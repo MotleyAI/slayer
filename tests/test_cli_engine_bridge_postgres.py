@@ -15,9 +15,9 @@ from psycopg import sql as pg_sql
 from pytest_postgresql import factories
 
 from slayer.async_utils import run_sync
-from slayer.cli import _run_validate_models
+from slayer.cli import _run_validate_datasets
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -52,16 +52,16 @@ def pg_datasource(postgresql_proc: Any) -> Iterator[DatasourceConfig]:
 def _store(base: Path, ds: DatasourceConfig) -> str:
     storage = YAMLStorage(base_dir=str(base))
     run_sync(storage.save_datasource(ds))
-    run_sync(storage.save_model(SlayerModel(
+    run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source=ds.name,
-        columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                 Column(name="region", sql="region", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="region", sql="region", datatype=DataType.STRING)],
     )))
-    run_sync(storage.save_model(SlayerModel(
+    run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source=ds.name,
-        columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                 Column(name="customer_id", sql="customer_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     return str(base)
 
@@ -71,14 +71,14 @@ def test_validate_models_with_cardinality_uses_one_event_loop(
 ) -> None:
     store = _store(tmp_path / "store", pg_datasource)
     args = SimpleNamespace(
-        datasource=pg_datasource.name, model=None, cardinality=True, persist_cardinality=False,
+        datasource=pg_datasource.name, dataset=None, cardinality=True, persist_cardinality=False,
         format="json", force_clean=False, yes=False, storage=store,
     )
-    _run_validate_models(args)
+    _run_validate_datasets(args)
     data = json.loads(capsys.readouterr().out)
     assert data["drift"] == []
     findings = data["cardinality"]["findings"]
     assert findings
     assert all(f["verdict"] != CardinalityVerdict.SCAN_FAILED.value for f in findings), findings
-    orders = next(f for f in findings if f["model"] == "orders")
+    orders = next(f for f in findings if f["dataset"] == "orders")
     assert orders["detected"] == "many_to_one"

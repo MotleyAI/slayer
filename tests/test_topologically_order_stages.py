@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import ModelJoin
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.models import DatasetRelationship
+from slayer.core.query import DatasetExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.stage_ordering import topologically_order_stages
 
@@ -21,16 +21,16 @@ def test_module_surface_exists() -> None:
 
 def test_engine_shim_delegates() -> None:
     """``SlayerQueryEngine._topologically_order_queries`` delegates to the module helper."""
-    a = SlayerQuery(name="a", source_model="orders")
+    a = SlayerQuery(name="a", population="orders")
     b = SlayerQuery(
         name="b",
-        source_model="orders",
-        extensions=[ModelExtension.model_validate({
-            "source_name": "orders",
-            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+        population="orders",
+        extensions=[DatasetExtension.model_validate({
+            "dataset": "orders",
+            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
-    root = SlayerQuery(source_model="b")
+    root = SlayerQuery(population="b")
     queries = [b, a, root]
 
     expected = topologically_order_stages(queries)
@@ -47,32 +47,32 @@ def test_engine_shim_delegates() -> None:
 
 def test_reorders_simple_forward_reference() -> None:
     # b depends on a via joins.target_model; input order is [b, a, root].
-    a = SlayerQuery(name="a", source_model="orders")
+    a = SlayerQuery(name="a", population="orders")
     b = SlayerQuery(
         name="b",
-        source_model="orders",
-        extensions=[ModelExtension.model_validate({
-            "source_name": "orders",
-            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+        population="orders",
+        extensions=[DatasetExtension.model_validate({
+            "dataset": "orders",
+            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
-    root = SlayerQuery(source_model="b")
+    root = SlayerQuery(population="b")
     ordered = topologically_order_stages([b, a, root])
     assert [q.name for q in ordered] == ["a", "b", None]
 
 
 def test_non_root_input_order_is_invariant() -> None:
     """Both input orderings of the non-root stages yield the same order."""
-    a = SlayerQuery(name="a", source_model="orders")
+    a = SlayerQuery(name="a", population="orders")
     b = SlayerQuery(
         name="b",
-        source_model="orders",
-        extensions=[ModelExtension.model_validate({
-            "source_name": "orders",
-            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+        population="orders",
+        extensions=[DatasetExtension.model_validate({
+            "dataset": "orders",
+            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
-    root = SlayerQuery(source_model="b")
+    root = SlayerQuery(population="b")
 
     ordered_ab = topologically_order_stages([a, b, root])
     ordered_ba = topologically_order_stages([b, a, root])
@@ -85,44 +85,44 @@ def test_non_root_input_order_is_invariant() -> None:
 def test_cycle_raises() -> None:
     a = SlayerQuery(
         name="a",
-        source_model="orders",
-        extensions=[ModelExtension.model_validate({
-            "source_name": "orders",
-            "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
+        population="orders",
+        extensions=[DatasetExtension.model_validate({
+            "dataset": "orders",
+            "relationships": [{"to": "b", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
     b = SlayerQuery(
         name="b",
-        source_model="orders",
-        extensions=[ModelExtension.model_validate({
-            "source_name": "orders",
-            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+        population="orders",
+        extensions=[DatasetExtension.model_validate({
+            "dataset": "orders",
+            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
-    root = SlayerQuery(source_model="a")
+    root = SlayerQuery(population="a")
     with pytest.raises(ValueError, match=r"[Cc]ycle"):
         topologically_order_stages([a, b, root])
 
 
 def test_root_referenced_raises() -> None:
     """The final entry is the DAG root and must not be referenced by another stage."""
-    a = SlayerQuery(name="a", source_model="root_stage")
-    root = SlayerQuery(name="root_stage", source_model="orders")
+    a = SlayerQuery(name="a", population="root_stage")
+    root = SlayerQuery(name="root_stage", population="orders")
     with pytest.raises(ValueError, match="root"):
         topologically_order_stages([a, root])
 
 
 def test_self_reference_raises() -> None:
-    a = SlayerQuery(name="a", source_model="a")
-    root = SlayerQuery(source_model="a")
+    a = SlayerQuery(name="a", population="a")
+    root = SlayerQuery(population="a")
     with pytest.raises(ValueError, match="self"):
         topologically_order_stages([a, root])
 
 
 def test_duplicate_name_raises() -> None:
-    a1 = SlayerQuery(name="a", source_model="orders")
-    a2 = SlayerQuery(name="a", source_model="orders")
-    root = SlayerQuery(source_model="a")
+    a1 = SlayerQuery(name="a", population="orders")
+    a2 = SlayerQuery(name="a", population="orders")
+    root = SlayerQuery(population="a")
     with pytest.raises(ValueError, match="[Dd]uplicate"):
         topologically_order_stages([a1, a2, root])
 
@@ -134,19 +134,19 @@ def test_duplicate_name_raises() -> None:
 
 def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
     """A ``ModelExtension`` join to a sibling adds an edge."""
-    a = SlayerQuery(name="a", source_model="orders")
+    a = SlayerQuery(name="a", population="orders")
     b = SlayerQuery(
         name="b",
-        source_model="orders",
-        extensions=[ModelExtension(
-            source_name="orders",
-            joins=[ModelJoin(
-                target_model="a",
-                join_pairs=[["id", "id"]],
+        population="orders",
+        extensions=[DatasetExtension(
+            dataset="orders",
+            relationships=[DatasetRelationship(
+                to="a",
+                from_columns=["id"], to_columns=["id"],
             )],
         )],
     )
-    root = SlayerQuery(source_model="b")
+    root = SlayerQuery(population="b")
     ordered = topologically_order_stages([b, a, root])
     names = [q.name for q in ordered]
     assert names.index("a") < names.index("b"), names
@@ -154,19 +154,19 @@ def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
 
 def test_dict_modelextension_nested_join_contributes_to_edges() -> None:
     """A raw-dict ``ModelExtension`` adds the same edge as the typed shape."""
-    a = SlayerQuery(name="a", source_model="orders")
+    a = SlayerQuery(name="a", population="orders")
     b = SlayerQuery.model_validate({
         "name": "b",
-        "source_model": "orders",
+        "population": "orders",
         "extensions": [{
-            "source_name": "orders",
-            "joins": [{
-                "target_model": "a",
-                "join_pairs": [["id", "id"]],
+            "dataset": "orders",
+            "relationships": [{
+                "to": "a",
+                "from_columns": ["id"], "to_columns": ["id"],
             }],
         }],
     })
-    root = SlayerQuery(source_model="b")
+    root = SlayerQuery(population="b")
     ordered = topologically_order_stages([b, a, root])
     names = [q.name for q in ordered]
     assert names.index("a") < names.index("b"), names

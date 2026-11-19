@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1824_fixtures import (
     REGION_LAST_AT,
-    ModelMeasure,
     make_exec_engine,
     q,
 )
@@ -39,7 +40,7 @@ class TestRankedTemporalValueNotTruncated:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="last(ordered_at)", name="lt")],
+            metrics=[QueryMetric(metric="last(ordered_at)", alias="lt")],
         ))
         got = {r["orders.region"]: str(r["orders.lt"])[:10] for r in resp.data}
         assert got == REGION_LAST_AT
@@ -49,7 +50,7 @@ class TestRankedTemporalValueNotTruncated:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="first(ordered_at)", name="ft")],
+            metrics=[QueryMetric(metric="first(ordered_at)", alias="ft")],
         ))
         got = {r["orders.region"]: str(r["orders.ft"])[:10] for r in resp.data}
         assert got == REGION_FIRST_AT

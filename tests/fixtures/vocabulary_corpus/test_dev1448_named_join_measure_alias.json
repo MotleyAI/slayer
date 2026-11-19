@@ -1,0 +1,174 @@
+{
+ "source": "tests/test_dev1448_named_join_measure_alias.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)",
+      "name": "rev"
+     }
+    ],
+    "to_many_handling": "broadcast"
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(customers.revenue)",
+      "alias": "rev"
+     }
+    ],
+    "to_many_handling": "broadcast"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(customers.revenue)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(customers__revenue_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(customers__revenue_sum)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  }
+ ]
+}

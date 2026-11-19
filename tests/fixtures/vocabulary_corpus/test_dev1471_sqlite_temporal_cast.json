@@ -1,0 +1,161 @@
+{
+ "source": "tests/test_dev1471_sqlite_temporal_cast.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "max(created_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(created_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "max(created_at, partition_by=customer_id)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(created_at, partition_by=customer_id)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "max(last_touch)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(last_touch)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "max(created_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(created_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "max(last_touch)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(last_touch)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "max(created_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(created_at)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  }
+ ]
+}

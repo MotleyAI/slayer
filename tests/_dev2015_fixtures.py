@@ -8,8 +8,9 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import BroadcastGrainWarningPayload
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
@@ -77,141 +78,141 @@ def spine_tables(*, orders_rows: Optional[list[tuple]] = None, date_type: str = 
     ]
 
 
-def _to_customers() -> ModelJoin:
-    return ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])
+def _to_customers() -> DatasetRelationship:
+    return DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])
 
 
-def customers_model(*, signed_up_at: bool = False) -> SlayerModel:
+def customers_dataset(*, signed_up_at: bool = False) -> SlayerDataset:
     columns = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="region", type=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region", datatype=DataType.STRING),
     ]
     if signed_up_at:
-        columns.append(Column(name="signed_up_at", type=DataType.DATE))
-    return SlayerModel(name="customers", sql_table="customers", data_source="test", columns=columns)
+        columns.append(DatasetField(name="signed_up_at", datatype=DataType.DATE))
+    return SlayerDataset(name="customers", sql_table="customers", data_source="test", fields=columns)
 
 
-def orders_model(*, date_type: DataType = DataType.DATE, extra_joins: Iterable[ModelJoin] = (),
-                 filters: Optional[list[str]] = None) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, date_type: DataType = DataType.DATE, extra_joins: Iterable[DatasetRelationship] = (),
+                 filters: Optional[list[str]] = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="order_date",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="order_date", type=date_type),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="order_date", datatype=date_type),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
-        joins=[_to_customers(), *extra_joins],
+        relationships=[_to_customers(), *extra_joins],
         filters=filters or [],
     )
 
 
-def returns_model(*, default_time_dimension: Optional[str] = None,
-                  extra_joins: Iterable[ModelJoin] = ()) -> SlayerModel:
+def returns_dataset(*, default_time_dimension: Optional[str] = None,
+                  extra_joins: Iterable[DatasetRelationship] = ()) -> SlayerDataset:
     """No declared default: ``return_date`` is the sole temporal column."""
-    return SlayerModel(
+    return SlayerDataset(
         name="returns", sql_table="returns", data_source="test",
         default_time_dimension=default_time_dimension,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="return_date", type=DataType.DATE),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="return_date", datatype=DataType.DATE),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
-        joins=[_to_customers(), *extra_joins],
+        relationships=[_to_customers(), *extra_joins],
     )
 
 
-def order_items_model() -> SlayerModel:
-    return SlayerModel(
+def order_items_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="order_items", sql_table="order_items", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="qty", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])],
+        relationships=[DatasetRelationship(to="orders", from_columns=["order_id"], to_columns=["id"])],
     )
 
 
-def shipments_two_dates_model() -> SlayerModel:
+def shipments_two_dates_dataset() -> SlayerDataset:
     """Two temporal columns and no declared default: no axis."""
-    return SlayerModel(
+    return SlayerDataset(
         name="shipments", sql_table="shipments", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="weight", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.DATE),
-            Column(name="delivered_at", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATE),
+            DatasetField(name="delivered_at", datatype=DataType.DATE),
         ],
     )
 
 
-def shipments_two_parents_model() -> SlayerModel:
+def shipments_two_parents_dataset() -> SlayerDataset:
     """No temporal column; joins both facts, so two equal-length spine routes."""
-    return SlayerModel(
+    return SlayerDataset(
         name="shipments", sql_table="shipments", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="return_id", type=DataType.INT),
-            Column(name="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="return_id", datatype=DataType.INTEGER),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
-        joins=[
-            ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
-            ModelJoin(target_model="returns", join_pairs=[["return_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="orders", from_columns=["order_id"], to_columns=["id"]),
+            DatasetRelationship(to="returns", from_columns=["return_id"], to_columns=["id"]),
         ],
     )
 
 
-def calendar_model() -> SlayerModel:
-    return SlayerModel(
+def calendar_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="calendar", sql_table="calendar", data_source="test",
-        columns=[Column(name="date", type=DataType.DATE, primary_key=True)],
+        fields=[DatasetField(name="date", datatype=DataType.DATE, primary_key=True)],
     )
 
 
-def _to_calendar(column: str) -> ModelJoin:
-    return ModelJoin(target_model="calendar", join_pairs=[[column, "date"]])
+def _to_calendar(column: str) -> DatasetRelationship:
+    return DatasetRelationship(to="calendar", from_columns=[column], to_columns=["date"])
 
 
-def monthly_model() -> SlayerModel:
+def monthly_dataset() -> SlayerDataset:
     """Query-backed monthly revenue; its axis is the ``month``-bucketed ``order_date``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="monthly", data_source="test",
         source_queries=[SlayerQuery.model_validate({
-            "source_model": "orders",
-            "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "population": "orders",
+            "time_dimensions": [{"field": "order_date", "granularity": "month"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })],
     )
 
 
-def spine_models(*, signed_up_at: bool = False, shipments: Optional[str] = None,
+def spine_datasets(*, signed_up_at: bool = False, shipments: Optional[str] = None,
                  date_type: DataType = DataType.DATE, returns_default: Optional[str] = None,
-                 orders_filters: Optional[list[str]] = None) -> list[SlayerModel]:
+                 orders_filters: Optional[list[str]] = None) -> list[SlayerDataset]:
     """``customers``, ``orders``, ``returns``, ``order_items``, ``monthly`` and an optional ``shipments``."""
     models = [
-        customers_model(signed_up_at=signed_up_at),
-        orders_model(date_type=date_type, filters=orders_filters),
-        returns_model(default_time_dimension=returns_default),
-        order_items_model(),
-        monthly_model(),
+        customers_dataset(signed_up_at=signed_up_at),
+        orders_dataset(date_type=date_type, filters=orders_filters),
+        returns_dataset(default_time_dimension=returns_default),
+        order_items_dataset(),
+        monthly_dataset(),
     ]
     if shipments == "two_dates":
-        models.append(shipments_two_dates_model())
+        models.append(shipments_two_dates_dataset())
     elif shipments == "two_parents":
-        models.append(shipments_two_parents_model())
+        models.append(shipments_two_parents_dataset())
     return models
 
 
-def calendar_models() -> list[SlayerModel]:
+def calendar_datasets() -> list[SlayerDataset]:
     """The hand-made calendar pattern: each fact joins ``calendar`` by its date."""
     return [
-        customers_model(),
-        orders_model(extra_joins=[_to_calendar("order_date")]),
-        returns_model(extra_joins=[_to_calendar("return_date")]),
-        calendar_model(),
+        customers_dataset(),
+        orders_dataset(extra_joins=[_to_calendar("order_date")]),
+        returns_dataset(extra_joins=[_to_calendar("return_date")]),
+        calendar_dataset(),
     ]
 
 
@@ -256,41 +257,41 @@ EVENTS = TableSpec(
 )
 
 
-def cg_orders_model(*, order_date_granularity: Optional[str] = None) -> SlayerModel:
-    column: dict[str, Any] = {"name": "order_date", "type": "DATE"}
+def cg_orders_dataset(*, order_date_granularity: Optional[str] = None) -> SlayerDataset:
+    column: dict[str, Any] = {"name": "order_date", "datatype": "Date"}
     if order_date_granularity is not None:
         column["granularity"] = order_date_granularity
-    return SlayerModel.model_validate({
+    return SlayerDataset.model_validate({
         "name": "orders", "sql_table": "orders", "data_source": "test", "default_time_dimension": "order_date",
-        "columns": [
-            {"name": "id", "type": "INT", "primary_key": True},
+        "fields": [
+            {"name": "id", "datatype": "Integer", "primary_key": True},
             column,
-            {"name": "amount", "type": "DOUBLE"},
+            {"name": "amount", "datatype": "Float"},
         ],
     })
 
 
-def events_model() -> SlayerModel:
-    return SlayerModel(
+def events_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="events", sql_table="events", data_source="test", default_time_dimension="ts",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="series", type=DataType.TEXT),
-            Column(name="ts", type=DataType.TIMESTAMP),
-            Column(name="d", type=DataType.DATE),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="series", datatype=DataType.STRING),
+            DatasetField(name="ts", datatype=DataType.DATETIME),
+            DatasetField(name="d", datatype=DataType.DATE),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
 
-def bucketed_model(*, name: str, source: str, column: str, granularity: str) -> SlayerModel:
+def bucketed_dataset(*, name: str, source: str, column: str, granularity: str) -> SlayerDataset:
     """A query-backed model whose ``column`` is bucketed at ``granularity``."""
-    return SlayerModel.model_validate({
+    return SlayerDataset.model_validate({
         "name": name, "data_source": "test",
         "source_queries": [{
-            "source_model": source,
-            "time_dimensions": [{"dimension": column, "granularity": granularity}],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "population": source,
+            "time_dimensions": [{"field": column, "granularity": granularity}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         }],
     })
 
@@ -301,14 +302,14 @@ def bucketed_model(*, name: str, source: str, column: str, granularity: str) -> 
 
 @contextlib.asynccontextmanager
 async def spine_engine(
-    backend: str, *, models: Optional[list[SlayerModel]] = None, tables: Optional[list[TableSpec]] = None,
+    backend: str, *, datasets: Optional[list[SlayerDataset]] = None, tables: Optional[list[TableSpec]] = None,
     clock: Optional[PinnedClock] = None, datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the spine seed (the custom granularities are declared too)."""
     seeded = spine_tables() if tables is None else tables
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, seeded),
-        models=spine_models() if models is None else models,
+        datasets=spine_datasets() if datasets is None else datasets,
         clock=clock if clock is not None else PinnedClock(NOW),
         datasource_fields=DS_GRANULARITIES if datasource_fields is None else datasource_fields,
     ) as (engine, _db):
@@ -317,13 +318,13 @@ async def spine_engine(
 
 @contextlib.asynccontextmanager
 async def cg_engine(
-    backend: str, *, models: Optional[list[SlayerModel]] = None, clock: Optional[PinnedClock] = None,
+    backend: str, *, datasets: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
     datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the custom-granularity seed, the datasource defining the four granularities."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, [CG_ORDERS, EVENTS]),
-        models=[cg_orders_model(), events_model()] if models is None else models,
+        datasets=[cg_orders_dataset(), events_dataset()] if datasets is None else datasets,
         clock=clock if clock is not None else PinnedClock(NOW),
         datasource_fields=DS_GRANULARITIES if datasource_fields is None else datasource_fields,
     ) as (engine, _db):
@@ -335,14 +336,14 @@ async def cg_engine(
 # ---------------------------------------------------------------------------
 
 def spine_td(*, granularity: str = "month", date_range: Any = JAN_JUN) -> dict[str, Any]:
-    td: dict[str, Any] = {"dimension": "time_spine.timestamp", "granularity": granularity}
+    td: dict[str, Any] = {"field": "time_spine.timestamp", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     return td
 
 
-def m(formula: str, name: str) -> dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str) -> dict[str, str]:
+    return {"metric": expression, "alias": name}
 
 
 TWO_FACTS = [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r"), m("count(orders.id)", "n")]
@@ -352,10 +353,10 @@ TWO_FACT_ROWS = {
 }
 
 
-def spine_query(*, measures: list[Any], date_range: Any = JAN_JUN, granularity: str = "month",
+def spine_query(*, metrics: list[Any], date_range: Any = JAN_JUN, granularity: str = "month",
                 **extra: Any) -> SlayerQuery:
     tds = extra.pop("time_dimensions", None) or [spine_td(granularity=granularity, date_range=date_range)]
-    return SlayerQuery.model_validate({"measures": measures, "time_dimensions": tds, **extra})
+    return SlayerQuery.model_validate({"metrics": metrics, "time_dimensions": tds, **extra})
 
 
 def key_of(row: dict[str, Any], name: str) -> str:
@@ -397,5 +398,5 @@ def by_bucket(resp: SlayerResponse, names: Iterable[str], *, bucket: str = "time
     return out
 
 
-def broadcast_warnings(resp: SlayerResponse) -> list:
-    return [w for w in (resp.warnings or []) if getattr(w, "kind", None) == "broadcast"]
+def broadcast_warnings(resp: SlayerResponse) -> list[BroadcastGrainWarningPayload]:
+    return [w for w in (resp.warnings or []) if isinstance(w, BroadcastGrainWarningPayload)]

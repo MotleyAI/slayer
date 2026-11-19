@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.client import current_model, embed_batch
 from slayer.embeddings.models import Embedding, EntityKind
@@ -21,12 +21,19 @@ from slayer.memories.models import Memory
 from slayer.memories.resolver import canonical_id_rooted_at
 from slayer.search.index import Corpus
 from slayer.search.render import (
-    collect_model_entity_pairs,
+    collect_dataset_entity_pairs,
     render_datasource_pair,
     render_memory_text_for_embedding,
 )
 from slayer.search.retriever import RetrievalResult, Retriever
 from slayer.storage.base import StorageBackend
+
+try:  # the optional ``advanced_search`` extra
+    import numpy as np
+
+    from slayer.embeddings.ranker import normalise, normalise_matrix, top_k_cosine
+except ImportError:
+    np = None
 
 
 _log = logging.getLogger(__name__)
@@ -139,11 +146,11 @@ class _PendingRefresh:
 class EmbeddingRetriever(Retriever):
     """Cosine-similarity retriever over a SQLite-sidecar embedding
     store, plus the refresh pipeline that keeps the sidecar in step
-    with model / memory edits.
+    with dataset / memory edits.
 
     The delete hooks intentionally default to ABC no-op:
     :class:`StorageBackend` cascade-deletes embedding rows
-    transactionally with the model / datasource / memory row delete,
+    transactionally with the dataset / datasource / memory row delete,
     so the retriever has nothing to do on delete this PR."""
 
     name = "embeddings"
@@ -231,18 +238,7 @@ class EmbeddingRetriever(Retriever):
                 f"{self._model_name!r}. Run `slayer ingest` to populate.",
             ])
 
-        # Inline imports: ``numpy`` and ``slayer.embeddings.ranker``
-        # require the optional ``advanced_search`` extra. Importing here
-        # rather than at module scope keeps the rest of slayer working
-        # without the extra.
-        try:
-            import numpy as np
-            from slayer.embeddings.ranker import (
-                normalise,
-                normalise_matrix,
-                top_k_cosine,
-            )
-        except ImportError:
+        if np is None:
             # Same packaging gap as the is_available() check above, reached by
             # a different route: an operator concern, not a caller's.
             _log.warning(
@@ -315,7 +311,7 @@ class EmbeddingRetriever(Retriever):
         self,
         *,
         name: str,
-        models: list[SlayerModel],
+        datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
         """Refresh the embedding for one datasource doc.
@@ -331,7 +327,7 @@ class EmbeddingRetriever(Retriever):
         if not embedding_client.is_available():
             return []
         pair = render_datasource_pair(
-            name=name, models=models, description=description,
+            name=name, datasets=datasets, description=description,
         )
         pending = _PendingRefresh(
             canonical_id=pair.canonical_id,
@@ -340,13 +336,13 @@ class EmbeddingRetriever(Retriever):
         )
         return await self._apply_pending([pending])
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> list[str]:
-        """Refresh the model doc + every visible column + named measures
+    async def refresh_dataset_subtree(self, dataset: SlayerDataset) -> list[str]:
+        """Refresh the dataset doc + every visible field + named metrics
         + custom aggregations in a single batch call.
 
         Routes through the unified :func:`collect_model_entity_pairs` so
         the "what counts as an indexable entity" filter rules (hidden
-        model -> empty; hidden column skipped; unnamed measure skipped)
+        dataset -> empty; hidden field skipped; unnamed metric skipped)
         live in exactly one place (DEV-1513).
         """
         if not embedding_client.is_available():
@@ -357,7 +353,7 @@ class EmbeddingRetriever(Retriever):
                 entity_kind=re.kind,  # type: ignore[arg-type]
                 text=re.text,
             )
-            for re in collect_model_entity_pairs(model=model)
+            for re in collect_dataset_entity_pairs(dataset=dataset)
         ]
         return await self._apply_pending(pending)
 

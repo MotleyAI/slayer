@@ -1,0 +1,349 @@
+{
+ "source": "tests/test_dev1853_validation.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ],
+    "name": "billing_customer"
+   },
+   "new": {
+    "to": "customers",
+    "name": "billing_customer",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ],
+    "name": "regions"
+   },
+   "new": {
+    "to": "customers",
+    "name": "regions",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ],
+    "name": "bill"
+   },
+   "new": {
+    "to": "customers",
+    "name": "bill",
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ],
+    "name": "bill"
+   },
+   "new": {
+    "to": "customers",
+    "name": "bill",
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ],
+    "name": "hop"
+   },
+   "new": {
+    "to": "regions",
+    "name": "hop",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ],
+    "name": "hop"
+   },
+   "new": {
+    "to": "customers",
+    "name": "hop",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ],
+    "name": "bill"
+   },
+   "new": {
+    "to": "customers",
+    "name": "bill",
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ],
+    "name": "bill"
+   },
+   "new": {
+    "to": "customers",
+    "name": "bill",
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ],
+    "name": "ship"
+   },
+   "new": {
+    "to": "customers",
+    "name": "ship",
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ],
+    "name": "billing"
+   },
+   "new": {
+    "to": "customers",
+    "name": "billing",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 172,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 183,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 225,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -8,6 +8,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.memories.models import Memory
 from slayer.database import engine_factory
 from slayer.storage import migrations as mig
+from slayer.storage.document_keys import keys_for
 from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
@@ -29,7 +30,7 @@ MEMORY_RANK = "rank(amount:sum)"
 #: The stored ranks as they load: descending, in the functional spelling.
 STAGE_RANK_LOADED = "rank(sum(rev), direction='desc')"
 MEMORY_RANK_LOADED = "rank(sum(amount), direction='desc')"
-TOP_QUERY = {"source_model": "top_status", "dimensions": ["status"], "measures": ["sum(total)"]}
+TOP_QUERY = {"population": "top_status", "dimensions": ["status"], "metrics": ["sum(total)"]}
 
 
 def _stages(*, query_version: int | None = None) -> list[dict]:
@@ -47,8 +48,10 @@ def _stages(*, query_version: int | None = None) -> list[dict]:
 
 
 def _memory_query(*, version: int | None = 4) -> dict:
-    q: dict = {"source_model": "orders", "dimensions": [{"name": "status"}],
-               "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    k = keys_for(entity="SlayerQuery", version=version or mig.CURRENT_VERSIONS["SlayerQuery"])
+    q: dict = {k.population: "orders", "dimensions": ["status"],
+               k.query_metrics: [{k.query_metric_text: "sum(amount)",
+                                  "name" if k.query_metric_text == "formula" else "alias": "rev"}],
                "order": [funcstyle_rank_order(MEMORY_RANK)], "limit": 1}
     if version is not None:
         q["version"] = version
@@ -80,10 +83,10 @@ async def test_0_10_2_stage_ordering_by_rank_executes_descending(tmp_path, shop_
     storage = await raw_store(
         backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
         models=[orders_v10(), customers_v10(), query_backed_v10(name="top_status", stages=_stages())])
-    model = await storage.get_model("top_status", data_source=DS)
+    model = await storage.get_dataset("top_status", data_source=DS)
     assert model is not None
     [order] = (model.source_queries or [])[-1].order or []
-    assert order.raw_formula == STAGE_RANK_LOADED
+    assert order.raw_expression == STAGE_RANK_LOADED
     resp = await run(storage, TOP_QUERY)
     assert list(by_dimension(resp, dim_suffix="status")) == [TOP_STATUS_DESC]
 
@@ -97,7 +100,7 @@ async def test_0_10_2_memory_ordering_by_rank_executes_descending(tmp_path, shop
     mem = await storage.get_memory("m1")
     assert mem.query is not None
     [order] = mem.query.order or []
-    assert order.raw_formula == MEMORY_RANK_LOADED
+    assert order.raw_expression == MEMORY_RANK_LOADED
     resp = await run(storage, mem.query)
     assert list(by_dimension(resp, dim_suffix="status")) == [TOP_STATUS_DESC]
 
@@ -108,13 +111,13 @@ async def test_v13_model_with_unrewritten_raw_formula_is_repaired(tmp_path, shop
     storage = await raw_store(
         backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
         models=[orders_v10(version=13), customers_v10(version=13), qb])
-    model = await storage.get_model("top_status", data_source=DS)
+    model = await storage.get_dataset("top_status", data_source=DS)
     assert model is not None
     assert model.version == mig.CURRENT_VERSIONS["SlayerModel"]
     final = (model.source_queries or [])[-1]
     assert final.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     [order] = final.order or []
-    assert order.raw_formula == STAGE_RANK_LOADED
+    assert order.raw_expression == STAGE_RANK_LOADED
     doc = await raw_doc(storage, "top_status")
     assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
     resp = await run(storage, TOP_QUERY)
@@ -132,11 +135,11 @@ async def test_v3_memory_with_unrewritten_raw_formula_is_repaired(tmp_path, shop
     assert mem.query is not None
     assert mem.query.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     [order] = mem.query.order or []
-    assert order.raw_formula == MEMORY_RANK_LOADED
+    assert order.raw_expression == MEMORY_RANK_LOADED
 
 
 def test_fresh_query_order_is_not_rewritten():
     mem = Memory.model_validate({"id": "f", "learning": "x", "query": _memory_query(version=None)})
     assert mem.query is not None
     [order] = mem.query.order or []
-    assert order.raw_formula == MEMORY_RANK
+    assert order.raw_expression == MEMORY_RANK

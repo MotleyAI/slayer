@@ -1,0 +1,83 @@
+{
+ "source": "tests/_dev1910_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "csp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "csp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.pop)",
+    "name": "rp"
+   },
+   "new": {
+    "expression": "sum(customers.regions.pop)",
+    "name": "rp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(stores.rent)",
+    "name": "rent"
+   },
+   "new": {
+    "expression": "sum(stores.rent)",
+    "name": "rent"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(customers.spend, weight=customers.spend)",
+    "name": "wa"
+   },
+   "new": {
+    "expression": "weighted_avg(customers.spend, weight=customers.spend)",
+    "name": "wa"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(customers.spend, weight=amount)",
+    "name": "wa"
+   },
+   "new": {
+    "expression": "weighted_avg(customers.spend, weight=amount)",
+    "name": "wa"
+   }
+  }
+ ],
+ "skipped": []
+}

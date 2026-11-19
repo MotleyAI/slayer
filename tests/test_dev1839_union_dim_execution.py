@@ -24,6 +24,8 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
     DUAL_MEASURE_RANK_OF,
@@ -33,7 +35,6 @@ from tests._dev1839_fixtures import (
     KEYLESS_RANK_OF,
     MIXED_RANK,
     MIXED_RANK_OF,
-    ModelMeasure,
     NESTED_RANK,
     NESTED_RANK_OF,
     RCC_TOTAL,
@@ -103,8 +104,8 @@ class TestMixedGrainRank:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -119,8 +120,8 @@ class TestMixedGrainRank:
         _, engine = exec_backend
         tier = f"CASE WHEN {MIXED_RANK} <= 1 THEN 'top' ELSE 'rest' END"
         resp = await engine.execute(q(
-            dimensions=[{"expression": tier, "name": "tier"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=[{"field": tier, "alias": "tier"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {r["orders.tier"]: float(r["orders.s"]) for r in resp.data}
         # rank<=1 groups: (N,CityA)=30 + (N,NULL)=30; the rest total 150.
@@ -131,8 +132,8 @@ class TestKeylessMixed:
     async def test_share_of_total_ranks_regions(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", {"expression": KEYLESS_RANK, "name": "kr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": KEYLESS_RANK, "alias": "kr"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")
@@ -151,8 +152,8 @@ class TestSubsetGrain:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"expression": SUBSET_RANK, "name": "sr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", "city", {"field": SUBSET_RANK, "alias": "sr"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -173,9 +174,9 @@ class TestNestedTransform:
         # shift (S,CityC,Mar) and (N,·,Feb) values and reorder the ranks.
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"expression": NESTED_RANK, "name": "nr"}],
+            dimensions=["region", "city", {"field": NESTED_RANK, "alias": "nr"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         resp = await engine.execute(query)
         got = {
@@ -198,9 +199,9 @@ class TestExplicitUnionPartition:
         dialect, engine = exec_backend
         query = q(
             dimensions=[
-                "region", "city", {"expression": EXPLICIT_PART_RANK, "name": "er"},
+                "region", "city", {"field": EXPLICIT_PART_RANK, "alias": "er"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -220,11 +221,11 @@ class TestUnionAttachStructure:
         _, engine = exec_backend
         base = await engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         plus = await engine.execute(q(
-            dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         base_by = rows_by(base, "orders.region", "orders.city")
         plus_by = rows_by(plus, "orders.region", "orders.city")
@@ -240,8 +241,8 @@ class TestUnionAttachStructure:
     ) -> None:
         dialect, engine = exec_backend
         sql = await _dry_scope_closed(engine, q(
-            dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ), dialect)
         # ``_cm_`` is the pinned attach-CTE naming contract (``cm_cte_bodies``
         # in the DEV-1739+ suites relies on it), not renderer-private detail.
@@ -265,10 +266,10 @@ class TestDuplicateProducerRoles:
         # design D10; stage-2 dedup) — values and cardinality must hold.
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
             ],
         )
         resp = await engine.execute(query)
@@ -294,11 +295,11 @@ class TestDualRole:
         query = q(
             dimensions=[
                 "region", "city", "channel",
-                {"expression": MIXED_RANK, "name": "rr"},
+                {"field": MIXED_RANK, "alias": "rr"},
             ],
-            measures=[
-                ModelMeasure(formula=MIXED_RANK, name="rm"),
-                ModelMeasure(formula="sum(amount)", name="s"),
+            metrics=[
+                QueryMetric(metric=MIXED_RANK, alias="rm"),
+                QueryMetric(metric="sum(amount)", alias="s"),
             ],
         )
         resp = await engine.execute(query)

@@ -29,15 +29,15 @@ from __future__ import annotations
 import os
 import tempfile
 
-from slayer.core.errors import UnresolvableOrderColumnError
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.errors import UnresolvableOrderFieldError
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
 from tests._dev1747_fixtures import (
     GROUP_A_AMOUNT,
     GROUP_B_AMOUNT,
     GROUP_NULL_AMOUNT,
     base_from_join_aliases,
     dev1747_bundle,
-    dev1747_models,
+    dev1747_datasets,
     make_sqlite_engine,
     order_by_text,
     outermost_select,
@@ -55,13 +55,13 @@ def _squash(sql: str) -> str:
     lines in one context and inline in another; that is not the subject."""
     return " ".join(sql.split())
 
-_MEASURE = [{"formula": "sum(amount)", "name": "rev"}]
+_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
-    models = dev1747_models()
+    models = dev1747_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:], dialect=dialect,
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect,
     )
 
 
@@ -75,10 +75,10 @@ async def _execute(query: SlayerQuery):
 
 def _grouped(direction: str, column: str = "cust_region") -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=_MEASURE,
-        order=[OrderItem(column=ColumnRef(name=column), direction=direction)],
+        population="orders",
+        dimensions=[QueryDimension(field="status")],
+        metrics=_MEASURE,
+        order=[OrderItem(field=column, direction=direction)],
     )
 
 
@@ -86,10 +86,10 @@ def _ungrouped(direction: str, column: str = "cust_region") -> SlayerQuery:
     """Raw rows — ``distinct_dimension_values=False`` means no GROUP BY, so the
     row IS the grain and a bare reference to the sort key is legal."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        dimensions=[QueryDimension(field="status")],
         distinct_dimension_values=False,
-        order=[OrderItem(column=ColumnRef(name=column), direction=direction)],
+        order=[OrderItem(field=column, direction=direction)],
     )
 
 
@@ -139,7 +139,7 @@ class TestUngroupedDerivedCrossing:
     async def test_ungrouped_derived_crossing_no_longer_rejects(self) -> None:
         try:
             sql = await _sql(_ungrouped("asc"))
-        except UnresolvableOrderColumnError as exc:  # pragma: no cover
+        except UnresolvableOrderFieldError as exc:  # pragma: no cover
             raise AssertionError(
                 f"ungrouped derived crossing still rejects: {exc}"
             ) from exc
@@ -172,11 +172,11 @@ class TestUngroupedDerivedCrossing:
         emitted sort terms must agree."""
         derived_sql = await _sql(_ungrouped("asc"))
         bare_sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
             order=[OrderItem(
-                column=ColumnRef(name="name", model="customers.regions"),
+                field="customers.regions.name",
                 direction="asc",
             )],
         ))
@@ -255,10 +255,10 @@ class TestDerivedOfDerivedSortKey:
         apart again without this failing."""
         hidden_sql = await _sql(_ungrouped("asc", column="amount_x4"))
         projected_sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status"), ColumnRef(name="amount_x4")],
+            population="orders",
+            dimensions=[QueryDimension(field="status"), QueryDimension(field="amount_x4")],
             distinct_dimension_values=False,
-            order=[OrderItem(column=ColumnRef(name="amount_x4"), direction="asc")],
+            order=[OrderItem(field="amount_x4", direction="asc")],
         ))
         # The projected query sorts by the ALIAS, so compare the sort term
         # against the projected SELECT expression for the same column.

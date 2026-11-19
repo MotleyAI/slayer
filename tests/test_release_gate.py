@@ -25,8 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEV_SLAYER = Path(sys.executable).parent / "slayer"
 WORKFLOWS = ("publish.yml", "publish-test.yml")
 HEADLINE = {
-    "source_model": "orders",
-    "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
+    "population": "orders",
+    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
     "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 }
 
@@ -79,7 +79,7 @@ def mcp_server():
                 descriptions_max_chars: Any = None) -> str:
         if B["mcp"] == "inspect_hang":
             time.sleep(3600)
-        return json.dumps({{"name": "orders", "entity_type": "model", "joins_to": B["mcp_joins"]}})
+        return json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["mcp_joins"]}})
 
     server.run()
 
@@ -103,7 +103,7 @@ def main():
         print({{"rows": json.dumps(ROWS), "empty": "[]", "non_json": "| a |\\n|---|\\n| 1 |",
                "object": json.dumps({{"rows": 1}})}}[B["cli_query"]])
     elif command == "inspect":
-        print(json.dumps({{"name": "orders", "entity_type": "model", "joins_to": B["cli_joins"]}}))
+        print(json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["cli_joins"]}}))
     elif command == "mcp":
         mcp_server()
     return 0

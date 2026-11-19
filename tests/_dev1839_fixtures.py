@@ -42,9 +42,9 @@ from __future__ import annotations
 
 from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surface
     CITY_TOTAL,
-    ColumnRef,
+    FieldRef,
     GRAND_TOTAL,
-    ModelMeasure,
+    DatasetMetric,
     RCM_GROUPS,
     RC_GROUPS,
     REGION_MONTH_TOTAL,
@@ -143,10 +143,10 @@ OK_REGION_TOTAL = {"North": 100.0, "South": 25.0, None: 60.0}
 
 
 __all__ = [
-    "CITY_TOTAL", "ColumnRef", "DUAL_MEASURE_RANK_OF", "EXPLICIT_PART_RANK",
+    "CITY_TOTAL", "FieldRef", "DUAL_MEASURE_RANK_OF", "EXPLICIT_PART_RANK",
     "EXPLICIT_PART_RANK_OF", "GRAND_TOTAL", "KEYLESS_RANK", "KEYLESS_RANK_OF",
     "MEASURE_DIFF", "MIXED_DIFF_OF", "MIXED_RANK", "MIXED_RANK_OF",
-    "ModelMeasure", "NESTED_RANK", "NESTED_RANK_OF", "OK_REGION_TOTAL",
+    "DatasetMetric", "NESTED_RANK", "NESTED_RANK_OF", "OK_REGION_TOTAL",
     "RCC_TOTAL", "RCM_GROUPS", "RCM_TOTAL", "RC_GROUPS", "REGION_CUMSUM",
     "REGION_MONTH_TOTAL", "REGION_TOTAL", "SAMEGRAIN_DIFF", "SAMEGRAIN_DIFF_OF",
     "SAMEGRAIN_RANK", "SAMEGRAIN_RANK_OF", "SUBSET_RANK", "SUBSET_RANK_OF",

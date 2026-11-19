@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -34,9 +34,9 @@ def _owner(doc: dict[str, Any], location: str) -> dict[str, Any]:
             "semantic_model": doc}[location]
 
 
-def _meta(model: SlayerModel, location: str) -> dict[str, Any]:
-    owner: Any = {"model": model, "semantic_model": model, "column": model.get_column("amount"),
-                  "measure": model.get_measure("revenue"), "join": model.joins[0]}[location]
+def _meta(model: SlayerDataset, location: str) -> dict[str, Any]:
+    owner: Any = {"model": model, "semantic_model": model, "column": model.get_field("amount"),
+                  "measure": model.get_metric("revenue"), "join": model.relationships[0]}[location]
     assert owner is not None
     return owner.meta or {}
 
@@ -48,7 +48,7 @@ def _entries_meta(location: str, entries: Any) -> dict[str, Any]:
 
 
 def _migrated(location: str, entries: Any) -> Any:
-    model = SlayerModel.model_validate(_doc(_entries_meta(location, entries), location=location))
+    model = SlayerDataset.model_validate(_doc(_entries_meta(location, entries), location=location))
     meta = _meta(model, location)
     if location == "semantic_model":
         semantic = meta["osi_semantic_model"]
@@ -98,12 +98,12 @@ def test_too_deep_string_does_not_abort_the_load() -> None:
 
 @pytest.mark.parametrize("value", ["garbage", {"vendor_name": "ACME"}, 3])
 def test_non_list_value_untouched(value: Any) -> None:
-    model = SlayerModel.model_validate(_doc({OLD: value, "owner": "x"}, location="column"))
+    model = SlayerDataset.model_validate(_doc({OLD: value, "owner": "x"}, location="column"))
     assert _meta(model, "column") == {OLD: value, "owner": "x"}
 
 
 def test_other_meta_kept() -> None:
-    model = SlayerModel.model_validate(_doc({OLD: [{"vendor_name": "A", "data": "{}"}], "osi_ai_context": {"x": 1},
+    model = SlayerDataset.model_validate(_doc({OLD: [{"vendor_name": "A", "data": "{}"}], "osi_ai_context": {"x": 1},
                                              "owner": "finance"}, location="measure"))
     assert _meta(model, "measure") == {NEW: [{"vendor_name": "A", "data": {}}], "osi_ai_context": {"x": 1},
                                        "owner": "finance"}
@@ -111,7 +111,7 @@ def test_other_meta_kept() -> None:
 
 def test_current_version_document_untouched() -> None:
     meta = {OLD: [{"vendor_name": "A", "data": '{"k": 1}'}]}
-    model = SlayerModel.model_validate(_doc(copy.deepcopy(meta), location="model", version=23))
+    model = SlayerDataset.model_validate(_doc(copy.deepcopy(meta), location="model", version=23))
     assert model.meta == meta
 
 
@@ -121,7 +121,7 @@ async def test_stored_model_upgraded_on_load(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True)
     doc = _doc({OLD: [{"vendor_name": "ACME", "data": '{"k": 1}'}]}, location="column", version=21)
     path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
-    model = await storage.get_model("orders", data_source="osids")
+    model = await storage.get_dataset("orders", data_source="osids")
     assert model is not None
     assert model.version == CURRENT_VERSIONS["SlayerModel"]
     assert _meta(model, "column") == {NEW: [{"vendor_name": "ACME", "data": {"k": 1}}]}

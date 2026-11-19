@@ -1,0 +1,187 @@
+{
+ "source": "tests/test_dev1750_guard_lift.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount) > 0)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount) > 0)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(customers.spend) > 0)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(customers.spend) > 0)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "delta"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "delta"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change_pct(sum(amount))",
+    "name": "delta"
+   },
+   "new": {
+    "expression": "change_pct(sum(amount))",
+    "name": "delta"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(customers.spend), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(customers.spend), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(customers.spend), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(customers.spend), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(customers.spend))",
+    "name": "run"
+   },
+   "new": {
+    "expression": "cumsum(sum(customers.spend))",
+    "name": "run"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount) + sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount) + sum(amount), -1)",
+    "name": "prev"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  }
+ ]
+}

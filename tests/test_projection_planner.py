@@ -12,32 +12,32 @@ from __future__ import annotations
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     Phase,
 )
 from decimal import Decimal
 from slayer.engine.compile.projection import ProjectionPlanner
-from slayer.ir.bound import DeclaredMeasure, OrderSpec
+from slayer.ir.bound import DeclaredMetric, OrderSpec
 from slayer.ir.bound import BoundExpr, BoundFilter
 
 
 def _amount_sum() -> AggregateKey:
     return AggregateKey(
-        source=ColumnKey(path=(), leaf="amount"), agg="sum",
+        source=FieldKey(path=(), leaf="amount"), agg="sum",
     )
 
 
-def _status() -> ColumnKey:
-    return ColumnKey(path=(), leaf="status")
+def _status() -> FieldKey:
+    return FieldKey(path=(), leaf="status")
 
 
 class TestDeclaredMeasures:
     def test_declared_measure_becomes_public_slot(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
                     declared_name="amount_sum",
                     public_name="amount_sum",
@@ -57,13 +57,13 @@ class TestDeclaredMeasures:
     def test_two_measures_with_same_key_share_slot(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
                     declared_name="rev1",
                     public_name="rev1",
                 ),
-                DeclaredMeasure(
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
                     declared_name="rev2",
                     public_name="rev2",
@@ -84,8 +84,8 @@ class TestHiddenSlots:
         # amount:sum. The slot is materialised hidden.
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -113,8 +113,8 @@ class TestHiddenSlots:
     def test_order_only_ref_becomes_hidden(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -136,8 +136,8 @@ class TestHiddenSlots:
     def test_declared_then_used_in_filter_stays_public(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
                     declared_name="rev",
                     public_name="rev",
@@ -172,8 +172,8 @@ class TestPlanFilters:
             referenced_keys=(_status(),),
         )
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -197,8 +197,8 @@ class TestPlanFilters:
             referenced_keys=(agg, LiteralKey(value=Decimal(100))),
         )
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -234,8 +234,8 @@ class TestPlanFilters:
             op="+", operands=(agg, LiteralKey(value=Decimal(1))),
         )
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -270,19 +270,19 @@ class TestDev1501CanonicalNameWithAggArgs:
         values — today both collide to ``revenue_last``.
         """
         k_cr = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"),
+            source=FieldKey(path=(), leaf="revenue"),
             agg="last",
-            args=(ColumnKey(path=(), leaf="created_at"),),
+            args=(FieldKey(path=(), leaf="created_at"),),
         )
         k_up = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"),
+            source=FieldKey(path=(), leaf="revenue"),
             agg="last",
-            args=(ColumnKey(path=(), leaf="updated_at"),),
+            args=(FieldKey(path=(), leaf="updated_at"),),
         )
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -319,19 +319,19 @@ class TestDev1501CanonicalNameWithAggArgs:
         values mirroring the cross-model parametric exception.
         """
         k_p50 = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"),
+            source=FieldKey(path=(), leaf="revenue"),
             agg="percentile",
             kwargs=(("p", Decimal("0.5")),),
         )
         k_p95 = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"),
+            source=FieldKey(path=(), leaf="revenue"),
             agg="percentile",
             kwargs=(("p", Decimal("0.95")),),
         )
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -368,8 +368,8 @@ class TestDev1501CanonicalNameWithAggArgs:
         agg = _amount_sum()  # AggregateKey(amount, sum, args=(), kwargs=())
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",

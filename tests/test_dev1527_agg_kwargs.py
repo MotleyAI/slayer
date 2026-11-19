@@ -30,12 +30,11 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.sql.generator import AggRenderSpec, ResolvedAggKwarg
 from tests._engine_helpers import _engine_generate
 
@@ -47,50 +46,50 @@ def _norm(s: str) -> str:
 # --------------------------------------------------------------------------- #
 # Fixtures — orders → customers → regions (+ a 1:N orders → line_items chain).
 # --------------------------------------------------------------------------- #
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="weight", sql="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def _line_items() -> SlayerModel:
-    return SlayerModel(
+def _line_items() -> SlayerDataset:
+    return SlayerDataset(
         name="line_items", sql_table="line_items", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="order_id", sql="order_id", type=DataType.DOUBLE),
-            Column(name="qty", sql="qty", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="order_id", sql="order_id", datatype=DataType.FLOAT),
+            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _orders(*, extra=None, joins_extra=None) -> SlayerModel:
+def _orders(*, extra=None, joins_extra=None) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-        Column(name="amount", sql="amount", type=DataType.DOUBLE),
-        Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
     ]
     cols += extra or []
-    joins = [ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])]
+    joins = [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]
     joins += joins_extra or []
-    return SlayerModel(
-        name="orders", sql_table="orders", data_source="test", columns=cols, joins=joins,
+    return SlayerDataset(
+        name="orders", sql_table="orders", data_source="test", fields=cols, relationships=joins,
     )
 
 
@@ -111,7 +110,7 @@ class TestResolvedAggKwarg:
 
     def test_agg_render_spec_accepts_expr_kind(self) -> None:
         spec = AggRenderSpec(
-            sql="price", name="price", model_name="sales",
+            sql="price", name="price", dataset_name="sales",
             aggregation="weighted_avg", alias="sales.price_weighted_avg",
             agg_kwargs={"weight": ResolvedAggKwarg(
                 kind="expr", value=exp.column("quantity", table="sales"), input_type=None)},
@@ -124,7 +123,7 @@ class TestResolvedAggKwarg:
         # agg_kwarg_canonical_str; a direct construction is rejected defensively).
         with pytest.raises((ValidationError, ValueError, TypeError)):
             AggRenderSpec(
-                sql="price", name="price", model_name="sales",
+                sql="price", name="price", dataset_name="sales",
                 aggregation="weighted_avg", alias="sales.price_weighted_avg",
                 agg_kwargs={"weight": True},
             )
@@ -138,13 +137,13 @@ class TestDev1527KwargExpansion:
         # A LOCAL derived column kwarg (no join) also collapses to a bare name
         # today (orders.dbl_qty, non-existent). After the fix it expands.
         orders = _orders(extra=[
-            Column(name="dbl_qty", sql="quantity * 2", type=DataType.DOUBLE),
+            DatasetField(name="dbl_qty", sql="quantity * 2", datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="weighted_avg(amount, weight=dbl_qty)")],
+            population="orders",
+            metrics=[QueryMetric(metric="weighted_avg(amount, weight=dbl_qty)")],
         )
-        sql = await _engine_generate(query=query, model=orders)
+        sql = await _engine_generate(query=query, dataset=orders)
         assert "quantity * 2" in sql
         assert "orders.dbl_qty" not in sql
         assert "LEFT JOIN" not in sql  # local — pulls no join
@@ -152,19 +151,19 @@ class TestDev1527KwargExpansion:
     async def test_percentile_numeric_param_unchanged(self) -> None:
         # str-kind path is byte-identical to today (regression guard).
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="percentile(amount, p=0.95)")],
+            population="orders",
+            metrics=[QueryMetric(metric="percentile(amount, p=0.95)")],
         )
-        sql = await _engine_generate(query=query, model=_orders())
+        sql = await _engine_generate(query=query, dataset=_orders())
         assert "PERCENTILE_CONT" in sql
         assert "0.95" in sql
 
     async def test_weighted_avg_plain_column_unchanged(self) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="weighted_avg(amount, weight=quantity)")],
+            population="orders",
+            metrics=[QueryMetric(metric="weighted_avg(amount, weight=quantity)")],
         )
-        sql = await _engine_generate(query=query, model=_orders())
+        sql = await _engine_generate(query=query, dataset=_orders())
         assert "SUM(" in sql
         assert "NULLIF(" in sql
         assert "orders.quantity" in sql
@@ -173,10 +172,10 @@ class TestDev1527KwargExpansion:
         # Non-vacuous: both the source (amount) and the ``other=`` operand
         # (quantity) must appear in the CORR call, str-kind, byte-identical.
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="corr(amount, other=quantity)")],
+            population="orders",
+            metrics=[QueryMetric(metric="corr(amount, other=quantity)")],
         )
-        sql = await _engine_generate(query=query, model=_orders())
+        sql = await _engine_generate(query=query, dataset=_orders())
         assert "CORR(" in sql.upper()
         assert "orders.amount" in sql
         assert "orders.quantity" in sql
@@ -186,15 +185,15 @@ class TestDev1527KwargExpansion:
         # column crossing a join → its expansion is embedded as the second CORR
         # operand AND the join is registered (base-pulled).
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers.regions.weight",
-                   type=DataType.DOUBLE),
+            DatasetField(name="region_weight", sql="customers.regions.weight",
+                   datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="corr(amount, other=region_weight)")],
+            population="orders",
+            metrics=[QueryMetric(metric="corr(amount, other=region_weight)")],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         assert "CORR(" in sql.upper()
         assert "customers__regions.weight" in sql          # expanded, not bare
@@ -209,16 +208,16 @@ class TestDev1527KwargExpansion:
         # weight operand is the expanded joined ref — not the bare, non-existent
         # ``orders.region_weight`` (Codex finding on the ROW-collector fold PR).
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers.regions.weight",
-                   type=DataType.DOUBLE),
+            DatasetField(name="region_weight", sql="customers.regions.weight",
+                   datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(
-                formula="weighted_avg(amount, weight=region_weight) + sum(quantity)")],
+            population="orders",
+            metrics=[QueryMetric(
+                metric="weighted_avg(amount, weight=region_weight) + sum(quantity)")],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         assert "customers__regions.weight" in sql          # kwarg expanded
         assert "orders.region_weight" not in sql           # not the broken bare form
@@ -235,17 +234,17 @@ class TestDev1527KwargExpansion:
         # kwarg (customers__regions.weight) renders inside the CTE; the bare
         # non-existent orders.region_weight never appears.
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers.regions.weight",
-                   type=DataType.DOUBLE),
+            DatasetField(name="region_weight", sql="customers.regions.weight",
+                   datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             dimensions=["id"],
-            measures=[ModelMeasure(formula="weighted_avg(amount, weight=region_weight)")],
-            filters=["weighted_avg(amount, weight=region_weight) > 5"],
+            metrics=[QueryMetric(metric="weighted_avg(amount, weight=region_weight)")],
+            filter=["weighted_avg(amount, weight=region_weight) > 5"],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         norm = _norm(sql)
         assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
@@ -263,14 +262,14 @@ class TestDev1527KwargExpansion:
         # numeric literal, substitutes as today (guarded by _SAFE_AGG_PARAM_RE).
         orders = _orders()
         orders.aggregations = [Aggregation(
-            name="scaled_sum", formula="SUM({value}) / {scale}",
+            name="scaled_sum", expression="SUM({value}) / {scale}",
             params=[AggregationParam(name="scale", sql="1")],
         )]
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="scaled_sum(amount, scale=100)")],
+            population="orders",
+            metrics=[QueryMetric(metric="scaled_sum(amount, scale=100)")],
         )
-        sql = await _engine_generate(query=query, model=orders)
+        sql = await _engine_generate(query=query, dataset=orders)
         assert "SUM(orders.amount)" in _norm(sql)
         assert "/ 100" in _norm(sql)
 
@@ -307,18 +306,18 @@ class TestDev1527F1BasePull:
         # the class-(d) crossed-argument ledger row). The proven-hop control
         # below pins the still-legal shape.
         orders = _orders(
-            extra=[Column(name="li_weight", sql="line_items.qty", type=DataType.DOUBLE)],
-            joins_extra=[ModelJoin(
-                target_model="line_items", join_pairs=[["id", "order_id"]])],
+            extra=[DatasetField(name="li_weight", sql="line_items.qty", datatype=DataType.FLOAT)],
+            joins_extra=[DatasetRelationship(
+                to="line_items", from_columns=["id"], to_columns=["order_id"])],
         )
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="weighted_avg(amount, weight=li_weight)")],
+            population="orders",
+            metrics=[QueryMetric(metric="weighted_avg(amount, weight=li_weight)")],
         )
         line_items = _line_items()
         with pytest.raises(ValueError) as ei:
             await _engine_generate(
-                query=query, model=orders, extra_models=[line_items],
+                query=query, dataset=orders, extra_datasets=[line_items],
             )
         message = str(ei.value)
         assert "line_items" in message
@@ -328,15 +327,15 @@ class TestDev1527F1BasePull:
         # N:1 control (region_weight): isolates identically — the trigger is
         # structural (any crossing input), not cardinality-driven.
         orders = _orders(extra=[
-            Column(name="region_weight", sql="customers.regions.weight",
-                   type=DataType.DOUBLE),
+            DatasetField(name="region_weight", sql="customers.regions.weight",
+                   datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="weighted_avg(amount, weight=region_weight)")],
+            population="orders",
+            metrics=[QueryMetric(metric="weighted_avg(amount, weight=region_weight)")],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
         assert "customers__regions.weight" in _extract_cm_body(sql), sql

@@ -1,0 +1,159 @@
+{
+ "source": "tests/facade/test_catalog_joins.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "stores",
+    "join_pairs": [
+     [
+      "store_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "stores",
+    "from_columns": [
+     "store_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "stores",
+    "join_pairs": [
+     [
+      "store_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "stores",
+    "from_columns": [
+     "store_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "ghost",
+    "join_pairs": [
+     [
+      "store_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "ghost",
+    "from_columns": [
+     "store_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "stores",
+    "join_pairs": [
+     [
+      "store_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "stores",
+    "from_columns": [
+     "store_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  }
+ ]
+}

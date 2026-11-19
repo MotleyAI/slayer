@@ -1,0 +1,61 @@
+{
+ "source": "tests/test_dev1740_regroup_guards.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  }
+ ],
+ "skipped": []
+}

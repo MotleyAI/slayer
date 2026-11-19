@@ -1,0 +1,80 @@
+{
+ "source": "tests/_dev2210_fixtures.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "id",
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "id",
+     "status"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  }
+ ]
+}

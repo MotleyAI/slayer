@@ -1,0 +1,137 @@
+{
+ "source": "tests/test_dev2102_query_inner_joins.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(orders.id)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(orders.id)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.credit)",
+    "name": "cr"
+   },
+   "new": {
+    "expression": "sum(customers.credit)",
+    "name": "cr"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "spent"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "spent"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.id"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "spent"
+     }
+    ],
+    "filters": [
+     "spent > 25"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.id"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "spent"
+     }
+    ],
+    "filter": [
+     "spent > 25"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 224,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 226,
+   "reason": "not fully literal"
+  }
+ ]
+}

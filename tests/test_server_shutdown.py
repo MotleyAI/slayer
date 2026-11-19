@@ -588,7 +588,7 @@ def test_pg_serve_idle_client_does_not_block_stop(store: str, usage_reporting_en
 def _stdio_mcp_after_a_query(store: str, env: dict[str, str]) -> McpStdio:
     session = McpStdio(args=["--storage", store], env=env)
     session.initialize()
-    response = session.call_tool("query", {"query": {"source_model": "orders", "measures": ["sum(amount)"]}})
+    response = session.call_tool("query", {"query": {"population": "orders", "metrics": ["sum(amount)"]}})
     assert not response["result"].get("isError"), response
     return session
 

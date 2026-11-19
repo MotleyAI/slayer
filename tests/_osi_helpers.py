@@ -11,7 +11,7 @@ import pytest
 import sqlalchemy as sa
 import yaml
 
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult, ConversionWarning
@@ -155,20 +155,20 @@ def convert(*, db: Path, docs: list[OSIDocument], db_dialect: str = "duckdb", **
     )
 
 
-def by_name(result: ConversionResult) -> dict[str, SlayerModel]:
-    return {model.name: model for model in result.models}
+def by_name(result: ConversionResult) -> dict[str, SlayerDataset]:
+    return {model.name: model for model in result.datasets}
 
 
-def cols(model: SlayerModel) -> dict[str, Column]:
-    return {c.name: c for c in model.columns}
+def cols(dataset: SlayerDataset) -> dict[str, DatasetField]:
+    return {c.name: c for c in dataset.fields}
 
 
-def visible(model: SlayerModel) -> set[str]:
-    return {c.name for c in model.columns if not c.hidden}
+def visible(dataset: SlayerDataset) -> set[str]:
+    return {c.name for c in dataset.fields if not c.hidden}
 
 
-def hidden(model: SlayerModel) -> list[Column]:
-    return [c for c in model.columns if c.hidden]
+def hidden(dataset: SlayerDataset) -> list[DatasetField]:
+    return [c for c in dataset.fields if c.hidden]
 
 
 def entries(result: ConversionResult) -> list[ConversionWarning]:
@@ -185,20 +185,20 @@ def mentions(result: ConversionResult, name: str, *, severity: str | None = None
 
 def unconverted(result: ConversionResult, metric: str) -> bool:
     """True when ``metric`` is reported as unconverted and is on no model."""
-    on_a_model = any(meas.name == metric for model in result.models for meas in model.measures)
+    on_a_model = any(meas.name == metric for model in result.datasets for meas in model.metrics)
     return not on_a_model and any(e.metric_name == metric for e in result.unconverted_metrics)
 
 
-def measure_home(result: ConversionResult, measure: str) -> SlayerModel:
-    homes = [model for model in result.models if any(meas.name == measure for meas in model.measures)]
-    assert len(homes) == 1, f"measure {measure!r} on {[h.name for h in homes]}"
+def metric_home(result: ConversionResult, metric: str) -> SlayerDataset:
+    homes = [model for model in result.datasets if any(meas.name == metric for meas in model.metrics)]
+    assert len(homes) == 1, f"measure {metric!r} on {[h.name for h in homes]}"
     return homes[0]
 
 
 async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
                 dialect: str = "duckdb") -> list[dict[str, Any]]:
     """Save the imported models over ``db`` and run one query, disposing every engine."""
-    engine = await build_exec_engine(str(db), dialect=dialect, models=result.models, datasource=DATASOURCE)
+    engine = await build_exec_engine(str(db), dialect=dialect, datasets=result.datasets, datasource=DATASOURCE)
     try:
         response = await engine.execute(payload)
     finally:
@@ -207,10 +207,10 @@ async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
     return response.data
 
 
-async def scalar(*, result: ConversionResult, db: Path, model: str, formula: str,
+async def scalar(*, result: ConversionResult, db: Path, dataset: str, expression: str,
                  dialect: str = "duckdb") -> Any:
     """The single value of ``formula`` over ``model``."""
     rows = await query(result=result, db=db, dialect=dialect,
-                       payload={"source_model": model, "measures": [{"formula": formula, "name": "v"}]})
+                       payload={"population": dataset, "metrics": [{"metric": expression, "alias": "v"}]})
     assert len(rows) == 1
-    return rows[0][f"{model}.v"]
+    return rows[0][f"{dataset}.v"]

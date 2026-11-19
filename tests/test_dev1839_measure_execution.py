@@ -18,6 +18,8 @@ import pytest
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
     GRAND_TOTAL,
@@ -25,7 +27,6 @@ from tests._dev1839_fixtures import (
     MIXED_DIFF_OF,
     MIXED_RANK,
     MIXED_RANK_OF,
-    ModelMeasure,
     REGION_TOTAL,
     SAMEGRAIN_DIFF,
     SAMEGRAIN_DIFF_OF,
@@ -55,9 +56,9 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[
-                ModelMeasure(formula=MEASURE_DIFF, name="d"),
-                ModelMeasure(formula="sum(amount)", name="s"),
+            metrics=[
+                QueryMetric(metric=MEASURE_DIFF, alias="d"),
+                QueryMetric(metric="sum(amount)", alias="s"),
             ],
         )
         resp = await engine.execute(query)
@@ -75,7 +76,7 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=SAMEGRAIN_DIFF, name="d")],
+            metrics=[QueryMetric(metric=SAMEGRAIN_DIFF, alias="d")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")
@@ -90,10 +91,10 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(
-                formula="sum(amount, partition_by=region) - "
+            metrics=[QueryMetric(
+                metric="sum(amount, partition_by=region) - "
                         "sum(amount, partition_by=[])",
-                name="d",
+                alias="d",
             )],
         )
         resp = await engine.execute(query)
@@ -109,7 +110,7 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=f"abs({MEASURE_DIFF})", name="d")],
+            metrics=[QueryMetric(metric=f"abs({MEASURE_DIFF})", alias="d")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -124,9 +125,9 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(
-                formula=f"CASE WHEN {MEASURE_DIFF} > 0 THEN 1 ELSE 0 END",
-                name="d",
+            metrics=[QueryMetric(
+                metric=f"CASE WHEN {MEASURE_DIFF} > 0 THEN 1 ELSE 0 END",
+                alias="d",
             )],
         )
         resp = await engine.execute(query)
@@ -142,8 +143,8 @@ class TestConformingSurfaces:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(
-                formula="sum(amount) - sum(amount, partition_by=region)", name="d",
+            metrics=[QueryMetric(
+                metric="sum(amount) - sum(amount, partition_by=region)", alias="d",
             )],
         )
         resp = await engine.execute(query)
@@ -162,9 +163,9 @@ class TestConformingSurfaces:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[
-                ModelMeasure(formula=MIXED_RANK, name="r"),
-                ModelMeasure(formula="sum(amount)", name="s"),
+            metrics=[
+                QueryMetric(metric=MIXED_RANK, alias="r"),
+                QueryMetric(metric="sum(amount)", alias="s"),
             ],
         )
         resp = await engine.execute(query)
@@ -175,7 +176,7 @@ class TestConformingSurfaces:
 
         solo = await engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         solo_by = rows_by(solo, "orders.region", "orders.city")
         assert set(solo_by) == set(by)
@@ -189,12 +190,12 @@ class TestConformingSurfaces:
         dialect, engine = exec_backend
         unfiltered = rows_by(await engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         query = q(
             dimensions=["region", "city"],
-            filters=[f"{MEASURE_DIFF} > 0"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filter=[f"{MEASURE_DIFF} > 0"],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -211,16 +212,16 @@ class TestConformingSurfaces:
         # the unfiltered run. Needs D10, so this variant is TDD, not locking.
         _, engine = exec_backend
         measures = [
-            ModelMeasure(formula="sum(amount)", name="s"),
-            ModelMeasure(formula=MEASURE_DIFF, name="d"),
+            QueryMetric(metric="sum(amount)", alias="s"),
+            QueryMetric(metric=MEASURE_DIFF, alias="d"),
         ]
         unfiltered = rows_by(await engine.execute(q(
-            dimensions=["region", "city"], measures=measures,
+            dimensions=["region", "city"], metrics=measures,
         )), "orders.region", "orders.city")
         resp = await engine.execute(q(
             dimensions=["region", "city"],
-            filters=[f"{MEASURE_DIFF} > 0"],
-            measures=measures,
+            filter=[f"{MEASURE_DIFF} > 0"],
+            metrics=measures,
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == {k for k, v in MIXED_DIFF_OF.items() if v > 0}

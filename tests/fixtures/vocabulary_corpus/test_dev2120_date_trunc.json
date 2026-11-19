@@ -1,0 +1,55 @@
+{
+ "source": "tests/test_dev2120_date_trunc.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "date_trunc",
+    "formula": "SUM({value})"
+   },
+   "new": {
+    "name": "date_trunc",
+    "expression": "SUM({value})"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "date_trunc('month', ts)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "date_trunc('month', ts)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "ts",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "ts",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(date_trunc('month', ts))",
+    "name": "v"
+   },
+   "new": {
+    "expression": "max(date_trunc('month', ts))",
+    "name": "v"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  }
+ ]
+}

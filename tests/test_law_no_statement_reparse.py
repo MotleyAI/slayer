@@ -23,11 +23,11 @@ from sqlglot.dialects.dialect import Dialect
 
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from tests import _statement_render_law as law
-from tests._dev1965_fixtures import cumsum_chain, gen, month_td, orders_model, q
+from tests._dev1965_fixtures import cumsum_chain, gen, month_td, orders_dataset, q
 from tests._engine_helpers import _engine_generate
 from tests.test_query_backed_identifier_length import _expand
 
@@ -169,7 +169,7 @@ class TestLiveGenerator:
             _inner().sql()
 
         monkeypatch.setattr(SQLGenerator, "_assert_stages_assigned", staticmethod(_renders))
-        query = q(dimensions=["status"], measures=["sum(amount)"])
+        query = q(dimensions=["status"], metrics=["sum(amount)"])
         with pytest.raises(law.StatementRenderedDuringComposition):
             await gen(query, dialect="postgres")
 
@@ -177,14 +177,14 @@ class TestLiveGenerator:
 # --------------------------------------------------------------------------- #
 # Every assembly seam compiles under the law.
 # --------------------------------------------------------------------------- #
-def _stats_models() -> list[SlayerModel]:
-    orders = orders_model()
-    orders.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
-    customers = SlayerModel(
+def _stats_datasets() -> list[SlayerDataset]:
+    orders = orders_dataset()
+    orders.relationships = [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="tier", sql="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
         ],
     )
     return [orders, customers]
@@ -192,30 +192,30 @@ def _stats_models() -> list[SlayerModel]:
 
 _SEAMS = {
     "plain_hidden_order": q(
-        dimensions=["status"], measures=["sum(amount)"],
-        order=[{"column": "max(amount)", "direction": "desc"}], limit=2,
+        dimensions=["status"], metrics=["sum(amount)"],
+        order=[{"field": "max(amount)", "direction": "desc"}], limit=2,
     ),
     "where_having": q(
-        dimensions=["region"], measures=["sum(amount)"],
-        filters=["amount > 15", "region == 'US' or region == 'EU'", "sum(amount) > 55 or count(amount) > 2"],
+        dimensions=["region"], metrics=["sum(amount)"],
+        filter=["amount > 15", "region == 'US' or region == 'EU'", "sum(amount) > 55 or count(amount) > 2"],
     ),
     "chain_post_filter_paginated": cumsum_chain(
-        filters=["cumsum(sum(amount)) > 50"],
-        order=[{"column": "created_at", "direction": "desc"}], limit=2, offset=1,
+        filter=["cumsum(sum(amount)) > 50"],
+        order=[{"field": "created_at", "direction": "desc"}], limit=2, offset=1,
     ),
     "windowed_producer": q(
         time_dimensions=month_td(),
-        measures=[{"formula": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}],
+        metrics=[{"metric": "covar_samp(amount, other=qty, window='90d')", "alias": "cv"}],
     ),
     "cross_model_combined": q(
         dimensions=["status"],
-        measures=[{"formula": "sum(amount) / count(customers.id)", "name": "r"}],
+        metrics=[{"metric": "sum(amount) / count(customers.id)", "alias": "r"}],
     ),
     "multi_stage": [
-        {"name": "s1", "source_model": "orders", "dimensions": ["status"],
+        {"name": "s1", "population": "orders", "dimensions": ["status"],
          "time_dimensions": month_td(),
-         "measures": [{"formula": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}]},
-        {"source_model": "s1", "dimensions": ["status"], "measures": [{"formula": "max(cv)", "name": "m"}]},
+         "metrics": [{"metric": "covar_samp(amount, other=qty, window='90d')", "alias": "cv"}]},
+        {"population": "s1", "dimensions": ["status"], "metrics": [{"metric": "max(cv)", "alias": "m"}]},
     ],
 }
 
@@ -223,9 +223,9 @@ _SEAMS = {
 @pytest.mark.parametrize("dialect", ["postgres", "mysql", "tsql", "bigquery"])
 @pytest.mark.parametrize("seam", sorted(_SEAMS))
 async def test_every_seam_composes_without_a_statement_render(seam: str, dialect: str) -> None:
-    models = _stats_models()
+    models = _stats_datasets()
     sql = await _engine_generate(
-        query=_SEAMS[seam], model=models[0], extra_models=models[1:],
+        query=_SEAMS[seam], dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False,
     )
     assert sql
@@ -236,8 +236,8 @@ async def test_query_backed_expansion_composes_without_a_statement_render(ds_typ
     _, sql = await _expand(
         ds_type=ds_type,
         columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
         dimensions=["status"],
     )

@@ -2,7 +2,7 @@
 
 sqlglot's per-dialect ``Generator.RESERVED_KEYWORDS`` is empty for Postgres,
 T-SQL, SQLite, ClickHouse, Snowflake, Databricks, Spark, and Oracle, so a
-SLayer model / column / alias named after a reserved word (``grant``, ``order``,
+SLayer dataset / field / alias named after a reserved word (``grant``, ``order``,
 ``user``, ``select``, ...) is emitted BARE and produces syntactically-invalid
 SQL (``syntax error at or near "grant"``). Table *names* are quoted; table
 *aliases* and *qualifiers* were not.
@@ -12,12 +12,12 @@ two mechanisms:
 
 1. :func:`install_reserved_keywords` unions the set into every dialect generator
    SLayer targets, so sqlglot's ``identifier_sql`` quotes reserved-word
-   identifiers built as AST (base FROM alias + qualifiers, cross-model CTEs,
+   identifiers built as AST (base FROM alias + qualifiers, cross-dataset CTEs,
    physical names) at emit time.
 2. :func:`prequote_reserved_identifiers` token-quotes reserved qualifiers/leaves
    in a SLayer-generated string *before* it is re-parsed (``join_cond``,
-   ``measure.filter_sql``, qualified WHERE, the first/last ranked subquery, and
-   the pre-generator ``Column.sql`` parses in ``column_expansion``). Emit-time
+   ``metric.filter_sql``, qualified WHERE, the first/last ranked subquery, and
+   the pre-generator ``DatasetField.sql`` parses in ``field_expansion``). Emit-time
    quoting cannot help there because a bare reserved word fails at *parse* time.
 
 NOTE: :func:`install_reserved_keywords` mutates sqlglot ``Generator`` classes
@@ -155,12 +155,12 @@ def prequote_reserved_identifiers(sql: str, *, dialect: str) -> str:
 
     Does NOT mutate stored metadata — callers pass a copy of the SQL string, so
     metadata scans (e.g. ``_window_referenced_aliases`` over
-    ``measure.filter_sql``) keep seeing the original unquoted text.
+    ``metric.filter_sql``) keep seeing the original unquoted text.
 
     Known limitation: only reserved words in QUALIFIER/LEAF (dot-adjacent)
     position are quoted. A physical column whose bare name is a *statement-initial*
     keyword (``grant``/``select``/``insert``/``create``/``drop``/...) referenced
-    UNQUALIFIED inside a compound expression (``Column.sql = "grant + 1"``) is not
+    UNQUALIFIED inside a compound expression (``DatasetField.sql = "grant + 1"``) is not
     quoted here — sqlglot parses such a bare word as a statement even in
     expression context, and blindly quoting non-dot-adjacent reserved words would
     corrupt genuine keywords (``CASE``/``WHEN``/``AND``/...). The trivial form

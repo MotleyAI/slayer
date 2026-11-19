@@ -13,11 +13,11 @@ import sqlglot
 from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import (
-    IntrospectedColumn, _columns_to_model, _sql_table_identity, ingest_datasource_idempotent, list_ingestable_objects,
+    IntrospectedColumn, _fields_to_dataset, _sql_table_identity, ingest_datasource_idempotent, list_ingestable_objects,
 )
 from slayer.live_schema.introspect_utils import table_location
 from slayer.live_schema import schema_drift
@@ -73,14 +73,14 @@ def test_folded_and_exact_live_spellings_are_ambiguous(dialect: str) -> None:
 
 
 def test_unquoted_mixed_case_reference_reads_the_exact_column_on_postgres() -> None:
-    lower, exact = Column(name="lower", sql="orderamount"), Column(name="exact", sql='"OrderAmount"')
+    lower, exact = DatasetField(name="lower", sql="orderamount"), DatasetField(name="exact", sql='"OrderAmount"')
     index = PhysicalIndex([lower, exact], dialect="postgres", live=["orderamount", "OrderAmount"])
     assert index.reader(exp.to_identifier("OrderAmount")) is exact
     assert index.reader(exp.to_identifier("orderamount")) is lower
 
 
 def test_case_insensitive_dialect_matches_any_case() -> None:
-    col = Column(name="amount", sql="orderamount")
+    col = DatasetField(name="amount", sql="orderamount")
     index = PhysicalIndex([col], dialect="duckdb", live=["orderamount"])
     assert index.reader(exp.to_identifier("OrderAmount")) is col
 
@@ -125,10 +125,10 @@ def test_rendered_name_reads_back_as_its_parts(parts: Sequence[str], dialect: st
 
 # ── ingestion stores names that read back (in-process backends) ──────────
 
-async def _query(storage: YAMLStorage, model: str) -> list[dict[str, object]]:
+async def _query(storage: YAMLStorage, dataset: str) -> list[dict[str, object]]:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return (await engine.execute({"source_model": model, "dimensions": ["qty"]})).data
+        return (await engine.execute({"population": dataset, "dimensions": ["qty"]})).data
     finally:
         engine.close()
 
@@ -144,10 +144,10 @@ async def _ingest(*, datasource: DatasourceConfig, storage: YAMLStorage,
         engine.close()
 
 
-async def _validate(storage: YAMLStorage) -> list[object]:
+async def _validate(storage: YAMLStorage) -> Sequence[object]:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return await engine.validate_models(data_source=DS)
+        return await engine.validate_datasets(data_source=DS)
     finally:
         engine.close()
 
@@ -173,9 +173,9 @@ async def duck(tmp_path: Path) -> AsyncGenerator[tuple[DatasourceConfig, YAMLSto
         engine_factory.invalidate_engine(ds)
 
 
-async def _only_model(storage: YAMLStorage) -> SlayerModel:
-    (name,) = await storage.list_models()
-    model = await storage.get_model(name)
+async def _only_dataset(storage: YAMLStorage) -> SlayerDataset:
+    (name,) = await storage.list_datasets()
+    model = await storage.get_dataset(name)
     assert model is not None
     return model
 
@@ -185,11 +185,11 @@ async def test_ingested_name_with_a_space_reads_back(duck: tuple[DatasourceConfi
                                                      scope: dict[str, Any]) -> None:
     ds, storage = duck
     await _ingest(datasource=ds, storage=storage, **scope)
-    model = await _only_model(storage)
+    model = await _only_dataset(storage)
     assert model.sql_table == 'sales."order items"'
     assert [r[f"{model.name}.qty"] for r in await _query(storage, model.name)] == [6]
     again = await _ingest(datasource=ds, storage=storage, **scope)
-    assert [(a.created, a.new_columns) for a in again.additions] == [(False, [])]
+    assert [(a.created, a.new_fields) for a in again.additions] == [(False, [])]
     assert again.to_delete == []
     assert await _validate(storage) == []
 
@@ -201,8 +201,8 @@ async def test_stored_dotted_table_name_validates_on_sqlite(tmp_path: Path) -> N
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(ds)
     try:
-        await storage.save_model(SlayerModel(name="items", data_source=DS, sql_table='"order.items"',
-                                             columns=[Column(name="qty", type=DataType.INT)]))
+        await storage.save_dataset(SlayerDataset(name="items", data_source=DS, sql_table='"order.items"',
+                                             fields=[DatasetField(name="qty", datatype=DataType.INTEGER)]))
         assert [r["items.qty"] for r in await _query(storage, "items")] == [1]
         assert await _validate(storage) == []
     finally:
@@ -269,7 +269,7 @@ class _SnowflakeDatabaseClient(DelegatingSqlClient):
 
     async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
         self.located.append(location)
-        return [ReflectedColumn(name="qty", type=DataType.INT)]
+        return [ReflectedColumn(name="qty", type=DataType.INTEGER)]
 
 
 async def test_a_catalog_matches_the_current_database_by_the_name_it_denotes() -> None:
@@ -285,7 +285,7 @@ async def test_a_catalog_matches_the_current_database_by_the_name_it_denotes() -
 async def test_type_refinement_reads_a_quoted_schema_in_the_current_database() -> None:
     client = _SnowflakeDatabaseClient()
     model = {"name": "t", "sql_table": 'slayer_ci."lower_schema".t', "data_source": DS,
-             "columns": [{"name": "qty", "type": "DOUBLE"}]}
+             "fields": [{"name": "qty", "datatype": "Float"}]}
     assert await refine_dict_with_live_schema(model, client.datasource, client)
     (location,) = client.located
     assert (location.catalog, location.schema_name, is_quoted_name(location.schema_name)) == (
@@ -300,9 +300,9 @@ def test_ingestion_identity_tells_a_quoted_schema_from_the_folded_one() -> None:
 
 
 async def test_drift_fallback_lists_a_quoted_schema_of_the_current_database_only() -> None:
-    models = [SlayerModel(name=name, data_source=DS, sql_table=sql_table, columns=[Column(name="qty")])
+    models = [SlayerDataset(name=name, data_source=DS, sql_table=sql_table, fields=[DatasetField(name="qty")])
               for name, sql_table in (("here", 'slayer_ci."lower_schema".t'), ("away", "otherdb.s.t"))]
-    (token,) = await schema_drift._model_schema_tokens(models, client=_SnowflakeDatabaseClient())
+    (token,) = await schema_drift._dataset_schema_tokens(models, client=_SnowflakeDatabaseClient())
     assert (token, is_quoted_name(token)) == ("lower_schema", True)
 
 
@@ -313,13 +313,13 @@ def test_table_location_keeps_the_quoting_of_its_names() -> None:
 
 # ── a quoted physical key reads its exact-case column ─────────────────────
 
-def _keyed(*, cardinality: JoinCardinality) -> list[SlayerModel]:
-    customers = SlayerModel(name="customers", data_source=DS, sql_table="customers", columns=[
-        Column(name="id", sql='"id"', type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
-        joins=[ModelJoin(target_model="orders", join_pairs=[["id", "cust"]], cardinality=cardinality)])
-    orders = SlayerModel(name="orders", data_source=DS, sql_table="orders", columns=[
-        Column(name="oid", type=DataType.INT, primary_key=True), Column(name="cust", sql='"cust_key"', type=DataType.INT),
-        Column(name="status", type=DataType.TEXT)])
+def _keyed(*, cardinality: RelationshipCardinality) -> list[SlayerDataset]:
+    customers = SlayerDataset(name="customers", data_source=DS, sql_table="customers", fields=[
+        DatasetField(name="id", sql='"id"', datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
+        relationships=[DatasetRelationship(to="orders", from_columns=["id"], to_columns=["cust"], cardinality=cardinality)])
+    orders = SlayerDataset(name="orders", data_source=DS, sql_table="orders", fields=[
+        DatasetField(name="oid", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="cust", sql='"cust_key"', datatype=DataType.INTEGER),
+        DatasetField(name="status", datatype=DataType.STRING)])
     return [customers, orders]
 
 
@@ -330,22 +330,22 @@ def _key_columns(sql: str, *, dialect: str) -> set[tuple[str, bool]]:
 
 
 @pytest.mark.parametrize(("cardinality", "query"), [
-    (JoinCardinality.ONE_TO_ONE, {"source_model": "customers", "dimensions": ["name", "orders.status"]}),
-    (JoinCardinality.ONE_TO_MANY, {"source_model": "customers", "dimensions": ["name"],
-                                   "filters": ["orders.status = 'x'"]}),
-    (JoinCardinality.ONE_TO_MANY, {"source_model": "customers", "dimensions": ["name"],
-                                   "filters": ["name = 'a' OR orders.status = 'x'"]}),
+    (RelationshipCardinality.ONE_TO_ONE, {"population": "customers", "dimensions": ["name", "orders.status"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
+                                   "filter": ["orders.status = 'x'"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
+                                   "filter": ["name = 'a' OR orders.status = 'x'"]}),
 ])
 @pytest.mark.parametrize("dialect", ["snowflake", "postgres"])
-async def test_quoted_join_keys_stay_quoted(cardinality: JoinCardinality, query: dict[str, Any], dialect: str) -> None:
+async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality, query: dict[str, Any], dialect: str) -> None:
     customers, orders = _keyed(cardinality=cardinality)
-    sql = await _engine_generate(query=SlayerQuery.model_validate(query), model=customers, extra_models=[orders],
+    sql = await _engine_generate(query=SlayerQuery.model_validate(query), dataset=customers, extra_datasets=[orders],
                                  dialect=dialect)
     assert _key_columns(sql, dialect=dialect) == {("id", True), ("cust_key", True)}
 
 
 def test_ingested_quoted_column_reads_itself_exactly() -> None:
-    model = _columns_to_model(name="t", data_source=DS, sql_table="t", columns=[
-        IntrospectedColumn(name="foo", type=DataType.INT, quoted=True), IntrospectedColumn(name="bar", type=DataType.INT)])
-    assert [(c.name, c.sql, c.physical_name, c.physical_quoted) for c in model.columns] == [
+    model = _fields_to_dataset(name="t", data_source=DS, sql_table="t", fields=[
+        IntrospectedColumn(name="foo", type=DataType.INTEGER, quoted=True), IntrospectedColumn(name="bar", type=DataType.INTEGER)])
+    assert [(c.name, c.sql, c.physical_name, c.physical_quoted) for c in model.fields] == [
         ("foo", '"foo"', "foo", True), ("bar", "bar", "bar", False)]

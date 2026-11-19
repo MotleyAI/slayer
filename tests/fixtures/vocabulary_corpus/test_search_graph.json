@@ -1,0 +1,198 @@
+{
+ "source": "tests/test_search_graph.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "total_revenue",
+    "formula": "sum(amount)",
+    "label": "Total revenue",
+    "description": "Sum of order amounts"
+   },
+   "new": {
+    "name": "total_revenue",
+    "expression": "sum(amount)",
+    "label": "Total revenue",
+    "description": "Sum of order amounts"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "weighted_avg",
+    "formula": "SUM({col} * weight) / SUM(weight)"
+   },
+   "new": {
+    "name": "weighted_avg",
+    "expression": "SUM({col} * weight) / SUM(weight)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "distinctive_agg",
+    "formula": "SUM({col})",
+    "description": "aggregation_token_omega unique description term"
+   },
+   "new": {
+    "name": "distinctive_agg",
+    "expression": "SUM({col})",
+    "description": "aggregation_token_omega unique description term"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "sum(id)"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "sum(id)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 406,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 408,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 533,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 537,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 696,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 701,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 702,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 723,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 727,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 731,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 736,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 799,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 803,
+   "reason": "not fully literal"
+  }
+ ]
+}

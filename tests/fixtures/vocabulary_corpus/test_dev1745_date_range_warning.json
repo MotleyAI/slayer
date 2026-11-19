@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_dev1745_date_range_warning.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 18,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 21,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  }
+ ]
+}

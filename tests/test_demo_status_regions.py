@@ -196,14 +196,14 @@ class TestDemoModels:
         store_dir = str(tmp_path / "store")
         storage = YAMLStorage(base_dir=store_dir)
         jaffle_shop.ensure_demo_datasource(storage, storage_path=store_dir, years=1)
-        names = set(run_sync(storage.list_models(data_source=jaffle_shop.DEMO_NAME)))
+        names = set(run_sync(storage.list_datasets(data_source=jaffle_shop.DEMO_NAME)))
         assert "regions" in names
-        orders = run_sync(storage.get_model(name="orders", data_source=jaffle_shop.DEMO_NAME))
-        stores = run_sync(storage.get_model(name="stores", data_source=jaffle_shop.DEMO_NAME))
+        orders = run_sync(storage.get_dataset(name="orders", data_source=jaffle_shop.DEMO_NAME))
+        stores = run_sync(storage.get_dataset(name="stores", data_source=jaffle_shop.DEMO_NAME))
         assert orders is not None
         assert stores is not None
-        assert "status" in {c.name for c in orders.columns}
-        assert "regions" in {j.target_model for j in stores.joins}
+        assert "status" in {c.name for c in orders.fields}
+        assert "regions" in {j.to for j in stores.relationships}
 
     def test_setup_closes_every_engine_it_creates(
         self, jaffle_generator, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -218,16 +218,16 @@ class TestDemoModels:
 
 class TestTwoYearDemo:
     def test_all_three_statuses_occur(self, doc_demo_storage: YAMLStorage) -> None:
-        rows = _rows(doc_demo_storage, {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]})
+        rows = _rows(doc_demo_storage, {"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]})
         assert rows
         assert {row[_dim_key(row)] for row in rows} == STATUSES
 
     def test_region_is_a_two_hop_dimension_of_orders(self, doc_demo_storage: YAMLStorage) -> None:
         rows = _rows(
             doc_demo_storage,
-            {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["stores.regions.name"]},
+            {"population": "orders", "metrics": ["count(*)"], "dimensions": ["stores.regions.name"]},
         )
-        total = _rows(doc_demo_storage, {"source_model": "orders", "measures": ["count(*)"]})
+        total = _rows(doc_demo_storage, {"population": "orders", "metrics": ["count(*)"]})
         assert rows
         regions = [row[_dim_key(row)] for row in rows]
         assert len(regions) == len(set(regions))

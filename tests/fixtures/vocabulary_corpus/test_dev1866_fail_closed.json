@@ -1,0 +1,101 @@
+{
+ "source": "tests/test_dev1866_fail_closed.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "filters": [
+     "sum(orders.amount) > 100"
+    ]
+   },
+   "new": {
+    "filter": [
+     "sum(orders.amount) > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(s1.total)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(s1.total)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "customers.region = 's1.total'"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "customers.region = 's1.total'"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

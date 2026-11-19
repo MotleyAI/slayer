@@ -19,7 +19,7 @@ from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
 
-from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.errors import (
     ExplainUnsupportedError,
     IdentifierCollisionError,
@@ -360,7 +360,7 @@ def cast_type_of(type_text: str, *, dialect: "SqlDialect") -> tuple[DataType, Op
         built = _read_type(type_text, readers=(reader,))
         if built is not None and not built.is_type(exp.DataType.Type.USERDEFINED):
             return slayer_type_of(built)
-    return DataType.UNKNOWN, None
+    return DataType.OPAQUE, None
 
 
 def _read_type(text: str, *, readers: Sequence[str]) -> Optional[exp.DataType]:
@@ -392,17 +392,17 @@ _CAST_FAMILIES: tuple[frozenset[DType], ...] = (
     frozenset({exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Type.VARIANT}),
 )
 _SLAYER_TYPES: tuple[tuple[frozenset[DType], DataType], ...] = (
-    (frozenset(exp.DataType.INTEGER_TYPES), DataType.INT),
-    (frozenset(exp.DataType.REAL_TYPES), DataType.DOUBLE),
-    (frozenset(exp.DataType.TEXT_TYPES | {exp.DataType.Type.BPCHAR}), DataType.TEXT),
+    (frozenset(exp.DataType.INTEGER_TYPES), DataType.INTEGER),
+    (frozenset(exp.DataType.REAL_TYPES), DataType.FLOAT),
+    (frozenset(exp.DataType.TEXT_TYPES | {exp.DataType.Type.BPCHAR}), DataType.STRING),
     (frozenset({exp.DataType.Type.BOOLEAN}), DataType.BOOLEAN),
     (_DATE_TYPES, DataType.DATE),
-    (_TIMESTAMP_TYPES, DataType.TIMESTAMP),
+    (_TIMESTAMP_TYPES, DataType.DATETIME),
 )
 
 
 def _scalar_slayer_type(data_type: exp.DataType) -> DataType:
-    return next((slayer for family, slayer in _SLAYER_TYPES if data_type.this in family), DataType.UNKNOWN)
+    return next((slayer for family, slayer in _SLAYER_TYPES if data_type.this in family), DataType.OPAQUE)
 
 
 def slayer_type_of(data_type: exp.DataType) -> tuple[DataType, Optional[DataType]]:
@@ -410,7 +410,7 @@ def slayer_type_of(data_type: exp.DataType) -> tuple[DataType, Optional[DataType
     if not data_type.is_type(exp.DataType.Type.ARRAY):
         return _scalar_slayer_type(data_type), None
     element = _element(data_type)
-    return DataType.ARRAY, DataType.UNKNOWN if element is None else _scalar_slayer_type(element)
+    return DataType.ARRAY, DataType.OPAQUE if element is None else _scalar_slayer_type(element)
 
 
 class _CastSignature(BaseModel):
@@ -478,7 +478,7 @@ VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
 
 
 def temporal_type_of(value: date) -> DataType:
-    return DataType.TIMESTAMP if isinstance(value, datetime) else DataType.DATE
+    return DataType.DATETIME if isinstance(value, datetime) else DataType.DATE
 
 
 def _build_covar_decomposition(
@@ -913,7 +913,7 @@ class SqlDialect(BaseModel):
     def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
         """``TRY_CAST`` to an integer type: integer text, or an integral number, in the target's range; else NULL.
         ``source``: ``CastKey.numeric_source``."""
-        if source is not DataType.DOUBLE:
+        if kind_of(source) is not TypeKind.DOUBLE:
             return self.build_integer_text_try_cast(as_text(value), to)
         wide = to.this in WIDE_INTEGER_BOUNDS
         low, high = WIDE_INTEGER_BOUNDS.get(to.this, (INT64_BOUNDS[0], INT64_BOUNDS[1] + 1))
@@ -1246,7 +1246,7 @@ class SqlDialect(BaseModel):
     ) -> Expression:
         """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
         text = self.build_json_value(value, path, native)
-        if target is DataType.INT:
+        if target is DataType.INTEGER:
             return self.build_integer_try_cast(text, to, source=None)
         return self.build_try_cast(text, to)
 
@@ -1287,8 +1287,8 @@ class SqlDialect(BaseModel):
         ``e`` read as a number (unconvertible: not an element)."""
         alias = exp.to_identifier(_EACH)
         wanted: Expression = exp.column(LIST_VALUE, table=_EACH)
-        if element is DataType.TEXT:
-            wanted = self.build_try_cast(wanted, self.try_cast_type(exp.DataType.build("DOUBLE"), data_type=DataType.DOUBLE))
+        if element is DataType.STRING:
+            wanted = self.build_try_cast(wanted, self.try_cast_type(exp.DataType.build("DOUBLE"), data_type=DataType.FLOAT))
         found = self.list_contains(values, wanted)
         if fn == "contains_any":
             return self.list_exists(other, alias=alias, element=element, predicate=found)
@@ -1354,7 +1354,7 @@ class SqlDialect(BaseModel):
 
     def list_element_type(self, names: Sequence[Any]) -> DataType:  # NOSONAR(S1172) — hook default
         """The element type the ``list_element_types_query`` rows name."""
-        return DataType.UNKNOWN
+        return DataType.OPAQUE
 
     def build_array_literal(self, values: Sequence[Expression]) -> Expression:
         return exp.Array(expressions=[v.copy() for v in values])
@@ -1462,14 +1462,14 @@ class SqlDialect(BaseModel):
             # Sunday week = Monday week of (col + 1 day), shifted back a day.
             shifted = self.build_date_add(
                 expr=col_expr, count=exp.Literal.number(1), unit=TimeGranularity.DAY,
-                operand=DataType.TIMESTAMP,
+                operand=DataType.DATETIME,
             )
             monday = self.build_date_trunc(
                 col_expr=shifted, granularity=TimeGranularity.WEEK,
             )
             return self.build_date_add(
                 expr=monday, count=exp.Literal.number(-1), unit=TimeGranularity.DAY,
-                operand=DataType.TIMESTAMP,
+                operand=DataType.DATETIME,
             )
         gran_str = _GRANULARITY_TO_DATE_TRUNC.get(granularity, granularity.value)
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
@@ -1482,12 +1482,12 @@ class SqlDialect(BaseModel):
             return self.build_date_trunc(col_expr=col_expr, granularity=granularity)
         base, multiple, origin = granularity_parts(granularity)
         ts = self.promote_to_timestamp(col_expr)
-        anchor = self.build_temporal_literal(value=origin, dt=DataType.TIMESTAMP)
+        anchor = self.build_temporal_literal(value=origin, dt=DataType.DATETIME)
 
         def at(count: Expression) -> Expression:
-            return self.build_date_add(expr=anchor, count=count, unit=base, operand=DataType.TIMESTAMP)
+            return self.build_date_add(expr=anchor, count=count, unit=base, operand=DataType.DATETIME)
 
-        crossed = self.build_date_diff(unit=base, start=anchor, end=ts, operand=DataType.TIMESTAMP)
+        crossed = self.build_date_diff(unit=base, start=anchor, end=ts, operand=DataType.DATETIME)
         # Boundaries crossed equal whole periods unless the origin is off the base's own boundaries.
         whole = crossed if nests_into(base, granularity) else exp.Case(ifs=[exp.If(
             this=exp.GT(this=at(crossed), expression=ts.copy()),
@@ -1539,7 +1539,7 @@ class SqlDialect(BaseModel):
         return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMP"))
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
-        return exp.Cast(this=exp.Literal.string(iso_text(value)), to=exp.DataType.build(dt.value))
+        return exp.Cast(this=exp.Literal.string(iso_text(value)), to=exp.DataType.build(dt.kind.value))
 
     def build_temporal_comparison(
         self, *, op: TemporalComparisonOp, operand: Expression, value: date,
@@ -1633,7 +1633,7 @@ class SqlDialect(BaseModel):
         """A time bucket moved by ``count`` ``unit``s, comparable with ``bucket_comparand`` of a bucket."""
         return self.build_date_add(
             expr=self.bucket_comparand(bucket), count=exp.Literal.number(count), unit=unit,
-            operand=DataType.TIMESTAMP,
+            operand=DataType.DATETIME,
         )
 
     def bucket_comparand(self, bucket: Expression) -> Expression:
@@ -2116,7 +2116,7 @@ class SqlDialect(BaseModel):
         self, *, columns: Sequence[str], row: Sequence[Any] | None,
     ) -> dict[str, ResultColumnType]:
         """Hook: ``result_census_select``'s row → the result's column types."""
-        return dict.fromkeys(columns, ResultColumnType(type=DataType.TEXT))
+        return dict.fromkeys(columns, ResultColumnType(type=DataType.STRING))
 
     # Structure reflection: the one reader of a live table's columns and keys.
 

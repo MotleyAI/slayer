@@ -1,0 +1,67 @@
+{
+ "source": "tests/test_dev1931_default_home.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wfan_widen(customers.regions.pop)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "wfan_widen(customers.regions.pop)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum_nowhere(customers.spend)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "wsum_nowhere(customers.spend)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum_partial(customers.spend)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "wsum_partial(customers.spend)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wscore(o.val)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "wscore(o.val)",
+    "name": "m"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,378 @@
+{
+ "source": "tests/test_entity_resolution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(amount) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "weighted_score",
+    "formula": "SUM(amount * amount) / SUM(amount)"
+   },
+   "new": {
+    "name": "weighted_score",
+    "expression": "SUM(amount * amount) / SUM(amount)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rolling_avg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "rolling_avg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "rolling_avg(customers.score)"
+   },
+   "new": {
+    "metric": "rolling_avg(customers.score)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 117,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 137,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 142,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 173,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 184,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 546,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 556,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 567,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 582,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 592,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 595,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 608,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 620,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 634,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 648,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 661,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 682,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 687,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 688,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 694,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 699,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 700,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 706,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 733,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 738,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 748,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 753,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -21,7 +21,7 @@ from google.protobuf.any_pb2 import Any as PbAny
 from pydantic import BaseModel, ConfigDict
 
 from slayer.async_utils import run_sync
-from slayer.core.models import DatasourceConfig, ModelMeasure
+from slayer.core.models import DatasourceConfig, DatasetMetric
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.handlers import FlightHandlers
@@ -100,9 +100,9 @@ def statements() -> list[str]:
 
 
 
-SAVED_MEASURES: dict[str, list[ModelMeasure]] = {
-    "orders": [ModelMeasure(name="revenue_total", formula="sum(revenue)")],
-    "things": [ModelMeasure(name="uids", formula="collect(uid)"), ModelMeasure(name="prices", formula="collect(price)")],
+SAVED_MEASURES: dict[str, list[DatasetMetric]] = {
+    "orders": [DatasetMetric(name="revenue_total", expression="sum(revenue)")],
+    "things": [DatasetMetric(name="uids", expression="collect(uid)"), DatasetMetric(name="prices", expression="collect(price)")],
 }
 
 
@@ -131,8 +131,8 @@ async def build_store(base: Path, *, extra: Iterable[str] = ()) -> FacadeStore:
         models = await ingester.ingest(ds)
     for model in models:
         if model.name in SAVED_MEASURES:
-            model = model.model_copy(update={"measures": SAVED_MEASURES[model.name]})
-        await storage.save_model(model)
+            model = model.model_copy(update={"metrics": SAVED_MEASURES[model.name]})
+        await storage.save_dataset(model)
     return FacadeStore(storage=storage, datasource=ds)
 
 

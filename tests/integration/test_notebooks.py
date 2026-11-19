@@ -55,7 +55,7 @@ _INGEST_DEMO_NOTEBOOKS = {
 
 
 @pytest.fixture(scope="session")
-def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
+def _jaffle_datasets_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
     """Ingest the base Jaffle models once, validate every demo table is present,
     and snapshot ``slayer_models/`` so consumers restore it instead of
     re-ingesting."""
@@ -66,10 +66,10 @@ def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
         storage,
         storage_path=str(JAFFLE_DATA_DIR),
         years=NOTEBOOK_DEMO_YEARS,
-        ingest_models=True,
+        ingest_datasets=True,
         assume_yes=True,
     )
-    present = set(run_sync(storage.list_models(data_source=DEMO_NAME)))
+    present = set(run_sync(storage.list_datasets(data_source=DEMO_NAME)))
     missing = [t for t in TABLE_NAMES if t not in present]
     if missing:
         pytest.skip(f"Jaffle models template incomplete: missing {missing}")
@@ -87,7 +87,7 @@ _KNOWN_FAILING_NOTEBOOKS: dict[str, str] = {}
 
 
 @pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
-def notebook_path(request, _jaffle_models_template):
+def notebook_path(request, _jaffle_datasets_template):
     # Wipe models before each notebook so custom models from one notebook don't
     # leak into another (e.g., order_items_custom). For everything but the
     # ingest-demo notebooks, restore the prebuilt base models so the notebook's
@@ -96,7 +96,7 @@ def notebook_path(request, _jaffle_models_template):
         shutil.rmtree(JAFFLE_MODELS_DIR)
     rel = str(request.param.relative_to(EXAMPLES_DIR))
     if rel not in _INGEST_DEMO_NOTEBOOKS:
-        shutil.copytree(_jaffle_models_template, JAFFLE_MODELS_DIR)
+        shutil.copytree(_jaffle_datasets_template, JAFFLE_MODELS_DIR)
     return request.param
 
 

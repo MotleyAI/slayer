@@ -1,0 +1,98 @@
+{
+ "source": "tests/test_sql_boolean_literal_filters.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "filters": [
+     "is_active = true"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "filter": [
+     "is_active = true"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "filters": [
+     "status = 'food' or false"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "filter": [
+     "status = 'food' or false"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "filters": [
+     "is_active = True"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "filter": [
+     "is_active = True"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  }
+ ]
+}

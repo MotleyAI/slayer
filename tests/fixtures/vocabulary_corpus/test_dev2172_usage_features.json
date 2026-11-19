@@ -1,0 +1,247 @@
+{
+ "source": "tests/test_dev2172_usage_features.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "m",
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "lower(name) = 'a'",
+     "regexp_like(name, 'a')",
+     "payload ->> 'k' = 'v'",
+     "contains_any(skills, ['go'])"
+    ]
+   },
+   "new": {
+    "population": "m",
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "lower(name) = 'a'",
+     "regexp_like(name, 'a')",
+     "payload ->> 'k' = 'v'",
+     "contains_any(skills, ['go'])"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "name": "c",
+      "expression": "upper(city)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "coalesce(shipped_at, ordered_at)",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     "sum(amount)"
+    ],
+    "filters": [
+     "length(name) > 3"
+    ],
+    "order": [
+     {
+      "column": "abs(rate)",
+      "direction": "asc"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "upper(city)",
+      "alias": "c"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "coalesce(shipped_at, ordered_at)",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     "sum(amount)"
+    ],
+    "filter": [
+     "length(name) > 3"
+    ],
+    "order": [
+     {
+      "field": "abs(rate)",
+      "direction": "asc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "lower(city)"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "lower(city)"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "name": "c",
+      "expression": "upper(city)"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "upper(city)",
+      "alias": "c"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "measures": [
+     "max(abs(rev))"
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "metrics": [
+     "max(abs(rev))"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     {
+      "name": "m",
+      "expression": "month(ordered_at)"
+     }
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     {
+      "field": "month(ordered_at)",
+      "alias": "m"
+     }
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "year(ordered_at) = 2024"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "year(ordered_at) = 2024"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "date_trunc('month', ordered_at) = '2024-01-01'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "date_trunc('month', ordered_at) = '2024-01-01'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(amount)::int"
+    ],
+    "filters": [
+     "lower(status) = 'paid'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(amount)::int"
+    ],
+    "filter": [
+     "lower(status) = 'paid'"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

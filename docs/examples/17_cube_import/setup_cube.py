@@ -2,14 +2,14 @@
 
 Self-contained and **offline**: builds a tiny jaffle-shop-flavored DuckDB
 with deterministic rows, and imports the committed ``cube_project`` (YAML cubes +
-a view + a JS ``FILTER_PARAMS`` cube) into SLayer models. The import runs before
+a view + a JS ``FILTER_PARAMS`` cube) into SLayer datasets. The import runs before
 the datasource exists, so types come from the Cube declarations and the DuckDB is
-only used to *query* the imported models.
+only used to *query* the imported datasets.
 
 Two import paths are exposed: :func:`import_cube_cli` runs the real
 ``slayer import-cube`` command (what the notebook shows), and
 :func:`import_cube_lib` runs the same conversion in-process (used by the test).
-Both wipe the model directory first, so the datasource must be saved *after*
+Both wipe the storage directory first, so the datasource must be saved *after*
 importing.
 
 Gold-answer helper note: SLayer opens the DuckDB file through a read-write engine
@@ -104,11 +104,11 @@ def import_cube_lib(
     cube_project: _PathLike = CUBE_PROJECT,
     models_dir: _PathLike = MODELS_DIR,
 ) -> CubeConversionResult:
-    """Import the cube_project in-process and persist the models.
+    """Import the cube_project in-process and persist the datasets.
 
     Wipes ``models_dir`` first (so the datasource must be saved afterwards),
     parses the project, runs :class:`CubeToSlayerConverter`, and saves each
-    model. Returns the full :class:`CubeConversionResult` (models + report).
+    dataset. Returns the full :class:`CubeConversionResult` (datasets + report).
     """
     models_dir = Path(models_dir)
     if models_dir.exists():
@@ -120,8 +120,8 @@ def import_cube_lib(
     ).convert()
 
     storage = YAMLStorage(base_dir=str(models_dir))
-    for model in result.models:
-        run_sync(storage.save_model(model))
+    for dataset in result.datasets:
+        run_sync(storage.save_dataset(dataset))
     return result
 
 
@@ -164,10 +164,10 @@ def import_cube_cli(
 def save_datasource(
     models_dir: _PathLike = MODELS_DIR, db_path: _PathLike = DB_PATH
 ) -> None:
-    """Register the DuckDB as a SLayer datasource in the model store.
+    """Register the DuckDB as a SLayer datasource in the dataset store.
 
-    Cube import files models under the datasource *name* but never creates the
-    datasource itself, so querying the imported models needs this. Call it AFTER
+    Cube import files datasets under the datasource *name* but never creates the
+    datasource itself, so querying the imported datasets needs this. Call it AFTER
     importing (the importers wipe ``models_dir``).
     """
     storage = YAMLStorage(base_dir=str(Path(models_dir)))

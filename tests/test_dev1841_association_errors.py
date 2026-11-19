@@ -12,16 +12,17 @@ import pytest
 
 from slayer.core.errors import SlayerError
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
-    ModelMeasure,
     TimeDimension,
     TimeGranularity,
     assoc_q,
-    column_default_agg_models,
-    crossing_input_models,
+    field_default_agg_datasets,
+    crossing_input_datasets,
     error_q,
-    keyless_root_models,
+    keyless_root_datasets,
     make_exec_engine,
     status_key,
 )
@@ -30,12 +31,12 @@ from tests._dev1892_fixtures import (
     ASSOC_WSUM_BY_STATUS,
 )
 
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 #: Must name the association concept — a generic ranked/time-dimension rejection
 #: (which would fire before association eligibility) must NOT satisfy it.
 _COMBO = re.compile(r"associat|attribut|distinct.entity|combination", re.IGNORECASE)
 _SIGNUP_TD = [TimeDimension(
-    dimension="customers.signup_at",
+    field="customers.signup_at",
     granularity=TimeGranularity.MONTH)]
 
 
@@ -47,19 +48,19 @@ async def exec_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_keyless(request):
-    async for engine in make_exec_engine(request, models=keyless_root_models()):
+    async for engine in make_exec_engine(request, datasets=keyless_root_datasets()):
         yield request.param, engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_crossing(request):
-    async for engine in make_exec_engine(request, models=crossing_input_models()):
+    async for engine in make_exec_engine(request, datasets=crossing_input_datasets()):
         yield request.param, engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_coldef(request):
-    async for engine in make_exec_engine(request, models=column_default_agg_models()):
+    async for engine in make_exec_engine(request, datasets=field_default_agg_datasets()):
         yield request.param, engine
 
 
@@ -72,7 +73,7 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            measures=[ModelMeasure(formula="last(customers.spend)", name="lastspend")])
+            metrics=[QueryMetric(metric="last(customers.spend)", alias="lastspend")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -83,8 +84,8 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, window='90d')", name="win")])
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='90d')", alias="win")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -94,7 +95,7 @@ class TestMissingUniqueKey:
     async def test_root_without_unique_key_associates(self, exec_backend_keyless):
         """A keyless root is deduplicated by its per-query row identity."""
         _, engine = exec_backend_keyless
-        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[CM]))
+        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[CM]))
         by = status_key(resp)
         for status, expected in ASSOC_SPEND_BY_STATUS.items():
             assert float(by[(status,)]["orders.cm"]) == pytest.approx(expected)
@@ -103,17 +104,17 @@ class TestMissingUniqueKey:
 class TestUnsafeInputInAssociate:
     """Input safety is mode-invariant: a crossing-hop input rejected on the broadcast/error path is rejected before association too."""
 
-    VIP = ModelMeasure(formula="sum(customers.vip_spend)", name="vip")
+    VIP = QueryMetric(metric="sum(customers.vip_spend)", alias="vip")
 
     async def test_crossing_input_rejected_in_associate(self, exec_backend_crossing):
         _, engine = exec_backend_crossing
-        error_query = error_q(dimensions=["status"], measures=[self.VIP])
-        assoc_query = assoc_q(dimensions=["status"], measures=[self.VIP])
+        error_query = error_q(dimensions=["status"], metrics=[self.VIP])
+        assoc_query = assoc_q(dimensions=["status"], metrics=[self.VIP])
         # Reference: the broadcast/error path already rejects the unsafe input.
-        with pytest.raises(ValueError, match="unproven join hop"):
+        with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(error_query)
         # The associate path must inherit the identical rejection.
-        with pytest.raises(ValueError, match="unproven join hop"):
+        with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(assoc_query)
 
 
@@ -121,20 +122,20 @@ class TestColumnReferenceParameter:
     """A column-reference parameter is picked once per distinct entity: the explicit
     weight and the definition default both execute."""
 
-    WAVG = ModelMeasure(
-        formula="weighted_avg(customers.spend, weight=customers.spend)", name="wavg")
-    WSUM = ModelMeasure(formula="wsum(customers.spend)", name="wsum")
+    WAVG = QueryMetric(
+        metric="weighted_avg(customers.spend, weight=customers.spend)", alias="wavg")
+    WSUM = QueryMetric(metric="wsum(customers.spend)", alias="wsum")
 
     async def test_explicit_column_param_executes(self, exec_backend):
         _, engine = exec_backend
-        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[self.WAVG]))
+        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[self.WAVG]))
         by = status_key(resp)
         for status, expected in ASSOC_WAVG_SPEND_BY_STATUS.items():
             assert float(by[(status,)]["orders.wavg"]) == pytest.approx(expected)
 
     async def test_column_default_param_executes(self, exec_backend_coldef):
         _, engine = exec_backend_coldef
-        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[self.WSUM]))
+        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[self.WSUM]))
         by = status_key(resp)
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(by[(status,)]["orders.wsum"]) == pytest.approx(expected)

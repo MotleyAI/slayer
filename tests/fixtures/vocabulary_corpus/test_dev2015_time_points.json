@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev2015_time_points.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  }
+ ]
+}

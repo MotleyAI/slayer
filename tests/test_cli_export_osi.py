@@ -9,7 +9,7 @@ import yaml
 from slayer.async_utils import run_sync
 from slayer.cli import _build_parser
 from tests._cli_inprocess import CliResult, run_cli_in_process
-from tests._osi_export_fixtures import BASIC_MEASURES, customers, measure, orders
+from tests._osi_export_fixtures import BASIC_MEASURES, customers, slayer_metric, orders
 from tests._osi_export_helpers import Env, dataset_names, entities, make_env, save, slayer_entries, validate
 
 _DS = "jaffle_shop"
@@ -18,8 +18,8 @@ _DS = "jaffle_shop"
 @pytest.fixture
 def shop(tmp_path: Path) -> Env:
     env = run_sync(make_env(tmp_path, datasource=_DS))
-    growth = measure("revenue_growth", "change_pct(revenue)")
-    run_sync(save(env, customers(), orders(measures=[*BASIC_MEASURES, growth])))
+    growth = slayer_metric("revenue_growth", "change_pct(revenue)")
+    run_sync(save(env, customers(), orders(metrics=[*BASIC_MEASURES, growth])))
     return env
 
 
@@ -53,7 +53,7 @@ def test_repeated_exports_are_byte_identical(shop: Env, tmp_path: Path) -> None:
 
 def test_models_subset(shop: Env, tmp_path: Path) -> None:
     out = tmp_path / "orders.osi.yaml"
-    assert _export(shop, out, "--models", "orders").returncode == 0
+    assert _export(shop, out, "--datasets", "orders").returncode == 0
     assert dataset_names(yaml.safe_load(out.read_text(encoding="utf-8"))) == ["orders"]
 
 
@@ -73,7 +73,7 @@ def _one_error_line(result: CliResult) -> str:
 
 def test_unknown_model(shop: Env, tmp_path: Path) -> None:
     out = tmp_path / "shop.osi.yaml"
-    result = _export(shop, out, "--models", "nope")
+    result = _export(shop, out, "--datasets", "nope")
     assert result.returncode == 1
     assert "nope" in _one_error_line(result)
     assert not out.exists()
@@ -90,5 +90,5 @@ def test_unknown_datasource(shop: Env, tmp_path: Path) -> None:
 
 def test_parser_defaults() -> None:
     args = _build_parser().parse_args(["export-osi", "--datasource", "ds", "--out", "x.yaml"])
-    assert args.models is None
+    assert args.datasets is None
     assert args.no_extensions is False

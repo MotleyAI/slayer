@@ -6,7 +6,7 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev2062_fixtures import AOV, CROSS_RATIO, customers_model, m, monthly_q, orders_model
+from tests._dev2062_fixtures import AOV, CROSS_RATIO, customers_dataset, m, monthly_q, orders_dataset
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -23,9 +23,9 @@ _RATIOS = {"local": AOV, "cross": CROSS_RATIO}
 def _cases() -> dict[str, SlayerQuery]:
     out: dict[str, SlayerQuery] = {}
     for label, r in _RATIOS.items():
-        out[f"{label}/filter"] = monthly_q(m(r, "a"), filters=[f"cumsum(({r})) > 9"], to_many_handling="broadcast")
+        out[f"{label}/filter"] = monthly_q(m(r, "a"), filter=[f"cumsum(({r})) > 9"], to_many_handling="broadcast")
         out[f"{label}/order_composite"] = monthly_q(
-            m(r, "a"), order=[{"column": f"cumsum(({r})) + 1", "direction": "desc"}],
+            m(r, "a"), order=[{"field": f"cumsum(({r})) + 1", "direction": "desc"}],
             to_many_handling="broadcast",
         )
     return out
@@ -35,7 +35,7 @@ async def _generate_one(query: SlayerQuery, dialect: str):
     """Emitted SQL, or a structured record of the raised error."""
     try:
         return await _engine_generate(
-            query=query, model=orders_model(), extra_models=[customers_model()], dialect=dialect, validate=False,
+            query=query, dataset=orders_dataset(), extra_datasets=[customers_dataset()], dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract
         return record_raise(exc)

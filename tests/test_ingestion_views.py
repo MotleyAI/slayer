@@ -12,7 +12,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.async_utils import run_sync
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.enums import DataType
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import (
@@ -20,8 +20,8 @@ from slayer.live_schema.ingestion import (
     list_ingestable_objects,
 )
 from slayer.live_schema.schema_drift import (
-    ModelAddition,
-    WholeModelDelete,
+    DatasetAddition,
+    WholeDatasetDelete,
     _live_schema_for_datasource,
     validate_datasource,
 )
@@ -148,14 +148,14 @@ class TestViewIngestion:
         _, ds = _db_with_view(workspace)
         models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         view_model = next(m for m in models if m.name == "stg_orders")
-        assert {c.name for c in view_model.columns} == {"id", "amount", "status"}
+        assert {c.name for c in view_model.fields} == {"id", "amount", "status"}
 
     def test_view_model_has_no_joins(self, workspace: Path) -> None:
         """Views carry no FK metadata, so no joins can be derived."""
         _, ds = _db_with_view(workspace)
         models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         view_model = next(m for m in models if m.name == "stg_orders")
-        assert view_model.joins == []
+        assert view_model.relationships == []
 
 
 # ---------------------------------------------------------------------------
@@ -271,18 +271,18 @@ class TestDriftSeesViews:
     ) -> None:
         """A model pointing at a view resolved to live_table=None and got a WholeModelDelete."""
         _, ds = _db_with_view(workspace)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="stg_orders",
             sql_table="stg_orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
         )
-        entries = await _with_client(validate_datasource, datasource=ds, models=[model])
-        whole = [e for e in entries if isinstance(e, WholeModelDelete)]
+        entries = await _with_client(validate_datasource, datasource=ds, datasets=[model])
+        whole = [e for e in entries if isinstance(e, WholeDatasetDelete)]
         assert whole == [], f"view-backed model marked for deletion: {whole}"
 
     async def test_model_pointing_at_a_genuinely_missing_object_still_deletes(
@@ -290,14 +290,14 @@ class TestDriftSeesViews:
     ) -> None:
         """The fix must not blind drift to genuinely dropped objects."""
         _, ds = _db_with_view(workspace)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="gone",
             sql_table="gone",
             data_source="ds",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
-        entries = await _with_client(validate_datasource, datasource=ds, models=[model])
-        assert any(isinstance(e, WholeModelDelete) for e in entries)
+        entries = await _with_client(validate_datasource, datasource=ds, datasets=[model])
+        assert any(isinstance(e, WholeDatasetDelete) for e in entries)
 
     def test_drift_sees_views_unconditionally(self, workspace: Path) -> None:
         """The drift side takes no include_views flag, so --no-views can't re-arm the bug."""
@@ -344,11 +344,11 @@ class TestMcpListing:
 
 class TestOutputLabel:
     def test_created_view_is_labelled(self, capsys) -> None:
-        addition = ModelAddition(
-            model_name="stg_orders",
+        addition = DatasetAddition(
+            dataset_name="stg_orders",
             data_source="ds",
             created=True,
-            new_columns=["id", "amount"],
+            new_fields=["id", "amount"],
             source_kind="view",
         )
         _print_ingest_addition(addition)
@@ -357,22 +357,22 @@ class TestOutputLabel:
         assert "[view]" in out
 
     def test_created_matview_is_labelled(self, capsys) -> None:
-        addition = ModelAddition(
-            model_name="mv_orders",
+        addition = DatasetAddition(
+            dataset_name="mv_orders",
             data_source="ds",
             created=True,
-            new_columns=["id"],
+            new_fields=["id"],
             source_kind="materialized_view",
         )
         _print_ingest_addition(addition)
         assert "[materialized view]" in capsys.readouterr().out
 
     def test_created_table_is_not_labelled(self, capsys) -> None:
-        addition = ModelAddition(
-            model_name="orders",
+        addition = DatasetAddition(
+            dataset_name="orders",
             data_source="ds",
             created=True,
-            new_columns=["id"],
+            new_fields=["id"],
             source_kind="table",
         )
         _print_ingest_addition(addition)
@@ -382,8 +382,8 @@ class TestOutputLabel:
 
     def test_unknown_source_kind_is_not_labelled(self, capsys) -> None:
         """source_kind=None (e.g. a pre-existing model) renders as before."""
-        addition = ModelAddition(
-            model_name="orders", data_source="ds", created=True, new_columns=["id"]
+        addition = DatasetAddition(
+            dataset_name="orders", data_source="ds", created=True, new_fields=["id"]
         )
         _print_ingest_addition(addition)
         assert "[" not in capsys.readouterr().out

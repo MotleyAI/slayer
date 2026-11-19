@@ -1,0 +1,167 @@
+{
+ "source": "tests/test_dev1737_date_arith_regressions.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "hour"
+     }
+    ],
+    "measures": [
+     "sum(v)",
+     {
+      "formula": "time_shift(sum(v), -1, 'hour')",
+      "name": "x"
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "hour"
+     }
+    ],
+    "metrics": [
+     "sum(v)",
+     {
+      "metric": "time_shift(sum(v), -1, 'hour')",
+      "alias": "x"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     {
+      "dimension": "d",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     "sum(v)",
+     {
+      "formula": "time_shift(sum(v), -1, 'month')",
+      "name": "x"
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     {
+      "field": "d",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     "sum(v)",
+     {
+      "metric": "time_shift(sum(v), -1, 'month')",
+      "alias": "x"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     {
+      "dimension": "d",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(v, window='1m')",
+      "name": "x"
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     {
+      "field": "d",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(v, window='1m')",
+      "alias": "x"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     {
+      "dimension": "d",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(v, window='6h1d')",
+      "name": "x"
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     {
+      "field": "d",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(v, window='6h1d')",
+      "alias": "x"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 15,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 18,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 19,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 20,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 21,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  }
+ ]
+}

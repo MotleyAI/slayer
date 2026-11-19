@@ -17,7 +17,7 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -33,30 +33,30 @@ from tests._engine_helpers import _engine_generate, _outer_select
 # cte_root_model set, and the AGGREGATE-phase filter on it routes to the outer
 # combined SELECT as a plain WHERE on the joined-back column.
 # --------------------------------------------------------------------------- #
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="tier", datatype=DataType.STRING),
         ],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="eu_amount", sql="amount",
-                   filter="customers.tier = 'eu'", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="eu_amount", sql="amount",
+                   filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
 
@@ -64,16 +64,16 @@ def _orders() -> SlayerModel:
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders(), referenced_models=[_customers()],
+        population=_orders(), referenced_datasets=[_customers()],
     )
 
 
 def _outer_where_query() -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "orders",
-        "dimensions": [{"formula": "status", "name": "status"}],
-        "measures": [{"formula": "sum(eu_amount)", "name": "eu"}],
-        "filters": ["sum(eu_amount) > 100"],
+        "population": "orders",
+        "dimensions": [{"field": "status", "alias": "status"}],
+        "metrics": [{"metric": "sum(eu_amount)", "alias": "eu"}],
+        "filter": ["sum(eu_amount) > 100"],
     })
 
 
@@ -98,10 +98,10 @@ class TestPlanCarriesOuterWhereRouting:
 
     def test_routing_is_empty_without_an_isolated_aggregate(self) -> None:
         plain = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": [{"formula": "status", "name": "status"}],
-            "measures": [{"formula": "sum(amount)", "name": "a"}],
-            "filters": ["sum(amount) > 100"],
+            "population": "orders",
+            "dimensions": [{"field": "status", "alias": "status"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "a"}],
+            "filter": ["sum(amount) > 100"],
         })
         planned = plan_query(query=plain, bundle=_bundle())
         assert _lower_positions(planned).outer_where_ids == []
@@ -111,7 +111,7 @@ class TestPlanCarriesOuterWhereRouting:
         HOST-rooted regroup producer, its filter routed to the outer WHERE."""
         planned = plan_query(query=_outer_where_query(), bundle=_bundle())
         assert any(
-            a.producer_root_model is None and a.attach_phase == "combined"
+            a.producer_root_dataset is None and a.attach_phase == "combined"
             for a in planned.regroup_attach_plans
         ), planned.regroup_attach_plans
         assert _lower_positions(planned).outer_where_ids, (
@@ -125,8 +125,8 @@ class TestGeneratorConsumesThePlanVerbatim:
 
     async def _sql(self, query: SlayerQuery) -> str:
         return await _engine_generate(
-            query=query, model=_orders(), dialect="postgres",
-            validate=False, extra_models=[_customers()],
+            query=query, dataset=_orders(), dialect="postgres",
+            validate=False, extra_datasets=[_customers()],
         )
 
     @staticmethod
@@ -176,26 +176,26 @@ class TestFrameBoundColumnsStayPlanSide:
     not re-introduce a render-time derivation."""
 
     def _windowed_query(self) -> SlayerQuery:
-        return SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [{
-                "dimension": "created_at",
+        return SlayerQuery.model_validate({"population": "orders", "time_dimensions": [{
+                "field": "created_at",
                 "granularity": TimeGranularity.MONTH,
                 "date_range": ["2024-01-01", "2024-12-31"],
-            }], "measures": [{"formula": "sum(amount)", "name": "a"}]})
+            }], "metrics": [{"metric": "sum(amount)", "alias": "a"}]})
 
     def test_plan_carries_frame_bound_columns(self) -> None:
         """A DECLARED field, checked the same way as masks.
         ``hasattr`` is always true for a field with a default_factory, so it
         could not fail regardless of planner behaviour."""
-        assert "frame_bound_columns" in PlannedQuery.model_fields
+        assert "frame_bound_fields" in PlannedQuery.model_fields
 
     def test_frame_bound_columns_covers_the_time_dimension(self) -> None:
         """Names the expected column, not just "non-empty" — the query has one
         time dimension, so a plan carrying some OTHER column would satisfy a
         truthiness check while getting the frame-bound set wrong."""
         planned = plan_query(query=self._windowed_query(), bundle=_bundle())
-        leaves = {getattr(k, "leaf", None) for k in planned.frame_bound_columns}
+        leaves = {getattr(k, "leaf", None) for k in planned.frame_bound_fields}
         assert "created_at" in leaves, (
             f"the time dimension's raw column must be carried on the plan so "
             f"both strip_frame_bounds call sites read the SAME set; got "
-            f"{planned.frame_bound_columns!r}"
+            f"{planned.frame_bound_fields!r}"
         )

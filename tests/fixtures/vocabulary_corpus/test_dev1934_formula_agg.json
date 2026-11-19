@@ -1,0 +1,277 @@
+{
+ "source": "tests/test_dev1934_formula_agg.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "sumsq",
+    "formula": "SUM({value} * {value})"
+   },
+   "new": {
+    "name": "sumsq",
+    "expression": "SUM({value} * {value})"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "lbl",
+    "formula": "MAX(CASE WHEN {value} > 0 THEN '{value}' END)"
+   },
+   "new": {
+    "name": "lbl",
+    "expression": "MAX(CASE WHEN {value} > 0 THEN '{value}' END)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "s1",
+    "formula": "SUM({ value })"
+   },
+   "new": {
+    "name": "s1",
+    "expression": "SUM({ value })"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "s1",
+    "formula": "SUM({value})"
+   },
+   "new": {
+    "name": "s1",
+    "expression": "SUM({value})"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "scaled",
+    "formula": "SUM({value}) / MAX({ scale })"
+   },
+   "new": {
+    "name": "scaled",
+    "expression": "SUM({value}) / MAX({ scale })"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "scaled",
+    "formula": "SUM({value}) / MAX({scale})"
+   },
+   "new": {
+    "name": "scaled",
+    "expression": "SUM({value}) / MAX({scale})"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "needs_scale",
+    "formula": "SUM({value}) * {scale}"
+   },
+   "new": {
+    "name": "needs_scale",
+    "expression": "SUM({value}) * {scale}"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "sum",
+    "formula": "SUM({value}) * 2"
+   },
+   "new": {
+    "name": "sum",
+    "expression": "SUM({value}) * 2"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "dk",
+    "formula": "SUM({value}) * {scale} // 2"
+   },
+   "new": {
+    "name": "dk",
+    "expression": "SUM({value}) * {scale} // 2"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rows",
+    "formula": "COUNT(*)"
+   },
+   "new": {
+    "name": "rows",
+    "expression": "COUNT(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=q_amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=q_amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "masked",
+    "formula": "SUM({value}) # {mask}"
+   },
+   "new": {
+    "name": "masked",
+    "expression": "SUM({value}) # {mask}"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "arr",
+    "formula": "SUM({value}) * ARRAY[{scale}][1]"
+   },
+   "new": {
+    "name": "arr",
+    "expression": "SUM({value}) * ARRAY[{scale}][1]"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "bad",
+    "formula": "SUM({value}) + 'x"
+   },
+   "new": {
+    "name": "bad",
+    "expression": "SUM({value}) + 'x"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 234,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 275,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 444,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 447,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 450,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 459,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 460,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 461,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 531,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 537,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 538,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 544,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 546,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 549,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 550,
+   "reason": "not fully literal"
+  }
+ ]
+}

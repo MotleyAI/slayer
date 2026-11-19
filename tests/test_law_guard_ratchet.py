@@ -43,11 +43,11 @@ ALLOWED_EXPRESSIVENESS = [
     r"not supported on (MySQL|T-SQL)",
     r"^Ranked CTE cannot anchor",
     r"window-transform dispatch has no arm for op",
-    r"^Unsupported TimeTruncKey column type",
+    r"^Unsupported TimeTruncKey field type",
     r"^AggregateKey source",
     r"ORDER BY references a hidden slot",
     r"unsupported filter phase",
-    r"cross-model aggregate ref in filter",
+    r"cross-dataset aggregate ref in filter",
     r"reached the local base SELECT path",
     r"row-phase key type",
     r"^Unsupported literal in a ValueKey render",
@@ -166,7 +166,7 @@ class TestClassifierSelfChecks:
     fail-closed site turns it red."""
 
     @pytest.fixture
-    def synthetic_site(self, monkeypatch) -> DeferralSite:
+    def synthetic_site(self, monkeypatch: pytest.MonkeyPatch) -> DeferralSite:
         """A registry of one scratch site, so these checks never depend on the live list."""
         site = DeferralSite(fragment="frobnication deferred", issue="DEV-9999")
         monkeypatch.setattr(sys.modules[__name__], "DEFERRAL_SITES", (site,))

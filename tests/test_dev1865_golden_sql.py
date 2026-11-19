@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1865_fixtures import BAND35, ModelMeasure, SlayerQuery, dev1865_models
+from slayer.core.query import QueryMetric
+
+from tests._dev1865_fixtures import BAND35, SlayerQuery, dev1865_models
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -23,33 +25,33 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def _cases() -> dict:
-    band = {"expression": BAND35, "name": "band"}
+    band = {"field": BAND35, "alias": "band"}
     cm_part = "sum(customers.spend, partition_by=customers.regions.name)"
     return {
         "filter/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
-            filters=[f"{cm_part} > 100"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            filter=[f"{cm_part} > 100"],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         ),
         "filter/computed_dim_mix_field": _q(
             dimensions=["region", "city", band],
-            filters=["band == 1 or channel == 'app'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filter=["band == 1 or channel == 'app'"],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "filter/computed_dim_mix_measure": _q(
             dimensions=["region", "city", band],
-            filters=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "order/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
-            order=[{"column": cm_part, "direction": "desc"}],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
+            order=[{"field": cm_part, "direction": "desc"}],
         ),
     }
 
@@ -58,7 +60,7 @@ async def _generate_one(query: SlayerQuery, dialect: str):
     models = dev1865_models()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is the contract

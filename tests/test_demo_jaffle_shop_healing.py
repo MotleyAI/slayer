@@ -19,7 +19,7 @@ from sqlalchemy.engine.reflection import Inspector
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.demo import jaffle_shop
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -46,8 +46,8 @@ EXPECTED_EDGES = {
 }
 
 README_QUERY = {
-    "source_model": "orders",
-    "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
+    "population": "orders",
+    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
     "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 }
 
@@ -126,18 +126,18 @@ def _setup(storage: YAMLStorage, store_dir: str) -> tuple:
     return jaffle_shop.ensure_demo_datasource(storage, storage_path=store_dir, years=1)
 
 
-def _stored_models(storage: YAMLStorage) -> dict[str, SlayerModel]:
-    names = run_sync(storage.list_models(data_source=jaffle_shop.DEMO_NAME))
-    loaded = {name: run_sync(storage.get_model(name=name, data_source=jaffle_shop.DEMO_NAME)) for name in names}
+def _stored_datasets(storage: YAMLStorage) -> dict[str, SlayerDataset]:
+    names = run_sync(storage.list_datasets(data_source=jaffle_shop.DEMO_NAME))
+    loaded = {name: run_sync(storage.get_dataset(name=name, data_source=jaffle_shop.DEMO_NAME)) for name in names}
     return {name: model for name, model in loaded.items() if model is not None}
 
 
-def _edges(models: dict[str, SlayerModel]) -> set[tuple[str, str]]:
-    return {(name, j.target_model) for name, m in models.items() for j in m.joins}
+def _edges(datasets: dict[str, SlayerDataset]) -> set[tuple[str, str]]:
+    return {(name, j.to) for name, m in datasets.items() for j in m.relationships}
 
 
-def _column(model: SlayerModel, name: str) -> Column:
-    return next(c for c in model.columns if c.name == name)
+def _column(dataset: SlayerDataset, name: str) -> DatasetField:
+    return next(c for c in dataset.fields if c.name == name)
 
 
 def _db_path(store_dir: str) -> str:
@@ -179,16 +179,16 @@ def _register_demo_ds(*, storage: YAMLStorage, store_dir: str) -> DatasourceConf
     return ds
 
 
-def _store_affected_models(*, storage: YAMLStorage, store_dir: str) -> None:
+def _store_affected_datasets(*, storage: YAMLStorage, store_dir: str) -> None:
     """Persist demo models as an affected release left them: no joins, no money ``db_type``."""
     ds = _register_demo_ds(storage=storage, store_dir=store_dir)
     for model in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds)):
         jaffle_shop.apply_demo_enrichment(model)
-        model.joins = []
-        for column in model.columns:
+        model.relationships = []
+        for column in model.fields:
             if (model.name, column.name) in MONEY_COLUMNS:
                 column.db_type = None
-        run_sync(storage.save_model(model))
+        run_sync(storage.save_dataset(model))
 
 
 EXPECTED_KEYS = {
@@ -203,16 +203,16 @@ EXPECTED_KEYS = {
 }
 
 
-def _keys(models: dict[str, SlayerModel]) -> dict[str, set[str]]:
-    return {name: {c.name for c in m.columns if c.primary_key} for name, m in models.items()}
+def _keys(datasets: dict[str, SlayerDataset]) -> dict[str, set[str]]:
+    return {name: {c.name for c in m.fields if c.primary_key} for name, m in datasets.items()}
 
 
 def _strip_joins_and_edit(storage: YAMLStorage) -> None:
-    for model in _stored_models(storage).values():
-        model.joins = []
+    for model in _stored_datasets(storage).values():
+        model.relationships = []
         if model.name == "orders":
             _column(model, "order_total").description = "My own total"
-        run_sync(storage.save_model(model))
+        run_sync(storage.save_dataset(model))
 
 
 def _run(storage: YAMLStorage, query: dict) -> list[dict]:
@@ -232,7 +232,7 @@ def _reset_engines():
 
 class TestDemoKeysAndJoins:
     def _assert_keys_and_joins(self, storage: YAMLStorage) -> None:
-        models = _stored_models(storage)
+        models = _stored_datasets(storage)
         assert _edges(models) == EXPECTED_EDGES
         assert _keys(models) == EXPECTED_KEYS
         assert _run(storage, README_QUERY)
@@ -286,8 +286,8 @@ class TestDemoMoneyIsExact:
     def test_revenue_by_store_and_month_is_exact(self, jaffle_generator, storage, store_dir) -> None:
         _setup(storage, store_dir)
         rows = _run(storage, {
-            "source_model": "orders",
-            "measures": ["sum(order_total)"],
+            "population": "orders",
+            "metrics": ["sum(order_total)"],
             "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
         })
         assert rows
@@ -308,31 +308,31 @@ class TestDemoMoneyIsExact:
 
     def test_demo_models_declare_decimal_db_type(self, jaffle_generator, storage, store_dir) -> None:
         _setup(storage, store_dir)
-        models = _stored_models(storage)
+        models = _stored_datasets(storage)
         for table, column in MONEY_COLUMNS:
             assert _column(models[table], column).db_type == "DECIMAL(12,2)", (table, column)
 
     def test_enrichment_fills_only_an_empty_db_type(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source=jaffle_shop.DEMO_NAME,
-            columns=[
-                Column(name="order_total", type=DataType.DOUBLE),
-                Column(name="subtotal", type=DataType.DOUBLE, db_type="NUMERIC(18,4)"),
+            fields=[
+                DatasetField(name="order_total", datatype=DataType.FLOAT),
+                DatasetField(name="subtotal", datatype=DataType.FLOAT, db_type="NUMERIC(18,4)"),
             ],
         )
         jaffle_shop.apply_demo_enrichment(model)
         assert _column(model, "order_total").db_type == "DECIMAL(12,2)"
         assert _column(model, "subtotal").db_type == "NUMERIC(18,4)"
 
-    def test_user_set_db_type_survives_setup(self, jaffle_generator, storage, store_dir) -> None:
+    def test_user_set_db_type_survives_setup(self, jaffle_generator, storage: YAMLStorage, store_dir) -> None:
         _setup(storage, store_dir)
-        orders = _stored_models(storage)["orders"]
+        orders = _stored_datasets(storage)["orders"]
         _column(orders, "subtotal").db_type = "NUMERIC(18,4)"
-        run_sync(storage.save_model(orders))
+        run_sync(storage.save_dataset(orders))
         _setup(storage, store_dir)
-        assert _column(_stored_models(storage)["orders"], "subtotal").db_type == "NUMERIC(18,4)"
+        assert _column(_stored_datasets(storage)["orders"], "subtotal").db_type == "NUMERIC(18,4)"
 
 
 # ---------------------------------------------------------------------------
@@ -401,35 +401,35 @@ class TestDemoSetupHealsModels:
         _setup(storage, store_dir)
         _strip_joins_and_edit(storage)
         _setup(storage, store_dir)
-        models = _stored_models(storage)
+        models = _stored_datasets(storage)
         assert jaffle_generator.calls == 1
         assert _edges(models) == EXPECTED_EDGES
         assert _column(models["orders"], "order_total").description == "My own total"
         assert _run(storage, README_QUERY)
 
     def test_a_demo_model_that_is_not_stored_fails_setup(
-        self, jaffle_generator, storage, store_dir, monkeypatch: pytest.MonkeyPatch,
+        self, jaffle_generator, storage: YAMLStorage, store_dir, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        save_model_impl = storage._save_model_impl
+        save_model_impl = storage._save_dataset_impl
 
-        async def refuse_tweets(model: SlayerModel):
+        async def refuse_tweets(model: SlayerDataset):
             if model.name == "tweets":
                 raise RuntimeError("disk full")
             return await save_model_impl(model)
 
-        monkeypatch.setattr(storage, "_save_model_impl", refuse_tweets)
+        monkeypatch.setattr(storage, "_save_dataset_impl", refuse_tweets)
         with pytest.raises(SlayerError, match=r"tweets.*disk full"):
             _setup(storage, store_dir)
 
-    def test_keyless_models_regain_their_keys(self, jaffle_generator, storage, store_dir) -> None:
+    def test_keyless_models_regain_their_keys(self, jaffle_generator, storage: YAMLStorage, store_dir) -> None:
         _setup(storage, store_dir)
-        for model in _stored_models(storage).values():
-            model.joins = []
-            for column in model.columns:
+        for model in _stored_datasets(storage).values():
+            model.relationships = []
+            for column in model.fields:
                 column.primary_key = False
-            run_sync(storage.save_model(model))
+            run_sync(storage.save_dataset(model))
         _setup(storage, store_dir)
-        models = _stored_models(storage)
+        models = _stored_datasets(storage)
         assert _keys(models) == EXPECTED_KEYS
         assert _edges(models) == EXPECTED_EDGES
 
@@ -437,10 +437,10 @@ class TestDemoSetupHealsModels:
         self, jaffle_generator, jafgen_dir, storage, store_dir, tmp_path,
     ) -> None:
         _build_v141_db(db_path=_db_path(store_dir), data_dir=jafgen_dir, tmp_path=tmp_path)
-        _store_affected_models(storage=storage, store_dir=store_dir)
+        _store_affected_datasets(storage=storage, store_dir=store_dir)
         _strip_joins_and_edit(storage)
         _setup(storage, store_dir)
-        models = _stored_models(storage)
+        models = _stored_datasets(storage)
         assert jaffle_generator.calls == 1
         assert _edges(models) == EXPECTED_EDGES
         assert _column(models["orders"], "order_total").description == "My own total"

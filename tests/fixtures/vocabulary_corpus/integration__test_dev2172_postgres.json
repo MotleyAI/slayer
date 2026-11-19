@@ -1,0 +1,59 @@
+{
+ "source": "tests/integration/test_dev2172_postgres.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "things",
+    "measures": [
+     "uids"
+    ]
+   },
+   "new": {
+    "population": "things",
+    "metrics": [
+     "uids"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "things",
+    "measures": [
+     "prices"
+    ]
+   },
+   "new": {
+    "population": "things",
+    "metrics": [
+     "prices"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "things",
+    "dimensions": [
+     "id",
+     "payload",
+     "blob",
+     "span"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "things",
+    "dimensions": [
+     "id",
+     "payload",
+     "blob",
+     "span"
+    ],
+    "distinct_dimension_values": false
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -14,11 +14,19 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import SearchService
 from slayer.storage.base import resolve_storage
 from slayer.storage.sqlite_conn import transaction
+from slayer.storage.base import StorageBackend
+from typing import Any
+
+
+def _stored_col(dataset: SlayerDataset, name: str) -> DatasetField:
+    col = dataset.get_field(name)
+    assert col is not None
+    return col
 
 
 @pytest_asyncio.fixture
@@ -39,16 +47,16 @@ async def search_setup(tmp_path) -> AsyncIterator[tuple[SearchService, object]]:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_file)
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="ds",
         description="Checkout orders.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT,
                    description="Order total in USD."),
-            Column(name="status", type=DataType.TEXT,
+            DatasetField(name="status", datatype=DataType.STRING,
                    description="Order lifecycle status."),
         ],
     ))
@@ -57,24 +65,27 @@ async def search_setup(tmp_path) -> AsyncIterator[tuple[SearchService, object]]:
 
 
 @pytest.mark.asyncio
-async def test_search_backfills_numeric_column_hit_verbose(search_setup) -> None:
+async def test_search_backfills_numeric_column_hit_verbose(search_setup: tuple[Any, StorageBackend]) -> None:
     service, storage = search_setup
     # Sanity: the numeric column starts uncached.
-    pre = await storage.get_model("orders", data_source="ds")
-    assert pre.get_column("amount").sampled is None
+    pre = await storage.get_dataset("orders", data_source="ds")
+    assert pre is not None
+    assert _stored_col(pre, "amount").sampled is None
 
     resp = await service.search(
         entities=["ds.orders.amount"], compact=False,
     )
     amount_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "ds.orders.amount"
+        if h.kind == "field" and h.id == "ds.orders.amount"
     ]
     assert amount_hits, "expected the amount column as a hit"
     # Persisted min/max range — proof the numeric back-fill fired in search.
-    reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("amount").sampled is not None
-    assert ".." in reloaded.get_column("amount").sampled
+    reloaded = await storage.get_dataset("orders", data_source="ds")
+    assert reloaded is not None
+    sampled = _stored_col(reloaded, "amount").sampled
+    assert sampled is not None
+    assert ".." in sampled
     # Verbose hit text carries the refreshed min/max RANGE (not just any
     # "Sample values:" label) — proves the numeric back-fill re-rendered text.
     assert any(
@@ -83,7 +94,7 @@ async def test_search_backfills_numeric_column_hit_verbose(search_setup) -> None
 
 
 @pytest.mark.asyncio
-async def test_search_backfills_numeric_column_hit_compact(search_setup) -> None:
+async def test_search_backfills_numeric_column_hit_compact(search_setup: tuple[Any, StorageBackend]) -> None:
     """compact=True keeps ``text=""`` but still persists the back-filled
     range (the persist side-effect mirrors the categorical path)."""
     service, storage = search_setup
@@ -92,10 +103,11 @@ async def test_search_backfills_numeric_column_hit_compact(search_setup) -> None
     )
     amount_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "ds.orders.amount"
+        if h.kind == "field" and h.id == "ds.orders.amount"
     ]
     assert amount_hits, "expected the amount column as a hit"
     for h in amount_hits:
         assert h.text == ""
-    reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("amount").sampled is not None
+    reloaded = await storage.get_dataset("orders", data_source="ds")
+    assert reloaded is not None
+    assert _stored_col(reloaded, "amount").sampled is not None

@@ -1,0 +1,38 @@
+{
+ "source": "tests/test_dev2280_stored_upgrade.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "year_end",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "year_end",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "early",
+     "sum(late_amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "early",
+     "sum(late_amount)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Generator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, NoReturn
@@ -16,12 +16,12 @@ from sqlalchemy import event, exc
 from pydantic import BaseModel
 from sqlalchemy.engine.reflection import Inspector
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import (
     IngestionScanReport,
-    introspect_table_to_model,
+    introspect_table_to_dataset,
 )
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
@@ -29,7 +29,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._key_read_failure import LOST, fail_key_read
 
 _REGCLASS = "Catalog Error: Type with name REGCLASS does not exist!"
-_TO_ONE = {JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE}
+_TO_ONE = {RelationshipCardinality.MANY_TO_ONE, RelationshipCardinality.ONE_TO_ONE}
 
 
 def _duck(path: Path, statements: list[str]) -> None:
@@ -87,7 +87,7 @@ def _ds(path: Path, *, kind: str = "duckdb") -> DatasourceConfig:
 
 
 @asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client
@@ -101,20 +101,20 @@ async def _report(ds: DatasourceConfig, **kwargs: Any) -> IngestionScanReport:
         return await ingestion.ingest_datasource_report_async(ds, client=client, **kwargs)
 
 
-def _models(report: IngestionScanReport) -> dict[str, SlayerModel]:
-    return {m.name: m for m in report.models}
+def _datasets(report: IngestionScanReport) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in report.datasets}
 
 
-def _pk(model: SlayerModel) -> list[str]:
-    return [c.name for c in model.columns if c.primary_key]
+def _pk(dataset: SlayerDataset) -> list[str]:
+    return [c.name for c in dataset.fields if c.primary_key]
 
 
-def _unique(model: SlayerModel) -> set[str]:
-    return {c.name for c in model.columns if c.unique}
+def _unique(dataset: SlayerDataset) -> set[str]:
+    return {c.name for c in dataset.fields if c.unique}
 
 
-def _joins(model: SlayerModel) -> dict[str, tuple[list[list[str]], JoinCardinality | None]]:
-    return {j.target_model: (j.join_pairs, j.cardinality) for j in model.joins}
+def _joins(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
+    return {j.to: ([list(p) for p in j.column_pairs], j.cardinality) for j in dataset.relationships}
 
 
 def _raise_regclass(*_args: Any, **_kwargs: Any) -> NoReturn:
@@ -135,33 +135,33 @@ def broken_generic_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestDuckdbKeys:
     async def test_unique_constraints_mark_columns_unique(self, keys_db) -> None:
-        customers = _models(await _report(_ds(keys_db)))["customers"]
+        customers = _datasets(await _report(_ds(keys_db)))["customers"]
         assert _pk(customers) == ["id"]
         assert _unique(customers) == {"code", "Mixed Case"}
 
     async def test_fk_to_a_unique_column_is_to_one(self, keys_db) -> None:
-        orders = _models(await _report(_ds(keys_db)))["orders"]
+        orders = _datasets(await _report(_ds(keys_db)))["orders"]
         pairs, cardinality = _joins(orders)["customers"]
         assert pairs == [["customer_code", "code"]]
         assert cardinality in _TO_ONE
 
     async def test_composite_unique_is_a_key_for_join_cardinality(self, keys_db) -> None:
-        pairs_model = _models(await _report(_ds(keys_db)))["pairs"]
+        pairs_model = _datasets(await _report(_ds(keys_db)))["pairs"]
         pairs, cardinality = _joins(pairs_model)["customers"]
         assert pairs == [["a", "a"], ["b", "b"]]
         assert cardinality in _TO_ONE
 
     async def test_composite_pk(self, keys_db) -> None:
-        lines = _models(await _report(_ds(keys_db)))["lines"]
+        lines = _datasets(await _report(_ds(keys_db)))["lines"]
         assert _pk(lines) == ["order_id", "n"]
         assert _joins(lines)["orders"][0] == [["order_id", "id"]]
 
     async def test_expression_unique_index_is_no_key(self, keys_db) -> None:
-        customers = _models(await _report(_ds(keys_db)))["customers"]
+        customers = _datasets(await _report(_ds(keys_db)))["customers"]
         assert "name" not in _unique(customers)
 
     async def test_composite_fk_in_non_default_schema(self, schema_db) -> None:
-        models = _models(await _report(_ds(schema_db), schemas=["ofr"]))
+        models = _datasets(await _report(_ds(schema_db), schemas=["ofr"]))
         assert _pk(models["parent"]) == ["a", "b"]
         assert _pk(models["child"]) == ["id"]
         pairs, cardinality = _joins(models["child"])["parent"]
@@ -169,13 +169,13 @@ class TestDuckdbKeys:
         assert cardinality in _TO_ONE
 
     async def test_default_schema_twins_keep_their_own_keys(self, schema_db) -> None:
-        models = _models(await _report(_ds(schema_db)))
+        models = _datasets(await _report(_ds(schema_db)))
         assert _pk(models["parent"]) == ["x"]
-        assert models["child"].joins == []
+        assert models["child"].relationships == []
 
 
 @asynccontextmanager
-async def _attached(paths: tuple[Path, Path]) -> AsyncIterator[SlayerSQLClient]:
+async def _attached(paths: tuple[Path, Path]) -> AsyncGenerator[SlayerSQLClient, None]:
     """A client over ``main`` whose every connection attaches ``other``."""
     main, other = paths
     ds = _ds(main)
@@ -196,7 +196,7 @@ async def _attached(paths: tuple[Path, Path]) -> AsyncIterator[SlayerSQLClient]:
 class TestAttachedCatalog:
     async def test_attached_twin_contributes_no_keys(self, attached_paths) -> None:
         async with _attached(attached_paths) as client:
-            model = await introspect_table_to_model(
+            model = await introspect_table_to_dataset(
                 client=client, table_name="t", ref=None, data_source="ds",
             )
         assert _pk(model) == ["id"]
@@ -211,10 +211,10 @@ class TestAttachedCatalog:
 class TestGenericReflectionBypassed:
     async def test_every_key_join_and_column_survives(self, keys_db, broken_generic_reflection) -> None:
         report = await _report(_ds(keys_db))
-        models = _models(report)
+        models = _datasets(report)
         assert report.skipped == []
         assert set(models) == {"customers", "orders", "pairs", "lines"}
-        assert [c.name for c in models["customers"].columns] == [
+        assert [c.name for c in models["customers"].fields] == [
             "id", "code", "a", "b", "Mixed Case", "name",
         ]
         assert _pk(models["customers"]) == ["id"]
@@ -223,11 +223,11 @@ class TestGenericReflectionBypassed:
         assert _joins(models["orders"])["customers"][0] == [["customer_code", "code"]]
         assert _joins(models["pairs"])["customers"][0] == [["a", "a"], ["b", "b"]]
         assert _joins(models["lines"])["orders"][0] == [["order_id", "id"]]
-        amount = next(c for c in models["orders"].columns if c.name == "amount")
-        assert (amount.type, amount.db_type) == (DataType.DOUBLE, "DECIMAL(12,2)")
+        amount = next(c for c in models["orders"].fields if c.name == "amount")
+        assert (amount.datatype, amount.db_type) == (DataType.DECIMAL, "DECIMAL(12,2)")
 
     async def test_non_default_schema_join_survives(self, schema_db, broken_generic_reflection) -> None:
-        models = _models(await _report(_ds(schema_db), schemas=["ofr"]))
+        models = _datasets(await _report(_ds(schema_db), schemas=["ofr"]))
         assert _joins(models["child"])["parent"][0] == [["pa", "a"], ["pb", "b"]]
 
 
@@ -254,7 +254,7 @@ _FAILED_READS = {
 
 
 @contextmanager
-def _failing(read: _FailedRead) -> Iterator[None]:
+def _failing(read: _FailedRead) -> Generator[None, None, None]:
     """Raise on DuckDB's own catalog read of one key kind for one table."""
 
     def _boom(_conn, _cursor, statement, *_rest) -> None:  # noqa: ANN001
@@ -290,11 +290,11 @@ class TestKeyReadFailureIsVisible:
         caplog.set_level(logging.WARNING)
         with _failing(read):
             report = await _report(_ds(keys_db))
-        models = _models(report)
+        models = _datasets(report)
         assert report.skipped == []
         assert set(models) == {"customers", "orders", "pairs", "lines"}
         orders, customers = models["orders"], models["customers"]
-        assert [c.name for c in orders.columns] == ["id", "customer_code", "amount"]
+        assert [c.name for c in orders.fields] == ["id", "customer_code", "amount"]
         assert _joins(models["lines"])["orders"][0] == [["order_id", "id"]]
         assert _pk(orders) == ([] if kind == "primary_key" else ["id"])
         assert ("customers" in _joins(orders)) is (kind != "foreign_keys")
@@ -318,9 +318,9 @@ class TestKeyReadFailureIsVisible:
         fail_key_read(monkeypatch, table="orders", reads=("foreign keys",))
         caplog.set_level(logging.WARNING)
         report = await _report(_ds(db, kind="sqlite"))
-        models = _models(report)
+        models = _datasets(report)
         assert report.skipped == []
-        assert models["orders"].joins == []
+        assert models["orders"].relationships == []
         assert _joins(models["items"])["orders"][0] == [["order_id", "id"]]
         _assert_one_read_warning(_warnings_naming(caplog, "orders"), word="foreign", marker=LOST)
 
@@ -367,14 +367,14 @@ def statement_log() -> Iterator[list[str]]:
 
 class TestSqliteBaseBehaviour:
     async def test_keys_unique_flags_and_joins(self, sqlite_db) -> None:
-        models = _models(await _report(_ds(sqlite_db, kind="sqlite")))
+        models = _datasets(await _report(_ds(sqlite_db, kind="sqlite")))
         customers, orders = models["customers"], models["orders"]
         assert _pk(customers) == ["id"]
         assert _unique(customers) == {"email", "code"}
-        joins = {tuple(map(tuple, j.join_pairs)): j.cardinality for j in orders.joins}
+        joins = {tuple(map(tuple, j.column_pairs)): j.cardinality for j in orders.relationships}
         assert joins == {
-            (("customer_id", "id"),): JoinCardinality.MANY_TO_ONE,
-            (("a", "a"), ("b", "b")): JoinCardinality.MANY_TO_ONE,
+            (("customer_id", "id"),): RelationshipCardinality.MANY_TO_ONE,
+            (("a", "a"), ("b", "b")): RelationshipCardinality.MANY_TO_ONE,
         }
 
     async def test_pk_never_reads_information_schema(self, sqlite_db, statement_log) -> None:

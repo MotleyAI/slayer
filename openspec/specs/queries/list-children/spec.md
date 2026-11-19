@@ -1,7 +1,7 @@
 # queries/list-children Specification
 
 ## Purpose
-Defines element access: each list column is a keyless one-to-many child of its model, reached as `<column>.value`, so filters, dimensions and aggregates over elements follow the ordinary query semantics without fanning parent values.
+Defines element access: each list column is a keyless one-to-many child of its model, reached as `<field>.value`, so filters, dimensions and aggregates over elements follow the ordinary query semantics without fanning parent values.
 
 The examples use `contractors(id, team, rate, skills ARRAY<TEXT>)` with these rows:
 - Ann: team A, rate 10, skills `['go', 'sql', 'go']`
@@ -54,7 +54,7 @@ A field-typed filter over `L.value` SHALL keep the `M` rows that have at least o
 
 ### Requirement: Association across a list hop needs no key
 
-When the mode is omitted or `to_many_handling: associate`, an aggregate homed on `M` SHALL, for each cell, aggregate over the `M` rows associated with the cell's element values, each `M` row once per cell, and SHALL NOT require a key on `M` when every unattributable dimension is reached through list hops of `M`'s own rows. When an unattributable dimension is reached through any other to-many hop, association SHALL deduplicate by `M`'s unique key, else by its per-query row identity (per `queries/attribution-modes`).
+When the mode is omitted or `to_many_handling: associate`, an aggregate homed on `M` SHALL, for each cell, aggregate over the `M` rows associated with the cell's element values, each `M` row once per cell, and SHALL NOT require a key on `M` when every unattributable dimension is reached through list hops of `M`'s own rows. When an unattributable dimension is reached through any other to-many hop, association SHALL deduplicate by `M`'s primary key, else by its per-query row identity (per `queries/attribution-modes`).
 
 #### Scenario: Contractors per skill
 - **WHEN** a query on keyless `contractors` has the dimension `skills.value`, the measure `count(*)` and `to_many_handling: associate`

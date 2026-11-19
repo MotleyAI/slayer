@@ -14,9 +14,10 @@ from unittest import mock
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import MeasureRecursionLimitError
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.errors import MetricRecursionLimitError, SpellingConflictError
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 
+from tests._deprecated_input_helpers import deprecations, payload_of, recorded
 from tests._dev1842_fixtures import gen, make_exec_engine, month_td, q
 from tests._engine_helpers import _engine_generate
 
@@ -43,13 +44,13 @@ class TestNestedSavedMeasure:
         _, engine = exec_backend
         dotted = await engine.execute(
             q(dimensions=["customers.tier"],
-              measures=[{"formula": "customers.aov_big", "name": "x"}]),
+              metrics=[{"metric": "customers.aov_big", "alias": "x"}]),
         )
         hand = await engine.execute(
             q(dimensions=["customers.tier"],
-              measures=[{"formula":
+              metrics=[{"metric":
                          "(sum(customers.spend) / count(customers.*)) * 2",
-                         "name": "x"}]),
+                         "alias": "x"}]),
         )
         assert _canon(dotted) == _canon(hand)
 
@@ -60,10 +61,10 @@ class TestHostMeasureContainingDottedRef:
         reference (``host_runs_dotted`` = ``cumsum(customers.aov)``) resolves
         recursively — identical SQL to writing the dotted form inline."""
         bare = q(dimensions=["customers.tier"],
-                 measures=[{"formula": "host_runs_dotted", "name": "x"}],
+                 metrics=[{"metric": "host_runs_dotted", "alias": "x"}],
                  time_dimensions=month_td())
         inline = q(dimensions=["customers.tier"],
-                   measures=[{"formula": "cumsum(customers.aov)", "name": "x"}],
+                   metrics=[{"metric": "cumsum(customers.aov)", "alias": "x"}],
                    time_dimensions=month_td())
         assert await gen(bare) == await gen(inline)
 
@@ -73,7 +74,7 @@ class TestCrossModelCycle:
         """``customers.cyc_c`` → ``orders.cyc_o`` → ``customers.cyc_c`` is a
         cross-model measure cycle. The error names the full (model, measure)
         chain, not a wrong or double-counted value."""
-        query = q(measures=[{"formula": "customers.cyc_c", "name": "x"}])
+        query = q(metrics=[{"metric": "customers.cyc_c", "alias": "x"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value).lower()
@@ -86,42 +87,56 @@ class TestDepthLimit:
     """A dotted reference into a same-model chain (``sub.d1`` → ``d2`` → ``d3``)
     respects the configurable depth cap; exceeding it raises naming the chain."""
 
-    def _models(self):
-        sub = SlayerModel(
+    def _datasets(self):
+        sub = SlayerDataset(
             name="sub", data_source="test", sql_table="sub",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
-            measures=[
-                ModelMeasure(name="d1", formula="d2"),
-                ModelMeasure(name="d2", formula="d3"),
-                ModelMeasure(name="d3", formula="sum(amount)"),
+            metrics=[
+                DatasetMetric(name="d1", expression="d2"),
+                DatasetMetric(name="d2", expression="d3"),
+                DatasetMetric(name="d3", expression="sum(amount)"),
             ],
         )
-        main = SlayerModel(
+        main = SlayerDataset(
             name="main", data_source="test", sql_table="main",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="sub_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="sub_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="sub", join_pairs=[["sub_id", "id"]])],
+            relationships=[DatasetRelationship(to="sub", from_columns=["sub_id"], to_columns=["id"])],
         )
         return main, sub
 
-    async def _generate(self, formula: str) -> str:
-        main, sub = self._models()
+    async def _generate(self, expression: str) -> str:
+        main, sub = self._datasets()
         return await _engine_generate(
-            query=q(source_model="main",
-                    measures=[{"formula": formula, "name": "x"}]),
-            model=main, extra_models=[sub], dialect="duckdb", validate=False,
+            query=q(population="main",
+                    metrics=[{"metric": expression, "alias": "x"}]),
+            dataset=main, extra_datasets=[sub], dialect="duckdb", validate=False,
         )
 
     async def test_depth_limit_exceeded_raises(self):
-        with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "1"}):
-            with pytest.raises(MeasureRecursionLimitError) as ei:
+        with mock.patch.dict(os.environ, {"SLAYER_METRIC_EXPANSION_DEPTH": "1"}):
+            with pytest.raises(MetricRecursionLimitError) as ei:
                 await self._generate("sub.d1")
             assert ei.value.limit == 1
+
+    async def test_the_pre_2_0_depth_variable_still_applies_with_a_deprecation(self):
+        with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "1"}), recorded() as caught:
+            with pytest.raises(MetricRecursionLimitError) as ei:
+                await self._generate("sub.d1")
+        assert ei.value.limit == 1
+        assert {(p.old, p.new) for p in map(payload_of, deprecations(caught))} == {
+            ("SLAYER_MEASURE_EXPANSION_DEPTH", "SLAYER_METRIC_EXPANSION_DEPTH")}
+
+    async def test_both_depth_variables_are_refused(self):
+        both = {"SLAYER_MEASURE_EXPANSION_DEPTH": "1", "SLAYER_METRIC_EXPANSION_DEPTH": "2"}
+        with mock.patch.dict(os.environ, both), recorded():
+            with pytest.raises(SpellingConflictError):
+                await self._generate("sub.d1")
 
     async def test_within_depth_limit_resolves(self):
         # The same chain resolves to ``sum(sub.amount)`` under the default cap.

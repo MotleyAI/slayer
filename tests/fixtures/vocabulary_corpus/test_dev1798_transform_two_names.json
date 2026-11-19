@@ -1,0 +1,191 @@
+{
+ "source": "tests/test_dev1798_transform_two_names.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "run_a"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "run_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "run_b"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "run_b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "ch_a"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "ch_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "ch_b"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "ch_b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "run_a"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "run_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "run_b"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "run_b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "ch"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "ch"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount))",
+    "name": "streak_a"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount))",
+    "name": "streak_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount))",
+    "name": "streak_b"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount))",
+    "name": "streak_b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(customers.spend))",
+    "name": "run_a"
+   },
+   "new": {
+    "expression": "cumsum(sum(customers.spend))",
+    "name": "run_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(customers.spend))",
+    "name": "run_b"
+   },
+   "new": {
+    "expression": "cumsum(sum(customers.spend))",
+    "name": "run_b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "run_a"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "run_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "run_a"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "run_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "run_a"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "run_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "run_a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "run_a"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 24,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  }
+ ]
+}

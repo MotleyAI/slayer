@@ -9,11 +9,11 @@ Scenario seed data, unless a scenario says otherwise: `customers` (id 1–3, cit
 
 ### Requirement: An unrelated dataset is reached by naming it
 
-In a query frame — the main query and every stage of a query list, including the stored stages of a query-backed model — a reference path whose first hop resolves to no edge and no route from the population SHALL resolve through a product hop to the dataset its token names, when that token names a model visible to the caller or a query-local stage (the stage spelling taking precedence) in the population's datasource. The product hop SHALL pair every population row with every row of that dataset (`P × D`) and determine nothing across it. Every existing edge and route resolution SHALL take precedence, and no route search — short-form routing, route counting, population inference, root recommendation's determination probe — SHALL take a product hop. A path SHALL continue past the product hop over ordinary edges. A token naming no visible dataset of the population's datasource, the time spine, or the population itself SHALL keep its existing error. Stored definitions (`Column.sql`, model filters, saved measures, joins) SHALL refuse a reference with no join path: a saved measure fails when used with the existing no-route error, and a `Column.sql` or model filter is rejected at save time with a typed error naming the definition and the unreachable model, and fails closed with that error at query time when stored without validation.
+In a query frame — the main query and every stage of a query list, including the stored stages of a query-backed model — a reference path whose first hop resolves to no edge and no route from the population SHALL resolve through a product hop to the dataset its token names, when that token names a model visible to the caller or a query-local stage (the stage spelling taking precedence) in the population's datasource. The product hop SHALL pair every population row with every row of that dataset (`P × D`) and determine nothing across it. Every existing edge and route resolution SHALL take precedence, and no route search — short-form routing, route counting, population inference, root recommendation's determination probe — SHALL take a product hop. A path SHALL continue past the product hop over ordinary edges. A token naming no visible dataset of the population's datasource, the time spine, or the population itself SHALL keep its existing error. Stored definitions (`DatasetField.sql`, model filters, saved measures, joins) SHALL refuse a reference with no join path: a saved measure fails when used with the existing no-route error, and a `DatasetField.sql` or model filter is rejected at save time with a typed error naming the definition and the unreachable model, and fails closed with that error at query time when stored without validation.
 
 #### Scenario: A grand-total ratio across unrelated models
 
-- **WHEN** a query with `source_model: customers` measures `{"formula": "count(events.id) / count(*)", "name": "events_per_customer"}`
+- **WHEN** a query with `population: customers` measures `{"metric": "count(events.id) / count(*)", "alias": "events_per_customer"}`
 - **THEN** one row is returned with `events_per_customer` = 5 / 3, equal to dividing the two separate single-model answers
 
 #### Scenario: A path continues past the product hop
@@ -23,7 +23,7 @@ In a query frame — the main query and every stage of a query list, including t
 
 #### Scenario: A query-local stage is an unrelated dataset
 
-- **WHEN** a query list has stages `c` (`source_model: customers`, measure `count(*)` named `nc`) and `e` (`source_model: events`, measure `count(*)` named `ne`) and a final stage `{"source_model": "c", "dimensions": ["nc"], "measures": [{"formula": "max(e.ne)", "name": "ne"}]}`
+- **WHEN** a query list has stages `c` (`population: customers`, measure `count(*)` named `nc`) and `e` (`population: events`, measure `count(*)` named `ne`) and a final stage `{"population": "c", "dimensions": ["nc"], "metrics": [{"metric": "max(e.ne)", "alias": "ne"}]}`
 - **THEN** exactly one row (nc 3, ne 5) is returned
 
 #### Scenario: References in every position are found
@@ -77,7 +77,7 @@ An aggregation homed on an unrelated dataset `D` SHALL be counted over `D`'s own
 
 #### Scenario: A spine query attributes through the unrelated dataset's own axis
 
-- **WHEN** a query with `source_model: customers` groups by `city` and by `time_spine.timestamp` at month with `date_range: ["2024-01-01", "2024-03-31"]` and measures `count(events.id)`
+- **WHEN** a query with `population: customers` groups by `city` and by `time_spine.timestamp` at month with `date_range: ["2024-01-01", "2024-03-31"]` and measures `count(events.id)`
 - **THEN** the rows are A and B for each of January–March, each January row reading 2, each February row 2 and each March row 1
 
 #### Scenario: Partitioning by a population dimension
@@ -92,7 +92,7 @@ An aggregation homed on an unrelated dataset `D` SHALL be counted over `D`'s own
 
 ### Requirement: Other row-level reads across a product hop fail closed
 
-A row-level read of an unrelated dataset that is neither beneath an aggregation whose input lies wholly on that dataset's side nor a one-sided field filter SHALL fail with a typed query type error naming the dataset, the reference, the population, and the remedy of aggregating it (for a one-row stage, `max(<stage>.<column>)`). This SHALL cover dimensions, time dimensions, row-level operands of computed dimensions, row-level order keys, and raw-row (`distinct_dimension_values: false`) queries, and SHALL be judged on dependency closures, so a derived column or saved definition reached through the product hop is classified by everything its definition reads. A row-level combination of population and unrelated columns inside one aggregation SHALL fail with the existing input-safety error. A join declared with empty `join_pairs` SHALL remain invalid, with a message naming the same aggregate remedy.
+A row-level read of an unrelated dataset that is neither beneath an aggregation whose input lies wholly on that dataset's side nor a one-sided field filter SHALL fail with a typed query type error naming the dataset, the reference, the population, and the remedy of aggregating it (for a one-row stage, `max(<stage>.<field>)`). This SHALL cover dimensions, time dimensions, row-level operands of computed dimensions, row-level order keys, and raw-row (`distinct_dimension_values: false`) queries, and SHALL be judged on dependency closures, so a derived column or saved definition reached through the product hop is classified by everything its definition reads. A row-level combination of population and unrelated columns inside one aggregation SHALL fail with the existing input-safety error. A join declared with empty `from_columns` and `to_columns` SHALL remain invalid, with a message naming the same aggregate remedy.
 
 #### Scenario: Unrelated dimension
 
@@ -101,7 +101,7 @@ A row-level read of an unrelated dataset that is neither beneath an aggregation 
 
 #### Scenario: Other row-level positions
 
-- **WHEN** a `customers`-rooted query has the time dimension `events.created_at` at month, the computed dimension `{"expression": "events.amount * 2", "name": "a2"}`, the order key `events.amount`, or `distinct_dimension_values: false` with dimension `events.kind`
+- **WHEN** a `customers`-rooted query has the time dimension `events.created_at` at month, the computed dimension `{"field": "events.amount * 2", "alias": "a2"}`, the order key `events.amount`, or `distinct_dimension_values: false` with dimension `events.kind`
 - **THEN** each fails with the same typed error
 
 #### Scenario: Mixed operands inside one aggregation
@@ -116,7 +116,7 @@ A row-level read of an unrelated dataset that is neither beneath an aggregation 
 
 #### Scenario: Empty join pairs
 
-- **WHEN** a stage's `source_model` extension declares a join with `join_pairs: []`
+- **WHEN** a stage's `population` extension declares a join with `from_columns: []` and `to_columns: []`
 - **THEN** validation fails with a message naming the aggregate remedy
 
 ### Requirement: Filters across a product hop are one-sided associations

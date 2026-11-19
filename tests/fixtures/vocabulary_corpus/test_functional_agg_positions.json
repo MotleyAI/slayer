@@ -1,0 +1,355 @@
+{
+ "source": "tests/test_functional_agg_positions.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "my_agg(price)"
+    ],
+    "filters": [
+     "my_agg(price) > 0"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "my_agg(price)"
+    ],
+    "filter": [
+     "my_agg(price) > 0"
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count(*)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "count(*)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_agg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "my_agg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "my_agg(price)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "my_agg(price)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "max(revenue)"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "max(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "measures": [
+     {
+      "name": "rev",
+      "formula": "sum(revenue)"
+     }
+    ]
+   },
+   "new": {
+    "dataset": "orders",
+    "metrics": [
+     {
+      "name": "rev",
+      "expression": "sum(revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(revenue)"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(revenue_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(revenue_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(revenue)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(revenue)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "daily",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "max(rev)"
+    ]
+   },
+   "new": {
+    "population": "daily",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "max(rev)"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(revenue) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 133,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 240,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 352,
+   "reason": "not fully literal"
+  }
+ ]
+}

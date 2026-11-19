@@ -1,0 +1,167 @@
+{
+ "source": "tests/test_boundexpr_unification.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "amount > 0"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "amount > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "amount > 0"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "amount > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "amount > 0"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "amount > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "sum(amount) > 100"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "sum(amount) > 100"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  }
+ ]
+}

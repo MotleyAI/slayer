@@ -60,7 +60,7 @@ async def serve(
     connect and stays static for the connection's lifetime. A float enables
     TTL-gated, on-demand refresh: an idle connection re-checks the storage
     fingerprint at most once per window and rebuilds only when it changed, so
-    long-lived BI sessions pick up model/schema edits without reconnecting.
+    long-lived BI sessions pick up dataset/schema edits without reconnecting.
     """
     # A custom authenticator that prompts for a password counts as auth, so the
     # non-loopback-requires-a-secret rule is satisfied even without a token.

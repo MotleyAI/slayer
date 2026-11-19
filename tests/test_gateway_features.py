@@ -19,7 +19,7 @@ from sqlalchemy import event
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
@@ -36,10 +36,10 @@ from tests._gateway_harness import (
     DS_NAME,
     GatewayFactory,
     backend_of,
-    customers_model,
+    customers_dataset,
     no_direct_access,
-    orders_model,
-    paid_sql_model,
+    orders_dataset,
+    paid_sql_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
@@ -47,7 +47,7 @@ from tests._gateway_harness import (
 from tests._stored_upgrade_fixtures import raw_store
 
 REVENUE_BY_STATUS = {
-    "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
 }
 ORDERS_PROJECT = DbtProject(
     semantic_models=[], metrics=[],
@@ -104,8 +104,8 @@ async def _twin(
     return Twin(default=default, gateway=gateway, attempts=guard.attempts)
 
 
-def _dumps(models: list[SlayerModel]) -> list[dict]:
-    return [m.model_dump(mode="json") for m in sorted(models, key=lambda m: m.name)]
+def _dumps(datasets: list[SlayerDataset]) -> list[dict]:
+    return [m.model_dump(mode="json") for m in sorted(datasets, key=lambda m: m.name)]
 
 
 async def _call(server: Any, name: str, arguments: dict[str, Any]) -> str:
@@ -123,7 +123,7 @@ class TestGatewayServesEveryFeature:
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             result = await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, client=engine.client_for(ds))
             assert result.errors == []
-            models, _ = await engine.storage.load_models(data_source=DS_NAME)
+            models, _ = await engine.storage.load_datasets(data_source=DS_NAME)
             return _dumps(models)
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
@@ -133,14 +133,14 @@ class TestGatewayServesEveryFeature:
 
     async def test_model_validation(self, tmp_path: Path, shop_db: str) -> None:
         ds = shop_datasource(shop_db)
-        drifted = orders_model()
-        drifted.columns.append(Column(name="ghost", sql="ghost", type=DataType.TEXT))
+        drifted = orders_dataset()
+        drifted.fields.append(DatasetField(name="ghost", sql="ghost", datatype=DataType.STRING))
 
         async def build(base: str) -> StorageBackend:
-            return await shop_storage(base, datasource=ds, models=[drifted, customers_model(), paid_sql_model()])
+            return await shop_storage(base, datasource=ds, datasets=[drifted, customers_dataset(), paid_sql_dataset()])
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
-            return [e.model_dump(mode="json") for e in await engine.validate_models(DS_NAME)]
+            return [e.model_dump(mode="json") for e in await engine.validate_datasets(DS_NAME)]
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
@@ -151,7 +151,7 @@ class TestGatewayServesEveryFeature:
         ds = shop_datasource(shop_db)
 
         async def build(base: str) -> StorageBackend:
-            return await shop_storage(base, datasource=ds, models=[orders_model(), customers_model()])
+            return await shop_storage(base, datasource=ds, datasets=[orders_dataset(), customers_dataset()])
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             rows = (await engine.execute(REVENUE_BY_STATUS)).data
@@ -182,14 +182,14 @@ class TestGatewayServesEveryFeature:
             return await raw_store(backend="yaml", base=base, datasource=ds, models=[v7_orders])
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> dict:
-            model = await engine.storage.get_model("orders", data_source=DS_NAME)
+            model = await engine.storage.get_dataset("orders", data_source=DS_NAME)
             assert model is not None
             return model.model_dump(mode="json")
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
-        types = {c["name"]: c["type"] for c in twin.default["columns"]}
-        assert (types["quantity"], types["amount"]) == ("INT", "DOUBLE")
+        types = {c["name"]: c["datatype"] for c in twin.default["fields"]}
+        assert (types["quantity"], types["amount"]) == ("Integer", "Float")
         assert twin.gateway == twin.default
 
     async def test_mcp_create_and_describe_datasource(self, tmp_path: Path, shop_db: str) -> None:
@@ -202,7 +202,7 @@ class TestGatewayServesEveryFeature:
             server = create_mcp_server(storage=engine.storage, client_factory=factory, _seed_help=False)
             created = await _call(server, "create_datasource", {"name": DS_NAME, "type": "sqlite", "database": shop_db})
             described = await _call(server, "describe_datasource", {"name": DS_NAME})
-            models, _ = await engine.storage.load_models(data_source=DS_NAME)
+            models, _ = await engine.storage.load_datasets(data_source=DS_NAME)
             return created, described, _dumps(models)
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
@@ -220,9 +220,9 @@ class TestGatewayServesEveryFeature:
             return await shop_storage(base, datasource=ds)
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
-            converter = DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_models=True)
+            converter = DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_datasets=True)
             await converter.collect_metadata(client=engine.client_for(ds))
-            return _dumps(converter.convert().models)
+            return _dumps(converter.convert().datasets)
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
@@ -238,7 +238,7 @@ class TestGatewayServesEveryFeature:
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             converter = OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, target_dialect="sqlite")
             await converter.collect_metadata(client=engine.client_for(ds))
-            return _dumps(converter.convert().models)
+            return _dumps(converter.convert().datasets)
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
@@ -249,7 +249,7 @@ class TestGatewayServesEveryFeature:
 def test_importer_metadata_collects_through_the_bridge_inside_a_running_loop(tmp_path: Path, shop_db: str) -> None:
     ds = shop_datasource(shop_db)
     engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
-    converter = DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_models=True)
+    converter = DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_datasets=True)
 
     async def _from_a_loop() -> None:
         engine.run_sync(converter.collect_metadata(client=engine.client_for(ds)))
@@ -259,7 +259,7 @@ def test_importer_metadata_collects_through_the_bridge_inside_a_running_loop(tmp
     finally:
         engine.close()
         engine_factory.invalidate_engine(ds)
-    assert [m.name for m in converter.convert().models] == ["orders"]
+    assert [m.name for m in converter.convert().datasets] == ["orders"]
 
 
 # --------------------------------------------------------------------------- #
@@ -319,20 +319,20 @@ class TestTheLoopStaysResponsive:
         )
         checkouts, statements = _slow_driver(ds)
         try:
-            model = await engine.storage.get_model("items", data_source=DS_NAME)
+            model = await engine.storage.get_dataset("items", data_source=DS_NAME)
         finally:
             await engine.aclose()
             engine.close()
             engine_factory.invalidate_engine(ds)
         assert model is not None
-        assert {c.name: c.type for c in model.columns}["amount"] is DataType.INT
+        assert {c.name: c.datatype for c in model.fields}["amount"] is DataType.INTEGER
         assert statements
         assert threading.get_ident() not in checkouts + statements
 
-    @pytest.mark.parametrize("tool", ["create_datasource", "describe_datasource", "ingest_datasource_models"])
+    @pytest.mark.parametrize("tool", ["create_datasource", "describe_datasource", "ingest_datasource"])
     async def test_mcp_datasource_tools(self, tmp_path: Path, shop_db: str, tool: str) -> None:
         db = shop_db
-        if tool == "ingest_datasource_models":
+        if tool == "ingest_datasource":
             db = str(tmp_path / "empty.db")
             with transaction(db) as cur:
                 cur.execute("SELECT 1")
@@ -344,7 +344,7 @@ class TestTheLoopStaysResponsive:
         arguments = {
             "create_datasource": {"name": DS_NAME, "type": "sqlite", "database": db},
             "describe_datasource": {"name": DS_NAME},
-            "ingest_datasource_models": {"datasource_name": DS_NAME},
+            "ingest_datasource": {"datasource_name": DS_NAME},
         }[tool]
         checkouts, statements = _slow_driver(ds)
         try:

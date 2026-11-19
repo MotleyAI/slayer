@@ -18,10 +18,10 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.embeddings.models import Embedding, EntityKind
 from slayer.storage.base import StorageBackend
@@ -79,10 +79,10 @@ async def test_get_unknown_returns_none(storage: StorageBackend) -> None:
 
 async def test_save_is_idempotent_upsert(storage: StorageBackend) -> None:
     """Re-saving the same (canonical_id, model) replaces the row in place."""
-    first = _embed(canonical_id="ds.m.col", kind="column", text_hash="h-a")
+    first = _embed(canonical_id="ds.m.col", kind="field", text_hash="h-a")
     second = _embed(
         canonical_id="ds.m.col",
-        kind="column",
+        kind="field",
         text_hash="h-b",
         vector=[9.9, 9.9, 9.9],
     )
@@ -126,11 +126,11 @@ async def test_delete_for_canonical_prefix_cascades(
     canonical_id starts with the supplied prefix — used by the
     delete_model / delete_datasource cascade."""
     rows_to_seed = [
-        _embed(canonical_id="ds_a.orders", kind="model"),
-        _embed(canonical_id="ds_a.orders.id", kind="column"),
-        _embed(canonical_id="ds_a.orders.revenue", kind="column"),
-        _embed(canonical_id="ds_a.customers", kind="model"),
-        _embed(canonical_id="ds_b.orders", kind="model"),
+        _embed(canonical_id="ds_a.orders", kind="dataset"),
+        _embed(canonical_id="ds_a.orders.id", kind="field"),
+        _embed(canonical_id="ds_a.orders.revenue", kind="field"),
+        _embed(canonical_id="ds_a.customers", kind="dataset"),
+        _embed(canonical_id="ds_b.orders", kind="dataset"),
     ]
     for row in rows_to_seed:
         await storage.save_embedding(row)
@@ -191,28 +191,28 @@ async def test_delete_model_cascades_subtree_embeddings(
         name="dsx", type="postgres", host="h", database="d",
     )
     await storage.save_datasource(ds)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="dsx",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-        measures=[ModelMeasure(name="rev", formula="sum(id)")],
-        aggregations=[Aggregation(name="custom_agg", formula="SUM({x})")],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+        metrics=[DatasetMetric(name="rev", expression="sum(id)")],
+        aggregations=[Aggregation(name="custom_agg", expression="SUM({x})")],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
     seeds: list[tuple[str, EntityKind]] = [
-        ("dsx.orders", "model"),
-        ("dsx.orders.id", "column"),
-        ("dsx.orders.rev", "measure"),
+        ("dsx.orders", "dataset"),
+        ("dsx.orders.id", "field"),
+        ("dsx.orders.rev", "metric"),
         ("dsx.orders.custom_agg", "aggregation"),
-        ("dsx.customers", "model"),
-        ("other.orders", "model"),
+        ("dsx.customers", "dataset"),
+        ("other.orders", "dataset"),
     ]
     for cid, kind in seeds:
         await storage.save_embedding(_embed(canonical_id=cid, kind=kind))
 
-    await storage.delete_model("orders", data_source="dsx")
+    await storage.delete_dataset("orders", data_source="dsx")
 
     remaining = {
         r.canonical_id for r in await storage.list_embeddings(
@@ -234,10 +234,10 @@ async def test_delete_datasource_cascades_descendants(
     await storage.save_datasource(ds)
     seeds: list[tuple[str, EntityKind]] = [
         ("dsx", "datasource"),
-        ("dsx.orders", "model"),
-        ("dsx.orders.id", "column"),
+        ("dsx.orders", "dataset"),
+        ("dsx.orders.id", "field"),
         ("other", "datasource"),
-        ("other.orders", "model"),
+        ("other.orders", "dataset"),
     ]
     for cid, kind in seeds:
         await storage.save_embedding(_embed(canonical_id=cid, kind=kind))

@@ -1,0 +1,458 @@
+{
+ "source": "tests/test_dev1967_grain_execution.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "c",
+    "source_model": "customers",
+    "dimensions": [
+     "id"
+    ],
+    "measures": [
+     {
+      "formula": "max(tier)",
+      "name": "tr"
+     }
+    ]
+   },
+   "new": {
+    "name": "c",
+    "population": "customers",
+    "dimensions": [
+     "id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(tier)",
+      "alias": "tr"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "c",
+    "source_model": "customers",
+    "dimensions": [
+     "id",
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "sum(spend)",
+      "name": "sp"
+     }
+    ]
+   },
+   "new": {
+    "name": "c",
+    "population": "customers",
+    "dimensions": [
+     "id",
+     "tier"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(spend)",
+      "alias": "sp"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "b",
+    "dimensions": [
+     "c__tr"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amt)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "b",
+    "dimensions": [
+     "c__tr"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amt)",
+      "alias": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "x",
+    "dimensions": [
+     "id"
+    ],
+    "measures": [
+     {
+      "formula": "max(tier)",
+      "name": "tr"
+     }
+    ]
+   },
+   "new": {
+    "population": "x",
+    "dimensions": [
+     "id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(tier)",
+      "alias": "tr"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "id",
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "sum(spend)",
+      "name": "sp"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "id",
+     "tier"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(spend)",
+      "alias": "sp"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "vm_id_tier",
+    "measures": [
+     {
+      "formula": "max(tier)",
+      "name": "mt"
+     }
+    ]
+   },
+   "new": {
+    "population": "vm_id_tier",
+    "metrics": [
+     {
+      "metric": "max(tier)",
+      "alias": "mt"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "vm_tier",
+    "join_pairs": [
+     [
+      "tier",
+      "tier"
+     ]
+    ]
+   },
+   "new": {
+    "to": "vm_tier",
+    "from_columns": [
+     "tier"
+    ],
+    "to_columns": [
+     "tier"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "vm_tier",
+    "measures": [
+     {
+      "formula": "max(tier)",
+      "name": "mt"
+     }
+    ]
+   },
+   "new": {
+    "population": "vm_tier",
+    "metrics": [
+     {
+      "metric": "max(tier)",
+      "alias": "mt"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "vm_tier_n",
+    "join_pairs": [
+     [
+      "tier",
+      "tier"
+     ]
+    ]
+   },
+   "new": {
+    "to": "vm_tier_n",
+    "from_columns": [
+     "tier"
+    ],
+    "to_columns": [
+     "tier"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers_t",
+    "dimensions": [
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "sum(vm_tier_n.n)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers_t",
+    "dimensions": [
+     "tier"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(vm_tier_n.n)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status",
+     "channel"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount, partition_by=status)",
+      "name": "st"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status",
+     "channel"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount, partition_by=status)",
+      "alias": "st"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status",
+     {
+      "expression": "sum(amount, partition_by=channel)",
+      "name": "ct"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status",
+     {
+      "field": "sum(amount, partition_by=channel)",
+      "alias": "ct"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "vm_ctot",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ]
+    ]
+   },
+   "new": {
+    "to": "vm_ctot",
+    "from_columns": [
+     "status"
+    ],
+    "to_columns": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "vm_ctot",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ]
+    ]
+   },
+   "new": {
+    "to": "vm_ctot",
+    "from_columns": [
+     "status"
+    ],
+    "to_columns": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "two_ok",
+    "dimensions": [
+     "vm_ctot.status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "to_many_handling": "broadcast"
+   },
+   "new": {
+    "population": "two_ok",
+    "dimensions": [
+     "vm_ctot.status"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ],
+    "to_many_handling": "broadcast"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 49,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 97,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 188,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 193,
+   "reason": "not fully literal"
+  }
+ ]
+}

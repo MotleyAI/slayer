@@ -12,16 +12,16 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     TimeTruncKey,
     TransformKey,
 )
 from slayer.engine.elaborate_env import _first_row_leaf
 
-WEIGHT = ColumnKey(leaf="weight")
-QTY = ColumnKey(leaf="qty")
-STORE = ColumnKey(leaf="store")
+WEIGHT = FieldKey(leaf="weight")
+QTY = FieldKey(leaf="qty")
+STORE = FieldKey(leaf="store")
 AGG = AggregateKey(source=WEIGHT, agg="sum", partition_keys=Grain.of([STORE]))
 
 
@@ -53,7 +53,7 @@ class TestSharedRowLeafWalker:
     def test_time_key_is_not_a_row_leaf(self):
         key = TransformKey(
             op="rank", input=AGG,
-            time_key=TimeTruncKey(source=ColumnKey(leaf="ordered_at"),
+            time_key=TimeTruncKey(source=FieldKey(leaf="ordered_at"),
                                   granularity=TimeGranularity.MONTH))
         assert _walk(key) is None
 

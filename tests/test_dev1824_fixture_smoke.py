@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1824_fixtures import (
     CITY_TOTAL,
     GRAND_TOTAL,
-    ModelMeasure,
     REGION_MONTH_TOTAL,
     REGION_TOTAL,
     make_exec_engine,
@@ -40,7 +41,7 @@ class TestSeededDataset:
     async def test_city_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(CITY_TOTAL)
@@ -50,7 +51,7 @@ class TestSeededDataset:
     async def test_region_month_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"])):

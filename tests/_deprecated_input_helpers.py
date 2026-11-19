@@ -17,17 +17,17 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from slayer.core.deprecation import DeprecatedInputFutureWarning
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._dev1840_fixtures import _seed_sqlite, dev1840_models
+from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
 SAVED = "by_status"
-CM = {"formula": "sum(customers.spend)", "name": "cm"}
-CLEAN = {"source_model": "orders", "measures": ["count(*)"]}
-CROSS = {"source_model": "orders", "dimensions": ["status"], "measures": [CM]}
+CM = {"metric": "sum(customers.spend)", "alias": "cm"}
+CLEAN = {"population": "orders", "metrics": ["count(*)"]}
+CROSS = {"population": "orders", "dimensions": ["status"], "metrics": [CM]}
 
 
 @contextmanager
@@ -80,7 +80,7 @@ def mcp_payload(text: str) -> dict[str, Any]:
 
 def saved_stage() -> SlayerQuery:
     return SlayerQuery.model_validate(
-        {"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "count(*)", "name": "n"}]},
+        {"population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]},
     )
 
 
@@ -90,9 +90,9 @@ async def orders_engine() -> AsyncGenerator[SlayerQueryEngine]:
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "data.sqlite")
         _seed_sqlite(db_path)
-        engine = await build_exec_engine(db_path, dialect="sqlite", models=dev1840_models())
+        engine = await build_exec_engine(db_path, dialect="sqlite", datasets=dev1840_datasets())
         try:
-            await engine.save_model(SlayerModel(name=SAVED, source_queries=[saved_stage()]))
+            await engine.save_dataset(SlayerDataset(name=SAVED, source_queries=[saved_stage()]))
             yield engine
         finally:
             engine.close()

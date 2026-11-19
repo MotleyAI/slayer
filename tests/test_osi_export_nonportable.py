@@ -11,12 +11,13 @@ import yaml
 from ruamel.yaml import YAML
 
 from slayer.core.enums import DataType
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.osi import slayer_extension as ext
+from slayer.storage.document_keys import LEGACY_KEYS, dataset_in
 from tests._cli_inprocess import run_cli_in_process
 from tests._osi_export_fixtures import BASIC_MEASURES, col, customers, orders, orders_columns, rich_orders
 from tests._osi_export_helpers import (
-    SLAYER, dataset, entities, export, export_models, field, make_env, mentions, payload,
+    SLAYER, dataset, entities, export, export_datasets, field, make_env, mentions, payload,
     reimport, save, slayer_entries, validate,
 )
 from tests._osi_helpers import FIXTURES, ds, f, flat
@@ -46,7 +47,7 @@ def _foreign(entity: dict[str, Any]) -> list[dict[str, Any]]:
 # ────────────────────────────── export shape ───────────────────────────────
 
 async def test_slayer_payload_is_an_object_under_nonportable_extensions(env) -> None:
-    result = await export_models(env, customers(), rich_orders())
+    result = await export_datasets(env, customers(), rich_orders())
     for entity in entities(result.document):
         [entry] = slayer_entries(entity)
         assert isinstance(entry["data"], dict), entity["name"]
@@ -79,9 +80,9 @@ async def test_document_level_foreign_extension(env, extensions: bool) -> None:
     validate(document)
 
 
-def _with_semantic(model: SlayerModel, extensions: list[Any]) -> SlayerModel:
+def _with_semantic(dataset: SlayerDataset, extensions: list[Any]) -> SlayerDataset:
     semantic = {"name": "shop", "description": None, "ai_context": None, "nonportable_extensions": extensions}
-    return model.model_copy(update={"meta": {**(model.meta or {}), "osi_semantic_model": semantic}})
+    return dataset.model_copy(update={"meta": {**(dataset.meta or {}), "osi_semantic_model": semantic}})
 
 
 @pytest.mark.parametrize("extensions", [True, False])
@@ -93,10 +94,10 @@ def _with_semantic(model: SlayerModel, extensions: list[Any]) -> SlayerModel:
 ])
 async def test_malformed_document_level_entry_is_reported_and_omitted(env, extensions: bool,
                                                                       malformed: dict[str, Any]) -> None:
-    def models(entries: list[Any]) -> list[SlayerModel]:
-        return [_with_semantic(customers(), entries), _with_semantic(orders(measures=BASIC_MEASURES), entries)]
-    clean = await export_models(env, *models([ACME]), extensions=extensions)
-    result = await export_models(env, *models([malformed, ACME]), extensions=extensions)
+    def models(entries: list[Any]) -> list[SlayerDataset]:
+        return [_with_semantic(customers(), entries), _with_semantic(orders(metrics=BASIC_MEASURES), entries)]
+    clean = await export_datasets(env, *models([ACME]), extensions=extensions)
+    result = await export_datasets(env, *models([malformed, ACME]), extensions=extensions)
     assert result.document == clean.document
     assert len(result.entries) == len(clean.entries) + 1
     validate(result.document)
@@ -105,9 +106,9 @@ async def test_malformed_document_level_entry_is_reported_and_omitted(env, exten
 # ──────────────────────── model stored by SLayer 1.8 ───────────────────────
 
 async def test_model_stored_before_the_shape_change(env) -> None:
-    await save(env, customers(), orders(measures=BASIC_MEASURES))
+    await save(env, customers(), orders(metrics=BASIC_MEASURES))
     path = env.store / "models" / env.datasource / "orders.yaml"
-    stored = yaml.safe_load(path.read_text(encoding="utf-8"))
+    stored = dataset_in(yaml.safe_load(path.read_text(encoding="utf-8")), LEGACY_KEYS)
     stored["version"] = 21
     [amount] = [c for c in stored["columns"] if c["name"] == "amount"]
     amount["meta"] = {"osi_custom_extensions": [{"vendor_name": "ACME", "data": '{"k": 1}'},
@@ -139,7 +140,7 @@ def test_ruamel_loader_reads_yaml_12_core() -> None:
 async def test_retypable_strings_round_trip(env, tmp_path: Path) -> None:
     meta = {f"v{i}": s for i, s in enumerate(_RETYPABLE)}
     columns = [col("amount", meta=meta) if c.name == "amount" else c for c in orders_columns()]
-    await save(env, customers(), orders(columns=columns, measures=BASIC_MEASURES))
+    await save(env, customers(), orders(columns=columns, metrics=BASIC_MEASURES))
     out = tmp_path / "shop.osi.yaml"
     result = run_cli_in_process(["export-osi", "--datasource", env.datasource, "--out", str(out),
                                  "--storage", str(env.store)])
@@ -148,13 +149,13 @@ async def test_retypable_strings_round_trip(env, tmp_path: Path) -> None:
     for loaded in (yaml.safe_load(text), _yaml12(text)):
         amount = field(dataset(loaded, "orders"), "amount")
         assert amount is not None
-        assert payload(amount)["column"]["meta"] == meta
+        assert payload(amount)["field"]["meta"] == meta
     assert yaml.safe_load(text) == _yaml12(text)
 
 
 async def test_retypable_strings_quoted_outside_payloads(env, tmp_path: Path) -> None:
-    columns = [*orders_columns(), col("x1e3", DataType.TEXT, "note", label="1e3", description="0o17")]
-    await save(env, customers(), orders(columns=columns, measures=BASIC_MEASURES))
+    columns = [*orders_columns(), col("x1e3", DataType.STRING, "note", label="1e3", description="0o17")]
+    await save(env, customers(), orders(columns=columns, metrics=BASIC_MEASURES))
     out = tmp_path / "shop.osi.yaml"
     assert run_cli_in_process(["export-osi", "--datasource", env.datasource, "--out", str(out),
                                "--storage", str(env.store), "--no-extensions"]).returncode == 0
@@ -168,7 +169,7 @@ async def test_retypable_strings_quoted_outside_payloads(env, tmp_path: Path) ->
 # ──────────────────────────────── round trips ──────────────────────────────
 
 async def test_export_import_export_keeps_every_payload(env) -> None:
-    first = (await export_models(env, customers(), rich_orders())).document
+    first = (await export_datasets(env, customers(), rich_orders())).document
     imported, _ = await reimport(env, first)
     second = (await export(imported)).document
     assert [(e["name"], payload(e)) for e in entities(second)] == [(e["name"], payload(e)) for e in entities(first)]
@@ -180,9 +181,13 @@ def _legacy_payload(entity: dict[str, Any]) -> dict[str, Any]:
     return json.loads(entry["data"])
 
 
-async def test_legacy_payloads_reexport_unchanged(env) -> None:
+def _without_fingerprint(data: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in data.items() if k != "fingerprint"}
+
+
+async def test_legacy_payloads_reexport_as_version_2(env) -> None:
     legacy = yaml.safe_load(LEGACY_FIXTURE.read_text(encoding="utf-8"))
     imported, _ = await reimport(env, legacy)
     document = (await export(imported)).document
-    assert [(e["name"], payload(e)) for e in entities(document)] == [
-        (e["name"], _legacy_payload(e)) for e in entities(legacy)]
+    assert [(e["name"], _without_fingerprint(payload(e))) for e in entities(document)] == [
+        (e["name"], _without_fingerprint(ext._version_2(_legacy_payload(e)))) for e in entities(legacy)]

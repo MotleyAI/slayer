@@ -20,15 +20,15 @@ import slayer.sql
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     ScalarCallKey,
     StarKey,
 )
 
 
-def _col(path=(), leaf="amount") -> ColumnKey:
-    return ColumnKey(path=tuple(path), leaf=leaf)
+def _col(path=(), leaf="amount") -> FieldKey:
+    return FieldKey(path=tuple(path), leaf=leaf)
 
 
 class TestSourceAnchorPath:

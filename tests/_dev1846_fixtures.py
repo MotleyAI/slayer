@@ -29,12 +29,12 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -42,64 +42,64 @@ from tests._engine_helpers import seeded_exec_engine
 from tests._engine_helpers import _engine_generate
 
 
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="factor", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="factor", datatype=DataType.FLOAT),
         ],
     )
 
 
-def sales_model() -> SlayerModel:
+def sales_dataset() -> SlayerDataset:
     """Host: ``wrevenue_sum`` crosses ``sales → regions`` (join-crossing leaf);
     ``hi_rev`` is a column-filtered projection of ``revenue``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="store", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.DOUBLE),
-            Column(name="cost", type=DataType.DOUBLE),
-            Column(name="weight", type=DataType.DOUBLE),
-            Column(name="sku", type=DataType.TEXT),
-            Column(name="hi_rev", type=DataType.DOUBLE, sql="revenue",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="store", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="cost", datatype=DataType.FLOAT),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
+            DatasetField(name="sku", datatype=DataType.STRING),
+            DatasetField(name="hi_rev", datatype=DataType.FLOAT, sql="revenue",
                    filter="revenue > 15"),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
-        joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
         aggregations=[
             Aggregation(
-                name="wrevenue_sum", formula="SUM({value} * {f})",
+                name="wrevenue_sum", expression="SUM({value} * {f})",
                 params=[AggregationParam(name="f", sql="regions.factor")],
             ),
         ],
     )
 
 
-def dev1846_models() -> List[SlayerModel]:
+def dev1846_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [sales_model(), regions_model()]
+    return [sales_dataset(), regions_dataset()]
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
-    models = dev1846_models()
+    models = dev1846_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False,
     )
 
 
 def month_td(column: str = "ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=column,
+        field=column,
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -151,7 +151,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1846_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1846_datasets()) as (engine, _db):
         yield engine
 
 
@@ -170,8 +170,8 @@ def rows_by(resp, *keys) -> dict:
 
 
 __all__ = [
-    "sales_model", "regions_model", "dev1846_models",
+    "sales_dataset", "regions_dataset", "dev1846_datasets",
     "gen", "month_td", "make_exec_engine", "month_key", "rows_by",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension",
     "TimeGranularity",
 ]

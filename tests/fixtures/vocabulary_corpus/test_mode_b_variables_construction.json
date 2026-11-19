@@ -1,0 +1,34 @@
+{
+ "source": "tests/test_mode_b_variables_construction.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) * {k}",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) * {k}",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 16,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 48,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 50,
+   "reason": "unclassifiable"
+  }
+ ]
+}

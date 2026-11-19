@@ -1,26 +1,23 @@
-"""A store written by this release reads on the previous release (spec: models/stored-upgrade)."""
+"""A store written by this release omits unset fields (spec: models/stored-upgrade)."""
 
 from __future__ import annotations
 
 import json
 import os
-import typing
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
-from pydantic import BaseModel
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._v1_4_1_field_sets import V1_4_1_FIELD_SETS
 
 DS = "shop"
 BACKENDS = ["yaml", "sqlite"]
@@ -35,35 +32,35 @@ def _storage(*, backend: str, base: Path) -> StorageBackend:
 def _ordered_query() -> SlayerQuery:
     """Leaves every field added by this release unset: ``OrderItem.nulls``, ``TimeDimension.name``."""
     return SlayerQuery.model_validate({
-        "source_model": "orders",
-        "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        "population": "orders",
+        "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         "dimensions": ["status"],
-        "time_dimensions": [TimeDimension(dimension="ordered_at", granularity="month")],
-        "order": [OrderItem.model_validate({"column": {"name": "status"}, "direction": "desc"})],
+        "time_dimensions": [TimeDimension(field="ordered_at", granularity="month")],
+        "order": [OrderItem.model_validate({"field": "status", "direction": "desc"})],
     })
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=DS,
-        columns=[
-            Column(name="order_id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="order_id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
-        measures=[ModelMeasure(name="revenue", formula="sum(amount)")],
+        metrics=[DatasetMetric(name="revenue", expression="sum(amount)")],
     )
 
 
-def _saved_query() -> SlayerModel:
-    return SlayerModel(name="rev_by_status", data_source=DS, source_queries=[_ordered_query()])
+def _saved_query() -> SlayerDataset:
+    return SlayerDataset(name="rev_by_status", data_source=DS, source_queries=[_ordered_query()])
 
 
 async def _populate(storage: StorageBackend) -> None:
     await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite", database="/nonexistent/shop.db"))
-    await storage.save_model(_orders())
-    await storage.save_model(_saved_query())
+    await storage.save_dataset(_orders())
+    await storage.save_dataset(_saved_query())
     await storage.save_memory(id="m_ordered", learning="Revenue by status.", entities=["orders"],
                               query=_ordered_query())
 
@@ -100,7 +97,7 @@ def _stored(*, backend: str, base: Path) -> dict[str, dict[str, Any]]:
         }
 
 
-_ROOT = {"SlayerModel": SlayerModel, "saved query": SlayerModel, "DatasourceConfig": DatasourceConfig,
+_ROOT = {"SlayerModel": SlayerDataset, "saved query": SlayerDataset, "DatasourceConfig": DatasourceConfig,
          "Memory": Memory}
 
 
@@ -112,36 +109,6 @@ def _nulls(value: Any, *, path: str) -> list[str]:
     if isinstance(value, list):
         return [p for i, v in enumerate(value) for p in _nulls(v, path=f"{path}[{i}]")]
     return []
-
-
-def _model_classes(annotation: Any) -> list[type[BaseModel]]:
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        return [annotation]
-    return [c for arg in typing.get_args(annotation) for c in _model_classes(arg)]
-
-
-def _field_of(cls: type[BaseModel], key: str) -> Any:
-    for name, info in cls.model_fields.items():
-        if key in (name, info.alias):
-            return info.annotation
-    return None
-
-
-def _rejections(value: Any, *, candidates: list[type[BaseModel]], path: str) -> list[str]:
-    """Keys a v1.4.1 ``extra="forbid"`` class would reject, at every nested level."""
-    if isinstance(value, list):
-        return [r for i, v in enumerate(value) for r in _rejections(v, candidates=candidates, path=f"{path}[{i}]")]
-    if not isinstance(value, dict) or not candidates:
-        return []
-    fitting = [c for c in candidates if all(_field_of(c, k) is not None for k in value)]
-    cls = fitting[0] if fitting else candidates[0]
-    out: list[str] = []
-    known, forbid = V1_4_1_FIELD_SETS.get(cls.__name__, (frozenset(), False))
-    if forbid and set(value) - known:
-        out.append(f"{path}: {cls.__name__} rejects {sorted(set(value) - known)}")
-    for key, item in value.items():
-        out += _rejections(item, candidates=_model_classes(_field_of(cls, key)), path=f"{path}.{key}")
-    return out
 
 
 @pytest.fixture(params=BACKENDS)
@@ -159,18 +126,6 @@ class TestNoUnsetField:
     async def test_memory_order_carries_no_nulls_key(self, stored: dict[str, dict[str, Any]]) -> None:
         order = stored["Memory"]["query"]["order"]
         assert all("nulls" not in item for item in order), order
-
-
-class TestPreviousReleaseFieldSets:
-    @pytest.mark.parametrize("kind", list(_ROOT))
-    async def test_every_key_is_known_to_the_previous_release(
-        self, stored: dict[str, dict[str, Any]], kind: str,
-    ) -> None:
-        assert _rejections(stored[kind], candidates=[_ROOT[kind]], path=kind) == []
-
-    def test_the_snapshot_covers_every_forbid_class(self) -> None:
-        forbid = {name for name, (_, f) in V1_4_1_FIELD_SETS.items() if f}
-        assert forbid == {"SlayerQuery", "OrderItem", "ComputedDimension", "ModelExtension"}
 
 
 class TestYamlMemoryLayout:

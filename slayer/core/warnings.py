@@ -3,18 +3,21 @@ structured payloads. Live in ``slayer.core`` so schemas reference them without e
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Annotated, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Annotated, Any, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ModelWrapValidatorHandler, model_validator
+from typing_extensions import deprecated
+
+from slayer.core import vocabulary  # a module reference: vocabulary reaches this module through deprecation
 
 _caller_announces: ContextVar[bool] = ContextVar("slayer_caller_announces", default=False)
 
 
 @contextmanager
-def announced_by_caller() -> Iterator[None]:
+def announced_by_caller() -> Generator[None, None, None]:
     """Inside the block the caller (a query response, a save) announces stored-document advisories, so loads do not."""
     token = _caller_announces.set(True)
     try:
@@ -31,6 +34,14 @@ class SlayerWarning(BaseModel):
     """Base of the warning family on ``SlayerResponse.warnings``; every payload declares a ``kind`` discriminator so consumers switch on it, not on a field's presence."""
 
     kind: str
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler[SlayerWarning]) -> SlayerWarning:
+        table = vocabulary.WARNING_KEYS.get(cls.model_fields["kind"].default)
+        if not table or not isinstance(data, dict):
+            return handler(data)
+        return vocabulary.renamed_input(data, handler, table, stored=False)
 
     def human_message(self) -> str:
         """One operator-readable line; subclasses override, the base is the honest last resort."""
@@ -86,10 +97,10 @@ def association_fallback_hint(reason: str) -> str:
 
 
 class BroadcastGrainWarningPayload(SlayerWarning):
-    """A cross-model aggregate whose implicit grain lost query dimensions to broadcasting; ``measure`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
+    """A cross-dataset aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
 
     kind: Literal["broadcast"] = "broadcast"
-    measure: str
+    metric: str
     location: str
     dimensions: list[BroadcastDimension]
     association_unsupported: Optional[str] = None
@@ -104,50 +115,86 @@ class BroadcastGrainWarningPayload(SlayerWarning):
     def human_message(self) -> str:
         dims = ", ".join(f"{d.dimension} ({d.reason})" for d in self.dimensions)
         return (
-            f"metric {self.measure!r} (at {self.location}) broadcast across "
+            f"metric {self.metric!r} (at {self.location}) broadcast across "
             f"unattributable dimension(s): {dims} — {self.hint}"
         )
+
+    @property
+    @deprecated("measure is deprecated; use metric", category=None)
+    def measure(self) -> str:
+        vocabulary.attribute_used(self, old="measure", new="metric")
+        return self.metric
+
+    @measure.setter
+    @deprecated("measure is deprecated; use metric", category=None)
+    def measure(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="measure", new="metric")
+        self.metric = value
 
 
 class AssociatedWarningPayload(SlayerWarning):
     """An aggregate resolved by distinct-entity association over unattributable dimension(s); the cells' entity populations may overlap and are not additive across ``dimensions``."""
 
     kind: Literal["associated"] = "associated"
-    measure: str
+    metric: str
     location: str
     dimensions: list[str]
 
     def human_message(self) -> str:
         dims = ", ".join(self.dimensions)
         return (
-            f"metric {self.measure!r} (at {self.location}) associated over "
+            f"metric {self.metric!r} (at {self.location}) associated over "
             f"unattributable dimension(s) {dims}; cell populations may overlap "
             f"and are not additive across them"
         )
 
+    @property
+    @deprecated("measure is deprecated; use metric", category=None)
+    def measure(self) -> str:
+        vocabulary.attribute_used(self, old="measure", new="metric")
+        return self.metric
+
+    @measure.setter
+    @deprecated("measure is deprecated; use metric", category=None)
+    def measure(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="measure", new="metric")
+        self.metric = value
+
 
 class UnrelatedDatasetWarningPayload(SlayerWarning):
-    """Aggregates over ``dataset``, which no join path reaches from ``population``: each is computed over the dataset's own rows and repeated on every row."""
+    """Aggregates over ``dataset``, which no relationship path reaches from ``population``: each is computed over the dataset's own rows and repeated on every row."""
 
     kind: Literal["unrelated_dataset"] = "unrelated_dataset"
     dataset: str
     population: str
-    measures: list[str]
+    metrics: list[str]
     location: str
 
     def human_message(self) -> str:
         return (
-            f"{', '.join(repr(m) for m in self.measures)} (at {self.location}) read {self.dataset!r}, which no "
-            f"join path reaches from {self.population!r}: unrelated dataset, aggregated over its own rows and "
+            f"{', '.join(repr(m) for m in self.metrics)} (at {self.location}) read {self.dataset!r}, which no "
+            f"relationship path reaches from {self.population!r}: unrelated dataset, aggregated over its own rows and "
             f"repeated on every row"
         )
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> list[str]:
+        vocabulary.attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @measures.setter
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self, value: list[str]) -> None:
+        vocabulary.attribute_used(self, old="measures", new="metrics")
+        self.metrics = value
 
 
 class DegenerateReaggregationWarningPayload(SlayerWarning):
     """A second-order aggregation whose operand grain equals the outer grain, so it is the identity; ``operand_grain`` / ``outer_grain`` name the equal grains and ``hint`` the partition_by remedy."""
 
     kind: Literal["degenerate_reaggregation"] = "degenerate_reaggregation"
-    measure: str
+    metric: str
     location: str
     operand_grain: list[str]
     outer_grain: list[str]
@@ -159,30 +206,54 @@ class DegenerateReaggregationWarningPayload(SlayerWarning):
     def human_message(self) -> str:
         og = ", ".join(self.operand_grain) or "<global>"
         return (
-            f"metric {self.measure!r} (at {self.location}) is a degenerate "
+            f"metric {self.metric!r} (at {self.location}) is a degenerate "
             f"re-aggregation: the operand grain ({og}) equals the outer grain, "
             f"so it returns the operand unchanged — {self.hint}"
         )
 
+    @property
+    @deprecated("measure is deprecated; use metric", category=None)
+    def measure(self) -> str:
+        vocabulary.attribute_used(self, old="measure", new="metric")
+        return self.metric
+
+    @measure.setter
+    @deprecated("measure is deprecated; use metric", category=None)
+    def measure(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="measure", new="metric")
+        self.metric = value
+
 
 class SemiJoinPushedWarningPayload(SlayerWarning):
-    """A ROW filter pushed as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error. ``measure`` names the affected aggregate, or is ``null`` when the query population itself is restricted."""
+    """A ROW filter pushed as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error. ``metric`` names the affected aggregate, or is ``null`` when the query population itself is restricted."""
 
     kind: Literal["semi_join_pushed"] = "semi_join_pushed"
-    measure: Optional[str] = None
+    metric: Optional[str] = None
     location: str
     filter_text: str
 
     def human_message(self) -> str:
-        if self.measure is None:
+        if self.metric is None:
             return (
                 f"filter {self.filter_text!r} restricts the population "
                 f"(at {self.location}) by semi-join"
             )
         return (
-            f"filter {self.filter_text!r} pushed into metric {self.measure!r} "
+            f"filter {self.filter_text!r} pushed into metric {self.metric!r} "
             f"(at {self.location}) by semi-join"
         )
+
+    @property
+    @deprecated("measure is deprecated; use metric", category=None)
+    def measure(self) -> Optional[str]:
+        vocabulary.attribute_used(self, old="measure", new="metric")
+        return self.metric
+
+    @measure.setter
+    @deprecated("measure is deprecated; use metric", category=None)
+    def measure(self, value: Optional[str]) -> None:
+        vocabulary.attribute_used(self, old="measure", new="metric")
+        self.metric = value
 
 
 class ResponseTruncationWarning(SlayerWarning):
@@ -217,10 +288,10 @@ class StatementTimeoutSkippedWarning(SlayerWarning):
 
 
 class WholePeriodsNonNestingWarningPayload(SlayerWarning):
-    """``whole_periods_only`` over time dimensions on one ``column`` whose ``granularities`` do not nest into each other."""
+    """``whole_periods_only`` over time dimensions on one ``field`` whose ``granularities`` do not nest into each other."""
 
     kind: Literal["whole_periods_non_nesting"] = "whole_periods_non_nesting"
-    column: str
+    field: str
     granularities: list[str]
     location: str
     hint: str = (
@@ -230,34 +301,58 @@ class WholePeriodsNonNestingWarningPayload(SlayerWarning):
 
     def human_message(self) -> str:
         return (
-            f"granularities {' and '.join(self.granularities)} on {self.column!r} "
+            f"granularities {' and '.join(self.granularities)} on {self.field!r} "
             f"(at {self.location}) do not nest — {self.hint}"
         )
+
+    @property
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self) -> str:
+        vocabulary.attribute_used(self, old="column", new="field")
+        return self.field
+
+    @column.setter
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="column", new="field")
+        self.field = value
 
 
 def _single_line(text: str) -> str:
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
-class ExtensionColumnInlinedWarning(SlayerWarning):
-    """A stored query's extension column was inlined where it is used; its text now reads as Mode B."""
+class ExtensionFieldInlinedWarning(SlayerWarning):
+    """A stored query's extension field was inlined where it is used; its text now reads as Mode B."""
 
-    kind: Literal["extension_column_inlined"] = "extension_column_inlined"
+    kind: Literal["extension_field_inlined"] = "extension_field_inlined"
     document: str
-    column: str
+    field: str
 
     def human_message(self) -> str:
         return _single_line(
-            f"stored document {self.document!r}: extension column {self.column!r} was inlined where it is used; "
+            f"stored document {self.document!r}: extension field {self.field!r} was inlined where it is used; "
             f"its text is now read as a SLayer expression"
         )
 
+    @property
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self) -> str:
+        vocabulary.attribute_used(self, old="column", new="field")
+        return self.field
+
+    @column.setter
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="column", new="field")
+        self.field = value
+
 
 class UnloadableDocumentWarning(SlayerWarning):
-    """A stored model or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
+    """A stored dataset or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
 
     kind: Literal["unloadable_document"] = "unloadable_document"
-    document_kind: Literal["model", "memory"]
+    document_kind: Literal["dataset", "memory"]
     data_source: Optional[str] = None
     name: str
     cause: str
@@ -268,56 +363,104 @@ class UnloadableDocumentWarning(SlayerWarning):
 
 
 class NarrowedAccessWarning(SlayerWarning):
-    """Model ``model`` reads tagged models (``narrowed_by``) whose tags do not cover its own, so some of its readers cannot see it."""
+    """Dataset ``dataset`` reads tagged datasets (``narrowed_by``) whose tags do not cover its own, so some of its readers cannot see it."""
 
     kind: Literal["narrowed_access"] = "narrowed_access"
     data_source: str
-    model: str
+    dataset: str
     narrowed_by: list[str]
 
     def human_message(self) -> str:
         return (
-            f"narrowed access: model {self.data_source}.{self.model} reads {', '.join(self.narrowed_by)}, "
+            f"narrowed access: dataset {self.data_source}.{self.dataset} reads {', '.join(self.narrowed_by)}, "
             f"whose access tags do not cover its own; callers lacking those tags cannot see it"
         )
 
+    @property
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self) -> str:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        return self.dataset
+
+    @model.setter
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        self.dataset = value
+
 
 class LibraryNameShadowWarning(SlayerWarning):
-    """Model ``model``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own model."""
+    """Dataset ``dataset``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own dataset."""
 
     kind: Literal["library_name_shadow"] = "library_name_shadow"
-    model: str
+    dataset: str
     aggregation: str
     function: str
 
     def human_message(self) -> str:
         return (
-            f"model {self.model!r} defines the aggregation {self.aggregation!r}, so {self.function}(…) over its "
-            f"columns is that aggregation, not the library function {self.function.lower()}()"
+            f"dataset {self.dataset!r} defines the aggregation {self.aggregation!r}, so {self.function}(…) over its "
+            f"fields is that aggregation, not the library function {self.function.lower()}()"
         )
+
+    @property
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self) -> str:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        return self.dataset
+
+    @model.setter
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        self.dataset = value
 
 
 class BrokenDependentWarning(SlayerWarning):
-    """A re-ingest re-typed ``column`` to a list, and the stored definition ``name`` that planned before it fails
+    """A re-ingest re-typed ``field`` to a list, and the stored definition ``name`` that planned before it fails
     after (``checked=False``: the check could not run, for ``reason``)."""
 
     kind: Literal["broken_dependent"] = "broken_dependent"
-    model: str
+    dataset: str
     data_source: str
-    dependent_kind: Literal["measure", "column", "filter", "saved_query"]
+    dependent_kind: Literal["metric", "field", "filter", "saved_query"]
     name: str
-    column: str
+    field: str
     checked: bool = True
     error_type: Optional[str] = None
     error: Optional[str] = None
     reason: Optional[str] = None
 
     def human_message(self) -> str:
-        where = f"{self.dependent_kind} {self.data_source}.{self.model}.{self.name}"
+        where = f"{self.dependent_kind} {self.data_source}.{self.dataset}.{self.name}"
         if not self.checked:
-            return _single_line(f"{where} reads {self.column}, re-typed to a list, and could not be checked: "
+            return _single_line(f"{where} reads {self.field}, re-typed to a list, and could not be checked: "
                                 f"{self.reason}")
-        return _single_line(f"{where} breaks now that {self.column} is a list: {self.error}")
+        return _single_line(f"{where} breaks now that {self.field} is a list: {self.error}")
+
+    @property
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self) -> str:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        return self.dataset
+
+    @model.setter
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        self.dataset = value
+
+    @property
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self) -> str:
+        vocabulary.attribute_used(self, old="column", new="field")
+        return self.field
+
+    @column.setter
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="column", new="field")
+        self.field = value
 
 
 class WholeListWarning(SlayerWarning):
@@ -349,30 +492,78 @@ class DeprecatedInputWarning(SlayerWarning):
 
 
 class NameCollisionWarning(SlayerWarning):
-    """Stored model ``model`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
+    """Stored dataset ``dataset`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
     spelled exactly (or double-quoted)."""
 
     kind: Literal["name_collision"] = "name_collision"
-    model: str
+    dataset: str
     namespace: str
     names: List[str]
 
     def human_message(self) -> str:
-        return (f"model {self.model!r} declares {' and '.join(repr(n) for n in self.names)} in its {self.namespace}, "
+        return (f"dataset {self.dataset!r} declares {' and '.join(repr(n) for n in self.names)} in its {self.namespace}, "
                 f"differing only in case; spell one exactly or double-quote it, and rename one to remove the "
                 f"ambiguity")
 
+    @property
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self) -> str:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        return self.dataset
 
-class SpineJoinDroppedWarning(SlayerWarning):
-    """A stored join of ``model`` into the built-in spine (``join``, its name or target) was dropped on load."""
+    @model.setter
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        self.dataset = value
 
-    kind: Literal["spine_join_dropped"] = "spine_join_dropped"
-    model: str
-    join: str
+
+class SpineRelationshipDroppedWarning(SlayerWarning):
+    """A stored relationship of ``dataset`` into the built-in spine (``relationship``, its name or target) was dropped on load."""
+
+    kind: Literal["spine_relationship_dropped"] = "spine_relationship_dropped"
+    dataset: str
+    relationship: str
 
     def human_message(self) -> str:
-        return (f"model {self.model!r}: its join {self.join!r} into the built-in time_spine was dropped; the spine "
-                f"joins each dataset through its time axis, so a declared join to it is never needed")
+        return (f"dataset {self.dataset!r}: its relationship {self.relationship!r} into the built-in time_spine was dropped; the spine "
+                f"reaches each dataset through its time axis, so a declared relationship to it is never needed")
+
+    @property
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self) -> str:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        return self.dataset
+
+    @model.setter
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="model", new="dataset")
+        self.dataset = value
+
+    @property
+    @deprecated("join is deprecated; use relationship", category=None)
+    def join(self) -> str:
+        vocabulary.attribute_used(self, old="join", new="relationship")
+        return self.relationship
+
+    @join.setter
+    @deprecated("join is deprecated; use relationship", category=None)
+    def join(self, value: str) -> None:
+        vocabulary.attribute_used(self, old="join", new="relationship")
+        self.relationship = value
+
+
+class UnknownStoredKeyWarning(SlayerWarning):
+    """Stored dataset ``dataset`` carried keys SLayer does not read (``paths``), dropped on load."""
+
+    kind: Literal["unknown_stored_key"] = "unknown_stored_key"
+    dataset: str
+    paths: List[str]
+
+    def human_message(self) -> str:
+        return (f"stored dataset {self.dataset!r} carried keys SLayer does not read, dropped on load: "
+                f"{', '.join(self.paths)}; save the dataset to persist it without them")
 
 
 class DeprecatedSpellingWarning(SlayerWarning):
@@ -418,7 +609,7 @@ AnySlayerWarning = Annotated[
         StatementTimeoutSkippedWarning,
         WholePeriodsNonNestingWarningPayload,
         UnloadableDocumentWarning,
-        ExtensionColumnInlinedWarning,
+        ExtensionFieldInlinedWarning,
         NarrowedAccessWarning,
         LibraryNameShadowWarning,
         BrokenDependentWarning,
@@ -426,7 +617,8 @@ AnySlayerWarning = Annotated[
         DeprecatedInputWarning,
         DeprecatedSpellingWarning,
         NameCollisionWarning,
-        SpineJoinDroppedWarning,
+        SpineRelationshipDroppedWarning,
+        UnknownStoredKeyWarning,
         DateOnlyMidnightWarning,
     ],
     Field(discriminator="kind"),
@@ -477,10 +669,10 @@ class SlayerUnloadableDocumentWarning(UserWarning):
         return self.payload.human_message()
 
 
-class SlayerExtensionColumnInlinedWarning(UserWarning):
-    """Carrier ``UserWarning`` for an ``ExtensionColumnInlinedWarning`` payload — one wording on both channels."""
+class SlayerExtensionFieldInlinedWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``ExtensionFieldInlinedWarning`` payload — one wording on both channels."""
 
-    def __init__(self, payload: ExtensionColumnInlinedWarning) -> None:
+    def __init__(self, payload: ExtensionFieldInlinedWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
@@ -554,10 +746,21 @@ class SlayerNameCollisionWarning(UserWarning):
         return self.payload.human_message()
 
 
-class SlayerSpineJoinDroppedWarning(UserWarning):
-    """Carrier ``UserWarning`` for a ``SpineJoinDroppedWarning`` payload — one wording on both channels."""
+class SlayerSpineRelationshipDroppedWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``SpineRelationshipDroppedWarning`` payload — one wording on both channels."""
 
-    def __init__(self, payload: SpineJoinDroppedWarning) -> None:
+    def __init__(self, payload: SpineRelationshipDroppedWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerUnknownStoredKeyWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``UnknownStoredKeyWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: UnknownStoredKeyWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
@@ -574,3 +777,30 @@ class SlayerDateOnlyMidnightWarning(UserWarning):
 
     def __str__(self) -> str:
         return self.payload.human_message()
+
+
+_RENAMED_CLASSES = {
+    "ExtensionColumnInlinedWarning": "ExtensionFieldInlinedWarning",
+    "SlayerExtensionColumnInlinedWarning": "SlayerExtensionFieldInlinedWarning",
+    "SpineJoinDroppedWarning": "SpineRelationshipDroppedWarning",
+    "SlayerSpineJoinDroppedWarning": "SlayerSpineRelationshipDroppedWarning",
+}
+
+if TYPE_CHECKING:
+    @deprecated("ExtensionColumnInlinedWarning is deprecated; use ExtensionFieldInlinedWarning", category=None)
+    class ExtensionColumnInlinedWarning(ExtensionFieldInlinedWarning): ...
+
+    @deprecated("SlayerExtensionColumnInlinedWarning is deprecated; use SlayerExtensionFieldInlinedWarning",
+                category=None)
+    class SlayerExtensionColumnInlinedWarning(SlayerExtensionFieldInlinedWarning): ...
+
+    @deprecated("SpineJoinDroppedWarning is deprecated; use SpineRelationshipDroppedWarning", category=None)
+    class SpineJoinDroppedWarning(SpineRelationshipDroppedWarning): ...
+
+    @deprecated("SlayerSpineJoinDroppedWarning is deprecated; use SlayerSpineRelationshipDroppedWarning",
+                category=None)
+    class SlayerSpineJoinDroppedWarning(SlayerSpineRelationshipDroppedWarning): ...
+
+
+def __getattr__(name: str) -> Any:
+    return vocabulary.renamed_name(name, namespace=globals(), renames=_RENAMED_CLASSES)

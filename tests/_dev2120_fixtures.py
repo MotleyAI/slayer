@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.keys import SCALAR_SPECS
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.database.client import SlayerSQLClient
@@ -96,12 +96,12 @@ _NAMES = [c for c, _ in LIB.columns]
 ROWS: dict[int, dict[str, Any]] = {r[0]: dict(zip(_NAMES, r)) for r in LIB.rows}
 
 
-def lib_model(*, data_source: str = "test") -> SlayerModel:
-    types = {"INT": DataType.INT, "DOUBLE": DataType.DOUBLE, "TEXT": DataType.TEXT, "TIMESTAMP": DataType.TIMESTAMP,
-             "DECIMAL": DataType.DOUBLE}
-    return SlayerModel(
+def lib_dataset(*, data_source: str = "test") -> SlayerDataset:
+    types = {"INT": DataType.INTEGER, "DOUBLE": DataType.FLOAT, "TEXT": DataType.STRING, "TIMESTAMP": DataType.DATETIME,
+             "DECIMAL": DataType.FLOAT}
+    return SlayerDataset(
         name="lib", sql_table="lib", data_source=data_source, default_time_dimension="ts",
-        columns=[Column(name=c, type=types[k], primary_key=c == "id", db_type=LIB_DECIMAL if k == "DECIMAL" else None)
+        fields=[DatasetField(name=c, datatype=types[k], primary_key=c == "id", db_type=LIB_DECIMAL if k == "DECIMAL" else None)
                  for c, k in LIB.columns],
     )
 
@@ -248,14 +248,14 @@ class Case(BaseModel):
     values: Optional[dict[int, Any]] = None
     keeps: Optional[frozenset[int]] = None
     variables: Optional[dict[str, Any]] = None
-    model: str = "lib"
+    dataset: str = "lib"
 
     def query(self) -> SlayerQuery:
-        body: dict[str, Any] = {"source_model": self.model, "distinct_dimension_values": False}
+        body: dict[str, Any] = {"population": self.dataset, "distinct_dimension_values": False}
         if self.keeps is not None:
-            body |= {"dimensions": ["id"], "filters": [self.expr]}
+            body |= {"dimensions": ["id"], "filter": [self.expr]}
         else:
-            body |= {"dimensions": ["id", {"expression": self.expr, "name": "v"}]}
+            body |= {"dimensions": ["id", {"field": self.expr, "alias": "v"}]}
         if self.variables:
             body["variables"] = self.variables
         return SlayerQuery.model_validate(body)
@@ -663,11 +663,11 @@ def assert_cell(actual: Any, expected: Any, *, where: str) -> None:
 
 def assert_case(data: list[dict[str, Any]], case: Case) -> None:
     if case.keeps is not None:
-        got = {int(r[f"{case.model}.id"]) for r in data}
+        got = {int(r[f"{case.dataset}.id"]) for r in data}
         assert got == set(case.keeps), f"{case.case_id}: kept {sorted(got)}, expected {sorted(case.keeps)}"
         return
     assert case.values is not None
-    got = {int(r[f"{case.model}.id"]): r[f"{case.model}.v"] for r in data}
+    got = {int(r[f"{case.dataset}.id"]): r[f"{case.dataset}.v"] for r in data}
     assert set(got) == set(case.values), f"{case.case_id}: row ids {sorted(got)}"
     for rid, expected in case.values.items():
         assert_cell(got[rid], expected, where=f"{case.case_id} id={rid}")
@@ -675,14 +675,14 @@ def assert_case(data: list[dict[str, Any]], case: Case) -> None:
 
 def lib_query(*dims: Any, **kw: Any) -> SlayerQuery:
     """A row-level ``lib`` query: ``id`` plus ``dims`` (an expression string becomes the ``v`` dimension)."""
-    dimensions: list[Any] = ["id"] + [{"expression": d, "name": "v"} if isinstance(d, str) else d for d in dims]
-    return SlayerQuery.model_validate({"source_model": "lib", "distinct_dimension_values": False,
+    dimensions: list[Any] = ["id"] + [{"field": d, "alias": "v"} if isinstance(d, str) else d for d in dims]
+    return SlayerQuery.model_validate({"population": "lib", "distinct_dimension_values": False,
                                        "dimensions": dimensions, **kw})
 
 
-async def emit_lib(query: SlayerQuery, *, dialect: str, models: Optional[list[SlayerModel]] = None) -> str:
+async def emit_lib(query: SlayerQuery, *, dialect: str, datasets: Optional[list[SlayerDataset]] = None) -> str:
     """Dry-run SQL for a ``lib`` query on ``dialect`` (asserts it parses there)."""
-    return await emit(query, dialect=dialect, models=models or [lib_model()])
+    return await emit(query, dialect=dialect, datasets=datasets or [lib_dataset()])
 
 
 def lib_values(resp: SlayerResponse, name: str = "v") -> dict[int, Any]:
@@ -719,9 +719,9 @@ async def run_case(engine: SlayerQueryEngine, case: Case) -> None:
 # Seeding
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
-async def lib_engine(backend: str, *, models: Optional[list[SlayerModel]] = None) -> AsyncGenerator[SlayerQueryEngine]:
+async def lib_engine(backend: str, *, datasets: Optional[list[SlayerDataset]] = None) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, [LIB]), models=models or [lib_model()],
+        dialect=backend, seed=lambda p: seed_backend(backend, p, [LIB]), datasets=datasets or [lib_dataset()],
     ) as (engine, _db):
         yield engine
 
@@ -786,7 +786,7 @@ DOCS_S = {1: "x", 2: None, 3: None, 4: None, 5: None}
 DOCS_A_INT = {1: 1, 2: 2, 3: None, 4: None, 5: None}
 
 
-async def check_native_json(engine: SlayerQueryEngine, *, model: str = "docs", column: str = "payload") -> None:
+async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs", column: str = "payload") -> None:
     """``json_value`` over an ingested native-JSON column: TEXT and ``RETURNING INT`` reads."""
     for expr, expected in (
         (f"json_value({column}, '$.s')", DOCS_S),
@@ -794,10 +794,10 @@ async def check_native_json(engine: SlayerQueryEngine, *, model: str = "docs", c
         (f"{column} ->> 's'", DOCS_S),
     ):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": model, "distinct_dimension_values": False,
-            "dimensions": ["id", {"expression": expr, "name": "v"}],
+            "population": dataset, "distinct_dimension_values": False,
+            "dimensions": ["id", {"field": expr, "alias": "v"}],
         }))
-        got = {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+        got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in resp.data}
         assert set(got) == set(expected), (expr, resp.sql)
         for rid, value in expected.items():
             assert_cell(got[rid], value, where=f"{expr} id={rid}")
@@ -888,14 +888,14 @@ def stored_contractors(storage: ListStorage = ListStorage()) -> list[dict[str, A
     return [{k: store(v) if k in LIST_COLUMNS else v for k, v in row.items()} for row in CONTRACTORS]
 
 
-def contractors_model(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerModel:
-    scalars = {"INT": DataType.INT, "TEXT": DataType.TEXT}
+def contractors_dataset(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerDataset:
+    scalars = {"INT": DataType.INTEGER, "TEXT": DataType.STRING}
     columns = [
-        Column(name=c, type=DataType.ARRAY, element_type=scalars[k[:-2]]) if k.endswith("[]")
-        else Column(name=c, type=scalars[k], primary_key=keyed and c == "id")
+        DatasetField(name=c, datatype=DataType.ARRAY, element_type=scalars[k[:-2]]) if k.endswith("[]")
+        else DatasetField(name=c, datatype=scalars[k], primary_key=keyed and c == "id")
         for c, k in CONTRACTOR_COLUMNS
     ]
-    return SlayerModel(name="contractors", sql_table=sql_table, data_source=data_source, columns=columns)
+    return SlayerDataset(name="contractors", sql_table=sql_table, data_source=data_source, fields=columns)
 
 
 # The list functions' meaning: a list's elements are its non-NULL elements.
@@ -937,11 +937,11 @@ def list_cases(storage: ListStorage = ListStorage()) -> list[Case]:
     rows = {r["id"]: r for r in stored_contractors(storage)}
 
     def v(case_id: str, covers: Iterable[str], expr: str, fn: Callable[[dict[str, Any]], Any], **kw: Any) -> Case:
-        return Case(model="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
+        return Case(dataset="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
                     values={rid: fn(r) for rid, r in rows.items()}, **kw)
 
     def f(case_id: str, covers: Iterable[str], expr: str, fn: Callable[[dict[str, Any]], Any], **kw: Any) -> Case:
-        return Case(model="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
+        return Case(dataset="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
                     keeps=frozenset(rid for rid, r in rows.items() if fn(r) is True), **kw)
 
     def length_plus_one(r: dict[str, Any]) -> Optional[int]:
@@ -1026,18 +1026,18 @@ def seed_contractors(backend: str, db_path: str, *, extra: Iterable[str] = ()) -
 
 
 @contextlib.asynccontextmanager
-async def contractors_engine(backend: str = "duckdb", *, models: Optional[list[SlayerModel]] = None,
+async def contractors_engine(backend: str = "duckdb", *, datasets: Optional[list[SlayerDataset]] = None,
                              extra: Iterable[str] = ()) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_contractors(backend, p, extra=extra),
-        models=models or [contractors_model()],
+        datasets=datasets or [contractors_dataset()],
     ) as (engine, _db):
         yield engine
 
 
-async def emit_contractors(query: SlayerQuery, *, dialect: str, models: Optional[list[SlayerModel]] = None) -> str:
+async def emit_contractors(query: SlayerQuery, *, dialect: str, datasets: Optional[list[SlayerDataset]] = None) -> str:
     """Dry-run SQL for a ``contractors`` query on ``dialect`` (asserts it parses there)."""
-    return await emit(query, dialect=dialect, models=models or [contractors_model()])
+    return await emit(query, dialect=dialect, datasets=datasets or [contractors_dataset()])
 
 
 _SERVER_LIST_TYPES: dict[str, dict[str, str]] = {

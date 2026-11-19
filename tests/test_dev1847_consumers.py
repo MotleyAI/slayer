@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1847_fixtures import (
     AVG_CITY_TOTAL_BY_REGION,
     COMPOSITE_AVG_BY_REGION,
     DEGENERATE_SUM_BY_REGION,
     INNER_CR,
     ROWPHASE_P_AVG_BY_REGION,
-    ModelMeasure,
     broadcast_warnings,
     make_exec_engine,
     reagg,
@@ -44,8 +45,8 @@ class TestTransformOverReaggregated:
         query grain by the attached re-aggregated value; no other column changes."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[reagg("avg", INNER_CR, name="acr"),
-                      ModelMeasure(formula=f"rank(avg({INNER_CR}), direction='desc')", name="rnk")]))
+            metrics=[reagg("avg", INNER_CR, name="acr"),
+                      QueryMetric(metric=f"rank(avg({INNER_CR}), direction='desc')", alias="rnk")]))
         by = {k[0]: v for k, v in region_key(resp).items()}
         # South has the largest per-region average -> rank 1 (descending).
         assert int(by["South"]["sales.rnk"]) == 1
@@ -61,7 +62,7 @@ class TestArithmeticAndOrderConsumers:
         value inside an arithmetic composite."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"avg({INNER_CR}) / 2", name="half")]))
+            metrics=[QueryMetric(metric=f"avg({INNER_CR}) / 2", alias="half")]))
         vals = {k[0]: v["sales.half"] for k, v in region_key(resp).items()}
         assert float(vals["North"]) == pytest.approx(
             AVG_CITY_TOTAL_BY_REGION["North"] / 2)
@@ -73,8 +74,8 @@ class TestArithmeticAndOrderConsumers:
         when not selected — rows come back in its descending order."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
-            order=[{"column": f"avg({INNER_CR})", "direction": "desc"}]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")],
+            order=[{"field": f"avg({INNER_CR})", "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data]
         # South(70) > East(60) > North(45) > Gap(10); Void(NULL) placement free.
         assert order.index("South") < order.index("East") < order.index("North") \
@@ -88,7 +89,7 @@ class TestExplicitOuterGrain:
         warning."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", "product"],
-            measures=[reagg("avg", INNER_CR, name="acr", partition_by="region")]))
+            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="region")]))
         by = rows_by(resp, "sales.region", "sales.product")
         for region in ("North", "South"):
             for product in ("P", "Q"):
@@ -102,10 +103,10 @@ class TestFilterOnReaggregated:
         """Scenario: Filter on the re-aggregated value prunes only — surviving
         rows keep the unfiltered value."""
         unfiltered = await exec_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg("avg", INNER_CR, name="acr")]))
+            dimensions=["region"], metrics=[reagg("avg", INNER_CR, name="acr")]))
         filtered = await exec_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg("avg", INNER_CR, name="acr")],
-            filters=[f"avg({INNER_CR}) > 50"]))
+            dimensions=["region"], metrics=[reagg("avg", INNER_CR, name="acr")],
+            filter=[f"avg({INNER_CR}) > 50"]))
         survivors = {k[0] for k in region_key(filtered)}
         assert survivors == {"South", "East"}
         ref = {k[0]: v["sales.acr"] for k, v in region_key(unfiltered).items()}
@@ -116,8 +117,8 @@ class TestFilterOnReaggregated:
         """Scenario: Row-phase filters reach the inner producer — product='P'
         restricts the population feeding the inner producer, shifting the value."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg("avg", INNER_CR, name="acr")],
-            filters=["product = 'P'"]))
+            dimensions=["region"], metrics=[reagg("avg", INNER_CR, name="acr")],
+            filter=["product = 'P'"]))
         vals = {k[0]: v["sales.acr"] for k, v in region_key(resp).items()}
         for region, expected in ROWPHASE_P_AVG_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -129,7 +130,7 @@ class TestCompositeSparseOperand:
         constituent contributes NULL to its cell without removing it."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"avg({COMPOSITE})", name="comp")]))
+            metrics=[QueryMetric(metric=f"avg({COMPOSITE})", alias="comp")]))
         vals = {k[0]: v["sales.comp"] for k, v in region_key(resp).items()}
         for region, expected in COMPOSITE_AVG_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -140,8 +141,8 @@ class TestCompositeSparseOperand:
         total+total is twice the degenerate region sum."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=f"sum({INNER_CR} + {INNER_CR})", name="d2")]))
+            metrics=[QueryMetric(
+                metric=f"sum({INNER_CR} + {INNER_CR})", alias="d2")]))
         vals = {k[0]: v["sales.d2"] for k, v in region_key(resp).items()}
         for region, total in DEGENERATE_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(2 * total)
@@ -152,9 +153,9 @@ class TestCompositeSparseOperand:
         the row-weighted wrong value would be 4, not 2)."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=(f"sum(iif({INNER_CR} > 25 and {INNER_CR} < 90, "
-                         f"1, 0))"), name="mid")]))
+            metrics=[QueryMetric(
+                metric=(f"sum(iif({INNER_CR} > 25 and {INNER_CR} < 90, "
+                         f"1, 0))"), alias="mid")]))
         vals = {k[0]: v["sales.mid"] for k, v in region_key(resp).items()}
         assert {r: int(vals[r]) for r in ("North", "South", "East")} == {
             "North": 2, "South": 1, "East": 3}
@@ -165,7 +166,7 @@ class TestCompositeSparseOperand:
         at the combined grain today and pins the carrier's cell set."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=COMPOSITE, name="comp")]))
+            metrics=[QueryMetric(metric=COMPOSITE, alias="comp")]))
         by = rows_by(resp, "sales.region", "sales.city")
         assert ("South", "Alpha") in by
         assert by[("South", "Alpha")]["sales.comp"] is None
@@ -177,7 +178,7 @@ class TestFirstLastDispatch:
         the last transform (needs a time dimension), never a re-aggregation."""
         query = sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"last({INNER_CR})", name="L")])
+            metrics=[QueryMetric(metric=f"last({INNER_CR})", alias="L")])
         with pytest.raises(ValueError, match="(?i)time"):
             await exec_engine.execute(query)
 
@@ -186,12 +187,12 @@ class TestComputedDimensionConsumer:
     async def test_dimension_bands_a_reaggregated_value(self, exec_engine):
         """Deferred from stage 2: a computed dimension consumes a re-aggregated
         value (region avg of city totals) at ROW phase and bands by it."""
-        rlevel = {"expression": f"CASE WHEN avg({INNER_CR}, partition_by=region) "
+        rlevel = {"field": f"CASE WHEN avg({INNER_CR}, partition_by=region) "
                                 f"> 50 THEN 'high' ELSE 'low' END",
-                  "name": "rlevel"}
+                  "alias": "rlevel"}
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", rlevel],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
         by = rows_by(resp, "sales.region", "sales.rlevel")
         expected = {
             region: "high" if avg is not None and avg > 50 else "low"

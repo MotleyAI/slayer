@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 
 
 def edge_graph(
     *, nodes: set[str], edges: list[tuple[str, str, str | None]],
-) -> dict[str, SlayerModel]:
+) -> dict[str, SlayerDataset]:
     """One model per node; each edge is an unannotated join declared on its source."""
-    joins: dict[str, list[ModelJoin]] = {n: [] for n in nodes}
+    joins: dict[str, list[DatasetRelationship]] = {n: [] for n in nodes}
     for source, target, name in edges:
-        joins[source].append(ModelJoin(target_model=target, join_pairs=[["x_id", "id"]], name=name))
+        joins[source].append(DatasetRelationship(to=target, from_columns=["x_id"], to_columns=["id"], name=name))
     return {
-        n: SlayerModel(
+        n: SlayerDataset(
             name=n, data_source="ds", sql_table=n,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="x_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="x_id", datatype=DataType.INTEGER),
             ],
-            joins=joins[n],
+            relationships=joins[n],
         )
         for n in sorted(nodes)
     }

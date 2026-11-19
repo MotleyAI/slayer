@@ -1,0 +1,206 @@
+{
+ "source": "tests/test_dev1866_reporting.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "customers",
+    "measures": [
+     {
+      "name": "n",
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "dataset": "customers",
+    "metrics": [
+     {
+      "name": "n",
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "by_region",
+    "source_model": "customers",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "by_region",
+    "population": "customers",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "by_region",
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "by_region",
+    "metrics": [
+     {
+      "metric": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 180,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 182,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 183,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 188,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 190,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 193,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  }
+ ]
+}

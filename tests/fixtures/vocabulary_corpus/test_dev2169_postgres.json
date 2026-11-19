@@ -1,0 +1,46 @@
+{
+ "source": "tests/test_dev2169_postgres.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -29,14 +29,15 @@ from pydantic import BaseModel
 
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import open_connection
+from slayer.core.query import QueryMetric
 
-from tests._dev1739_fixtures import dev1739_models, _seed_duckdb, _seed_sqlite
+from tests._dev1739_fixtures import dev1739_datasets, _seed_duckdb, _seed_sqlite
 from tests._engine_helpers import seeded_exec_engine
 from tests._dev1837_fixtures import (
     DIM_FAMILY_DIMS,
     TD_TRANSFORM_OPS,
     TRANSFORM_FORMULAS,
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     dim_key,
     month_key,
@@ -319,7 +320,7 @@ async def make_law_engine(
         pytest.importorskip("duckdb")
     seed = _seed_sqlite if dialect == "sqlite" else _seed_duckdb
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev1739_models(),
+        dialect=dialect, seed=seed, datasets=dev1739_datasets(),
     ) as (engine, db_path):
         # Copy the oracle right after entering — engine connections are lazy, so
         # the file is not yet locked (DuckDB rejects a second config on it).
@@ -347,14 +348,14 @@ def build_query(
 ) -> SlayerQuery:
     kwargs: dict[str, Any] = {"dimensions": LAW_DIM_FAMILY_DIMS[shape.dim_family]}
     if not dims_only:
-        kwargs["measures"] = [
-            ModelMeasure(formula=MEASURE_POOL[k], name=f"m_{k}")
+        kwargs["metrics"] = [
+            QueryMetric(metric=MEASURE_POOL[k], alias=f"m_{k}")
             for k in shape.measure_keys if k != drop
         ]
     if shape.with_month:
         kwargs["time_dimensions"] = month_td()
     if shape.filter:
-        kwargs["filters"] = [shape.filter]
+        kwargs["filter"] = [shape.filter]
     return q(**kwargs)
 
 
@@ -446,7 +447,7 @@ __all__ = [
     "MEASURE_POOL", "MEASURE_REQUIRED_FAMILY", "N_DUCKDB",
     "N_PAIRS", "N_SHAPES", "OPERANDS", "OPERAND_GRAIN", "OPS",
     "PAIRS_BY_GRAIN", "SHAPES", "CoherencePair", "DeferralSite", "LawShape",
-    "ModelMeasure",
+    "DatasetMetric",
     "build_query", "canon", "execute_shape", "keyed_rows", "law_assert",
     "law_dim_key", "law_params", "make_law_engine", "month_key", "month_td",
     "pair_params", "q", "raw_rows", "sample_pairs", "sample_shapes",

@@ -30,15 +30,15 @@ class _Term(BaseModel, frozen=True):
     pass
 
 
-class ModelDataset(_Term, frozen=True):
-    """Model-backed dataset, identified by (datasource, model name)."""
+class StoredDataset(_Term, frozen=True):
+    """Backed by a stored dataset, identified by (datasource, dataset name)."""
 
     data_source: str
-    model_name: str
+    dataset_name: str
 
     @property
     def kind(self) -> str:
-        return "model"
+        return "dataset"
 
 
 class StageDataset(_Term, frozen=True):
@@ -52,13 +52,13 @@ class StageDataset(_Term, frozen=True):
 
 
 #: Concrete datasets an ``Aggregate`` may aggregate over, or a ``Field`` live on.
-DatasetT = Union[ModelDataset, StageDataset, "Aggregate"]
+DatasetT = Union[StoredDataset, StageDataset, "Aggregate"]
 
 
 class Aggregate(_Term, frozen=True):
     """An aggregation of ``home`` at a total ``grain`` — itself a ``Dataset``.
 
-    ``home_path`` is the resolved home dataset (Axiom 2) as a join path relative
+    ``home_path`` is the resolved home dataset (Axiom 2) as a relationship path relative
     to the environment's host: the deepest dataset that determines every input;
     ``()`` is the host itself. Resolved once in the elaborator (``engine/population/home``).
     """

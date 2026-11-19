@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_retriever_abc.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  }
+ ]
+}

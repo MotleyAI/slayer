@@ -14,7 +14,7 @@ from slayer.core.errors import RenderContextMissingFacilityError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     ScalarCallKey,
     StarKey,
@@ -25,7 +25,7 @@ from slayer.sql.dialects import get_dialect
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.render.value_expr import AliasFacilities, RenderContext, render_value_key
 
-_SUM = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+_SUM = AggregateKey(source=FieldKey(leaf="amount"), agg="sum")
 _COUNT = AggregateKey(source=StarKey(), agg="count")
 _RATIO = ArithmeticKey(op="/", operands=(_SUM, _COUNT))
 _ABS = ScalarCallKey(name="abs", args=(_SUM,))
@@ -98,8 +98,8 @@ def test_unslotted_composite_renders_structurally() -> None:
 
 
 _SLOTTED = {
-    "column": ColumnKey(leaf="amount"),
-    "time_trunc": TimeTruncKey(source=ColumnKey(leaf="order_date"), granularity=TimeGranularity.MONTH),
+    "column": FieldKey(leaf="amount"),
+    "time_trunc": TimeTruncKey(source=FieldKey(leaf="order_date"), granularity=TimeGranularity.MONTH),
     "aggregate": _SUM,
     "transform": TransformKey(op="cumsum", input=_RATIO),
 }

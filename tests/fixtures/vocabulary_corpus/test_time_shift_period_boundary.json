@@ -1,0 +1,140 @@
+{
+ "source": "tests/test_time_shift_period_boundary.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(cost)",
+     {
+      "formula": "change(sum(cost))",
+      "name": "chg"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "order": [
+     {
+      "column": "created_at",
+      "direction": "asc"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(cost)",
+     {
+      "metric": "change(sum(cost))",
+      "alias": "chg"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "order": [
+     {
+      "field": "created_at",
+      "direction": "asc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(cost)",
+     {
+      "formula": "time_shift(sum(cost), -1, 'month')",
+      "name": "prev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(cost)",
+     {
+      "metric": "time_shift(sum(cost), -1, 'month')",
+      "alias": "prev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(cost)",
+     {
+      "formula": "time_shift(sum(cost), -1, 'day')",
+      "name": "prev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(cost)",
+     {
+      "metric": "time_shift(sum(cost), -1, 'day')",
+      "alias": "prev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  }
+ ]
+}

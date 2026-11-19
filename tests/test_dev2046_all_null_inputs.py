@@ -10,8 +10,7 @@ from typing import Callable, Dict, List
 
 import pytest
 
-from slayer.core.models import ModelMeasure
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev2046_fixtures import m, make_exec_engine, month_td, orders_q
 
@@ -29,7 +28,7 @@ async def engine(request):
         yield e
 
 
-def _measures(source: str, *, suffix: str = "") -> List[ModelMeasure]:
+def _metrics(source: str, *, suffix: str = "") -> List[QueryMetric]:
     """Every aggregation in ``EMPTY`` over ``source`` plus the boolean ``sum`` / ``max``, named by aggregation."""
     measures = [m(f"{agg}({source}{suffix})", agg) for agg in EMPTY]
     return measures + [m(f"sum({source} > 15{suffix})", "bsum"), m(f"max({source} > 15{suffix})", "bmax")]
@@ -38,21 +37,21 @@ def _measures(source: str, *, suffix: str = "") -> List[ModelMeasure]:
 EXPECTED = {**EMPTY, "bsum": None, "bmax": None}
 
 LOCATIONS: Dict[str, Callable[[], object]] = {
-    "local": lambda: orders_q(dimensions=["region"], measures=_measures("amount"), filters=WEST),
+    "local": lambda: orders_q(dimensions=["region"], metrics=_metrics("amount"), filter=WEST),
     "partition": lambda: orders_q(
-        dimensions=["region", "status"], measures=_measures("amount", suffix=", partition_by=region"), filters=WEST,
+        dimensions=["region", "status"], metrics=_metrics("amount", suffix=", partition_by=region"), filter=WEST,
     ),
     "window": lambda: orders_q(
-        time_dimensions=month_td(), measures=_measures("amount", suffix=", window='30d'"), filters=WEST,
+        time_dimensions=month_td(), metrics=_metrics("amount", suffix=", window='30d'"), filter=WEST,
     ),
-    "cross_model": lambda: orders_q(measures=_measures("customers.score")),
+    "cross_model": lambda: orders_q(metrics=_metrics("customers.score")),
     "stage": lambda: [
-        {"name": "s1", "source_model": "orders", "dimensions": ["region", "status"],
-         "measures": [{"formula": "sum(amount)", "name": "x"}]},
-        {"source_model": "s1", "dimensions": ["region"], "measures": _measures("x"), "filters": WEST},
+        {"name": "s1", "population": "orders", "dimensions": ["region", "status"],
+         "metrics": [{"metric": "sum(amount)", "alias": "x"}]},
+        {"population": "s1", "dimensions": ["region"], "metrics": _metrics("x"), "filter": WEST},
     ],
     "association": lambda: SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["region"], "measures": _measures("customers.score"),
+        "population": "orders", "dimensions": ["region"], "metrics": _metrics("customers.score"),
         "to_many_handling": "associate",
     }),
 }

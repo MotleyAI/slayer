@@ -26,7 +26,7 @@ import struct
 from decimal import Decimal
 from typing import Any
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind
 from slayer.core.format import encode_text
 from slayer.pg_facade.protocol import (
     OID_BOOL,
@@ -37,18 +37,19 @@ from slayer.pg_facade.protocol import (
     OID_TIMESTAMP,
 )
 
-DATATYPE_TO_OID: dict[DataType, int] = {
-    DataType.TEXT: OID_TEXT,
-    DataType.INT: OID_INT8,
-    DataType.DOUBLE: OID_FLOAT8,
-    DataType.BOOLEAN: OID_BOOL,
-    DataType.DATE: OID_DATE,
-    DataType.TIMESTAMP: OID_TIMESTAMP,
+_KIND_TO_OID: dict[TypeKind, int] = {
+    TypeKind.TEXT: OID_TEXT,
+    TypeKind.INT: OID_INT8,
+    TypeKind.DOUBLE: OID_FLOAT8,
+    TypeKind.BOOLEAN: OID_BOOL,
+    TypeKind.DATE: OID_DATE,
+    TypeKind.TIMESTAMP: OID_TIMESTAMP,
     # Opaque columns go out as text — see slayer.core.enums.DataType.is_opaque.
-    DataType.UNKNOWN: OID_TEXT,
+    TypeKind.UNKNOWN: OID_TEXT,
     # Lists go out as their JSON array text.
-    DataType.ARRAY: OID_TEXT,
+    TypeKind.ARRAY: OID_TEXT,
 }
+DATATYPE_TO_OID: dict[DataType, int] = {t: _KIND_TO_OID[t.kind] for t in DataType}
 
 # Postgres binary date/timestamp epoch.
 _PG_EPOCH_DATE = _dt.date(2000, 1, 1)

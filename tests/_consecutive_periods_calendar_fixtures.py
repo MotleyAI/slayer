@@ -15,7 +15,7 @@ from typing import AsyncGenerator, Optional
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -94,28 +94,28 @@ def ticks_rows() -> list:
     return [(i, *r) for i, r in enumerate(rows, start=1)]
 
 
-def calendar_models() -> list[SlayerModel]:
+def calendar_datasets() -> list[SlayerDataset]:
     """``[orders, ticks]``."""
     return [
-        SlayerModel(
+        SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             default_time_dimension="order_date",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="order_date", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="order_date", datatype=DataType.DATETIME),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="ticks", data_source="test", sql_table="ticks",
             default_time_dimension="ts",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="series", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="ts", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="series", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="ts", datatype=DataType.DATETIME),
             ],
         ),
     ]
@@ -163,32 +163,32 @@ async def calendar_engine(
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     async with seeded_exec_engine(
-        dialect=dialect, seed=_seeder(dialect, orders_rows), models=calendar_models(),
+        dialect=dialect, seed=_seeder(dialect, orders_rows), datasets=calendar_datasets(),
     ) as (engine, _):
         yield engine
 
 
-def orders_query(*, formula: str, filters=None, dimensions=None, date_range=None,
+def orders_query(*, expression: str, filters=None, dimensions=None, date_range=None,
                  granularity: str = "month") -> SlayerQuery:
     """One measure ``v`` over customer 1's series unless ``filters`` is given."""
-    td: dict = {"dimension": "order_date", "granularity": granularity}
+    td: dict = {"field": "order_date", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     return SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "time_dimensions": [td],
         "dimensions": dimensions or [],
-        "filters": ["customer_id = 1"] if filters is None else filters,
-        "measures": [{"formula": formula, "name": "v"}],
+        "filter": ["customer_id = 1"] if filters is None else filters,
+        "metrics": [{"metric": expression, "alias": "v"}],
     })
 
 
-def ticks_query(*, series: str, granularity: str, measures: list) -> SlayerQuery:
+def ticks_query(*, series: str, granularity: str, metrics: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "ticks",
-        "time_dimensions": [{"dimension": "ts", "granularity": granularity}],
-        "filters": [f"series = '{series}'"],
-        "measures": measures,
+        "population": "ticks",
+        "time_dimensions": [{"field": "ts", "granularity": granularity}],
+        "filter": [f"series = '{series}'"],
+        "metrics": metrics,
     })
 
 

@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 import sqlglot
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import client as sql_client
 from slayer.database import engine_factory
@@ -35,7 +35,7 @@ _DOOR_SQL = (
     "strftime('%Y-%m', '2020-03-15') AS ym"
 )
 _DOOR_ROW = {"pat": _REGEX_LITERAL, "ym": "2020-03"}
-_DOOR_TYPES = {"pat": ResultColumnType(type=DataType.TEXT), "ym": ResultColumnType(type=DataType.TEXT)}
+_DOOR_TYPES = {"pat": ResultColumnType(type=DataType.STRING), "ym": ResultColumnType(type=DataType.STRING)}
 _DOOR_PROBE: TypeProbe = render_type_probe(sqlglot.parse_one(_DOOR_SQL, dialect="sqlite"), dialect=SqliteDialect())
 
 # The two verbatim helpers the fix introduces; every driver-level execute lives
@@ -301,11 +301,11 @@ class TestRegexExpressionDimensionEndToEnd:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
         ))
         return SlayerQueryEngine(storage=storage)
@@ -313,10 +313,10 @@ class TestRegexExpressionDimensionEndToEnd:
     async def test_regex_expression_dimension(self, tmp_path) -> None:
         engine = await self._seed_engine(tmp_path)
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ComputedDimension(expression=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
-                                          name="rx")],
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders",
+            dimensions=[QueryDimension(field=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
+                                          alias="rx")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await engine.execute(query=query)
         by_rx = {int(row["orders.rx"]): row["orders._count"] for row in result.data}

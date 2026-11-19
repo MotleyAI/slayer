@@ -17,7 +17,7 @@ from decimal import Decimal
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     LiteralKey,
     TransformKey,
@@ -26,15 +26,15 @@ from slayer.core.keys import (
     walk_value_keys,
 )
 
-QTY = ColumnKey(leaf="quantity")
-UP = ColumnKey(leaf="unit_price")
-AMOUNT = ColumnKey(leaf="amount")
-PRODUCT = ColumnKey(leaf="product")
-CITY = ColumnKey(leaf="city")
-REGION = ColumnKey(leaf="region")
-ORDERED_AT = ColumnKey(leaf="ordered_at")
-PH = ColumnKey(leaf="__regroup__0__min")
-PH2 = ColumnKey(leaf="__regroup__1__band")
+QTY = FieldKey(leaf="quantity")
+UP = FieldKey(leaf="unit_price")
+AMOUNT = FieldKey(leaf="amount")
+PRODUCT = FieldKey(leaf="product")
+CITY = FieldKey(leaf="city")
+REGION = FieldKey(leaf="region")
+ORDERED_AT = FieldKey(leaf="ordered_at")
+PH = FieldKey(leaf="__regroup__0__min")
+PH2 = FieldKey(leaf="__regroup__1__band")
 
 AVG_UP_PRODUCT = AggregateKey(source=UP, agg="avg", partition_keys=Grain.of([PRODUCT]))
 REGION_SUM = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of([REGION]))

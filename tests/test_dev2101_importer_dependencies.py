@@ -7,7 +7,7 @@ import importlib
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasetMetric, SlayerDataset
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.report import CubeConversionReport
 from slayer.dbt.converter import DbtToSlayerConverter
@@ -29,57 +29,57 @@ DANGLING = {"b", "c"}
 CYCLIC = {"d", "e"}
 
 
-def _measures(extra: dict[str, str] | None = None) -> list[ModelMeasure]:
-    return [ModelMeasure(name=n, formula=f) for n, f in {**MEASURES, **(extra or {})}.items()]
+def _metrics(extra: dict[str, str] | None = None) -> list[DatasetMetric]:
+    return [DatasetMetric(name=n, expression=f) for n, f in {**MEASURES, **(extra or {})}.items()]
 
 
 class TestDbtDependencyCheck:
-    def _prune(self, measures: list[ModelMeasure]) -> tuple[set[str], set[str]]:
-        model = SlayerModel(
+    def _prune(self, metrics: list[DatasetMetric]) -> tuple[set[str], set[str]]:
+        model = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            columns=[Column(name=c, type=DataType.DOUBLE) for c in ("id", "amount", "quantity", "price")]
-            + [Column(name="status", type=DataType.TEXT)],
-            aggregations=[Aggregation(name="wsum", formula="SUM({value} * {weight})")],
-            measures=measures,
+            fields=[DatasetField(name=c, datatype=DataType.FLOAT) for c in ("id", "amount", "quantity", "price")]
+            + [DatasetField(name="status", datatype=DataType.STRING)],
+            aggregations=[Aggregation(name="wsum", expression="SUM({value} * {weight})")],
+            metrics=metrics,
         )
         conv = DbtToSlayerConverter(project=DbtProject(semantic_models=[], metrics=[]), data_source="test")
-        conv._prune_model_measures(model)
+        conv._prune_dataset_metrics(model)
         dropped = {w.metric_name for w in conv._unconverted if w.category == "dangling_reference"}
-        return {m.name for m in model.measures if m.name}, {d for d in dropped if d}
+        return {m.name for m in model.metrics if m.name}, {d for d in dropped if d}
 
     def test_survivors_and_drops(self) -> None:
-        kept, dropped = self._prune(_measures())
+        kept, dropped = self._prune(_metrics())
         assert kept == SURVIVORS
         assert dropped == DANGLING | CYCLIC
 
     def test_bare_column_outside_an_aggregation_is_dangling(self) -> None:
-        kept, dropped = self._prune(_measures({"i": "amount + a"}))
+        kept, dropped = self._prune(_metrics({"i": "amount + a"}))
         assert "i" in dropped
         assert "i" not in kept
 
     def test_custom_aggregation_name_is_in_the_namespace(self) -> None:
-        kept, _ = self._prune(_measures({"j": "wsum(price, weight=quantity) + a"}))
+        kept, _ = self._prune(_metrics({"j": "wsum(price, weight=quantity) + a"}))
         assert "j" in kept
 
     def test_self_reference_is_cyclic(self) -> None:
-        _, dropped = self._prune(_measures({"s": "s + 1"}))
+        _, dropped = self._prune(_metrics({"s": "s + 1"}))
         assert "s" in dropped
 
 
 class TestCubeDependencyCheck:
-    def _drop(self, measures: list[ModelMeasure]) -> set[str]:
+    def _drop(self, metrics: list[DatasetMetric]) -> set[str]:
         conv = CubeToSlayerConverter(project=None, data_source="test")
-        kept = conv._drop_unparseable_measures("orders", measures, CubeConversionReport())
+        kept = conv._drop_unparseable_metrics("orders", metrics, CubeConversionReport())
         return {m.name for m in kept if m.name}
 
     def test_survivors(self) -> None:
-        assert self._drop(_measures()) == SURVIVORS
+        assert self._drop(_metrics()) == SURVIVORS
 
     def test_transitive_dangling_reference_dropped(self) -> None:
-        assert not self._drop(_measures()) & DANGLING
+        assert not self._drop(_metrics()) & DANGLING
 
     def test_cyclic_measures_dropped(self) -> None:
-        assert not self._drop(_measures()) & CYCLIC
+        assert not self._drop(_metrics()) & CYCLIC
 
 
 class TestOneParser:

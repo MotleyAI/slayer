@@ -17,27 +17,29 @@ from slayer.core.keys import (
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1836_fixtures import ModelMeasure, dev1836_models, gen, month_td, q
-from tests._dev1846_fixtures import SlayerQuery, dev1846_models
+from slayer.core.query import QueryMetric
+
+from tests._dev1836_fixtures import dev1836_datasets, gen, month_td, q
+from tests._dev1846_fixtures import SlayerQuery, dev1846_datasets
 from tests._dev1868_fixtures import CM_PART_TIER, LAST_TIER
 
 
 def _bundle36() -> ResolvedSourceBundle:
-    models = dev1836_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0],
-                                referenced_models=models[1:])
+    models = dev1836_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0],
+                                referenced_datasets=models[1:])
 
 
 def _bundle46() -> ResolvedSourceBundle:
-    models = dev1846_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0],
-                                referenced_models=models[1:])
+    models = dev1846_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0],
+                                referenced_datasets=models[1:])
 
 
 def _q46(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     kw.setdefault("time_dimensions",
-                  [{"dimension": "ordered_at", "granularity": "month"}])
+                  [{"field": "ordered_at", "granularity": "month"}])
     return SlayerQuery(**kw)
 
 
@@ -45,10 +47,10 @@ class TestRankedProducerShape:
     def test_cross_model_last_installs_a_ranked_kernel(self) -> None:
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula=LAST_TIER, name="l")]),
+            metrics=[QueryMetric(metric=LAST_TIER, alias="l")]),
             bundle=_bundle36())
         [attach] = planned.regroup_attach_plans
-        assert attach.producer_root_model == "customers"
+        assert attach.producer_root_dataset == "customers"
         assert attach.attach_phase == "combined"
         assert attach.kernel.kind == "ranked"
         assert len(attach.join_pairs) == 1  # the complete [tier] grain
@@ -58,11 +60,11 @@ class TestSharedInnerProducerShape:
     def test_one_producer_serves_transform_and_filter(self) -> None:
         planned = plan_query(query=q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            filters=[f"{CM_PART_TIER} > 100"],
-            measures=[ModelMeasure(formula=f"cumsum({CM_PART_TIER})", name="c")]),
+            filter=[f"{CM_PART_TIER} > 100"],
+            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")]),
             bundle=_bundle36())
         attaches = [a for a in planned.regroup_attach_plans
-                    if a.producer_root_model == "customers"]
+                    if a.producer_root_dataset == "customers"]
         assert len(attaches) == 1
         [attach] = attaches
         assert attach.attach_phase == "combined"
@@ -88,8 +90,8 @@ class TestSharedInnerProducerShape:
     async def test_emitted_sql_has_one_producer_relation(self) -> None:
         sql = await gen(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            filters=[f"{CM_PART_TIER} > 100"],
-            measures=[ModelMeasure(formula=f"cumsum({CM_PART_TIER})", name="c")]))
+            filter=[f"{CM_PART_TIER} > 100"],
+            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")]))
         assert len(set(re.findall(r"_cm_\w+", sql))) == 1, sql
 
 
@@ -108,11 +110,11 @@ class TestCompositesBecomeCombinedSlots:
     ) -> None:
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula=formula, name="r")]),
+            metrics=[QueryMetric(metric=formula, alias="r")]),
             bundle=_bundle36())
         attaches = planned.regroup_attach_plans
         assert len(attaches) == n_producers
-        assert all(a.producer_root_model == "customers" for a in attaches)
+        assert all(a.producer_root_dataset == "customers" for a in attaches)
         composite_slots = [s for s in planned.aggregate_slots
                            if isinstance(s.key, (ArithmeticKey, ScalarCallKey))]
         assert len(composite_slots) == 1
@@ -124,8 +126,8 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_mixed_composite_rejected_by_plan_query(self) -> None:
         query = _q46(
-            measures=[ModelMeasure(formula="time_shift(sum(revenue) * weight, -1)",
-                                   name="t")])
+            metrics=[QueryMetric(metric="time_shift(sum(revenue) * weight, -1)",
+                                   alias="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -136,8 +138,8 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_row_predicate_rejected_by_plan_query(self) -> None:
         query = _q46(
-            measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
-                                   name="t")])
+            metrics=[QueryMetric(metric="time_shift(store in ('A', 'B'), -1)",
+                                   alias="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:
             plan_query(query=query, bundle=bundle)

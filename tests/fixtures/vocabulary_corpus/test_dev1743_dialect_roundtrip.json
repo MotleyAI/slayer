@@ -1,0 +1,74 @@
+{
+ "source": "tests/test_dev1743_dialect_roundtrip.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customer__region",
+    "join_pairs": [
+     [
+      "cr_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customer__region",
+    "from_columns": [
+     "cr_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region_label"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region_label"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region_label"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region_label"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  }
+ ]
+}

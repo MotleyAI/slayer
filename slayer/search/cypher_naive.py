@@ -18,10 +18,10 @@ from slayer.core.errors import SlayerError
 _LABEL_TO_KIND: dict[str, str] = {
     "memory": "memory",
     "datasource": "datasource",
-    "model": "model",
-    "modelcolumn": "column",
-    "column": "column",
-    "measure": "measure",
+    "dataset": "dataset",
+    "datasetfield": "field",
+    "field": "field",
+    "metric": "metric",
     "aggregation": "aggregation",
 }
 

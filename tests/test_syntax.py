@@ -26,15 +26,15 @@ from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     LiteralKey,
     ScalarCallKey,
     TransformKey,
     ValueKey,
 )
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.scope import ModelScope
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import (
     AggCall,
     Arith,
@@ -58,49 +58,49 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 # ---------------------------------------------------------------------------
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.DOUBLE),
-            Column(name="col1", type=DataType.DOUBLE),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
-            Column(name="cohort", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="col1", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="cohort", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="prod",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect="postgres", source_model=_orders(), referenced_models=[_customers()])
+    return ResolvedSourceBundle(dialect="postgres", population=_orders(), referenced_datasets=[_customers()])
 
 
 def _bound(text: str) -> ValueKey:
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=_orders()), bundle=_bundle()).value_key
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=_orders()), bundle=_bundle()).value_key
 
 
 def _bound_filter(text: str) -> ValueKey:
-    return bind_filter(parse_expr(text), scope=ModelScope(source_model=_orders()), bundle=_bundle()).value_key
+    return bind_filter(parse_expr(text), scope=DatasetScope(population=_orders()), bundle=_bundle()).value_key
 
 
 def _assert_arguments(call: AggCall | TransformCall, *needles: str, count: int) -> None:
@@ -209,7 +209,7 @@ class TestAggregations:
         _assert_arguments(result, "'weight'", "'quantity'", count=1)
         bound = _bound("weighted_avg(price, weight=quantity)")
         assert isinstance(bound, AggregateKey)
-        assert bound.kwargs == (("weight", ColumnKey(path=(), leaf="quantity")),)
+        assert bound.kwargs == (("weight", FieldKey(path=(), leaf="quantity")),)
 
     def test_aggregation_with_numeric_kwarg(self):
         result = parse_expr("percentile(revenue, p=0.5)")
@@ -334,7 +334,7 @@ class TestTransforms:
         _assert_arguments(result, "'partition_by'", "'customers'", "'region'", "'direction'", "'desc'", count=2)
         bound = _bound(text)
         assert isinstance(bound, TransformKey)
-        assert bound.partition_keys == Grain.of([ColumnKey(path=("customers",), leaf="region")])
+        assert bound.partition_keys == Grain.of([FieldKey(path=("customers",), leaf="region")])
         assert bound.kwargs == (("direction", "desc"),)
 
     def test_triple_nested_transforms(self):
@@ -780,7 +780,7 @@ class TestFilterOperatorNormalization:
         assert isinstance(bound, ArithmeticKey)
         rank = bound.operands[0]
         assert isinstance(rank, TransformKey)
-        assert rank.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
+        assert rank.partition_keys == Grain.of([FieldKey(path=(), leaf="region")])
         assert rank.kwargs == (("direction", "desc"),)
 
     def test_rank_partition_by_list_kwarg_preserved_in_filter(self):
@@ -798,7 +798,7 @@ class TestFilterOperatorNormalization:
         rank = bound.operands[0]
         assert isinstance(rank, TransformKey)
         assert rank.partition_keys == Grain.of(
-            [ColumnKey(path=(), leaf="region"), ColumnKey(path=(), leaf="channel")],
+            [FieldKey(path=(), leaf="region"), FieldKey(path=(), leaf="channel")],
         )
         assert rank.kwargs == (("direction", "desc"),)
 
@@ -841,7 +841,7 @@ class TestFilterOperatorNormalization:
         assert isinstance(change, TransformKey)
         assert change.kwargs == ()
         assert isinstance(change.input, AggregateKey)
-        assert change.input.kwargs == (("weight", ColumnKey(path=(), leaf="quantity")),)
+        assert change.input.kwargs == (("weight", FieldKey(path=(), leaf="quantity")),)
 
     def test_filter_transform_preserves_mixed_agg_args_and_kwargs(self):
         # change(price:weighted_avg(col1, weight=quantity)) > 0 — positional
@@ -871,7 +871,7 @@ class TestFilterOperatorNormalization:
         ntile = bound.operands[0]
         assert isinstance(ntile, TransformKey)
         assert ntile.kwargs == (("n", Decimal(4)),)
-        assert ntile.partition_keys == Grain.of([ColumnKey(path=(), leaf="cohort")])
+        assert ntile.partition_keys == Grain.of([FieldKey(path=(), leaf="cohort")])
 
     def test_grouping_paren_equality_still_rewritten(self):
         # DEV-1492 regression guard: a `=` inside a *grouping* paren (not a
@@ -916,7 +916,7 @@ class TestFilterOperatorNormalization:
         assert isinstance(ntile, TransformKey)
         assert ntile.kwargs == (("n", Decimal(4)),)
         assert bound_right == ArithmeticKey(
-            op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid")),
+            op="==", operands=(FieldKey(path=(), leaf="status"), LiteralKey(value="paid")),
         )
 
     def test_equality_inside_string_literal_untouched(self):
@@ -1007,10 +1007,10 @@ class TestFilterOperatorNormalization:
         assert isinstance(bound, ArithmeticKey)
         rank = bound.operands[0]
         assert isinstance(rank, TransformKey)
-        assert rank.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
+        assert rank.partition_keys == Grain.of([FieldKey(path=(), leaf="region")])
         assert rank.kwargs == (("direction", "desc"),)
         assert rank.input == ScalarCallKey(name="coalesce", args=(
-            ArithmeticKey(op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid"))),
+            ArithmeticKey(op="==", operands=(FieldKey(path=(), leaf="status"), LiteralKey(value="paid"))),
             LiteralKey(value=Decimal(0)),
         ))
         inner = result.left.input
@@ -1080,7 +1080,7 @@ class TestFilterOperatorNormalization:
         assert isinstance(streak, TransformKey)
         assert streak.kwargs == ()
         assert streak.input == ArithmeticKey(
-            op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid")),
+            op="==", operands=(FieldKey(path=(), leaf="status"), LiteralKey(value="paid")),
         )
         assert bound.operands[1] == LiteralKey(value=Decimal(2))
 

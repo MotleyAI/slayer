@@ -1,0 +1,220 @@
+{
+ "source": "tests/test_dev1838_cte_body_lifts.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(gold_amount)",
+    "name": "g"
+   },
+   "new": {
+    "expression": "sum(gold_amount)",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "dimension",
+   "old": {
+    "name": "tier",
+    "model": "customers"
+   },
+   "new": {
+    "field": "customers.tier"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(gold_amount)",
+    "name": "g"
+   },
+   "new": {
+    "expression": "sum(gold_amount)",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend)",
+    "name": "sl"
+   },
+   "new": {
+    "expression": "last(customers.spend)",
+    "name": "sl"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(gold_amount)",
+    "name": "g"
+   },
+   "new": {
+    "expression": "sum(gold_amount)",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "last(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "last(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "bt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "bt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(bt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(bt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[])",
+    "name": "gt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[])",
+    "name": "gt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(m)",
+    "name": "ms"
+   },
+   "new": {
+    "expression": "sum(m)",
+    "name": "ms"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(gt)",
+    "name": "gts"
+   },
+   "new": {
+    "expression": "max(gt)",
+    "name": "gts"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='1y')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(w)",
+    "name": "wm"
+   },
+   "new": {
+    "expression": "max(w)",
+    "name": "wm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "bt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "bt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(bt)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(bt)",
+    "name": "t"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 216,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 239,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 264,
+   "reason": "not fully literal"
+  }
+ ]
+}

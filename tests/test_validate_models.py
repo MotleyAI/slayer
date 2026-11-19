@@ -5,7 +5,7 @@ Two layers are tested here:
 
 * Pure functions in ``slayer.live_schema.schema_drift`` — exercise each diff /
   cascade rule against synthetic ``LiveTable`` fixtures, no DB involved.
-* ``SlayerQueryEngine.validate_models()`` — end-to-end against a real SQLite
+* ``SlayerQueryEngine.validate_datasets()`` — end-to-end against a real SQLite
   database in a tempfile, verifying the orchestrator wires up live
   introspection, multi-DS gather, and the read-only contract (storage is
   never mutated).
@@ -17,6 +17,7 @@ Integration coverage on DuckDB lives in
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,25 +31,26 @@ except ImportError:  # optional dependency — tests importorskip at use sites
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
-    EditModelDelete,
+    DriftReportEntry,
+    EditDatasetDelete,
     LiveTable,
     RemoveSpec,
-    WholeModelDelete,
+    WholeDatasetDelete,
     _resolve_live_table,
-    _sql_model_source_refs,
+    _sql_dataset_source_refs,
     compute_datasource_drops,
     data_type_bucket,
-    diff_sql_model,
-    diff_sql_table_model,
+    diff_sql_dataset,
+    diff_sql_table_dataset,
 )
 from slayer.sql.dialects import get_dialect
 from slayer.storage.sqlite_conn import transaction
@@ -62,28 +64,28 @@ POSTGRES = get_dialect("postgres")
 # ---------------------------------------------------------------------------
 
 
-def _orders_model(
+def _orders_dataset(
     *,
     data_source: str = "ds",
-    columns: list[Column] | None = None,
-    joins: list[ModelJoin] | None = None,
-    measures: list[ModelMeasure] | None = None,
+    columns: list[DatasetField] | None = None,
+    joins: list[DatasetRelationship] | None = None,
+    metrics: list[DatasetMetric] | None = None,
     filters: list[str] | None = None,
     sql_table: str = "orders",
-) -> SlayerModel:
-    return SlayerModel(
+) -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table=sql_table,
         data_source=data_source,
-        columns=columns
+        fields=columns
         or [
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
         ],
-        joins=joins or [],
-        measures=measures or [],
+        relationships=joins or [],
+        metrics=metrics or [],
         filters=filters or [],
     )
 
@@ -95,29 +97,29 @@ def _live_orders(
     return LiveTable(
         columns=columns
         or {
-            "id": DataType.DOUBLE,
-            "amount": DataType.DOUBLE,
-            "status": DataType.TEXT,
-            "customer_id": DataType.DOUBLE,
+            "id": DataType.FLOAT,
+            "amount": DataType.FLOAT,
+            "status": DataType.STRING,
+            "customer_id": DataType.FLOAT,
         },
     )
 
 
-def _entry_for(model_name: str, entries: list) -> object | None:
+def _entry_for(dataset_name: str, entries: Sequence[DriftReportEntry]) -> object | None:
     for e in entries:
-        if e.model_name == model_name:
+        if e.dataset_name == dataset_name:
             return e
     return None
 
 
-def _delete_for(model_name: str, entries: list) -> object | None:
-    return next((e for e in entries if e.model_name == model_name
-                 and isinstance(e, (EditModelDelete, WholeModelDelete))), None)
+def _delete_for(dataset_name: str, entries: Sequence[DriftReportEntry]) -> object | None:
+    return next((e for e in entries if e.dataset_name == dataset_name
+                 and isinstance(e, (EditDatasetDelete, WholeDatasetDelete))), None)
 
 
-def _retype_for(entries: list, column: str) -> dict:
+def _retype_for(entries: Sequence[DriftReportEntry], column: str) -> dict:
     (finding,) = [d for e in entries if (d := e.model_dump(mode="json")).get("finding") == "retype"
-                  and d.get("column") == column]
+                  and d.get("field") == column]
     return finding
 
 
@@ -128,24 +130,24 @@ def _retype_for(entries: list, column: str) -> dict:
 
 class TestDataTypeBucket:
     def test_number_string_boolean_temporal(self) -> None:
-        # DataType.DOUBLE → DOUBLE, DataType.TEXT → TEXT.
-        assert data_type_bucket(DataType.DOUBLE) == "number"
-        assert data_type_bucket(DataType.TEXT) == "string"
+        # DataType.FLOAT → DOUBLE, DataType.STRING → TEXT.
+        assert data_type_bucket(DataType.FLOAT) == "number"
+        assert data_type_bucket(DataType.STRING) == "string"
         assert data_type_bucket(DataType.BOOLEAN) == "boolean"
         # DATE and TIMESTAMP collapse to "temporal"
-        assert data_type_bucket(DataType.DATE) == data_type_bucket(DataType.TIMESTAMP)
+        assert data_type_bucket(DataType.DATE) == data_type_bucket(DataType.DATETIME)
         assert data_type_bucket(DataType.DATE) == "temporal"
 
     def test_number_and_string_are_different_buckets(self) -> None:
-        assert data_type_bucket(DataType.DOUBLE) != data_type_bucket(DataType.TEXT)
+        assert data_type_bucket(DataType.FLOAT) != data_type_bucket(DataType.STRING)
 
     def test_int_and_double_share_number_bucket(self) -> None:
         # Critical invariance — drift detection must NOT flag a
         # persisted DOUBLE column against an INT live column (or vice versa)
         # even though they're now distinct enum members.
-        assert data_type_bucket(DataType.INT) == "number"
-        assert data_type_bucket(DataType.DOUBLE) == "number"
-        assert data_type_bucket(DataType.INT) == data_type_bucket(DataType.DOUBLE)
+        assert data_type_bucket(DataType.INTEGER) == "number"
+        assert data_type_bucket(DataType.FLOAT) == "number"
+        assert data_type_bucket(DataType.INTEGER) == data_type_bucket(DataType.FLOAT)
 
 
 # ---------------------------------------------------------------------------
@@ -155,57 +157,57 @@ class TestDataTypeBucket:
 
 class TestDiffSqlTableModel:
     def test_no_drift_when_live_matches(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         live = _live_orders()
-        entry, dropped = diff_sql_table_model(
-            model=model, live_table=live, available_models_in_ds={"orders"}
+        entry, dropped = diff_sql_table_dataset(
+            dataset=model, live_table=live, available_datasets_in_ds={"orders"}
         )
         assert entry is None
         assert dropped == set()
 
     def test_persisted_column_missing_from_live(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         live = _live_orders(
             columns={
-                "id": DataType.DOUBLE,
-                "amount": DataType.DOUBLE,
+                "id": DataType.FLOAT,
+                "amount": DataType.FLOAT,
                 # status missing
-                "customer_id": DataType.DOUBLE,
+                "customer_id": DataType.FLOAT,
             }
         )
-        entry, dropped = diff_sql_table_model(
-            model=model, live_table=live, available_models_in_ds={"orders"}
+        entry, dropped = diff_sql_table_dataset(
+            dataset=model, live_table=live, available_datasets_in_ds={"orders"}
         )
-        assert isinstance(entry, EditModelDelete)
-        assert entry.model_name == "orders"
-        assert entry.remove.columns == ["status"]
+        assert isinstance(entry, EditDatasetDelete)
+        assert entry.dataset_name == "orders"
+        assert entry.remove.fields == ["status"]
         assert dropped == {"status"}
-        assert any(r.target == "column:status" for r in entry.reasons)
+        assert any(r.target == "field:status" for r in entry.reasons)
 
     def test_live_table_missing(self) -> None:
-        model = _orders_model()
-        entry, dropped = diff_sql_table_model(
-            model=model, live_table=None, available_models_in_ds={"orders"}
+        model = _orders_dataset()
+        entry, dropped = diff_sql_table_dataset(
+            dataset=model, live_table=None, available_datasets_in_ds={"orders"}
         )
-        assert isinstance(entry, WholeModelDelete)
-        assert entry.model_name == "orders"
-        assert dropped == {c.name for c in model.columns}
+        assert isinstance(entry, WholeDatasetDelete)
+        assert entry.dataset_name == "orders"
+        assert dropped == {c.name for c in model.fields}
         assert any("missing" in r.reason.lower() or "not found" in r.reason.lower()
                    for r in entry.reasons)
 
     def test_type_bucket_mismatch_keeps_column(self) -> None:
         # Persisted "amount" is NUMBER, live made it STRING.
-        model = _orders_model()
+        model = _orders_dataset()
         live = _live_orders(
             columns={
-                "id": DataType.DOUBLE,
-                "amount": DataType.TEXT,  # bucket flip
-                "status": DataType.TEXT,
-                "customer_id": DataType.DOUBLE,
+                "id": DataType.FLOAT,
+                "amount": DataType.STRING,  # bucket flip
+                "status": DataType.STRING,
+                "customer_id": DataType.FLOAT,
             }
         )
-        entry, dropped = diff_sql_table_model(
-            model=model, live_table=live, available_models_in_ds={"orders"}
+        entry, dropped = diff_sql_table_dataset(
+            dataset=model, live_table=live, available_datasets_in_ds={"orders"}
         )
         assert entry is None
         assert dropped == set()
@@ -216,111 +218,111 @@ class TestDiffSqlTableModel:
         # when a persisted DOUBLE column is reported as INT by live
         # introspection (the v5 refinement step reconciles these without
         # raising drift).
-        model = _orders_model()
+        model = _orders_dataset()
         live = _live_orders(
             columns={
-                "id": DataType.INT,
-                "amount": DataType.DOUBLE,
-                "status": DataType.TEXT,
-                "customer_id": DataType.INT,
+                "id": DataType.INTEGER,
+                "amount": DataType.FLOAT,
+                "status": DataType.STRING,
+                "customer_id": DataType.INTEGER,
             }
         )
-        entry, _ = diff_sql_table_model(
-            model=model, live_table=live, available_models_in_ds={"orders"}
+        entry, _ = diff_sql_table_dataset(
+            dataset=model, live_table=live, available_datasets_in_ds={"orders"}
         )
         assert entry is None
 
     def test_date_and_timestamp_share_bucket(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="events",
             sql_table="events",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="happened_at", sql="happened_at", type=DataType.DATE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="happened_at", sql="happened_at", datatype=DataType.DATE),
             ],
         )
         # Live reports TIMESTAMP — same bucket as DATE.
         live = LiveTable(
-            columns={"id": DataType.DOUBLE, "happened_at": DataType.TIMESTAMP},
+            columns={"id": DataType.FLOAT, "happened_at": DataType.DATETIME},
         )
-        entry, _ = diff_sql_table_model(
-            model=model, live_table=live, available_models_in_ds={"events"}
+        entry, _ = diff_sql_table_dataset(
+            dataset=model, live_table=live, available_datasets_in_ds={"events"}
         )
         assert entry is None
 
     def test_join_local_column_missing_drops_join(self) -> None:
-        model = _orders_model(
+        model = _orders_dataset(
             joins=[
-                ModelJoin(
-                    target_model="customers",
-                    join_pairs=[["customer_id", "id"]],
+                DatasetRelationship(
+                    to="customers",
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
         # Live drops customer_id
         live = _live_orders(
             columns={
-                "id": DataType.DOUBLE,
-                "amount": DataType.DOUBLE,
-                "status": DataType.TEXT,
+                "id": DataType.FLOAT,
+                "amount": DataType.FLOAT,
+                "status": DataType.STRING,
             }
         )
-        entry, _ = diff_sql_table_model(
-            model=model, live_table=live, available_models_in_ds={"orders", "customers"}
+        entry, _ = diff_sql_table_dataset(
+            dataset=model, live_table=live, available_datasets_in_ds={"orders", "customers"}
         )
-        assert isinstance(entry, EditModelDelete)
-        assert "customer_id" in entry.remove.columns
-        assert "customers" in entry.remove.joins  # by target_model name
+        assert isinstance(entry, EditDatasetDelete)
+        assert "customer_id" in entry.remove.fields
+        assert "customers" in entry.remove.relationships  # by target_model name
 
     def test_join_target_model_not_in_datasource_drops_join(self) -> None:
-        model = _orders_model(
+        model = _orders_dataset(
             joins=[
-                ModelJoin(
-                    target_model="warehouses",
-                    join_pairs=[["customer_id", "id"]],  # using customer_id as the key
+                DatasetRelationship(
+                    to="warehouses",
+                    from_columns=["customer_id"], to_columns=["id"],  # using customer_id as the key
                 ),
             ],
         )
         live = _live_orders()
         # warehouses not in this DS
-        entry, _ = diff_sql_table_model(
-            model=model, live_table=live, available_models_in_ds={"orders", "customers"}
+        entry, _ = diff_sql_table_dataset(
+            dataset=model, live_table=live, available_datasets_in_ds={"orders", "customers"}
         )
-        assert isinstance(entry, EditModelDelete)
-        assert "warehouses" in entry.remove.joins
+        assert isinstance(entry, EditDatasetDelete)
+        assert "warehouses" in entry.remove.relationships
 
     def test_join_local_column_resolves_through_column_sql(self) -> None:
-        """``join.join_pairs[*][0]`` is a semantic column name; resolve to
+        """``join.column_pairs[*][0]`` is a semantic column name; resolve to
         the physical column via ``Column.sql`` before checking against the
         live table. CodeRabbit thread #103/r3196378686.
         """
         # Model: ``customer_id`` semantic name maps to physical ``customer_fk``.
-        model = _orders_model(
+        model = _orders_dataset(
             columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="customer_id", sql="customer_fk", type=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_fk", datatype=DataType.FLOAT),
             ],
             joins=[
-                ModelJoin(
-                    target_model="customers",
-                    join_pairs=[["customer_id", "id"]],  # semantic
+                DatasetRelationship(
+                    to="customers",
+                    from_columns=["customer_id"], to_columns=["id"],  # semantic
                 ),
             ],
         )
         live = _live_orders(
             columns={
-                "id": DataType.DOUBLE,
-                "amount": DataType.DOUBLE,
-                "status": DataType.TEXT,
-                "customer_fk": DataType.DOUBLE,  # physical name in the live DB
+                "id": DataType.FLOAT,
+                "amount": DataType.FLOAT,
+                "status": DataType.STRING,
+                "customer_fk": DataType.FLOAT,  # physical name in the live DB
             }
         )
-        entry, _ = diff_sql_table_model(
-            model=model, live_table=live,
-            available_models_in_ds={"orders", "customers"},
+        entry, _ = diff_sql_table_dataset(
+            dataset=model, live_table=live,
+            available_datasets_in_ds={"orders", "customers"},
         )
         # No drift — the join's local column resolves to ``customer_fk`` which
         # is present in the live table. Without the fix, ``customer_id`` would
@@ -335,89 +337,89 @@ class TestDiffSqlTableModel:
 
 class TestDiffSqlModel:
     def test_trial_execute_success_matching_columns_is_no_op(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="archived_orders",
             sql="SELECT id, amount FROM orders WHERE archived = true",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
-        live = {"id": DataType.DOUBLE, "amount": DataType.DOUBLE}
-        entry, dropped = diff_sql_model(model=model, live_columns=live)
+        live = {"id": DataType.FLOAT, "amount": DataType.FLOAT}
+        entry, dropped = diff_sql_dataset(dataset=model, live_columns=live)
         assert entry is None
         assert dropped == set()
 
     def test_trial_execute_failure_whole_drop(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="archived_orders",
             sql="SELECT id, amount FROM orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         # live_columns=None signals trial-execute failed
-        entry, dropped = diff_sql_model(model=model, live_columns=None)
-        assert isinstance(entry, WholeModelDelete)
-        assert entry.model_name == "archived_orders"
+        entry, dropped = diff_sql_dataset(dataset=model, live_columns=None)
+        assert isinstance(entry, WholeDatasetDelete)
+        assert entry.dataset_name == "archived_orders"
         assert entry.cause == "schema_drift"
-        assert dropped == {c.name for c in model.columns}
+        assert dropped == {c.name for c in model.fields}
 
     def test_trial_execute_failure_with_live_tables_marks_invalid_sql(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="archived_orders",
             sql="SELECT id, amount FROM orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
-        entry, dropped = diff_sql_model(
-            model=model, live_columns=None, invalid_sql=True
+        entry, dropped = diff_sql_dataset(
+            dataset=model, live_columns=None, invalid_sql=True
         )
-        assert isinstance(entry, WholeModelDelete)
+        assert isinstance(entry, WholeDatasetDelete)
         assert entry.cause == "invalid_sql"
         assert "source tables and referenced columns exist" in entry.reasons[0].reason
-        assert dropped == {c.name for c in model.columns}
+        assert dropped == {c.name for c in model.fields}
 
     def test_trial_execute_bucket_mismatch_keeps_column(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="archived_orders",
             sql="SELECT id, amount FROM orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
-        live = {"id": DataType.DOUBLE, "amount": DataType.TEXT}
-        entry, dropped = diff_sql_model(model=model, live_columns=live)
+        live = {"id": DataType.FLOAT, "amount": DataType.STRING}
+        entry, dropped = diff_sql_dataset(dataset=model, live_columns=live)
         assert entry is None
         assert dropped == set()
 
     def test_extra_live_columns_are_ignored(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="archived_orders",
             sql="SELECT id, amount FROM orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
-        live = {"id": DataType.DOUBLE, "amount": DataType.DOUBLE, "extra": DataType.TEXT}
-        entry, _ = diff_sql_model(model=model, live_columns=live)
+        live = {"id": DataType.FLOAT, "amount": DataType.FLOAT, "extra": DataType.STRING}
+        entry, _ = diff_sql_dataset(dataset=model, live_columns=live)
         # validate_models reports deletes only — additions are out of scope
         assert entry is None
 
 
 def _refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
     """``_sql_model_source_refs`` with each table rendered and each column named."""
-    refs = _sql_model_source_refs(sql=sql, dialect=dialect)
+    refs = _sql_dataset_source_refs(sql=sql, dialect=dialect)
     if refs is None:
         return None
     return {table.sql(dialect=dialect): {col.name for col in cols} for table, cols in refs.items()}
@@ -524,182 +526,182 @@ class TestCascadeRules:
         """A derived ``Column.sql`` referencing a column that was dropped is
         itself dropped. Walks transitively across chains of derived columns.
         """
-        model = _orders_model(
+        model = _orders_dataset(
             columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 # derived column referencing 'amount'
-                Column(name="amount_x2", sql="amount * 2", type=DataType.DOUBLE),
+                DatasetField(name="amount_x2", sql="amount * 2", datatype=DataType.FLOAT),
                 # transitively-derived: refs another derived column
-                Column(name="amount_x4", sql="amount_x2 * 2", type=DataType.DOUBLE),
+                DatasetField(name="amount_x4", sql="amount_x2 * 2", datatype=DataType.FLOAT),
             ],
         )
         # Base diff: 'amount' dropped from live
-        edit = EditModelDelete(
-            model_name="orders",
+        edit = EditDatasetDelete(
+            dataset_name="orders",
             data_source="ds",
-            remove=RemoveSpec(columns=["amount"]),
+            remove=RemoveSpec(fields=["amount"]),
             reasons=[],
         )
         out = compute_datasource_drops(
-            models=[model],
+            datasets=[model],
             sql_table_diffs={"orders": (edit, {"amount"})},
             sql_diffs={},
         )
         entry = _entry_for("orders", out)
-        assert isinstance(entry, EditModelDelete)
-        assert set(entry.remove.columns) >= {"amount", "amount_x2", "amount_x4"}
+        assert isinstance(entry, EditDatasetDelete)
+        assert set(entry.remove.fields) >= {"amount", "amount_x2", "amount_x4"}
 
     def test_rule_2_measure_referencing_dropped_column(self) -> None:
-        """A ``ModelMeasure.formula`` referencing dropped column or dropped
+        """A ``ModelMeasure.expression`` referencing dropped column or dropped
         measure is itself dropped.
         """
-        model = _orders_model(
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="total_amount"),
+        model = _orders_dataset(
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="total_amount"),
                 # transitive: refs total_amount which itself refs dropped 'amount'
-                ModelMeasure(formula="total_amount / count(*)", name="aov"),
+                DatasetMetric(expression="total_amount / count(*)", name="aov"),
             ],
         )
-        edit = EditModelDelete(
-            model_name="orders",
+        edit = EditDatasetDelete(
+            dataset_name="orders",
             data_source="ds",
-            remove=RemoveSpec(columns=["amount"]),
+            remove=RemoveSpec(fields=["amount"]),
         )
         out = compute_datasource_drops(
-            models=[model],
+            datasets=[model],
             sql_table_diffs={"orders": (edit, {"amount"})},
             sql_diffs={},
         )
         entry = _entry_for("orders", out)
-        assert isinstance(entry, EditModelDelete)
-        assert set(entry.remove.measures) >= {"total_amount", "aov"}
+        assert isinstance(entry, EditDatasetDelete)
+        assert set(entry.remove.metrics) >= {"total_amount", "aov"}
 
     def test_rule_2_funcstyle_joined_custom_agg_cascades(self) -> None:
-        """A ``ModelMeasure.formula`` using funcstyle over a custom
+        """A ``ModelMeasure.expression`` using funcstyle over a custom
         aggregation defined on a JOINED model (``rolling_avg(customers.score)``
         where ``rolling_avg`` lives on ``customers``) must extract
         ``customers.score`` as a ref, so dropping that column cascades the
         measure away. The cascade now walks the reachable join graph for
         custom aggregation names instead of using the model's own aggs only.
         """
-        orders = _orders_model(
+        orders = _orders_dataset(
             joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
-            measures=[
-                ModelMeasure(formula="rolling_avg(customers.score)", name="ravg"),
+            metrics=[
+                DatasetMetric(expression="rolling_avg(customers.score)", name="ravg"),
             ],
         )
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="score", sql="score", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
             ],
             aggregations=[
-                Aggregation(name="rolling_avg", formula="AVG({value})"),
+                Aggregation(name="rolling_avg", expression="AVG({value})"),
             ],
         )
         # Live diff: ``customers.score`` was dropped.
-        customers_edit = EditModelDelete(
-            model_name="customers",
+        customers_edit = EditDatasetDelete(
+            dataset_name="customers",
             data_source="ds",
-            remove=RemoveSpec(columns=["score"]),
+            remove=RemoveSpec(fields=["score"]),
         )
         out = compute_datasource_drops(
-            models=[orders, customers],
+            datasets=[orders, customers],
             sql_table_diffs={"customers": (customers_edit, {"score"})},
             sql_diffs={},
         )
         # orders.ravg must cascade because its formula references the
         # dropped customers.score.
         orders_entry = _entry_for("orders", out)
-        assert isinstance(orders_entry, EditModelDelete), out
-        assert "ravg" in set(orders_entry.remove.measures), orders_entry
+        assert isinstance(orders_entry, EditDatasetDelete), out
+        assert "ravg" in set(orders_entry.remove.metrics), orders_entry
 
     def test_rule_3a_join_local_column_dropped(self) -> None:
         """A ``Join`` whose ``local_column`` (= join_pairs[i][0]) was dropped
         produces a ``drop_join`` on the source model.
         """
-        model = _orders_model(
+        model = _orders_dataset(
             joins=[
-                ModelJoin(
-                    target_model="customers",
-                    join_pairs=[["customer_id", "id"]],
+                DatasetRelationship(
+                    to="customers",
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
-        edit = EditModelDelete(
-            model_name="orders",
+        edit = EditDatasetDelete(
+            dataset_name="orders",
             data_source="ds",
-            remove=RemoveSpec(columns=["customer_id"]),
+            remove=RemoveSpec(fields=["customer_id"]),
         )
         out = compute_datasource_drops(
-            models=[model],
+            datasets=[model],
             sql_table_diffs={"orders": (edit, {"customer_id"})},
             sql_diffs={},
         )
         entry = _entry_for("orders", out)
-        assert isinstance(entry, EditModelDelete)
-        assert "customers" in entry.remove.joins
+        assert isinstance(entry, EditDatasetDelete)
+        assert "customers" in entry.remove.relationships
 
     def test_rule_3b_target_foreign_column_dropped(self) -> None:
         """A ``Join`` on model ``K`` whose ``target_model == M`` and whose
         ``foreign_column`` (= join_pairs[i][1]) was dropped on M produces a
         ``drop_join`` on K.
         """
-        orders = _orders_model(
+        orders = _orders_dataset(
             joins=[
-                ModelJoin(
-                    target_model="customers",
-                    join_pairs=[["customer_id", "id"]],
+                DatasetRelationship(
+                    to="customers",
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds",
-            columns=[
-                Column(name="region", sql="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
         # customers.id was dropped
-        edit = EditModelDelete(
-            model_name="customers",
+        edit = EditDatasetDelete(
+            dataset_name="customers",
             data_source="ds",
-            remove=RemoveSpec(columns=["id"]),
+            remove=RemoveSpec(fields=["id"]),
         )
         out = compute_datasource_drops(
-            models=[orders, customers],
+            datasets=[orders, customers],
             sql_table_diffs={"customers": (edit, {"id"})},
             sql_diffs={},
         )
         orders_entry = _entry_for("orders", out)
-        assert isinstance(orders_entry, EditModelDelete)
-        assert "customers" in orders_entry.remove.joins
+        assert isinstance(orders_entry, EditDatasetDelete)
+        assert "customers" in orders_entry.remove.relationships
 
     def test_rule_4_filter_referencing_dropped_column(self) -> None:
-        model = _orders_model(
+        model = _orders_dataset(
             filters=["status = 'completed'", "amount > 0"],
         )
-        edit = EditModelDelete(
-            model_name="orders",
+        edit = EditDatasetDelete(
+            dataset_name="orders",
             data_source="ds",
-            remove=RemoveSpec(columns=["amount"]),
+            remove=RemoveSpec(fields=["amount"]),
         )
         out = compute_datasource_drops(
-            models=[model],
+            datasets=[model],
             sql_table_diffs={"orders": (edit, {"amount"})},
             sql_diffs={},
         )
         entry = _entry_for("orders", out)
-        assert isinstance(entry, EditModelDelete)
+        assert isinstance(entry, EditDatasetDelete)
         assert "amount > 0" in entry.remove_filters
         # Untouched filter stays out of the remove list
         assert "status = 'completed'" not in entry.remove_filters
@@ -708,84 +710,84 @@ class TestCascadeRules:
         """A derived column on model A whose SQL references ``customers.region``
         is cascade-dropped when ``customers.region`` is dropped.
         """
-        orders = _orders_model(
+        orders = _orders_dataset(
             columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 # derived cross-model ref
-                Column(
+                DatasetField(
                     name="customer_region",
                     sql="customers.region",
-                    type=DataType.TEXT,
+                    datatype=DataType.STRING,
                 ),
             ],
             joins=[
-                ModelJoin(
-                    target_model="customers",
-                    join_pairs=[["customer_id", "id"]],
+                DatasetRelationship(
+                    to="customers",
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
-        edit = EditModelDelete(
-            model_name="customers",
+        edit = EditDatasetDelete(
+            dataset_name="customers",
             data_source="ds",
-            remove=RemoveSpec(columns=["region"]),
+            remove=RemoveSpec(fields=["region"]),
         )
         out = compute_datasource_drops(
-            models=[orders, customers],
+            datasets=[orders, customers],
             sql_table_diffs={"customers": (edit, {"region"})},
             sql_diffs={},
         )
         orders_entry = _entry_for("orders", out)
-        assert isinstance(orders_entry, EditModelDelete)
-        assert "customer_region" in orders_entry.remove.columns
+        assert isinstance(orders_entry, EditDatasetDelete)
+        assert "customer_region" in orders_entry.remove.fields
 
     def test_rule_6_query_backed_model_transitive_whole_drop(self) -> None:
         """A query-backed model whose ``source_queries`` chain transitively
         references a dropped column / dropped model gets a ``WholeModelDelete``.
         Multi-stage chain (stage B refs stage A which refs dropped) is covered.
         """
-        orders = _orders_model()
+        orders = _orders_dataset()
         # Two-stage query-backed model: stage A reads from orders, stage B
         # builds on stage A.
-        qb = SlayerModel(
+        qb = SlayerDataset(
             name="qb_orders_summary",
             data_source="ds",
             source_queries=[
                 SlayerQuery.model_validate({
                     "name": "stage_a",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                    "population": "orders",
+                    "metrics": [{"metric": "sum(amount)", "alias": "total"}],
                 }),
                 SlayerQuery.model_validate({
-                    "source_model": "stage_a",
-                    "measures": [{"formula": "max(total)", "name": "peak"}],
+                    "population": "stage_a",
+                    "metrics": [{"metric": "max(total)", "alias": "peak"}],
                 }),
             ],
         )
         # 'amount' on orders dropped — qb_orders_summary stage_a refs it
-        edit = EditModelDelete(
-            model_name="orders",
+        edit = EditDatasetDelete(
+            dataset_name="orders",
             data_source="ds",
-            remove=RemoveSpec(columns=["amount"]),
+            remove=RemoveSpec(fields=["amount"]),
         )
         out = compute_datasource_drops(
-            models=[orders, qb],
+            datasets=[orders, qb],
             sql_table_diffs={"orders": (edit, {"amount"})},
             sql_diffs={},
         )
         qb_entry = _entry_for("qb_orders_summary", out)
-        assert isinstance(qb_entry, WholeModelDelete)
+        assert isinstance(qb_entry, WholeDatasetDelete)
 
     def test_rule_6_query_backed_stage_filter_with_aggregation_cascades(
         self,
@@ -796,30 +798,30 @@ class TestCascadeRules:
         Stage filters were once routed through the SQL-only ref
         extractor and returned ``[]``, so drift cascades were missed.
         """
-        orders = _orders_model()
-        qb = SlayerModel(
+        orders = _orders_dataset()
+        qb = SlayerDataset(
             name="qb_orders_filtered",
             data_source="ds",
             source_queries=[
                 SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)", "name": "total"}],
-                    "filters": ["sum(amount) > 100"],
+                    "population": "orders",
+                    "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+                    "filter": ["sum(amount) > 100"],
                 }),
             ],
         )
-        edit = EditModelDelete(
-            model_name="orders",
+        edit = EditDatasetDelete(
+            dataset_name="orders",
             data_source="ds",
-            remove=RemoveSpec(columns=["amount"]),
+            remove=RemoveSpec(fields=["amount"]),
         )
         out = compute_datasource_drops(
-            models=[orders, qb],
+            datasets=[orders, qb],
             sql_table_diffs={"orders": (edit, {"amount"})},
             sql_diffs={},
         )
         qb_entry = _entry_for("qb_orders_filtered", out)
-        assert isinstance(qb_entry, WholeModelDelete)
+        assert isinstance(qb_entry, WholeDatasetDelete)
 
     def test_rule_6_query_backed_whole_drop_when_base_model_whole_dropped(
         self,
@@ -827,76 +829,76 @@ class TestCascadeRules:
         """If the underlying model gets a whole-drop (live table missing),
         any query-backed model that references it transitively whole-drops.
         """
-        orders = _orders_model()
-        qb = SlayerModel(
+        orders = _orders_dataset()
+        qb = SlayerDataset(
             name="qb_orders",
             data_source="ds",
             source_queries=[
                 SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                    "population": "orders",
+                    "metrics": [{"metric": "sum(amount)", "alias": "total"}],
                 }),
             ],
         )
-        whole = WholeModelDelete(model_name="orders", data_source="ds")
+        whole = WholeDatasetDelete(dataset_name="orders", data_source="ds")
         out = compute_datasource_drops(
-            models=[orders, qb],
-            sql_table_diffs={"orders": (whole, {c.name for c in orders.columns})},
+            datasets=[orders, qb],
+            sql_table_diffs={"orders": (whole, {c.name for c in orders.fields})},
             sql_diffs={},
         )
         qb_entry = _entry_for("qb_orders", out)
-        assert isinstance(qb_entry, WholeModelDelete)
+        assert isinstance(qb_entry, WholeDatasetDelete)
 
     def test_rule_7_pk_drop_does_not_cascade(self) -> None:
         """PK drops don't cascade into derived columns / measures / filters."""
-        model = _orders_model(
+        model = _orders_dataset(
             columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 # Derived column that *would* reference 'id' — but PK drops
                 # don't trigger cascade, so this column survives.
-                Column(name="id_doubled", sql="id * 2", type=DataType.DOUBLE),
+                DatasetField(name="id_doubled", sql="id * 2", datatype=DataType.FLOAT),
             ],
-            measures=[ModelMeasure(formula="count_distinct(id)", name="unique_ids")],
+            metrics=[DatasetMetric(expression="count_distinct(id)", name="unique_ids")],
         )
-        edit = EditModelDelete(
-            model_name="orders",
+        edit = EditDatasetDelete(
+            dataset_name="orders",
             data_source="ds",
-            remove=RemoveSpec(columns=["id"]),
+            remove=RemoveSpec(fields=["id"]),
             reasons=[],
         )
         out = compute_datasource_drops(
-            models=[model],
+            datasets=[model],
             sql_table_diffs={"orders": (edit, {"id"})},
             sql_diffs={},
         )
         entry = _entry_for("orders", out)
-        assert isinstance(entry, EditModelDelete)
-        assert "id" in entry.remove.columns
+        assert isinstance(entry, EditDatasetDelete)
+        assert "id" in entry.remove.fields
         # Cascade has not extended into derived columns / measures / filters
-        assert "id_doubled" not in entry.remove.columns
-        assert "unique_ids" not in entry.remove.measures
+        assert "id_doubled" not in entry.remove.fields
+        assert "unique_ids" not in entry.remove.metrics
 
 
 class TestCollapseRule:
     def test_whole_drop_preempts_edit_for_same_model(self) -> None:
         """When a single model receives both an EditModelDelete and a
         WholeModelDelete, only the WholeModelDelete is emitted."""
-        model = _orders_model()
+        model = _orders_dataset()
         # Live table missing → WholeModelDelete; meanwhile a column-bucket
         # diff would also try to emit EditModelDelete via cascade. The
         # collapse rule should leave only the whole-drop.
-        whole = WholeModelDelete(model_name="orders", data_source="ds")
+        whole = WholeDatasetDelete(dataset_name="orders", data_source="ds")
         out = compute_datasource_drops(
-            models=[model],
-            sql_table_diffs={"orders": (whole, {c.name for c in model.columns})},
+            datasets=[model],
+            sql_table_diffs={"orders": (whole, {c.name for c in model.fields})},
             sql_diffs={},
         )
-        entries = [e for e in out if e.model_name == "orders"]
+        entries = [e for e in out if e.dataset_name == "orders"]
         assert len(entries) == 1
-        assert isinstance(entries[0], WholeModelDelete)
+        assert isinstance(entries[0], WholeDatasetDelete)
 
 
 class TestCrossDatasourceBoundary:
@@ -907,26 +909,26 @@ class TestCrossDatasourceBoundary:
         """
         # Model in ds_a references customers from ds_b — this is invalid
         # cross-DS but at the cascade layer we just don't follow it.
-        orders_in_a = _orders_model(data_source="ds_a")
-        customers_in_b = SlayerModel(
+        orders_in_a = _orders_dataset(data_source="ds_a")
+        customers_in_b = SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds_b",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
         # Drop region in ds_b
-        edit = EditModelDelete(
-            model_name="customers",
+        edit = EditDatasetDelete(
+            dataset_name="customers",
             data_source="ds_b",
-            remove=RemoveSpec(columns=["region"]),
+            remove=RemoveSpec(fields=["region"]),
         )
         # Run compute scoped to ds_a — orders_in_a is the only model.
         # Cascade should NOT see anything about customers in ds_b.
         out_a = compute_datasource_drops(
-            models=[orders_in_a],
+            datasets=[orders_in_a],
             sql_table_diffs={},
             sql_diffs={},
         )
@@ -936,7 +938,7 @@ class TestCrossDatasourceBoundary:
         # And running compute scoped to ds_b — only customers is touched,
         # orders_in_a (which lives in ds_a) is not even passed in.
         out_b = compute_datasource_drops(
-            models=[customers_in_b],
+            datasets=[customers_in_b],
             sql_table_diffs={"customers": (edit, {"region"})},
             sql_diffs={},
         )
@@ -992,32 +994,32 @@ class TestValidateModelsEndToEnd:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="ds",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                    Column(name="region", sql="region", type=DataType.TEXT),
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
                 ],
             )
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="ds",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                    Column(name="status", sql="status", type=DataType.TEXT),
-                    Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 ],
-                joins=[
-                    ModelJoin(
-                        target_model="customers",
-                        join_pairs=[["customer_id", "id"]],
+                relationships=[
+                    DatasetRelationship(
+                        to="customers",
+                        from_columns=["customer_id"], to_columns=["id"],
                     ),
                 ],
             )
@@ -1027,7 +1029,7 @@ class TestValidateModelsEndToEnd:
 
     async def test_no_drift_returns_empty_list(self, workspace: Path) -> None:
         engine, _ = await self._setup(workspace)
-        result = await engine.validate_models(data_source="ds")
+        result = await engine.validate_datasets(data_source="ds")
         assert result == []
 
     async def test_dropped_column_is_reported(self, workspace: Path) -> None:
@@ -1036,10 +1038,10 @@ class TestValidateModelsEndToEnd:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders DROP COLUMN status")
 
-        result = await engine.validate_models(data_source="ds")
+        result = await engine.validate_datasets(data_source="ds")
         orders_entry = _entry_for("orders", result)
-        assert isinstance(orders_entry, EditModelDelete)
-        assert "status" in orders_entry.remove.columns
+        assert isinstance(orders_entry, EditDatasetDelete)
+        assert "status" in orders_entry.remove.fields
 
     async def test_dropped_table_yields_whole_model_delete(
         self, workspace: Path
@@ -1048,24 +1050,24 @@ class TestValidateModelsEndToEnd:
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE orders")
 
-        result = await engine.validate_models(data_source="ds")
+        result = await engine.validate_datasets(data_source="ds")
         orders_entry = _entry_for("orders", result)
-        assert isinstance(orders_entry, WholeModelDelete)
+        assert isinstance(orders_entry, WholeDatasetDelete)
 
     async def test_validate_models_is_read_only(self, workspace: Path) -> None:
         """The validator must never mutate storage. Persisted models stay byte-
         for-byte unchanged after a validate_models call.
         """
         engine, db_path = await self._setup(workspace)
-        before = await engine.storage.get_model("orders", data_source="ds")
+        before = await engine.storage.get_dataset("orders", data_source="ds")
         before_dump = before.model_dump()
 
         # Mutate live DB and re-validate.
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders DROP COLUMN status")
-        await engine.validate_models(data_source="ds")
+        await engine.validate_datasets(data_source="ds")
 
-        after = await engine.storage.get_model("orders", data_source="ds")
+        after = await engine.storage.get_dataset("orders", data_source="ds")
         assert after.model_dump() == before_dump
 
     async def test_multi_datasource_concatenates_results(
@@ -1087,16 +1089,16 @@ class TestValidateModelsEndToEnd:
         await engine.storage.save_datasource(
             DatasourceConfig(name="ds_b", type="sqlite", database=db_b)
         )
-        await engine.storage.save_model(
-            SlayerModel(
+        await engine.storage.save_dataset(
+            SlayerDataset(
                 name="products",
                 sql_table="products",
                 data_source="ds_b",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    Column(name="sku", sql="sku", type=DataType.TEXT),
+                    DatasetField(name="sku", sql="sku", datatype=DataType.STRING),
                 ],
             )
         )
@@ -1107,7 +1109,7 @@ class TestValidateModelsEndToEnd:
             conn_b.execute("ALTER TABLE products DROP COLUMN sku")
 
         # Default datasource arg → both DSes
-        result = await engine.validate_models()
+        result = await engine.validate_datasets()
         ds_names = {entry.data_source for entry in result}
         assert ds_names == {"ds", "ds_b"}
         # Cascades are bound per-DS — entries reference their own DS only
@@ -1151,8 +1153,8 @@ class TestValidateModelsSqliteProbe:
         workspace: Path,
         *,
         values: list,
-        columns: list[Column],
-        measures: list[ModelMeasure] | None = None,
+        columns: list[DatasetField],
+        metrics: list[DatasetMetric] | None = None,
         ds_type: str = "sqlite",
     ) -> tuple[SlayerQueryEngine, str]:
         """Persist a sensordata model whose ``tempstabidx`` column is
@@ -1167,13 +1169,13 @@ class TestValidateModelsSqliteProbe:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type=ds_type, database=db_path)
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="sensordata",
                 sql_table="sensordata",
                 data_source="ds",
-                columns=columns,
-                measures=measures or [],
+                fields=columns,
+                metrics=metrics or [],
             )
         )
         return SlayerQueryEngine(storage=storage), db_path
@@ -1185,16 +1187,16 @@ class TestValidateModelsSqliteProbe:
             workspace,
             values=[1, 0.5, 0.7, 0.9, 0.99],
             columns=[
-                Column(
-                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
-        result = await engine.validate_models(data_source="ds")
+        result = await engine.validate_datasets(data_source="ds")
         assert _delete_for("sensordata", result) is None, result
         finding = _retype_for(result, "tempstabidx")
-        assert (finding["stored_type"], finding["live_type"]) == ("INT", "DOUBLE"), finding
+        assert (finding["stored_type"], finding["live_type"]) == ("Integer", "Float"), finding
         assert "slayer ingest" in finding["remedy"], finding
 
     async def test_reports_a_retype_when_storage_widens_to_text(
@@ -1206,16 +1208,16 @@ class TestValidateModelsSqliteProbe:
             workspace,
             values=[1, 2, "abc", "xyz"],
             columns=[
-                Column(
-                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
-        result = await engine.validate_models(data_source="ds")
+        result = await engine.validate_datasets(data_source="ds")
         assert _delete_for("sensordata", result) is None, result
         finding = _retype_for(result, "tempstabidx")
-        assert (finding["stored_type"], finding["live_type"]) == ("INT", "TEXT"), finding
+        assert (finding["stored_type"], finding["live_type"]) == ("Integer", "String"), finding
         assert "slayer ingest" in finding["remedy"], finding
 
     async def test_no_drift_when_probe_agrees(
@@ -1226,13 +1228,13 @@ class TestValidateModelsSqliteProbe:
             workspace,
             values=[1, 2, 3, 4, 5],
             columns=[
-                Column(
-                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
-        result = await engine.validate_models(data_source="ds")
+        result = await engine.validate_datasets(data_source="ds")
         assert result == []
 
     async def test_non_sqlite_skips_probe(self, workspace: Path) -> None:
@@ -1251,17 +1253,17 @@ class TestValidateModelsSqliteProbe:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="duckdb", database=db_path)
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="sensordata",
                 sql_table="sensordata",
                 data_source="ds",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.INT, primary_key=True,
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                     ),
-                    Column(
-                        name="tempstabidx", sql="tempstabidx", type=DataType.INT,
+                    DatasetField(
+                        name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER,
                     ),
                 ],
             )
@@ -1272,11 +1274,11 @@ class TestValidateModelsSqliteProbe:
             "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not fire on non-SQLite"),
         ):
-            result = await engine.validate_models(data_source="ds")
+            result = await engine.validate_datasets(data_source="ds")
         # No probe-related drift; the test mainly asserts the patch never
         # fires.
-        assert all(e.model_name != "sensordata" or
-                   "tempstabidx" not in getattr(e, "remove", RemoveSpec()).columns
+        assert all(e.dataset_name != "sensordata" or
+                   "tempstabidx" not in (e.remove if isinstance(e, EditDatasetDelete) else RemoveSpec()).fields
                    for e in result)
 
     async def test_probe_failure_no_entry(self, workspace: Path) -> None:
@@ -1286,21 +1288,21 @@ class TestValidateModelsSqliteProbe:
             workspace,
             values=[1, 0.5, 0.7],
             columns=[
-                Column(
-                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         with patch(
             "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             return_value=None,
         ):
-            result = await engine.validate_models(data_source="ds")
+            result = await engine.validate_datasets(data_source="ds")
         # No drift entry for tempstabidx via the probe path.
         entry = _entry_for("sensordata", result)
         assert entry is None or "tempstabidx" not in (
-            entry.remove.columns if isinstance(entry, EditModelDelete) else []
+            entry.remove.fields if isinstance(entry, EditDatasetDelete) else []
         )
 
     async def test_probe_retype_keeps_the_dependent_measure(
@@ -1310,19 +1312,19 @@ class TestValidateModelsSqliteProbe:
             workspace,
             values=[1, 0.5, 0.7, 0.9],
             columns=[
-                Column(
-                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
-            measures=[
-                ModelMeasure(
-                    formula="sum(tempstabidx)",
+            metrics=[
+                DatasetMetric(
+                    expression="sum(tempstabidx)",
                     name="stab_total",
                 ),
             ],
         )
-        result = await engine.validate_models(data_source="ds")
+        result = await engine.validate_datasets(data_source="ds")
         assert _delete_for("sensordata", result) is None, result
         assert _retype_for(result, "tempstabidx")
 
@@ -1333,14 +1335,14 @@ class TestValidateModelsSqliteProbe:
             workspace,
             values=[1, 0.5, 0.7, 0.9],
             columns=[
-                Column(
-                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
-                Column(name="doubled", sql="tempstabidx * 2", type=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
+                DatasetField(name="doubled", sql="tempstabidx * 2", datatype=DataType.INTEGER),
             ],
         )
-        result = await engine.validate_models(data_source="ds")
+        result = await engine.validate_datasets(data_source="ds")
         assert _delete_for("sensordata", result) is None, result
 
 
@@ -1349,7 +1351,7 @@ class TestResolveLiveTable:
 
     @staticmethod
     def _live(name: str) -> LiveTable:
-        return LiveTable(columns={"id": DataType.DOUBLE})
+        return LiveTable(columns={"id": DataType.FLOAT})
 
     def test_bare_table_matches(self) -> None:
         live = self._live("orders")

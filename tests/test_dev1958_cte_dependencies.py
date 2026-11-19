@@ -12,12 +12,13 @@ from slayer.ir.planned import _iter_plans_with_producers, _walk_regroup_attaches
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1832_fixtures import (
-    ModelMeasure,
     TimeDimension,
     TimeGranularity,
     degenerate_warnings,
-    dev1832_models,
+    dev1832_datasets,
     gen,
     make_exec_engine,
     month_key,
@@ -32,13 +33,13 @@ REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
 DEGENERATE_SHARE = "sum(amount) / max(sum(amount, partition_by=[region]), partition_by=region)"
 
 
-def _q(formula: str, *, date_range: bool = False):
-    td = ([TimeDimension(dimension="ordered_at",
+def _q(expression: str, *, date_range: bool = False):
+    td = ([TimeDimension(field="ordered_at",
                          granularity=TimeGranularity.MONTH,
                          date_range=["2024-02-01", "2024-03-31"])]
           if date_range else month_td())
     return monthly_q(dimensions=["region"], time_dimensions=td,
-                     measures=[ModelMeasure(formula=f"time_shift({formula}, -1)", name="t")])
+                     metrics=[QueryMetric(metric=f"time_shift({expression}, -1)", alias="t")])
 
 
 def _ctes(sql: str) -> list[str]:
@@ -101,12 +102,12 @@ class TestShiftedProducerOrdering:
 
 
 class TestIdentityDeduplicatedTraversal:
-    def _plan(self, formula: str):
-        models = dev1832_models()
+    def _plan(self, expression: str):
+        models = dev1832_datasets()
         root = next(m for m in models if m.name == "monthly")
-        return plan_query(query=_q(formula), bundle=ResolvedSourceBundle(
+        return plan_query(query=_q(expression), bundle=ResolvedSourceBundle(
             dialect="duckdb",
-            source_model=root, referenced_models=[m for m in models if m is not root]))
+            population=root, referenced_datasets=[m for m in models if m is not root]))
 
     def test_carried_attach_yielded_once(self) -> None:
         pq = self._plan(REGION_SHARE)

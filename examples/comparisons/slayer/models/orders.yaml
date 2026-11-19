@@ -1,14 +1,14 @@
 name: orders
 data_source: probe
 sql_table: orders
-columns:
-  - {name: id, type: number, primary_key: true}
-  - {name: customer_id, type: number}
-  - {name: amount, type: number}
-  - {name: status, type: string}
-  - {name: order_date, type: date}
-joins:
-  - {target_model: customers, join_pairs: [[customer_id, id]], cardinality: many_to_one}
-measures:
-  - {name: aov, formula: "sum(amount) / count(*)"}
-  - {name: aov_chg, formula: "change_pct(aov)"}
+fields:
+  - {name: id, datatype: Float, primary_key: true}
+  - {name: customer_id, datatype: Float}
+  - {name: amount, datatype: Float}
+  - {name: status, datatype: String}
+  - {name: order_date, datatype: Date}
+relationships:
+  - {to: customers, from_columns: [customer_id], to_columns: [id], cardinality: many_to_one}
+metrics:
+  - {name: aov, expression: "sum(amount) / count(*)"}
+  - {name: aov_chg, expression: "change_pct(aov)"}

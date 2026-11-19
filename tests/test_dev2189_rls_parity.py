@@ -36,7 +36,7 @@ from tests._dev2189_fixtures import (
     reference_scoped_sql,
     refusal,
     row_values,
-    save_models,
+    save_datasets,
     save_query_backed,
     seed_statements,
     shape_supported,
@@ -114,7 +114,7 @@ async def pg_engine(postgresql, tmp_path) -> AsyncGenerator[tuple[SlayerQueryEng
     ds = client_datasource(postgresql.info, name="test")
     storage = YAMLStorage(base_dir=str(tmp_path))
     async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-        await save_models(storage)
+        await save_datasets(storage)
         await save_query_backed(engine)
         yield engine, ds
 
@@ -264,7 +264,7 @@ async def test_the_side_statistics_fail_closed(kind: str, monkeypatch: pytest.Mo
             engine = await _scoped_engine(base, kind, monkeypatch)
             try:
                 with pytest.raises(ForcedFilterError) as exc:
-                    await engine.detect_join_cardinality(data_source="test", model="customers")
+                    await engine.detect_relationship_cardinality(data_source="test", dataset="customers")
             finally:
                 engine.close()
     refused = exc.value.table
@@ -307,10 +307,10 @@ async def test_profiling_reads_only_the_tenants_rows(policy: str) -> None:
     async with file_engine("sqlite") as (base, _):
         engine = SlayerQueryEngine(storage=base.storage, policy=POLICIES[policy])
         try:
-            report = await engine.detect_join_cardinality(data_source="test", model="customers")
+            report = await engine.detect_relationship_cardinality(data_source="test", dataset="customers")
         finally:
             engine.close()
-    (finding,) = [f for f in report.findings if f.target_model == "orders"]
+    (finding,) = [f for f in report.findings if f.to == "orders"]
     assert finding.source_side is not None
     assert finding.target_side is not None
     assert (finding.source_side.row_count, finding.target_side.row_count) == (2, 3)

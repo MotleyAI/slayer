@@ -5,6 +5,8 @@ DEV-1608 §10.
 
 import json
 
+from slayer.cube.converter import CubeToSlayerConverter
+from slayer.cube.models import CubeCube, CubeDimension, CubeProject, CubeView, CubeViewCubeRef
 from slayer.cube.report import (
     CubeConversionIssue,
     CubeConversionReport,
@@ -60,14 +62,14 @@ def test_result_json_round_trips():
                 message="pre_aggregations dropped",
                 raw="name: main",
             )],
-            model_count=3,
+            dataset_count=3,
             hidden_count=1,
             view_count=1,
         )
     )
     blob = result.model_dump_json()
     parsed = json.loads(blob)
-    assert parsed["report"]["model_count"] == 3
+    assert parsed["report"]["dataset_count"] == 3
     assert parsed["report"]["issues"][0]["category"] == "unmapped_infra"
 
     # Re-validate from the JSON to confirm the categories survive the round-trip.
@@ -80,9 +82,6 @@ def test_result_json_round_trips():
 
 def test_converter_derives_report_counts():
     """The converter must populate model/hidden/view counts on the report."""
-    from slayer.cube.converter import CubeToSlayerConverter
-    from slayer.cube.models import CubeCube, CubeDimension, CubeProject, CubeView, CubeViewCubeRef
-
     project = CubeProject(
         cubes=[
             CubeCube(name="orders", sql_table="public.orders",
@@ -94,6 +93,6 @@ def test_converter_derives_report_counts():
             CubeViewCubeRef(join_path="orders", includes=["id"])])],
     )
     result = CubeToSlayerConverter(project=project, data_source="ds").convert()
-    assert result.report.model_count == len(result.models)
+    assert result.report.dataset_count == len(result.datasets)
     assert result.report.hidden_count == 1
     assert result.report.view_count == 1

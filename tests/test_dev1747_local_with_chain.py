@@ -29,10 +29,10 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from tests._dev1747_fixtures import (
     cte_body_names,
-    dev1747_models,
+    dev1747_datasets,
     order_by_text,
     with_node_of,
 )
@@ -45,41 +45,41 @@ import inspect
 #: A LOCAL (single-model) transform chain — no cross-model measure, so it takes
 #: the f-string splice path rather than the cross-model one PR 3 already fixed.
 _CHAIN_QUERY = SlayerQuery(
-    source_model="orders",
+    population="orders",
     time_dimensions=[TimeDimension(
-        dimension="created_at",
+        field="created_at",
         granularity=TimeGranularity.MONTH,
     )],
-    measures=[
-        {"formula": "sum(amount)", "name": "rev"},
-        {"formula": "cumsum(sum(amount))", "name": "cs"},
+    metrics=[
+        {"metric": "sum(amount)", "alias": "rev"},
+        {"metric": "cumsum(sum(amount))", "alias": "cs"},
     ],
 )
 
 #: Two chained transforms, so the chain has more than one step and dependency
 #: ORDER is actually observable.
 _MULTI_STEP_QUERY = SlayerQuery(
-    source_model="orders",
+    population="orders",
     time_dimensions=[TimeDimension(
-        dimension="created_at",
+        field="created_at",
         granularity=TimeGranularity.MONTH,
     )],
-    measures=[
-        {"formula": "sum(amount)", "name": "rev"},
-        {"formula": "cumsum(sum(amount))", "name": "cs"},
-        {"formula": "change(sum(amount))", "name": "ch"},
+    metrics=[
+        {"metric": "sum(amount)", "alias": "rev"},
+        {"metric": "cumsum(sum(amount))", "alias": "cs"},
+        {"metric": "change(sum(amount))", "alias": "ch"},
     ],
 )
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
-    models = dev1747_models()
+    models = dev1747_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:], dialect=dialect,
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect,
     )
 
 
-def _assembler_spy(monkeypatch) -> list:
+def _assembler_spy(monkeypatch: pytest.MonkeyPatch) -> list:
     """Record the ``CteEntry`` list handed to ``assemble_with_chain``.
 
     Patched as BOUND in ``slayer.sql.generator`` (which does ``from … import
@@ -133,10 +133,10 @@ class TestWithChainAssembly:
     async def test_chain_still_orders_and_paginates(self) -> None:
         """The chain's outer wrap is where ORDER BY / LIMIT land; D8 must not
         disturb that while replacing the splice."""
-        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="created_at",
+        sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="cs"), direction="desc")], "limit": 2}))
+            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")], "limit": 2}))
         assert order_by_text(sql), f"chain lost its ORDER BY:\n{sql}"
         assert "LIMIT" in sql.upper() or "TOP" in sql.upper()
 
@@ -155,7 +155,7 @@ class TestNoTextRoundTrip:
         )
 
     async def test_chain_bodies_reach_the_assembler_as_ast(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The positive half. Every entry the chain hands the assembler must
         already be a ``exp.Select`` — a string body would mean the renderer
@@ -172,7 +172,7 @@ class TestNoTextRoundTrip:
                 f"{type(entry.query).__name__}, not exp.Select"
             )
 
-    async def test_chain_declares_its_dependencies(self, monkeypatch) -> None:
+    async def test_chain_declares_its_dependencies(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """D8's substantive change. Emitting in the right order is not the
         contract — DECLARING the dependency is, because the current code gets
         the order right by reading ``ctes[-1][0]`` positionally, which is
@@ -226,15 +226,15 @@ class TestChainSemanticsPreserved:
     async def test_hidden_order_slot_survives_the_chain(self) -> None:
         """A hidden order-only slot has to be carried through every step; the
         carry lists are plan-ordered (B8, PR 3) and must stay that way."""
-        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="created_at",
+        sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="status"), direction="desc")]}))
+            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="status", direction="desc")]}))
         assert order_by_text(sql)
 
     async def test_post_phase_filter_still_wraps_the_chain(self) -> None:
-        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="created_at",
+        sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "filters": ["cs > 5"]}))
+            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "filter": ["cs > 5"]}))
         assert "WHERE" in sql.upper()

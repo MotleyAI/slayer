@@ -17,7 +17,7 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
-from slayer.core.models import DatasourceConfig, ModelMeasure
+from slayer.core.models import DatasourceConfig
 from slayer.engine.cache import CacheConfig
 from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -26,25 +26,27 @@ from slayer.pg_facade.connection import PgConnection
 from slayer.database.client import ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements, ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev1840_fixtures import dev1840_models, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1840_fixtures import dev1840_datasets, q
 from tests._gateway_harness import (
     DS_NAME,
     GatewayFactory,
     RecordingClient,
     backend_of,
-    customers_model,
+    customers_dataset,
     no_direct_access,
-    orders_model,
-    paid_sql_model,
+    orders_dataset,
+    paid_sql_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
 )
 from tests.pg_facade.test_connection import _FakeWriter, _messages, _query, _startup, _terminate
 
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
 REVENUE_BY_STATUS = {
-    "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
 }
 
 
@@ -63,7 +65,7 @@ async def shop(tmp_path: Path) -> Shop:
     ds = shop_datasource(db)
     storage = await shop_storage(
         str(tmp_path / "store"), datasource=ds,
-        models=[orders_model(), customers_model(), paid_sql_model()],
+        datasets=[orders_dataset(), customers_dataset(), paid_sql_dataset()],
     )
     return Shop(db=db, datasource=ds, storage=storage)
 
@@ -113,7 +115,7 @@ class TestStatementsReachTheFactoryClient:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
-            report = await engine.detect_join_cardinality(data_source=DS_NAME)
+            report = await engine.detect_relationship_cardinality(data_source=DS_NAME)
         assert guard.attempts == []
         assert report.findings
         assert all(f.verdict is not CardinalityVerdict.SCAN_FAILED for f in report.findings), report.findings
@@ -144,16 +146,16 @@ class TestStatementsReachTheFactoryClient:
 
 _PUSHED = q(
     dimensions=["customers.tier"],
-    measures=[ModelMeasure(formula="sum(amount)", name="m"), ModelMeasure(formula="sum(customers.spend)", name="cm")],
-    filters=["channel = 'app'"],
+    metrics=[QueryMetric(metric="sum(amount)", alias="m"), QueryMetric(metric="sum(customers.spend)", alias="cm")],
+    filter=["channel = 'app'"],
 )
 
 
 async def _clickhouse_engine(tmp_path: Path, *, profile: ServerProfile, built: list[ProfileClient]) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="clickhouse"))
-    for model in dev1840_models():
-        await storage.save_model(model, _validate=False)
+    for model in dev1840_datasets():
+        await storage.save_dataset(model, _validate=False)
 
     def factory(datasource: DatasourceConfig) -> ProfileClient:
         built.append(ProfileClient(datasource=datasource, profile=profile))
@@ -205,7 +207,7 @@ class TestOneConstructionPoint:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
-            await engine.validate_models(DS_NAME)
+            await engine.validate_datasets(DS_NAME)
             response = await engine.execute(COUNT_ORDERS)
         assert guard.attempts == []
         assert isinstance(engine.client_for(shop.datasource), RecordingClient)
@@ -218,8 +220,8 @@ class TestOneConstructionPoint:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         for name, db in (("shop", first_db), ("twin1", twin_db), ("twin2", twin_db)):
             await storage.save_datasource(shop_datasource(db, name=name))
-            await storage.save_model(orders_model(data_source=name), _validate=False)
-            await storage.save_model(customers_model(data_source=name), _validate=False)
+            await storage.save_dataset(orders_dataset(data_source=name), _validate=False)
+            await storage.save_dataset(customers_dataset(data_source=name), _validate=False)
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=storage, client_factory=factory)
         for _ in range(3):
@@ -233,7 +235,7 @@ class TestOneConstructionPoint:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
             response = await engine.execute(COUNT_ORDERS)
-            entries = await engine.validate_models(DS_NAME)
+            entries = await engine.validate_datasets(DS_NAME)
         assert guard.attempts == []
         assert _n(response) == 4
         assert entries == []
@@ -246,7 +248,7 @@ class TestEngineOwnsItsClients:
     async def test_join_profiling_leaves_the_shared_client_open(self, shop: Shop) -> None:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
-        await engine.detect_join_cardinality(data_source=DS_NAME)
+        await engine.detect_relationship_cardinality(data_source=DS_NAME)
         assert len(factory.clients) == 1
         client = factory.clients[0]
         assert (client.acloses, client.closes) == (0, 0)
@@ -258,7 +260,7 @@ class TestEngineOwnsItsClients:
         twin_db = str(tmp_path / "twin.db")
         shutil.copy(shop.db, twin_db)
         await shop.storage.save_datasource(shop_datasource(twin_db, name="twin"))
-        await shop.storage.save_model(orders_model(data_source="twin"), _validate=False)
+        await shop.storage.save_dataset(orders_dataset(data_source="twin"), _validate=False)
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         await engine.execute(COUNT_ORDERS, data_source=DS_NAME)
@@ -286,7 +288,7 @@ class TestEngineOwnsItsClients:
 
         assert asyncio.run(_inside_a_loop()) == 4
         with pytest.raises(SlayerError):
-            client.query_sync({"source_model": "no_such_model", "measures": [{"formula": "count(*)"}]})
+            client.query_sync({"population": "no_such_model", "metrics": [{"metric": "count(*)"}]})
         assert acloses() == 0
 
     def test_run_sync_leaves_custom_clients_open_when_cancelled(self, shop: Shop) -> None:
@@ -318,7 +320,7 @@ class TestEngineOwnsItsClients:
         twin_db = str(tmp_path / "twin.db")
         shutil.copy(shop.db, twin_db)
         run_sync(shop.storage.save_datasource(shop_datasource(twin_db, name="twin")))
-        run_sync(shop.storage.save_model(orders_model(data_source="twin"), _validate=False))
+        run_sync(shop.storage.save_dataset(orders_dataset(data_source="twin"), _validate=False))
         released: list[str] = []
 
         async def _release(self: SlayerSQLClient) -> None:
@@ -348,7 +350,7 @@ class TestEngineOwnsItsClients:
 
         monkeypatch.setattr(engine, "release_local_connections", _release)
         try:
-            model = engine.create_model_from_query_sync(REVENUE_BY_STATUS, name="rev_by_status")
+            model = engine.create_dataset_from_query_sync(REVENUE_BY_STATUS, name="rev_by_status")
         finally:
             engine.close()
         assert model.name == "rev_by_status"
@@ -372,7 +374,7 @@ class TestEngineOwnsItsClients:
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
             http = TestClient(app)
             queried = http.post("/query", json=COUNT_ORDERS)
-            validated = http.post("/validate-models", json={"data_source": DS_NAME})
+            validated = http.post("/validate-datasets", json={"data_source": DS_NAME})
             ingested = http.post("/ingest", json={"datasource": DS_NAME})
         assert guard.attempts == []
         assert queried.status_code == 200, queried.text
@@ -390,7 +392,7 @@ class TestEngineOwnsItsClients:
 
         monkeypatch.setattr(api_server, "SlayerQueryEngine", _Counting)
         http = TestClient(create_app(storage=shop.storage, client_factory=GatewayFactory()))
-        recommended = http.post("/recommend-root-model", json={"items": ["orders.amount", "customers.id"]})
+        recommended = http.post("/recommend-population", json={"items": ["orders.amount", "customers.id"]})
         assert recommended.status_code == 200, recommended.text
         assert len(built) == 1
 

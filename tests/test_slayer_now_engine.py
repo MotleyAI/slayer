@@ -17,7 +17,7 @@ from tests._time_points_fixtures import month_key, monthly
 D = datetime
 EXPLICIT_NOW = D(2026, 9, 29, 12)
 EXPLICIT_WINDOW = ids_in(D(2026, 6, 1), D(2026, 9, 1))
-COUNT = [{"formula": "count(*)", "name": "n"}]
+COUNT = [{"metric": "count(*)", "alias": "n"}]
 
 
 class _FalseyClock:
@@ -30,7 +30,7 @@ class _FalseyClock:
         return EXPLICIT_NOW
 
 
-async def test_pinned_datetime_drives_relative_tokens(monkeypatch) -> None:
+async def test_pinned_datetime_drives_relative_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     async with now_engine() as engine:
         got = await ids(engine, LAST_3_MONTHS)
@@ -39,7 +39,7 @@ async def test_pinned_datetime_drives_relative_tokens(monkeypatch) -> None:
     assert not {1, 5} & got
 
 
-async def test_date_only_pins_midnight(monkeypatch) -> None:
+async def test_date_only_pins_midnight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", "2025-07-15")
     async with now_engine() as engine:
         today = await ids(engine, "ts = 'today'")
@@ -49,7 +49,7 @@ async def test_date_only_pins_midnight(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("value", [None, "", "   "], ids=["unset", "empty", "whitespace"])
-async def test_unset_or_blank_keeps_host_clock(monkeypatch, value) -> None:
+async def test_unset_or_blank_keeps_host_clock(monkeypatch: pytest.MonkeyPatch, value) -> None:
     if value is None:
         monkeypatch.delenv("SLAYER_NOW", raising=False)
     else:
@@ -57,7 +57,7 @@ async def test_unset_or_blank_keeps_host_clock(monkeypatch, value) -> None:
     before = date.today()
     async with now_engine() as engine:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "measures": COUNT, "filters": ["ts = 'today'"],
+            "population": "ev", "metrics": COUNT, "filter": ["ts = 'today'"],
         }), dry_run=True)
     assert resp.sql is not None
     assert any(
@@ -67,20 +67,20 @@ async def test_unset_or_blank_keeps_host_clock(monkeypatch, value) -> None:
 
 
 @pytest.mark.parametrize("value", [PIN, "yesterday-ish", "2025-07-15T12:00:00Z"], ids=["pin", "unparseable", "aware"])
-async def test_explicit_clock_wins(monkeypatch, value) -> None:
+async def test_explicit_clock_wins(monkeypatch: pytest.MonkeyPatch, value) -> None:
     monkeypatch.setenv("SLAYER_NOW", value)
     async with now_engine(clock=lambda: EXPLICIT_NOW) as engine:
         assert await ids(engine, LAST_3_MONTHS) == EXPLICIT_WINDOW == {14}
 
 
-async def test_falsey_explicit_clock_wins(monkeypatch) -> None:
+async def test_falsey_explicit_clock_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     async with now_engine(clock=_FalseyClock()) as engine:
         assert await ids(engine, LAST_3_MONTHS) == EXPLICIT_WINDOW
 
 
 @pytest.mark.parametrize("value", ["2025-07-15T12:00:00Z", "2025-07-15T12:00:00+02:00"], ids=["Z", "offset"])
-def test_timezone_aware_value_rejected_at_build(monkeypatch, tmp_path, value) -> None:
+def test_timezone_aware_value_rejected_at_build(monkeypatch: pytest.MonkeyPatch, tmp_path, value) -> None:
     monkeypatch.setenv("SLAYER_NOW", value)
     storage = YAMLStorage(base_dir=str(tmp_path))
     with pytest.raises(SlayerError) as exc:
@@ -91,7 +91,7 @@ def test_timezone_aware_value_rejected_at_build(monkeypatch, tmp_path, value) ->
     assert "naive" in msg.lower()
 
 
-def test_unparseable_value_rejected_at_build(monkeypatch, tmp_path) -> None:
+def test_unparseable_value_rejected_at_build(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("SLAYER_NOW", "yesterday-ish")
     storage = YAMLStorage(base_dir=str(tmp_path))
     with pytest.raises(SlayerError) as exc:
@@ -100,7 +100,7 @@ def test_unparseable_value_rejected_at_build(monkeypatch, tmp_path) -> None:
     assert "yesterday-ish" in str(exc.value)
 
 
-async def test_variable_is_read_when_the_engine_is_built(monkeypatch) -> None:
+async def test_variable_is_read_when_the_engine_is_built(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     async with now_engine() as first:
         monkeypatch.setenv("SLAYER_NOW", "2026-01-10T09:00:00")
@@ -112,14 +112,14 @@ async def test_variable_is_read_when_the_engine_is_built(monkeypatch) -> None:
             second.close()
 
 
-async def test_whole_periods_default_upper_bound_uses_pin(monkeypatch) -> None:
+async def test_whole_periods_default_upper_bound_uses_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", "2025-07-15T12:30:00")
     since_may = ["ts >= '2025-05-01'"]
     async with now_engine() as engine:
-        pinned = await monthly(engine, measures=COUNT, filters=since_may, whole_periods_only=True)
+        pinned = await monthly(engine, metrics=COUNT, filters=since_may, whole_periods_only=True)
         explicit_engine = SlayerQueryEngine(storage=engine.storage, clock=lambda: D(2025, 7, 15, 12, 30))
         try:
-            explicit = await monthly(explicit_engine, measures=COUNT, filters=since_may, whole_periods_only=True)
+            explicit = await monthly(explicit_engine, metrics=COUNT, filters=since_may, whole_periods_only=True)
         finally:
             explicit_engine.close()
     assert pinned == explicit
@@ -130,11 +130,11 @@ def _spine_months(resp) -> set[str]:
     return {month_key(r["time_spine.timestamp"]) for r in resp.data}
 
 
-async def test_time_spine_default_upper_bound_uses_pin(monkeypatch) -> None:
+async def test_time_spine_default_upper_bound_uses_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     query = SlayerQuery.model_validate({
-        "measures": [{"formula": "count(ev.id)", "name": "n"}],
-        "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-05-01", None]}],
+        "metrics": [{"metric": "count(ev.id)", "alias": "n"}],
+        "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-05-01", None]}],
     })
     async with now_engine() as engine:
         pinned = await engine.execute(query)

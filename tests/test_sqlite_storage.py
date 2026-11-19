@@ -6,7 +6,7 @@ import os
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.storage.sqlite_storage import SQLiteStorage
 
 
@@ -18,15 +18,15 @@ def storage() -> SQLiteStorage:
 
 
 @pytest.fixture
-def sample_model() -> SlayerModel:
-    return SlayerModel(
+def sample_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="test_model",
         sql_table="public.test_table",
         data_source="test_ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -45,30 +45,30 @@ def sample_datasource() -> DatasourceConfig:
 
 
 class TestSQLiteModelStorage:
-    async def test_save_and_get(self, storage: SQLiteStorage, sample_model: SlayerModel) -> None:
-        await storage.save_model(sample_model)
-        loaded = await storage.get_model("test_model")
+    async def test_save_and_get(self, storage: SQLiteStorage, sample_dataset: SlayerDataset) -> None:
+        await storage.save_dataset(sample_dataset)
+        loaded = await storage.get_dataset("test_model")
         assert loaded is not None
         assert loaded.name == "test_model"
         assert loaded.sql_table == "public.test_table"
-        assert len(loaded.columns) == 3
+        assert len(loaded.fields) == 3
 
-    async def test_list_models(self, storage: SQLiteStorage, sample_model: SlayerModel) -> None:
-        assert await storage.list_models() == []
-        await storage.save_model(sample_model)
-        assert await storage.list_models() == ["test_model"]
+    async def test_list_models(self, storage: SQLiteStorage, sample_dataset: SlayerDataset) -> None:
+        assert await storage.list_datasets() == []
+        await storage.save_dataset(sample_dataset)
+        assert await storage.list_datasets() == ["test_model"]
 
-    async def test_delete_model(self, storage: SQLiteStorage, sample_model: SlayerModel) -> None:
-        await storage.save_model(sample_model)
-        assert await storage.delete_model("test_model") is True
-        assert await storage.get_model("test_model") is None
-        assert await storage.delete_model("nonexistent") is False
+    async def test_delete_model(self, storage: SQLiteStorage, sample_dataset: SlayerDataset) -> None:
+        await storage.save_dataset(sample_dataset)
+        assert await storage.delete_dataset("test_model") is True
+        assert await storage.get_dataset("test_model") is None
+        assert await storage.delete_dataset("nonexistent") is False
 
-    async def test_update_model(self, storage: SQLiteStorage, sample_model: SlayerModel) -> None:
-        await storage.save_model(sample_model)
-        sample_model.description = "Updated"
-        await storage.save_model(sample_model)
-        loaded = await storage.get_model("test_model")
+    async def test_update_model(self, storage: SQLiteStorage, sample_dataset: SlayerDataset) -> None:
+        await storage.save_dataset(sample_dataset)
+        sample_dataset.description = "Updated"
+        await storage.save_dataset(sample_dataset)
+        loaded = await storage.get_dataset("test_model")
         assert loaded.description == "Updated"
 
 

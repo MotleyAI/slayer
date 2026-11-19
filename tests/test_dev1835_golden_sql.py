@@ -18,9 +18,10 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import (
     BAND35,
-    ModelMeasure,
     dev1835_models,
     month_td,
     q,
@@ -33,10 +34,10 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 SMOKE_DIALECTS = ["tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-BAND = {"expression": BAND35, "name": "band"}
+BAND = {"field": BAND35, "alias": "band"}
 RBAND = {
-    "expression": "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END",
-    "name": "rband",
+    "field": "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END",
+    "alias": "rband",
 }
 
 
@@ -44,36 +45,36 @@ def _cases() -> dict:
     return {
         "mig/bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
             ],
         ),
         "mig/bare_rk": q(
             dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="last(amount)", name="l"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="last(amount)", alias="l"),
             ],
         ),
         "lift/band_x_wm": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
             ],
         ),
         "lift/cumsum_over_bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="cumsum(sum(amount, window='90d'))", name="x"),
+            metrics=[
+                QueryMetric(metric="cumsum(sum(amount, window='90d'))", alias="x"),
             ],
         ),
         "dedup/dual_role": q(
             dimensions=["region", RBAND],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
             ],
         ),
     }
@@ -83,7 +84,7 @@ async def _generate_one(query, dialect: str):
     models = dev1835_models()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

@@ -1,0 +1,4344 @@
+{
+ "files": [
+  {
+   "source": "tests/_arrow_types.py",
+   "reason": "new since main"
+  },
+  {
+   "source": "tests/_cast_fixtures.py",
+   "corpus": "_cast_fixtures.json"
+  },
+  {
+   "source": "tests/_cli_shop.py",
+   "corpus": "_cli_shop.json"
+  },
+  {
+   "source": "tests/_consecutive_periods_calendar_fixtures.py",
+   "corpus": "_consecutive_periods_calendar_fixtures.json"
+  },
+  {
+   "source": "tests/_cross_model_chain.py",
+   "corpus": "_cross_model_chain.json"
+  },
+  {
+   "source": "tests/_cube_helpers.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_deprecated_input_helpers.py",
+   "corpus": "_deprecated_input_helpers.json"
+  },
+  {
+   "source": "tests/_dev1471_fixtures.py",
+   "corpus": "_dev1471_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1737_fixtures.py",
+   "corpus": "_dev1737_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1739_fixtures.py",
+   "corpus": "_dev1739_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1740_fixtures.py",
+   "corpus": "_dev1740_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1743_fixtures.py",
+   "corpus": "_dev1743_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1746_fixtures.py",
+   "corpus": "_dev1746_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1747_fixtures.py",
+   "corpus": "_dev1747_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1748_fixtures.py",
+   "corpus": "_dev1748_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1750_fixtures.py",
+   "corpus": "_dev1750_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1800_fixtures.py",
+   "corpus": "_dev1800_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1824_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev1832_fixtures.py",
+   "corpus": "_dev1832_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1835_fixtures.py",
+   "corpus": "_dev1835_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1836_equiv_driver.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev1836_fixtures.py",
+   "corpus": "_dev1836_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1837_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev1838_fixtures.py",
+   "corpus": "_dev1838_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1839_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev1840_fixtures.py",
+   "corpus": "_dev1840_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1841_fixtures.py",
+   "corpus": "_dev1841_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1842_fixtures.py",
+   "corpus": "_dev1842_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1846_fixtures.py",
+   "corpus": "_dev1846_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1847_fixtures.py",
+   "corpus": "_dev1847_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1853_fixtures.py",
+   "corpus": "_dev1853_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1859_fixtures.py",
+   "corpus": "_dev1859_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1865_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev1866_fixtures.py",
+   "corpus": "_dev1866_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1868_fixtures.py",
+   "corpus": "_dev1868_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1871_fixtures.py",
+   "corpus": "_dev1871_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1871_raise_ledger.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev1879_helpers.py",
+   "corpus": "_dev1879_helpers.json"
+  },
+  {
+   "source": "tests/_dev1883_fixtures.py",
+   "corpus": "_dev1883_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1892_fixtures.py",
+   "corpus": "_dev1892_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1900_fixtures.py",
+   "corpus": "_dev1900_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1901_fixtures.py",
+   "corpus": "_dev1901_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1902_fixtures.py",
+   "corpus": "_dev1902_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1908_fixtures.py",
+   "corpus": "_dev1908_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1910_fixtures.py",
+   "corpus": "_dev1910_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1915_fixtures.py",
+   "corpus": "_dev1915_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1919_fixtures.py",
+   "corpus": "_dev1919_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1920_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev1931_fixtures.py",
+   "corpus": "_dev1931_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1935_fixtures.py",
+   "corpus": "_dev1935_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1945_fixtures.py",
+   "corpus": "_dev1945_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1948_fixtures.py",
+   "corpus": "_dev1948_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1953_fixtures.py",
+   "corpus": "_dev1953_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1954_fixtures.py",
+   "corpus": "_dev1954_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1965_fixtures.py",
+   "corpus": "_dev1965_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1966_fixtures.py",
+   "corpus": "_dev1966_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1994_fixtures.py",
+   "corpus": "_dev1994_fixtures.json"
+  },
+  {
+   "source": "tests/_dev1995_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev2006_fixtures.py",
+   "corpus": "_dev2006_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2015_fixtures.py",
+   "corpus": "_dev2015_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2046_fixtures.py",
+   "corpus": "_dev2046_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2062_fixtures.py",
+   "corpus": "_dev2062_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2070_fixtures.py",
+   "corpus": "_dev2070_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2073_fixtures.py",
+   "corpus": "_dev2073_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2101_fixtures.py",
+   "corpus": "_dev2101_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2102_fixtures.py",
+   "corpus": "_dev2102_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2119_fixtures.py",
+   "corpus": "_dev2119_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2120_fixtures.py",
+   "corpus": "_dev2120_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2137_fixtures.py",
+   "corpus": "_dev2137_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2171_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev2172_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_dev2177_fixtures.py",
+   "corpus": "_dev2177_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2187_fixtures.py",
+   "corpus": "_dev2187_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2189_fixtures.py",
+   "corpus": "_dev2189_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2210_fixtures.py",
+   "corpus": "_dev2210_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2215_fixtures.py",
+   "corpus": "_dev2215_fixtures.json"
+  },
+  {
+   "source": "tests/_dev2216_fixtures.py",
+   "corpus": "_dev2216_fixtures.json"
+  },
+  {
+   "source": "tests/_doc_examples.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_doc_mode_b_examples.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_edge_graph_fixtures.py",
+   "corpus": "_edge_graph_fixtures.json"
+  },
+  {
+   "source": "tests/_engine_helpers.py",
+   "corpus": "_engine_helpers.json"
+  },
+  {
+   "source": "tests/_gateway_harness.py",
+   "corpus": "_gateway_harness.json"
+  },
+  {
+   "source": "tests/_granularity_rename_fixtures.py",
+   "corpus": "_granularity_rename_fixtures.json"
+  },
+  {
+   "source": "tests/_law_harness.py",
+   "corpus": "_law_harness.json"
+  },
+  {
+   "source": "tests/_library_names_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_list_mixed_numbers.py",
+   "corpus": "_list_mixed_numbers.json"
+  },
+  {
+   "source": "tests/_mcp_idiom_fixtures.py",
+   "corpus": "_mcp_idiom_fixtures.json"
+  },
+  {
+   "source": "tests/_model_access_fixtures.py",
+   "corpus": "_model_access_fixtures.json"
+  },
+  {
+   "source": "tests/_osi_export_fixtures.py",
+   "corpus": "_osi_export_fixtures.json"
+  },
+  {
+   "source": "tests/_osi_export_helpers.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_osi_helpers.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_pg_helpers.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_query_heal_fixtures.py",
+   "corpus": "_query_heal_fixtures.json"
+  },
+  {
+   "source": "tests/_reagg_outer_grain_fixtures.py",
+   "corpus": "_reagg_outer_grain_fixtures.json"
+  },
+  {
+   "source": "tests/_saved_query_refinement_fixtures.py",
+   "corpus": "_saved_query_refinement_fixtures.json"
+  },
+  {
+   "source": "tests/_slayer_now_fixtures.py",
+   "corpus": "_slayer_now_fixtures.json"
+  },
+  {
+   "source": "tests/_sql_mode_retype_fixtures.py",
+   "corpus": "_sql_mode_retype_fixtures.json"
+  },
+  {
+   "source": "tests/_statement_render_law.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_stored_upgrade_fixtures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_time_points_fixtures.py",
+   "corpus": "_time_points_fixtures.json"
+  },
+  {
+   "source": "tests/_unrelated_datasets_fixtures.py",
+   "corpus": "_unrelated_datasets_fixtures.json"
+  },
+  {
+   "source": "tests/_upgrade_corpus.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/_usage_reporting_helpers.py",
+   "corpus": "_usage_reporting_helpers.json"
+  },
+  {
+   "source": "tests/_v1_4_1_field_sets.py",
+   "reason": "deleted"
+  },
+  {
+   "source": "tests/conftest.py",
+   "corpus": "conftest.json"
+  },
+  {
+   "source": "tests/dialects/conftest.py",
+   "corpus": "dialects__conftest.json"
+  },
+  {
+   "source": "tests/dialects/test_base.py",
+   "corpus": "dialects__test_base.json"
+  },
+  {
+   "source": "tests/dialects/test_bigquery.py",
+   "corpus": "dialects__test_bigquery.json"
+  },
+  {
+   "source": "tests/dialects/test_byte_equivalence.py",
+   "corpus": "dialects__test_byte_equivalence.json"
+  },
+  {
+   "source": "tests/dialects/test_clickhouse.py",
+   "corpus": "dialects__test_clickhouse.json"
+  },
+  {
+   "source": "tests/dialects/test_date_functions.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/dialects/test_dev1737_date_add_parity.py",
+   "corpus": "dialects__test_dev1737_date_add_parity.json"
+  },
+  {
+   "source": "tests/dialects/test_dev1879_alias_battery.py",
+   "corpus": "dialects__test_dev1879_alias_battery.json"
+  },
+  {
+   "source": "tests/dialects/test_dev2015_spine_emission.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/dialects/test_dev2046_boolean_emission.py",
+   "corpus": "dialects__test_dev2046_boolean_emission.json"
+  },
+  {
+   "source": "tests/dialects/test_dev2177_param_emission.py",
+   "corpus": "dialects__test_dev2177_param_emission.json"
+  },
+  {
+   "source": "tests/dialects/test_dev2210_filtered_dataset_emission.py",
+   "corpus": "dialects__test_dev2210_filtered_dataset_emission.json"
+  },
+  {
+   "source": "tests/dialects/test_generator_delegation.py",
+   "corpus": "dialects__test_generator_delegation.json"
+  },
+  {
+   "source": "tests/dialects/test_multi_dialect_generation.py",
+   "corpus": "dialects__test_multi_dialect_generation.json"
+  },
+  {
+   "source": "tests/dialects/test_mysql.py",
+   "corpus": "dialects__test_mysql.json"
+  },
+  {
+   "source": "tests/dialects/test_snowflake.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/dialects/test_time_points_emission.py",
+   "corpus": "dialects__test_time_points_emission.json"
+  },
+  {
+   "source": "tests/dialects/test_trino.py",
+   "corpus": "dialects__test_trino.json"
+  },
+  {
+   "source": "tests/dialects/test_tsql.py",
+   "corpus": "dialects__test_tsql.json"
+  },
+  {
+   "source": "tests/facade/test_catalog.py",
+   "corpus": "facade__test_catalog.json"
+  },
+  {
+   "source": "tests/facade/test_catalog_flatten_filter.py",
+   "corpus": "facade__test_catalog_flatten_filter.json"
+  },
+  {
+   "source": "tests/facade/test_catalog_grouped_by_schema.py",
+   "corpus": "facade__test_catalog_grouped_by_schema.json"
+  },
+  {
+   "source": "tests/facade/test_catalog_joins.py",
+   "corpus": "facade__test_catalog_joins.json"
+  },
+  {
+   "source": "tests/facade/test_catalog_relation_load.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/facade/test_catalog_sql.py",
+   "corpus": "facade__test_catalog_sql.json"
+  },
+  {
+   "source": "tests/facade/test_catalog_sql_metabase_golden.py",
+   "corpus": "facade__test_catalog_sql_metabase_golden.json"
+  },
+  {
+   "source": "tests/facade/test_info_schema.py",
+   "corpus": "facade__test_info_schema.json"
+  },
+  {
+   "source": "tests/facade/test_translator.py",
+   "corpus": "facade__test_translator.json"
+  },
+  {
+   "source": "tests/facade/test_translator_cross_model_guard.py",
+   "corpus": "facade__test_translator_cross_model_guard.json"
+  },
+  {
+   "source": "tests/facade/test_translator_metabase_fingerprint.py",
+   "corpus": "facade__test_translator_metabase_fingerprint.json"
+  },
+  {
+   "source": "tests/facade/test_translator_time_bound_instants.py",
+   "corpus": "facade__test_translator_time_bound_instants.json"
+  },
+  {
+   "source": "tests/facade/test_translator_time_filter_e2e.py",
+   "corpus": "facade__test_translator_time_filter_e2e.json"
+  },
+  {
+   "source": "tests/fixtures/upgrade/v0_10_2/generate.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/fixtures/upgrade/v1_8_2/generate.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/flight/test_dev1894_type_error_status.py",
+   "corpus": "flight__test_dev1894_type_error_status.json"
+  },
+  {
+   "source": "tests/flight/test_flight_client_factory.py",
+   "corpus": "flight__test_flight_client_factory.json"
+  },
+  {
+   "source": "tests/flight/test_handlers.py",
+   "corpus": "flight__test_handlers.json"
+  },
+  {
+   "source": "tests/flight/test_translator.py",
+   "corpus": "flight__test_translator.json"
+  },
+  {
+   "source": "tests/flight/test_types.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/_consecutive_periods_calendar.py",
+   "corpus": "integration___consecutive_periods_calendar.json"
+  },
+  {
+   "source": "tests/integration/_dev2015_server.py",
+   "corpus": "integration___dev2015_server.json"
+  },
+  {
+   "source": "tests/integration/conftest_metabase.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_base_key_reflection_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_decimal_aggregate_precision.py",
+   "corpus": "integration__test_decimal_aggregate_precision.json"
+  },
+  {
+   "source": "tests/integration/test_demo_cli.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_dev1737_date_functions_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_dev1743_integration_postgres.py",
+   "corpus": "integration__test_dev1743_integration_postgres.json"
+  },
+  {
+   "source": "tests/integration/test_dev1756_identifier_length_pg.py",
+   "corpus": "integration__test_dev1756_identifier_length_pg.json"
+  },
+  {
+   "source": "tests/integration/test_dev1815_perf_guards.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_dev1853_reverse_hop.py",
+   "corpus": "integration__test_dev1853_reverse_hop.json"
+  },
+  {
+   "source": "tests/integration/test_dev1933_postgres_verbatim.py",
+   "corpus": "integration__test_dev1933_postgres_verbatim.json"
+  },
+  {
+   "source": "tests/integration/test_dev2015_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_dev2046_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_dev2101_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_dev2120_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_dev2137_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_dev2172_postgres.py",
+   "corpus": "integration__test_dev2172_postgres.json"
+  },
+  {
+   "source": "tests/integration/test_ingestion_jaffle_shop.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_integration.py",
+   "corpus": "integration__test_integration.json"
+  },
+  {
+   "source": "tests/integration/test_integration_bigquery.py",
+   "corpus": "integration__test_integration_bigquery.json"
+  },
+  {
+   "source": "tests/integration/test_integration_clickhouse.py",
+   "corpus": "integration__test_integration_clickhouse.json"
+  },
+  {
+   "source": "tests/integration/test_integration_duckdb.py",
+   "corpus": "integration__test_integration_duckdb.json"
+  },
+  {
+   "source": "tests/integration/test_integration_mysql.py",
+   "corpus": "integration__test_integration_mysql.json"
+  },
+  {
+   "source": "tests/integration/test_integration_postgres.py",
+   "corpus": "integration__test_integration_postgres.json"
+  },
+  {
+   "source": "tests/integration/test_integration_rls.py",
+   "corpus": "integration__test_integration_rls.json"
+  },
+  {
+   "source": "tests/integration/test_integration_snowflake.py",
+   "corpus": "integration__test_integration_snowflake.json"
+  },
+  {
+   "source": "tests/integration/test_integration_sqlserver.py",
+   "corpus": "integration__test_integration_sqlserver.json"
+  },
+  {
+   "source": "tests/integration/test_integration_trino.py",
+   "corpus": "integration__test_integration_trino.json"
+  },
+  {
+   "source": "tests/integration/test_integration_windowed_measures.py",
+   "corpus": "integration__test_integration_windowed_measures.json"
+  },
+  {
+   "source": "tests/integration/test_mcp_inspect.py",
+   "corpus": "integration__test_mcp_inspect.json"
+  },
+  {
+   "source": "tests/integration/test_metabase_e2e.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_notebooks.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_rank_direction_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/integration/test_schema_drift_duckdb.py",
+   "corpus": "integration__test_schema_drift_duckdb.json"
+  },
+  {
+   "source": "tests/integration/test_stored_upgrade_postgres.py",
+   "corpus": "integration__test_stored_upgrade_postgres.json"
+  },
+  {
+   "source": "tests/perf/conftest.py",
+   "corpus": "perf__conftest.json"
+  },
+  {
+   "source": "tests/perf/test_bench.py",
+   "corpus": "perf__test_bench.json"
+  },
+  {
+   "source": "tests/pg_facade/test_bind_empty_string_classifier.py",
+   "corpus": "pg_facade__test_bind_empty_string_classifier.json"
+  },
+  {
+   "source": "tests/pg_facade/test_cli.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/pg_facade/test_connection.py",
+   "corpus": "pg_facade__test_connection.json"
+  },
+  {
+   "source": "tests/pg_facade/test_types.py",
+   "corpus": "pg_facade__test_types.json"
+  },
+  {
+   "source": "tests/search_helpers.py",
+   "corpus": "search_helpers.json"
+  },
+  {
+   "source": "tests/test_additive_merge_physical_spelling.py",
+   "corpus": "test_additive_merge_physical_spelling.json"
+  },
+  {
+   "source": "tests/test_additive_merge_primary_key.py",
+   "corpus": "test_additive_merge_primary_key.json"
+  },
+  {
+   "source": "tests/test_agg_kwarg_canonical_golden.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_agg_positional_params.py",
+   "corpus": "test_agg_positional_params.json"
+  },
+  {
+   "source": "tests/test_agg_render_spec.py",
+   "corpus": "test_agg_render_spec.json"
+  },
+  {
+   "source": "tests/test_aggregation_gating.py",
+   "corpus": "test_aggregation_gating.json"
+  },
+  {
+   "source": "tests/test_api_server.py",
+   "corpus": "test_api_server.json"
+  },
+  {
+   "source": "tests/test_async_engine_disposal.py",
+   "corpus": "test_async_engine_disposal.json"
+  },
+  {
+   "source": "tests/test_binding.py",
+   "corpus": "test_binding.json"
+  },
+  {
+   "source": "tests/test_bm25_retriever.py",
+   "corpus": "test_bm25_retriever.json"
+  },
+  {
+   "source": "tests/test_boundexpr_unification.py",
+   "corpus": "test_boundexpr_unification.json"
+  },
+  {
+   "source": "tests/test_builtin_aggregation_exact_case.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_builtin_aggregation_overrides.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_canonical_text_grouping.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cardinality_helpers.py",
+   "corpus": "test_cardinality_helpers.json"
+  },
+  {
+   "source": "tests/test_carrier_scope_matrix.py",
+   "corpus": "test_carrier_scope_matrix.json"
+  },
+  {
+   "source": "tests/test_cascade_strip_on_delete.py",
+   "corpus": "test_cascade_strip_on_delete.json"
+  },
+  {
+   "source": "tests/test_cast_postgres.py",
+   "corpus": "test_cast_postgres.json"
+  },
+  {
+   "source": "tests/test_cast_type_grammar.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cli.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cli_engine_bridge_postgres.py",
+   "corpus": "test_cli_engine_bridge_postgres.json"
+  },
+  {
+   "source": "tests/test_cli_error_door.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cli_export_osi.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cli_import_osi.py",
+   "corpus": "test_cli_import_osi.json"
+  },
+  {
+   "source": "tests/test_cli_memory_string_ids.py",
+   "corpus": "test_cli_memory_string_ids.json"
+  },
+  {
+   "source": "tests/test_cli_search_refresh_samples.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cli_table_number_format.py",
+   "corpus": "test_cli_table_number_format.json"
+  },
+  {
+   "source": "tests/test_cli_validate_models_cardinality.py",
+   "corpus": "test_cli_validate_models_cardinality.json"
+  },
+  {
+   "source": "tests/test_clickhouse_server_profile.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_clickhouse_statement_timeout.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_client.py",
+   "corpus": "test_client.json"
+  },
+  {
+   "source": "tests/test_column_dependency.py",
+   "corpus": "test_column_dependency.json"
+  },
+  {
+   "source": "tests/test_column_expansion_sync.py",
+   "corpus": "test_column_expansion_sync.json"
+  },
+  {
+   "source": "tests/test_comparison_matrix.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_compat_legacy_call_forms.py",
+   "corpus": "test_compat_legacy_call_forms.json"
+  },
+  {
+   "source": "tests/test_connection_default_schema.py",
+   "corpus": "test_connection_default_schema.json"
+  },
+  {
+   "source": "tests/test_consecutive_periods_calendar.py",
+   "corpus": "test_consecutive_periods_calendar.json"
+  },
+  {
+   "source": "tests/test_consecutive_periods_calendar_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_count_distinct_approx_generation.py",
+   "corpus": "test_count_distinct_approx_generation.json"
+  },
+  {
+   "source": "tests/test_cross_model_derived_columns.py",
+   "corpus": "test_cross_model_derived_columns.json"
+  },
+  {
+   "source": "tests/test_cross_model_rename_dev1448.py",
+   "corpus": "test_cross_model_rename_dev1448.json"
+  },
+  {
+   "source": "tests/test_cube_boundaries.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cube_cli.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cube_cli_js.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cube_converter.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cube_converter_filter_params.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cube_dropped_measures.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cube_extends.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cube_import_example.py",
+   "corpus": "test_cube_import_example.json"
+  },
+  {
+   "source": "tests/test_cube_js_e2e_duckdb.py",
+   "corpus": "test_cube_js_e2e_duckdb.json"
+  },
+  {
+   "source": "tests/test_cube_report.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cube_smoke.py",
+   "corpus": "test_cube_smoke.json"
+  },
+  {
+   "source": "tests/test_cube_views.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_cypher_naive.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dbt_converter.py",
+   "corpus": "test_dbt_converter.json"
+  },
+  {
+   "source": "tests/test_dbt_converter_inline_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dbt_entities.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dbt_filters.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dbt_metricflow_strengthen.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dbt_parser.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dbt_relation_quoting.py",
+   "corpus": "test_dbt_relation_quoting.json"
+  },
+  {
+   "source": "tests/test_dbt_sql_resolver.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_declared_list_variables.py",
+   "corpus": "test_declared_list_variables.json"
+  },
+  {
+   "source": "tests/test_default_driver_pin.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_default_result_order.py",
+   "corpus": "test_default_result_order.json"
+  },
+  {
+   "source": "tests/test_demo_cli.py",
+   "corpus": "test_demo_cli.json"
+  },
+  {
+   "source": "tests/test_demo_jaffle_shop_healing.py",
+   "corpus": "test_demo_jaffle_shop_healing.json"
+  },
+  {
+   "source": "tests/test_demo_list_columns.py",
+   "corpus": "test_demo_list_columns.json"
+  },
+  {
+   "source": "tests/test_demo_status_regions.py",
+   "corpus": "test_demo_status_regions.json"
+  },
+  {
+   "source": "tests/test_deprecated_input.py",
+   "corpus": "test_deprecated_input.json"
+  },
+  {
+   "source": "tests/test_deprecated_input_harvest.py",
+   "corpus": "test_deprecated_input_harvest.json"
+  },
+  {
+   "source": "tests/test_deprecated_input_saves.py",
+   "corpus": "test_deprecated_input_saves.json"
+  },
+  {
+   "source": "tests/test_detect_join_cardinality.py",
+   "corpus": "test_detect_join_cardinality.json"
+  },
+  {
+   "source": "tests/test_dev1445_cross_model_alias_filter.py",
+   "corpus": "test_dev1445_cross_model_alias_filter.json"
+  },
+  {
+   "source": "tests/test_dev1446_nested_transform_dedup.py",
+   "corpus": "test_dev1446_nested_transform_dedup.json"
+  },
+  {
+   "source": "tests/test_dev1448_named_join_measure_alias.py",
+   "corpus": "test_dev1448_named_join_measure_alias.json"
+  },
+  {
+   "source": "tests/test_dev1449_flat_stage_schema_refs.py",
+   "corpus": "test_dev1449_flat_stage_schema_refs.json"
+  },
+  {
+   "source": "tests/test_dev1450fix_cross_model_derived.py",
+   "corpus": "test_dev1450fix_cross_model_derived.json"
+  },
+  {
+   "source": "tests/test_dev1450fix_cross_model_parametric_keys.py",
+   "corpus": "test_dev1450fix_cross_model_parametric_keys.json"
+  },
+  {
+   "source": "tests/test_dev1450fix_derived_time_dimension.py",
+   "corpus": "test_dev1450fix_derived_time_dimension.json"
+  },
+  {
+   "source": "tests/test_dev1450fix_group2_correctness.py",
+   "corpus": "test_dev1450fix_group2_correctness.json"
+  },
+  {
+   "source": "tests/test_dev1450fix_model_filter_derived.py",
+   "corpus": "test_dev1450fix_model_filter_derived.json"
+  },
+  {
+   "source": "tests/test_dev1471_sqlite_temporal_cast.py",
+   "corpus": "test_dev1471_sqlite_temporal_cast.json"
+  },
+  {
+   "source": "tests/test_dev1471_stage_date_range.py",
+   "corpus": "test_dev1471_stage_date_range.json"
+  },
+  {
+   "source": "tests/test_dev1471_stage_time_axis.py",
+   "corpus": "test_dev1471_stage_time_axis.json"
+  },
+  {
+   "source": "tests/test_dev1471_stage_time_dimensions.py",
+   "corpus": "test_dev1471_stage_time_dimensions.json"
+  },
+  {
+   "source": "tests/test_dev1474_time_shift_cross_model_partition.py",
+   "corpus": "test_dev1474_time_shift_cross_model_partition.json"
+  },
+  {
+   "source": "tests/test_dev1475_in_tuple_filters.py",
+   "corpus": "test_dev1475_in_tuple_filters.json"
+  },
+  {
+   "source": "tests/test_dev1476_first_last_explicit_time.py",
+   "corpus": "test_dev1476_first_last_explicit_time.json"
+  },
+  {
+   "source": "tests/test_dev1527_agg_kwargs.py",
+   "corpus": "test_dev1527_agg_kwargs.json"
+  },
+  {
+   "source": "tests/test_dev1576_heals.py",
+   "corpus": "test_dev1576_heals.json"
+  },
+  {
+   "source": "tests/test_dev1645_invalid_postgres_sql.py",
+   "corpus": "test_dev1645_invalid_postgres_sql.json"
+  },
+  {
+   "source": "tests/test_dev1686_reserved_word_identifiers.py",
+   "corpus": "test_dev1686_reserved_word_identifiers.json"
+  },
+  {
+   "source": "tests/test_dev1708_stage4_cte_scope.py",
+   "corpus": "test_dev1708_stage4_cte_scope.json"
+  },
+  {
+   "source": "tests/test_dev1712_order_only_hidden_slots.py",
+   "corpus": "test_dev1712_order_only_hidden_slots.json"
+  },
+  {
+   "source": "tests/test_dev1713_naming.py",
+   "corpus": "test_dev1713_naming.json"
+  },
+  {
+   "source": "tests/test_dev1726_cte_case_folding.py",
+   "corpus": "test_dev1726_cte_case_folding.json"
+  },
+  {
+   "source": "tests/test_dev1728_derived_shared_grain.py",
+   "corpus": "test_dev1728_derived_shared_grain.json"
+  },
+  {
+   "source": "tests/test_dev1732_frame_bound_filters.py",
+   "corpus": "test_dev1732_frame_bound_filters.json"
+  },
+  {
+   "source": "tests/test_dev1733_order_only_transform_composite.py",
+   "corpus": "test_dev1733_order_only_transform_composite.json"
+  },
+  {
+   "source": "tests/test_dev1737_clock_cache.py",
+   "corpus": "test_dev1737_clock_cache.json"
+  },
+  {
+   "source": "tests/test_dev1737_date_arith_regressions.py",
+   "corpus": "test_dev1737_date_arith_regressions.json"
+  },
+  {
+   "source": "tests/test_dev1737_date_functions_exec.py",
+   "corpus": "test_dev1737_date_functions_exec.json"
+  },
+  {
+   "source": "tests/test_dev1737_date_functions_parse.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1737_date_functions_typing.py",
+   "corpus": "test_dev1737_date_functions_typing.json"
+  },
+  {
+   "source": "tests/test_dev1737_scalar_specs.py",
+   "corpus": "test_dev1737_scalar_specs.json"
+  },
+  {
+   "source": "tests/test_dev1739_execution.py",
+   "corpus": "test_dev1739_execution.json"
+  },
+  {
+   "source": "tests/test_dev1739_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1739_guards.py",
+   "corpus": "test_dev1739_guards.json"
+  },
+  {
+   "source": "tests/test_dev1740_conditional_execution.py",
+   "corpus": "test_dev1740_conditional_execution.json"
+  },
+  {
+   "source": "tests/test_dev1740_conditional_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1740_conditional_key.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1740_expr_dim_execution.py",
+   "corpus": "test_dev1740_expr_dim_execution.json"
+  },
+  {
+   "source": "tests/test_dev1740_expr_dim_surface.py",
+   "corpus": "test_dev1740_expr_dim_surface.json"
+  },
+  {
+   "source": "tests/test_dev1740_regroup_execution.py",
+   "corpus": "test_dev1740_regroup_execution.json"
+  },
+  {
+   "source": "tests/test_dev1740_regroup_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1740_regroup_guards.py",
+   "corpus": "test_dev1740_regroup_guards.json"
+  },
+  {
+   "source": "tests/test_dev1740_regroup_shape.py",
+   "corpus": "test_dev1740_regroup_shape.json"
+  },
+  {
+   "source": "tests/test_dev1743_dialect_roundtrip.py",
+   "corpus": "test_dev1743_dialect_roundtrip.json"
+  },
+  {
+   "source": "tests/test_dev1743_flattening_collisions.py",
+   "corpus": "test_dev1743_flattening_collisions.json"
+  },
+  {
+   "source": "tests/test_dev1743_importers.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1743_ingestion_preserve.py",
+   "corpus": "test_dev1743_ingestion_preserve.json"
+  },
+  {
+   "source": "tests/test_dev1743_inspectors.py",
+   "corpus": "test_dev1743_inspectors.json"
+  },
+  {
+   "source": "tests/test_dev1743_join_alias_registry.py",
+   "corpus": "test_dev1743_join_alias_registry.json"
+  },
+  {
+   "source": "tests/test_dev1743_migration.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1743_mode_b.py",
+   "corpus": "test_dev1743_mode_b.json"
+  },
+  {
+   "source": "tests/test_dev1743_resolution.py",
+   "corpus": "test_dev1743_resolution.json"
+  },
+  {
+   "source": "tests/test_dev1743_validators.py",
+   "corpus": "test_dev1743_validators.json"
+  },
+  {
+   "source": "tests/test_dev1744_naming_allocator.py",
+   "corpus": "test_dev1744_naming_allocator.json"
+  },
+  {
+   "source": "tests/test_dev1744_result_key_contract.py",
+   "corpus": "test_dev1744_result_key_contract.json"
+  },
+  {
+   "source": "tests/test_dev1744_value_expr.py",
+   "corpus": "test_dev1744_value_expr.json"
+  },
+  {
+   "source": "tests/test_dev1745_date_range_warning.py",
+   "corpus": "test_dev1745_date_range_warning.json"
+  },
+  {
+   "source": "tests/test_dev1745_derived_expansion.py",
+   "corpus": "test_dev1745_derived_expansion.json"
+  },
+  {
+   "source": "tests/test_dev1745_fragment_joins.py",
+   "corpus": "test_dev1745_fragment_joins.json"
+  },
+  {
+   "source": "tests/test_dev1745_golden_sql.py",
+   "corpus": "test_dev1745_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1745_mode_a_door.py",
+   "corpus": "test_dev1745_mode_a_door.json"
+  },
+  {
+   "source": "tests/test_dev1745_plan_time_routing.py",
+   "corpus": "test_dev1745_plan_time_routing.json"
+  },
+  {
+   "source": "tests/test_dev1745_reachability.py",
+   "corpus": "test_dev1745_reachability.json"
+  },
+  {
+   "source": "tests/test_dev1745_warning_contract.py",
+   "corpus": "test_dev1745_warning_contract.json"
+  },
+  {
+   "source": "tests/test_dev1746_consumer_materialization.py",
+   "corpus": "test_dev1746_consumer_materialization.json"
+  },
+  {
+   "source": "tests/test_dev1746_cte_assembly.py",
+   "corpus": "test_dev1746_cte_assembly.json"
+  },
+  {
+   "source": "tests/test_dev1746_empty_base_plan.py",
+   "corpus": "test_dev1746_empty_base_plan.json"
+  },
+  {
+   "source": "tests/test_dev1746_null_safe_grain.py",
+   "corpus": "test_dev1746_null_safe_grain.json"
+  },
+  {
+   "source": "tests/test_dev1746_pagination.py",
+   "corpus": "test_dev1746_pagination.json"
+  },
+  {
+   "source": "tests/test_dev1746_projection_order.py",
+   "corpus": "test_dev1746_projection_order.json"
+  },
+  {
+   "source": "tests/test_dev1747_derived_crossing_order.py",
+   "corpus": "test_dev1747_derived_crossing_order.json"
+  },
+  {
+   "source": "tests/test_dev1747_golden_sql.py",
+   "corpus": "test_dev1747_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1747_grouped_joined_order.py",
+   "corpus": "test_dev1747_grouped_joined_order.json"
+  },
+  {
+   "source": "tests/test_dev1747_local_with_chain.py",
+   "corpus": "test_dev1747_local_with_chain.json"
+  },
+  {
+   "source": "tests/test_dev1747_order_entry.py",
+   "corpus": "test_dev1747_order_entry.json"
+  },
+  {
+   "source": "tests/test_dev1747_order_resolver.py",
+   "corpus": "test_dev1747_order_resolver.json"
+  },
+  {
+   "source": "tests/test_dev1747_reroot_filter_routing.py",
+   "corpus": "test_dev1747_reroot_filter_routing.json"
+  },
+  {
+   "source": "tests/test_dev1747_reroot_visitor.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1748_first_last_matrix.py",
+   "corpus": "test_dev1748_first_last_matrix.json"
+  },
+  {
+   "source": "tests/test_dev1748_golden_sql.py",
+   "corpus": "test_dev1748_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1750_execution.py",
+   "corpus": "test_dev1750_execution.json"
+  },
+  {
+   "source": "tests/test_dev1750_golden_sql.py",
+   "corpus": "test_dev1750_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1750_guard_lift.py",
+   "corpus": "test_dev1750_guard_lift.json"
+  },
+  {
+   "source": "tests/test_dev1750_guard_ownership.py",
+   "corpus": "test_dev1750_guard_ownership.json"
+  },
+  {
+   "source": "tests/test_dev1750_shifted_fragment_joins.py",
+   "corpus": "test_dev1750_shifted_fragment_joins.json"
+  },
+  {
+   "source": "tests/test_dev1751_date_range_null_bound.py",
+   "corpus": "test_dev1751_date_range_null_bound.json"
+  },
+  {
+   "source": "tests/test_dev1752_subquery_scope.py",
+   "corpus": "test_dev1752_subquery_scope.json"
+  },
+  {
+   "source": "tests/test_dev1753_last_four_scalars.py",
+   "corpus": "test_dev1753_last_four_scalars.json"
+  },
+  {
+   "source": "tests/test_dev1756_identifier_length.py",
+   "corpus": "test_dev1756_identifier_length.json"
+  },
+  {
+   "source": "tests/test_dev1763_call_site_migration.py",
+   "corpus": "test_dev1763_call_site_migration.json"
+  },
+  {
+   "source": "tests/test_dev1769_routed_filter_path_validation.py",
+   "corpus": "test_dev1769_routed_filter_path_validation.json"
+  },
+  {
+   "source": "tests/test_dev1771_bare_identifier.py",
+   "corpus": "test_dev1771_bare_identifier.json"
+  },
+  {
+   "source": "tests/test_dev1777_declared_measure_partition.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1777_emit_step_cte.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1780_missing_join_path.py",
+   "corpus": "test_dev1780_missing_join_path.json"
+  },
+  {
+   "source": "tests/test_dev1783_pr286_g1.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1798_transform_two_names.py",
+   "corpus": "test_dev1798_transform_two_names.json"
+  },
+  {
+   "source": "tests/test_dev1800_execution.py",
+   "corpus": "test_dev1800_execution.json"
+  },
+  {
+   "source": "tests/test_dev1800_golden_sql.py",
+   "corpus": "test_dev1800_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1800_materialisation_stage.py",
+   "corpus": "test_dev1800_materialisation_stage.json"
+  },
+  {
+   "source": "tests/test_dev1824_computed_dim_execution.py",
+   "corpus": "test_dev1824_computed_dim_execution.json"
+  },
+  {
+   "source": "tests/test_dev1824_fixture_smoke.py",
+   "corpus": "test_dev1824_fixture_smoke.json"
+  },
+  {
+   "source": "tests/test_dev1824_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1824_hoist_collisions.py",
+   "corpus": "test_dev1824_hoist_collisions.json"
+  },
+  {
+   "source": "tests/test_dev1824_multistage_boundary.py",
+   "corpus": "test_dev1824_multistage_boundary.json"
+  },
+  {
+   "source": "tests/test_dev1824_partitioned_execution.py",
+   "corpus": "test_dev1824_partitioned_execution.json"
+  },
+  {
+   "source": "tests/test_dev1824_ranked_temporal_cast.py",
+   "corpus": "test_dev1824_ranked_temporal_cast.json"
+  },
+  {
+   "source": "tests/test_dev1824_remaining_guards.py",
+   "corpus": "test_dev1824_remaining_guards.json"
+  },
+  {
+   "source": "tests/test_dev1825_regroup_execution.py",
+   "corpus": "test_dev1825_regroup_execution.json"
+  },
+  {
+   "source": "tests/test_dev1825_regroup_planner.py",
+   "corpus": "test_dev1825_regroup_planner.json"
+  },
+  {
+   "source": "tests/test_dev1825_scope_attach.py",
+   "corpus": "test_dev1825_scope_attach.json"
+  },
+  {
+   "source": "tests/test_dev1825_substitute_keys.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1827_value_key_traversal.py",
+   "corpus": "test_dev1827_value_key_traversal.json"
+  },
+  {
+   "source": "tests/test_dev1829_guards.py",
+   "corpus": "test_dev1829_guards.json"
+  },
+  {
+   "source": "tests/test_dev1829_planner.py",
+   "corpus": "test_dev1829_planner.json"
+  },
+  {
+   "source": "tests/test_dev1829_producer_naming.py",
+   "corpus": "test_dev1829_producer_naming.json"
+  },
+  {
+   "source": "tests/test_dev1829_routing.py",
+   "corpus": "test_dev1829_routing.json"
+  },
+  {
+   "source": "tests/test_dev1832_anchor.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1832_column_filter.py",
+   "corpus": "test_dev1832_column_filter.json"
+  },
+  {
+   "source": "tests/test_dev1832_cross_model_exec.py",
+   "corpus": "test_dev1832_cross_model_exec.json"
+  },
+  {
+   "source": "tests/test_dev1832_golden_sql.py",
+   "corpus": "test_dev1832_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1832_home.py",
+   "corpus": "test_dev1832_home.json"
+  },
+  {
+   "source": "tests/test_dev1832_transform_source.py",
+   "corpus": "test_dev1832_transform_source.json"
+  },
+  {
+   "source": "tests/test_dev1835_dedup.py",
+   "corpus": "test_dev1835_dedup.json"
+  },
+  {
+   "source": "tests/test_dev1835_desugar.py",
+   "corpus": "test_dev1835_desugar.json"
+  },
+  {
+   "source": "tests/test_dev1835_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1835_grain_prune.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1835_guard_dissolution.py",
+   "corpus": "test_dev1835_guard_dissolution.json"
+  },
+  {
+   "source": "tests/test_dev1835_guards.py",
+   "corpus": "test_dev1835_guards.json"
+  },
+  {
+   "source": "tests/test_dev1835_semantic_pins.py",
+   "corpus": "test_dev1835_semantic_pins.json"
+  },
+  {
+   "source": "tests/test_dev1835_union_grain.py",
+   "corpus": "test_dev1835_union_grain.json"
+  },
+  {
+   "source": "tests/test_dev1836_broadcast_strict.py",
+   "corpus": "test_dev1836_broadcast_strict.json"
+  },
+  {
+   "source": "tests/test_dev1836_cube_cardinality.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1836_filter_inheritance.py",
+   "corpus": "test_dev1836_filter_inheritance.json"
+  },
+  {
+   "source": "tests/test_dev1836_matrix_flip.py",
+   "corpus": "test_dev1836_matrix_flip.json"
+  },
+  {
+   "source": "tests/test_dev1836_producer_execution.py",
+   "corpus": "test_dev1836_producer_execution.json"
+  },
+  {
+   "source": "tests/test_dev1836_query_model_stamping.py",
+   "corpus": "test_dev1836_query_model_stamping.json"
+  },
+  {
+   "source": "tests/test_dev1836_ranked_windowed.py",
+   "corpus": "test_dev1836_ranked_windowed.json"
+  },
+  {
+   "source": "tests/test_dev1836_reverse_hop_reroot.py",
+   "corpus": "test_dev1836_reverse_hop_reroot.json"
+  },
+  {
+   "source": "tests/test_dev1836_safety_predicate.py",
+   "corpus": "test_dev1836_safety_predicate.json"
+  },
+  {
+   "source": "tests/test_dev1836_total_routing.py",
+   "corpus": "test_dev1836_total_routing.json"
+  },
+  {
+   "source": "tests/test_dev1836_unsafe_inputs.py",
+   "corpus": "test_dev1836_unsafe_inputs.json"
+  },
+  {
+   "source": "tests/test_dev1836_validation_pressure.py",
+   "corpus": "test_dev1836_validation_pressure.json"
+  },
+  {
+   "source": "tests/test_dev1836_warning_collector.py",
+   "corpus": "test_dev1836_warning_collector.json"
+  },
+  {
+   "source": "tests/test_dev1837_dimension_measure_matrix.py",
+   "corpus": "test_dev1837_dimension_measure_matrix.json"
+  },
+  {
+   "source": "tests/test_dev1837_filter_placement.py",
+   "corpus": "test_dev1837_filter_placement.json"
+  },
+  {
+   "source": "tests/test_dev1837_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1837_guards.py",
+   "corpus": "test_dev1837_guards.json"
+  },
+  {
+   "source": "tests/test_dev1838_cte_body_lifts.py",
+   "corpus": "test_dev1838_cte_body_lifts.json"
+  },
+  {
+   "source": "tests/test_dev1838_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1838_interning.py",
+   "corpus": "test_dev1838_interning.json"
+  },
+  {
+   "source": "tests/test_dev1838_invariant.py",
+   "corpus": "test_dev1838_invariant.json"
+  },
+  {
+   "source": "tests/test_dev1838_kernels.py",
+   "corpus": "test_dev1838_kernels.json"
+  },
+  {
+   "source": "tests/test_dev1838_role_safety.py",
+   "corpus": "test_dev1838_role_safety.json"
+  },
+  {
+   "source": "tests/test_dev1838_transform_predicate_scope.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1839_fixture_smoke.py",
+   "corpus": "test_dev1839_fixture_smoke.json"
+  },
+  {
+   "source": "tests/test_dev1839_golden_sql.py",
+   "corpus": "test_dev1839_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1839_guards.py",
+   "corpus": "test_dev1839_guards.json"
+  },
+  {
+   "source": "tests/test_dev1839_measure_execution.py",
+   "corpus": "test_dev1839_measure_execution.json"
+  },
+  {
+   "source": "tests/test_dev1839_union_dim_execution.py",
+   "corpus": "test_dev1839_union_dim_execution.json"
+  },
+  {
+   "source": "tests/test_dev1840_clickhouse_gate.py",
+   "corpus": "test_dev1840_clickhouse_gate.json"
+  },
+  {
+   "source": "tests/test_dev1840_disposition.py",
+   "corpus": "test_dev1840_disposition.json"
+  },
+  {
+   "source": "tests/test_dev1840_execution.py",
+   "corpus": "test_dev1840_execution.json"
+  },
+  {
+   "source": "tests/test_dev1840_fixture_smoke.py",
+   "corpus": "test_dev1840_fixture_smoke.json"
+  },
+  {
+   "source": "tests/test_dev1840_golden_sql.py",
+   "corpus": "test_dev1840_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1840_grouping.py",
+   "corpus": "test_dev1840_grouping.json"
+  },
+  {
+   "source": "tests/test_dev1840_strict_metadata.py",
+   "corpus": "test_dev1840_strict_metadata.json"
+  },
+  {
+   "source": "tests/test_dev1841_association_errors.py",
+   "corpus": "test_dev1841_association_errors.json"
+  },
+  {
+   "source": "tests/test_dev1841_association_exec.py",
+   "corpus": "test_dev1841_association_exec.json"
+  },
+  {
+   "source": "tests/test_dev1841_association_filters.py",
+   "corpus": "test_dev1841_association_filters.json"
+  },
+  {
+   "source": "tests/test_dev1841_association_plan.py",
+   "corpus": "test_dev1841_association_plan.json"
+  },
+  {
+   "source": "tests/test_dev1841_error_mode.py",
+   "corpus": "test_dev1841_error_mode.json"
+  },
+  {
+   "source": "tests/test_dev1841_golden_sql.py",
+   "corpus": "test_dev1841_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1841_mode_field.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1841_surfaces.py",
+   "corpus": "test_dev1841_surfaces.json"
+  },
+  {
+   "source": "tests/test_dev1841_uniform_classification.py",
+   "corpus": "test_dev1841_uniform_classification.json"
+  },
+  {
+   "source": "tests/test_dev1841_warnings.py",
+   "corpus": "test_dev1841_warnings.json"
+  },
+  {
+   "source": "tests/test_dev1842_binder_measure_resolution.py",
+   "corpus": "test_dev1842_binder_measure_resolution.json"
+  },
+  {
+   "source": "tests/test_dev1842_broadcast_strict.py",
+   "corpus": "test_dev1842_broadcast_strict.json"
+  },
+  {
+   "source": "tests/test_dev1842_dotted_equivalence.py",
+   "corpus": "test_dev1842_dotted_equivalence.json"
+  },
+  {
+   "source": "tests/test_dev1842_eligibility_errors.py",
+   "corpus": "test_dev1842_eligibility_errors.json"
+  },
+  {
+   "source": "tests/test_dev1842_keys_prepend.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1842_naming.py",
+   "corpus": "test_dev1842_naming.json"
+  },
+  {
+   "source": "tests/test_dev1842_query_backed.py",
+   "corpus": "test_dev1842_query_backed.json"
+  },
+  {
+   "source": "tests/test_dev1842_recursion.py",
+   "corpus": "test_dev1842_recursion.json"
+  },
+  {
+   "source": "tests/test_dev1842_round_trip.py",
+   "corpus": "test_dev1842_round_trip.json"
+  },
+  {
+   "source": "tests/test_dev1846_composite_transforms.py",
+   "corpus": "test_dev1846_composite_transforms.json"
+  },
+  {
+   "source": "tests/test_dev1846_golden_sql.py",
+   "corpus": "test_dev1846_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1847_consumers.py",
+   "corpus": "test_dev1847_consumers.json"
+  },
+  {
+   "source": "tests/test_dev1847_equivalence.py",
+   "corpus": "test_dev1847_equivalence.json"
+  },
+  {
+   "source": "tests/test_dev1847_fixtures_smoke.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1847_gate.py",
+   "corpus": "test_dev1847_gate.json"
+  },
+  {
+   "source": "tests/test_dev1847_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1847_modes.py",
+   "corpus": "test_dev1847_modes.json"
+  },
+  {
+   "source": "tests/test_dev1847_nesting.py",
+   "corpus": "test_dev1847_nesting.json"
+  },
+  {
+   "source": "tests/test_dev1847_reaggregation_exec.py",
+   "corpus": "test_dev1847_reaggregation_exec.json"
+  },
+  {
+   "source": "tests/test_dev1847_shape_b.py",
+   "corpus": "test_dev1847_shape_b.json"
+  },
+  {
+   "source": "tests/test_dev1850_keyless_grain.py",
+   "corpus": "test_dev1850_keyless_grain.json"
+  },
+  {
+   "source": "tests/test_dev1853_ambiguity.py",
+   "corpus": "test_dev1853_ambiguity.json"
+  },
+  {
+   "source": "tests/test_dev1853_cube_importer.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1853_inspect.py",
+   "corpus": "test_dev1853_inspect.json"
+  },
+  {
+   "source": "tests/test_dev1853_join_graph.py",
+   "corpus": "test_dev1853_join_graph.json"
+  },
+  {
+   "source": "tests/test_dev1853_join_sync_retirement.py",
+   "corpus": "test_dev1853_join_sync_retirement.json"
+  },
+  {
+   "source": "tests/test_dev1853_join_walker.py",
+   "corpus": "test_dev1853_join_walker.json"
+  },
+  {
+   "source": "tests/test_dev1853_migration.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1853_mirror_parity.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1853_named_edges.py",
+   "corpus": "test_dev1853_named_edges.json"
+  },
+  {
+   "source": "tests/test_dev1853_oriented_safety.py",
+   "corpus": "test_dev1853_oriented_safety.json"
+  },
+  {
+   "source": "tests/test_dev1853_pushdown.py",
+   "corpus": "test_dev1853_pushdown.json"
+  },
+  {
+   "source": "tests/test_dev1853_traversal_execution.py",
+   "corpus": "test_dev1853_traversal_execution.json"
+  },
+  {
+   "source": "tests/test_dev1853_validation.py",
+   "corpus": "test_dev1853_validation.json"
+  },
+  {
+   "source": "tests/test_dev1854_null_test_predicates.py",
+   "corpus": "test_dev1854_null_test_predicates.json"
+  },
+  {
+   "source": "tests/test_dev1856_short_form_routing.py",
+   "corpus": "test_dev1856_short_form_routing.json"
+  },
+  {
+   "source": "tests/test_dev1858_mcp_query_tidy.py",
+   "corpus": "test_dev1858_mcp_query_tidy.json"
+  },
+  {
+   "source": "tests/test_dev1859_attached_param_exec.py",
+   "corpus": "test_dev1859_attached_param_exec.json"
+  },
+  {
+   "source": "tests/test_dev1859_classifier.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1859_determination.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1859_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1859_plan_structure.py",
+   "corpus": "test_dev1859_plan_structure.json"
+  },
+  {
+   "source": "tests/test_dev1859_row_mixed_exec.py",
+   "corpus": "test_dev1859_row_mixed_exec.json"
+  },
+  {
+   "source": "tests/test_dev1859_scope_render.py",
+   "corpus": "test_dev1859_scope_render.json"
+  },
+  {
+   "source": "tests/test_dev1859_transform_row_leaf.py",
+   "corpus": "test_dev1859_transform_row_leaf.json"
+  },
+  {
+   "source": "tests/test_dev1859_walker.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1865_cross_model_compose.py",
+   "corpus": "test_dev1865_cross_model_compose.json"
+  },
+  {
+   "source": "tests/test_dev1865_cross_model_keyless.py",
+   "corpus": "test_dev1865_cross_model_keyless.json"
+  },
+  {
+   "source": "tests/test_dev1865_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1865_mask_fallback.py",
+   "corpus": "test_dev1865_mask_fallback.json"
+  },
+  {
+   "source": "tests/test_dev1865_newly_legal.py",
+   "corpus": "test_dev1865_newly_legal.json"
+  },
+  {
+   "source": "tests/test_dev1865_order.py",
+   "corpus": "test_dev1865_order.json"
+  },
+  {
+   "source": "tests/test_dev1865_plan_shape.py",
+   "corpus": "test_dev1865_plan_shape.json"
+  },
+  {
+   "source": "tests/test_dev1865_stratification.py",
+   "corpus": "test_dev1865_stratification.json"
+  },
+  {
+   "source": "tests/test_dev1865_typing_errors.py",
+   "corpus": "test_dev1865_typing_errors.json"
+  },
+  {
+   "source": "tests/test_dev1865_value_parity.py",
+   "corpus": "test_dev1865_value_parity.json"
+  },
+  {
+   "source": "tests/test_dev1866_execution.py",
+   "corpus": "test_dev1866_execution.json"
+  },
+  {
+   "source": "tests/test_dev1866_fail_closed.py",
+   "corpus": "test_dev1866_fail_closed.json"
+  },
+  {
+   "source": "tests/test_dev1866_inference.py",
+   "corpus": "test_dev1866_inference.json"
+  },
+  {
+   "source": "tests/test_dev1866_multistage.py",
+   "corpus": "test_dev1866_multistage.json"
+  },
+  {
+   "source": "tests/test_dev1866_recommend_alignment.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1866_reporting.py",
+   "corpus": "test_dev1866_reporting.json"
+  },
+  {
+   "source": "tests/test_dev1866_surfaces.py",
+   "corpus": "test_dev1866_surfaces.json"
+  },
+  {
+   "source": "tests/test_dev1867_grain.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1868_characterization.py",
+   "corpus": "test_dev1868_characterization.json"
+  },
+  {
+   "source": "tests/test_dev1868_composite_cm_exec.py",
+   "corpus": "test_dev1868_composite_cm_exec.json"
+  },
+  {
+   "source": "tests/test_dev1868_golden_sql.py",
+   "corpus": "test_dev1868_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1868_plan_structure.py",
+   "corpus": "test_dev1868_plan_structure.json"
+  },
+  {
+   "source": "tests/test_dev1868_ranked_cm_exec.py",
+   "corpus": "test_dev1868_ranked_cm_exec.json"
+  },
+  {
+   "source": "tests/test_dev1868_residue_split.py",
+   "corpus": "test_dev1868_residue_split.json"
+  },
+  {
+   "source": "tests/test_dev1868_series_shift_exec.py",
+   "corpus": "test_dev1868_series_shift_exec.json"
+  },
+  {
+   "source": "tests/test_dev1868_transform_cm_exec.py",
+   "corpus": "test_dev1868_transform_cm_exec.json"
+  },
+  {
+   "source": "tests/test_dev1871_alias_stability.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1871_anchors_fold.py",
+   "corpus": "test_dev1871_anchors_fold.json"
+  },
+  {
+   "source": "tests/test_dev1871_broadcast_coherence_assert.py",
+   "corpus": "test_dev1871_broadcast_coherence_assert.json"
+  },
+  {
+   "source": "tests/test_dev1871_elaborate.py",
+   "corpus": "test_dev1871_elaborate.json"
+  },
+  {
+   "source": "tests/test_dev1871_grain_retype.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1871_population_routing.py",
+   "corpus": "test_dev1871_population_routing.json"
+  },
+  {
+   "source": "tests/test_dev1871_terms.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1871_time_inkey_traversal.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1879_formula_measure_naming.py",
+   "corpus": "test_dev1879_formula_measure_naming.json"
+  },
+  {
+   "source": "tests/test_dev1883_collision_keys.py",
+   "corpus": "test_dev1883_collision_keys.json"
+  },
+  {
+   "source": "tests/test_dev1883_equivalence.py",
+   "corpus": "test_dev1883_equivalence.json"
+  },
+  {
+   "source": "tests/test_dev1883_equivalence_guards.py",
+   "corpus": "test_dev1883_equivalence_guards.json"
+  },
+  {
+   "source": "tests/test_dev1883_errors.py",
+   "corpus": "test_dev1883_errors.json"
+  },
+  {
+   "source": "tests/test_dev1883_functional_rewrite.py",
+   "corpus": "test_dev1883_functional_rewrite.json"
+  },
+  {
+   "source": "tests/test_dev1883_order_keys.py",
+   "corpus": "test_dev1883_order_keys.json"
+  },
+  {
+   "source": "tests/test_dev1883_reserved_agg_names.py",
+   "corpus": "test_dev1883_reserved_agg_names.json"
+  },
+  {
+   "source": "tests/test_dev1891_internal_identifier_fit.py",
+   "corpus": "test_dev1891_internal_identifier_fit.json"
+  },
+  {
+   "source": "tests/test_dev1892_determination.py",
+   "corpus": "test_dev1892_determination.json"
+  },
+  {
+   "source": "tests/test_dev1892_fold_equivalence.py",
+   "corpus": "test_dev1892_fold_equivalence.json"
+  },
+  {
+   "source": "tests/test_dev1892_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1892_home_rooting.py",
+   "corpus": "test_dev1892_home_rooting.json"
+  },
+  {
+   "source": "tests/test_dev1892_parameter_typing.py",
+   "corpus": "test_dev1892_parameter_typing.json"
+  },
+  {
+   "source": "tests/test_dev1892_plan_structure.py",
+   "corpus": "test_dev1892_plan_structure.json"
+  },
+  {
+   "source": "tests/test_dev1892_residue.py",
+   "corpus": "test_dev1892_residue.json"
+  },
+  {
+   "source": "tests/test_dev1892_review_fixes.py",
+   "corpus": "test_dev1892_review_fixes.json"
+  },
+  {
+   "source": "tests/test_dev1894_error_family.py",
+   "corpus": "test_dev1894_error_family.json"
+  },
+  {
+   "source": "tests/test_dev1894_query_type_errors.py",
+   "corpus": "test_dev1894_query_type_errors.json"
+  },
+  {
+   "source": "tests/test_dev1900_closure.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1900_dimensions.py",
+   "corpus": "test_dev1900_dimensions.json"
+  },
+  {
+   "source": "tests/test_dev1900_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1900_home_path.py",
+   "corpus": "test_dev1900_home_path.json"
+  },
+  {
+   "source": "tests/test_dev1900_input_safety.py",
+   "corpus": "test_dev1900_input_safety.json"
+  },
+  {
+   "source": "tests/test_dev1900_population_guard.py",
+   "corpus": "test_dev1900_population_guard.json"
+  },
+  {
+   "source": "tests/test_dev1901_default_equivalence.py",
+   "corpus": "test_dev1901_default_equivalence.json"
+  },
+  {
+   "source": "tests/test_dev1901_fragment_key.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1901_param_binding.py",
+   "corpus": "test_dev1901_param_binding.json"
+  },
+  {
+   "source": "tests/test_dev1901_spelling_invariance.py",
+   "corpus": "test_dev1901_spelling_invariance.json"
+  },
+  {
+   "source": "tests/test_dev1902_golden_sql.py",
+   "corpus": "test_dev1902_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1902_join_key_contract.py",
+   "corpus": "test_dev1902_join_key_contract.json"
+  },
+  {
+   "source": "tests/test_dev1902_join_key_migration.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1902_join_key_spelling.py",
+   "corpus": "test_dev1902_join_key_spelling.json"
+  },
+  {
+   "source": "tests/test_dev1903_discovery.py",
+   "corpus": "test_dev1903_discovery.json"
+  },
+  {
+   "source": "tests/test_dev1903_first_last_dispatch.py",
+   "corpus": "test_dev1903_first_last_dispatch.json"
+  },
+  {
+   "source": "tests/test_dev1903_opacity.py",
+   "corpus": "test_dev1903_opacity.json"
+  },
+  {
+   "source": "tests/test_dev1903_producer_flag.py",
+   "corpus": "test_dev1903_producer_flag.json"
+  },
+  {
+   "source": "tests/test_dev1903_transform_inputs.py",
+   "corpus": "test_dev1903_transform_inputs.json"
+  },
+  {
+   "source": "tests/test_dev1908_default_cancellation.py",
+   "corpus": "test_dev1908_default_cancellation.json"
+  },
+  {
+   "source": "tests/test_dev1908_golden_sql.py",
+   "corpus": "test_dev1908_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1908_route.py",
+   "corpus": "test_dev1908_route.json"
+  },
+  {
+   "source": "tests/test_dev1908_walker.py",
+   "corpus": "test_dev1908_walker.json"
+  },
+  {
+   "source": "tests/test_dev1909_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1909_population_pushdown.py",
+   "corpus": "test_dev1909_population_pushdown.json"
+  },
+  {
+   "source": "tests/test_dev1910_association_plan.py",
+   "corpus": "test_dev1910_association_plan.json"
+  },
+  {
+   "source": "tests/test_dev1910_back_path.py",
+   "corpus": "test_dev1910_back_path.json"
+  },
+  {
+   "source": "tests/test_dev1910_home_rooted_association.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1911_fanning_partition_key.py",
+   "corpus": "test_dev1911_fanning_partition_key.json"
+  },
+  {
+   "source": "tests/test_dev1915_golden_sql.py",
+   "corpus": "test_dev1915_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1915_windowed_exec.py",
+   "corpus": "test_dev1915_windowed_exec.json"
+  },
+  {
+   "source": "tests/test_dev1919_home_rooted_attached_inputs.py",
+   "corpus": "test_dev1919_home_rooted_attached_inputs.json"
+  },
+  {
+   "source": "tests/test_dev1920_colon_refusal.py",
+   "corpus": "test_dev1920_colon_refusal.json"
+  },
+  {
+   "source": "tests/test_dev1920_no_colon_emission.py",
+   "corpus": "test_dev1920_no_colon_emission.json"
+  },
+  {
+   "source": "tests/test_dev1920_result_key_stability.py",
+   "corpus": "test_dev1920_result_key_stability.json"
+  },
+  {
+   "source": "tests/test_dev1920_stored_colon_upgrade.py",
+   "corpus": "test_dev1920_stored_colon_upgrade.json"
+  },
+  {
+   "source": "tests/test_dev1922_source_model_union.py",
+   "corpus": "test_dev1922_source_model_union.json"
+  },
+  {
+   "source": "tests/test_dev1929_column_granularity.py",
+   "corpus": "test_dev1929_column_granularity.json"
+  },
+  {
+   "source": "tests/test_dev1930_save_time_arity.py",
+   "corpus": "test_dev1930_save_time_arity.json"
+  },
+  {
+   "source": "tests/test_dev1931_default_home.py",
+   "corpus": "test_dev1931_default_home.json"
+  },
+  {
+   "source": "tests/test_dev1933_verbatim_execution.py",
+   "corpus": "test_dev1933_verbatim_execution.json"
+  },
+  {
+   "source": "tests/test_dev1934_formula_agg.py",
+   "corpus": "test_dev1934_formula_agg.json"
+  },
+  {
+   "source": "tests/test_dev1934_save_time_formula.py",
+   "corpus": "test_dev1934_save_time_formula.json"
+  },
+  {
+   "source": "tests/test_dev1935_boolean_lowering.py",
+   "corpus": "test_dev1935_boolean_lowering.json"
+  },
+  {
+   "source": "tests/test_dev1935_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1942_consumer_substitution.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1942_cte_dependencies.py",
+   "corpus": "test_dev1942_cte_dependencies.json"
+  },
+  {
+   "source": "tests/test_dev1942_dual_phase_reagg.py",
+   "corpus": "test_dev1942_dual_phase_reagg.json"
+  },
+  {
+   "source": "tests/test_dev1942_golden_sql.py",
+   "corpus": "test_dev1942_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1945_ranking_key_safety.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1946_transform_parameter.py",
+   "corpus": "test_dev1946_transform_parameter.json"
+  },
+  {
+   "source": "tests/test_dev1948_stage_edges.py",
+   "corpus": "test_dev1948_stage_edges.json"
+  },
+  {
+   "source": "tests/test_dev1952_derived_revisit.py",
+   "corpus": "test_dev1952_derived_revisit.json"
+  },
+  {
+   "source": "tests/test_dev1953_partition_alias.py",
+   "corpus": "test_dev1953_partition_alias.json"
+  },
+  {
+   "source": "tests/test_dev1953_partition_membership.py",
+   "corpus": "test_dev1953_partition_membership.json"
+  },
+  {
+   "source": "tests/test_dev1954_canonical_paths.py",
+   "corpus": "test_dev1954_canonical_paths.json"
+  },
+  {
+   "source": "tests/test_dev1954_stale_spelling.py",
+   "corpus": "test_dev1954_stale_spelling.json"
+  },
+  {
+   "source": "tests/test_dev1955_kind_free_vocabulary.py",
+   "corpus": "test_dev1955_kind_free_vocabulary.json"
+  },
+  {
+   "source": "tests/test_dev1958_cte_dependencies.py",
+   "corpus": "test_dev1958_cte_dependencies.json"
+  },
+  {
+   "source": "tests/test_dev1958_golden_sql.py",
+   "corpus": "test_dev1958_golden_sql.json"
+  },
+  {
+   "source": "tests/test_dev1958_plan_structure.py",
+   "corpus": "test_dev1958_plan_structure.json"
+  },
+  {
+   "source": "tests/test_dev1958_row_leaf_ban.py",
+   "corpus": "test_dev1958_row_leaf_ban.json"
+  },
+  {
+   "source": "tests/test_dev1958_shift_helpers.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1958_shifted_leaf_grain.py",
+   "corpus": "test_dev1958_shifted_leaf_grain.json"
+  },
+  {
+   "source": "tests/test_dev1958_shifted_population.py",
+   "corpus": "test_dev1958_shifted_population.json"
+  },
+  {
+   "source": "tests/test_dev1958_stage_axis.py",
+   "corpus": "test_dev1958_stage_axis.json"
+  },
+  {
+   "source": "tests/test_dev1964_dual_phase_consumption.py",
+   "corpus": "test_dev1964_dual_phase_consumption.json"
+  },
+  {
+   "source": "tests/test_dev1965_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1965_statement_assembly.py",
+   "corpus": "test_dev1965_statement_assembly.json"
+  },
+  {
+   "source": "tests/test_dev1966_fixtures_smoke.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1966_inline_qb_ban.py",
+   "corpus": "test_dev1966_inline_qb_ban.json"
+  },
+  {
+   "source": "tests/test_dev1966_invariants.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1966_localize_stages.py",
+   "corpus": "test_dev1966_localize_stages.json"
+  },
+  {
+   "source": "tests/test_dev1966_query_backed_cycles.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev1966_query_backed_inline.py",
+   "corpus": "test_dev1966_query_backed_inline.json"
+  },
+  {
+   "source": "tests/test_dev1966_splice_demand.py",
+   "corpus": "test_dev1966_splice_demand.json"
+  },
+  {
+   "source": "tests/test_dev1966_stage_scope.py",
+   "corpus": "test_dev1966_stage_scope.json"
+  },
+  {
+   "source": "tests/test_dev1967_grain_execution.py",
+   "corpus": "test_dev1967_grain_execution.json"
+  },
+  {
+   "source": "tests/test_dev1967_identifier_columns.py",
+   "corpus": "test_dev1967_identifier_columns.json"
+  },
+  {
+   "source": "tests/test_dev1967_stage_grain.py",
+   "corpus": "test_dev1967_stage_grain.json"
+  },
+  {
+   "source": "tests/test_dev1967_stage_model_builder.py",
+   "corpus": "test_dev1967_stage_model_builder.json"
+  },
+  {
+   "source": "tests/test_dev1976_dimension_values.py",
+   "corpus": "test_dev1976_dimension_values.json"
+  },
+  {
+   "source": "tests/test_dev1994_empty_value.py",
+   "corpus": "test_dev1994_empty_value.json"
+  },
+  {
+   "source": "tests/test_dev1995_virtual_model.py",
+   "corpus": "test_dev1995_virtual_model.json"
+  },
+  {
+   "source": "tests/test_dev2006_kernel_operands.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2013_expression_attribution.py",
+   "corpus": "test_dev2013_expression_attribution.json"
+  },
+  {
+   "source": "tests/test_dev2015_custom_granularities.py",
+   "corpus": "test_dev2015_custom_granularities.json"
+  },
+  {
+   "source": "tests/test_dev2015_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2015_laws.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2015_population.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2015_surfaces.py",
+   "corpus": "test_dev2015_surfaces.json"
+  },
+  {
+   "source": "tests/test_dev2015_time_dimensions.py",
+   "corpus": "test_dev2015_time_dimensions.json"
+  },
+  {
+   "source": "tests/test_dev2015_time_points.py",
+   "corpus": "test_dev2015_time_points.json"
+  },
+  {
+   "source": "tests/test_dev2015_time_spine.py",
+   "corpus": "test_dev2015_time_spine.json"
+  },
+  {
+   "source": "tests/test_dev2015_transforms.py",
+   "corpus": "test_dev2015_transforms.json"
+  },
+  {
+   "source": "tests/test_dev2021_column_sql_statement.py",
+   "corpus": "test_dev2021_column_sql_statement.json"
+  },
+  {
+   "source": "tests/test_dev2021_mode_a_variables.py",
+   "corpus": "test_dev2021_mode_a_variables.json"
+  },
+  {
+   "source": "tests/test_dev2021_profiling.py",
+   "corpus": "test_dev2021_profiling.json"
+  },
+  {
+   "source": "tests/test_dev2021_queries_carry_no_mode_a.py",
+   "corpus": "test_dev2021_queries_carry_no_mode_a.json"
+  },
+  {
+   "source": "tests/test_dev2021_stored_conversion.py",
+   "corpus": "test_dev2021_stored_conversion.json"
+  },
+  {
+   "source": "tests/test_dev2021_string_parameters.py",
+   "corpus": "test_dev2021_string_parameters.json"
+  },
+  {
+   "source": "tests/test_dev2046_all_null_inputs.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2046_boolean_exec.py",
+   "corpus": "test_dev2046_boolean_exec.json"
+  },
+  {
+   "source": "tests/test_dev2046_boolean_valued.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2046_typing.py",
+   "corpus": "test_dev2046_typing.json"
+  },
+  {
+   "source": "tests/test_dev2062_alias_reference_rule.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2062_composite_consumers.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2062_golden_sql.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2062_literal_transforms.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2063_grain_guarantee.py",
+   "corpus": "test_dev2063_grain_guarantee.json"
+  },
+  {
+   "source": "tests/test_dev2070_expression_auto_names.py",
+   "corpus": "test_dev2070_expression_auto_names.json"
+  },
+  {
+   "source": "tests/test_dev2073_cycle_resolution.py",
+   "corpus": "test_dev2073_cycle_resolution.json"
+  },
+  {
+   "source": "tests/test_dev2073_drift.py",
+   "corpus": "test_dev2073_drift.json"
+  },
+  {
+   "source": "tests/test_dev2073_edge_naming.py",
+   "corpus": "test_dev2073_edge_naming.json"
+  },
+  {
+   "source": "tests/test_dev2073_fk_cycles.py",
+   "corpus": "test_dev2073_fk_cycles.json"
+  },
+  {
+   "source": "tests/test_dev2073_join_edge_identity.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2073_join_edges.py",
+   "corpus": "test_dev2073_join_edges.json"
+  },
+  {
+   "source": "tests/test_dev2073_reingest.py",
+   "corpus": "test_dev2073_reingest.json"
+  },
+  {
+   "source": "tests/test_dev2073_surfaces.py",
+   "corpus": "test_dev2073_surfaces.json"
+  },
+  {
+   "source": "tests/test_dev2074_cypher_timeout.py",
+   "corpus": "test_dev2074_cypher_timeout.json"
+  },
+  {
+   "source": "tests/test_dev2074_frame_local_revisit.py",
+   "corpus": "test_dev2074_frame_local_revisit.json"
+  },
+  {
+   "source": "tests/test_dev2074_join_search.py",
+   "corpus": "test_dev2074_join_search.json"
+  },
+  {
+   "source": "tests/test_dev2074_save_ambiguity.py",
+   "corpus": "test_dev2074_save_ambiguity.json"
+  },
+  {
+   "source": "tests/test_dev2074_surface_parity.py",
+   "corpus": "test_dev2074_surface_parity.json"
+  },
+  {
+   "source": "tests/test_dev2101_agg_filter.py",
+   "corpus": "test_dev2101_agg_filter.json"
+  },
+  {
+   "source": "tests/test_dev2101_cast_typing.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2101_casts.py",
+   "corpus": "test_dev2101_casts.json"
+  },
+  {
+   "source": "tests/test_dev2101_date_literals.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2101_grammar_parse.py",
+   "corpus": "test_dev2101_grammar_parse.json"
+  },
+  {
+   "source": "tests/test_dev2101_importer_dependencies.py",
+   "corpus": "test_dev2101_importer_dependencies.json"
+  },
+  {
+   "source": "tests/test_dev2101_null_ordering.py",
+   "corpus": "test_dev2101_null_ordering.json"
+  },
+  {
+   "source": "tests/test_dev2101_sql_forms.py",
+   "corpus": "test_dev2101_sql_forms.json"
+  },
+  {
+   "source": "tests/test_dev2101_stored_upgrade.py",
+   "corpus": "test_dev2101_stored_upgrade.json"
+  },
+  {
+   "source": "tests/test_dev2101_variables.py",
+   "corpus": "test_dev2101_variables.json"
+  },
+  {
+   "source": "tests/test_dev2102_edge_merge.py",
+   "corpus": "test_dev2102_edge_merge.json"
+  },
+  {
+   "source": "tests/test_dev2102_extension_variables.py",
+   "corpus": "test_dev2102_extension_variables.json"
+  },
+  {
+   "source": "tests/test_dev2102_extensions_ir.py",
+   "corpus": "test_dev2102_extensions_ir.json"
+  },
+  {
+   "source": "tests/test_dev2102_legacy_conversion.py",
+   "corpus": "test_dev2102_legacy_conversion.json"
+  },
+  {
+   "source": "tests/test_dev2102_memory_entities.py",
+   "corpus": "test_dev2102_memory_entities.json"
+  },
+  {
+   "source": "tests/test_dev2102_query_inner_joins.py",
+   "corpus": "test_dev2102_query_inner_joins.json"
+  },
+  {
+   "source": "tests/test_dev2102_schema_drift.py",
+   "corpus": "test_dev2102_schema_drift.json"
+  },
+  {
+   "source": "tests/test_dev2102_scope_and_targets.py",
+   "corpus": "test_dev2102_scope_and_targets.json"
+  },
+  {
+   "source": "tests/test_dev2102_static_reads_harness.py",
+   "corpus": "test_dev2102_static_reads_harness.json"
+  },
+  {
+   "source": "tests/test_dev2102_stored_upgrade.py",
+   "corpus": "test_dev2102_stored_upgrade.json"
+  },
+  {
+   "source": "tests/test_dev2119_expression_time_dimensions.py",
+   "corpus": "test_dev2119_expression_time_dimensions.json"
+  },
+  {
+   "source": "tests/test_dev2119_granularity_calls.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2119_partition_keys.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2119_ranked_expressions.py",
+   "corpus": "test_dev2119_ranked_expressions.json"
+  },
+  {
+   "source": "tests/test_dev2119_ranked_kernel.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2119_stored_upgrade.py",
+   "corpus": "test_dev2119_stored_upgrade.json"
+  },
+  {
+   "source": "tests/test_dev2119_time_dimension_forms.py",
+   "corpus": "test_dev2119_time_dimension_forms.json"
+  },
+  {
+   "source": "tests/test_dev2119_time_dimension_variables.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2119_time_spine.py",
+   "corpus": "test_dev2119_time_spine.json"
+  },
+  {
+   "source": "tests/test_dev2120_bigquery_timestamps.py",
+   "corpus": "test_dev2120_bigquery_timestamps.json"
+  },
+  {
+   "source": "tests/test_dev2120_coercion.py",
+   "corpus": "test_dev2120_coercion.json"
+  },
+  {
+   "source": "tests/test_dev2120_date_trunc.py",
+   "corpus": "test_dev2120_date_trunc.json"
+  },
+  {
+   "source": "tests/test_dev2120_json.py",
+   "corpus": "test_dev2120_json.json"
+  },
+  {
+   "source": "tests/test_dev2120_regex.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2120_scalar_functions.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2120_string_matching.py",
+   "corpus": "test_dev2120_string_matching.json"
+  },
+  {
+   "source": "tests/test_dev2137_collect.py",
+   "corpus": "test_dev2137_collect.json"
+  },
+  {
+   "source": "tests/test_dev2137_element_types.py",
+   "corpus": "test_dev2137_element_types.json"
+  },
+  {
+   "source": "tests/test_dev2137_facade_lists.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2137_list_children.py",
+   "corpus": "test_dev2137_list_children.json"
+  },
+  {
+   "source": "tests/test_dev2137_list_columns.py",
+   "corpus": "test_dev2137_list_columns.json"
+  },
+  {
+   "source": "tests/test_dev2137_list_functions.py",
+   "corpus": "test_dev2137_list_functions.json"
+  },
+  {
+   "source": "tests/test_dev2137_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2137_profiling.py",
+   "corpus": "test_dev2137_profiling.json"
+  },
+  {
+   "source": "tests/test_dev2137_schema_drift.py",
+   "corpus": "test_dev2137_schema_drift.json"
+  },
+  {
+   "source": "tests/test_dev2169_dialect_fixes.py",
+   "corpus": "test_dev2169_dialect_fixes.json"
+  },
+  {
+   "source": "tests/test_dev2169_dialect_library_support.py",
+   "corpus": "test_dev2169_dialect_library_support.json"
+  },
+  {
+   "source": "tests/test_dev2169_postgres.py",
+   "corpus": "test_dev2169_postgres.json"
+  },
+  {
+   "source": "tests/test_dev2169_server_versions.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2171_bound_variables.py",
+   "corpus": "test_dev2171_bound_variables.json"
+  },
+  {
+   "source": "tests/test_dev2171_collision_drops.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2171_cube_import.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2171_dbt_import.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2171_importers_preserve_meaning.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2171_measure_dependencies.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2171_osi_import.py",
+   "corpus": "test_dev2171_osi_import.json"
+  },
+  {
+   "source": "tests/test_dev2171_unreachable_columns.py",
+   "corpus": "test_dev2171_unreachable_columns.json"
+  },
+  {
+   "source": "tests/test_dev2172_facade_projection.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2172_honest_catalogs.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2172_list_dimensions.py",
+   "corpus": "test_dev2172_list_dimensions.json"
+  },
+  {
+   "source": "tests/test_dev2172_memory_filters.py",
+   "corpus": "test_dev2172_memory_filters.json"
+  },
+  {
+   "source": "tests/test_dev2172_one_mode_b_reader.py",
+   "corpus": "test_dev2172_one_mode_b_reader.json"
+  },
+  {
+   "source": "tests/test_dev2172_usage_features.py",
+   "corpus": "test_dev2172_usage_features.json"
+  },
+  {
+   "source": "tests/test_dev2172_value_codec.py",
+   "corpus": "test_dev2172_value_codec.json"
+  },
+  {
+   "source": "tests/test_dev2172_wire_values.py",
+   "corpus": "test_dev2172_wire_values.json"
+  },
+  {
+   "source": "tests/test_dev2177_boolean_params.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2177_conditional_branches.py",
+   "corpus": "test_dev2177_conditional_branches.json"
+  },
+  {
+   "source": "tests/test_dev2177_filter_naming.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2177_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2186_custom_filter.py",
+   "corpus": "test_dev2186_custom_filter.json"
+  },
+  {
+   "source": "tests/test_dev2186_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2187_one_reader_law.py",
+   "corpus": "test_dev2187_one_reader_law.json"
+  },
+  {
+   "source": "tests/test_dev2187_root_qualifier.py",
+   "corpus": "test_dev2187_root_qualifier.json"
+  },
+  {
+   "source": "tests/test_dev2189_rls_parity.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2189_statement_consumers.py",
+   "corpus": "test_dev2189_statement_consumers.json"
+  },
+  {
+   "source": "tests/test_dev2210_clickhouse_gate.py",
+   "corpus": "test_dev2210_clickhouse_gate.json"
+  },
+  {
+   "source": "tests/test_dev2210_join_target_model_filters.py",
+   "corpus": "test_dev2210_join_target_model_filters.json"
+  },
+  {
+   "source": "tests/test_dev2210_model_filter_cycles.py",
+   "corpus": "test_dev2210_model_filter_cycles.json"
+  },
+  {
+   "source": "tests/test_dev2210_model_filter_rls.py",
+   "corpus": "test_dev2210_model_filter_rls.json"
+  },
+  {
+   "source": "tests/test_dev2210_model_filter_validation.py",
+   "corpus": "test_dev2210_model_filter_validation.json"
+  },
+  {
+   "source": "tests/test_dev2215_call_arguments.py",
+   "corpus": "test_dev2215_call_arguments.json"
+  },
+  {
+   "source": "tests/test_dev2215_date_parts.py",
+   "corpus": "test_dev2215_date_parts.json"
+  },
+  {
+   "source": "tests/test_dev2215_first_last_null_keys.py",
+   "corpus": "test_dev2215_first_last_null_keys.json"
+  },
+  {
+   "source": "tests/test_dev2215_identifier_case.py",
+   "corpus": "test_dev2215_identifier_case.json"
+  },
+  {
+   "source": "tests/test_dev2215_legacy_spellings.py",
+   "corpus": "test_dev2215_legacy_spellings.json"
+  },
+  {
+   "source": "tests/test_dev2215_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2215_stored_upgrade.py",
+   "corpus": "test_dev2215_stored_upgrade.json"
+  },
+  {
+   "source": "tests/test_dev2216_associate_default.py",
+   "corpus": "test_dev2216_associate_default.json"
+  },
+  {
+   "source": "tests/test_dev2216_keyless_association.py",
+   "corpus": "test_dev2216_keyless_association.json"
+  },
+  {
+   "source": "tests/test_dev2216_mode_surface.py",
+   "corpus": "test_dev2216_mode_surface.json"
+  },
+  {
+   "source": "tests/test_dev2216_stored_mode_migration.py",
+   "corpus": "test_dev2216_stored_mode_migration.json"
+  },
+  {
+   "source": "tests/test_dev2268_flat_stage_columns.py",
+   "corpus": "test_dev2268_flat_stage_columns.json"
+  },
+  {
+   "source": "tests/test_dev2269_join_target_case.py",
+   "corpus": "test_dev2269_join_target_case.json"
+  },
+  {
+   "source": "tests/test_dev2269_spine_case.py",
+   "corpus": "test_dev2269_spine_case.json"
+  },
+  {
+   "source": "tests/test_dev2280_date_only_instants.py",
+   "corpus": "test_dev2280_date_only_instants.json"
+  },
+  {
+   "source": "tests/test_dev2280_numeric_semantics.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2280_osi.py",
+   "corpus": "test_dev2280_osi.json"
+  },
+  {
+   "source": "tests/test_dev2280_sqlite_casts.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dev2280_stored_upgrade.py",
+   "corpus": "test_dev2280_stored_upgrade.json"
+  },
+  {
+   "source": "tests/test_dev2286_deprecated_input_surfaces.py",
+   "corpus": "test_dev2286_deprecated_input_surfaces.json"
+  },
+  {
+   "source": "tests/test_dialect_driver_facts.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dialect_reflection_hooks.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_dimension_routing.py",
+   "corpus": "test_dimension_routing.json"
+  },
+  {
+   "source": "tests/test_distinct_dimension_values.py",
+   "corpus": "test_distinct_dimension_values.json"
+  },
+  {
+   "source": "tests/test_division_by_zero.py",
+   "corpus": "test_division_by_zero.json"
+  },
+  {
+   "source": "tests/test_doc_examples.py",
+   "corpus": "test_doc_examples.json"
+  },
+  {
+   "source": "tests/test_docs_dev_1560.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_docs_guards.py",
+   "corpus": "test_docs_guards.json"
+  },
+  {
+   "source": "tests/test_document_isolation.py",
+   "corpus": "test_document_isolation.json"
+  },
+  {
+   "source": "tests/test_document_keys.py",
+   "reason": "new since main"
+  },
+  {
+   "source": "tests/test_dot_path_in_sql.py",
+   "corpus": "test_dot_path_in_sql.json"
+  },
+  {
+   "source": "tests/test_drift_attribution_scope.py",
+   "corpus": "test_drift_attribution_scope.json"
+  },
+  {
+   "source": "tests/test_drift_element_attribution.py",
+   "corpus": "test_drift_element_attribution.json"
+  },
+  {
+   "source": "tests/test_drift_list_retype.py",
+   "corpus": "test_drift_list_retype.json"
+  },
+  {
+   "source": "tests/test_drift_probe_quoting.py",
+   "corpus": "test_drift_probe_quoting.json"
+  },
+  {
+   "source": "tests/test_duckdb_key_reflection.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_edit_datasource_refresh.py",
+   "corpus": "test_edit_datasource_refresh.json"
+  },
+  {
+   "source": "tests/test_embedding_retriever.py",
+   "corpus": "test_embedding_retriever.json"
+  },
+  {
+   "source": "tests/test_embeddings_client.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_embeddings_storage.py",
+   "corpus": "test_embeddings_storage.json"
+  },
+  {
+   "source": "tests/test_engine_client_factory.py",
+   "corpus": "test_engine_client_factory.json"
+  },
+  {
+   "source": "tests/test_engine_explain.py",
+   "corpus": "test_engine_explain.json"
+  },
+  {
+   "source": "tests/test_engine_factory.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_engine_namespacing.py",
+   "corpus": "test_engine_namespacing.json"
+  },
+  {
+   "source": "tests/test_engine_ownership.py",
+   "corpus": "test_engine_ownership.json"
+  },
+  {
+   "source": "tests/test_engine_profiling.py",
+   "corpus": "test_engine_profiling.json"
+  },
+  {
+   "source": "tests/test_entity_description_plumbing.py",
+   "corpus": "test_entity_description_plumbing.json"
+  },
+  {
+   "source": "tests/test_entity_resolution.py",
+   "corpus": "test_entity_resolution.json"
+  },
+  {
+   "source": "tests/test_entry_points_namespacing.py",
+   "corpus": "test_entry_points_namespacing.json"
+  },
+  {
+   "source": "tests/test_error_messages.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_errors_hierarchy.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_expression_aggregations.py",
+   "corpus": "test_expression_aggregations.json"
+  },
+  {
+   "source": "tests/test_filter_renamed_measure.py",
+   "corpus": "test_filter_renamed_measure.json"
+  },
+  {
+   "source": "tests/test_filtered_count_forms.py",
+   "corpus": "test_filtered_count_forms.json"
+  },
+  {
+   "source": "tests/test_filtered_local_isolation.py",
+   "corpus": "test_filtered_local_isolation.json"
+  },
+  {
+   "source": "tests/test_force_clean.py",
+   "corpus": "test_force_clean.json"
+  },
+  {
+   "source": "tests/test_format_propagation.py",
+   "corpus": "test_format_propagation.json"
+  },
+  {
+   "source": "tests/test_formula.py",
+   "corpus": "test_formula.json"
+  },
+  {
+   "source": "tests/test_formula_referencing_measure_dev1779.py",
+   "corpus": "test_formula_referencing_measure_dev1779.json"
+  },
+  {
+   "source": "tests/test_functional_agg_positions.py",
+   "corpus": "test_functional_agg_positions.json"
+  },
+  {
+   "source": "tests/test_functional_aggregations.py",
+   "corpus": "test_functional_aggregations.json"
+  },
+  {
+   "source": "tests/test_functional_emission.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_functional_remedies.py",
+   "corpus": "test_functional_remedies.json"
+  },
+  {
+   "source": "tests/test_gateway_features.py",
+   "corpus": "test_gateway_features.json"
+  },
+  {
+   "source": "tests/test_gateway_harness.py",
+   "corpus": "test_gateway_harness.json"
+  },
+  {
+   "source": "tests/test_generator2_multistage.py",
+   "corpus": "test_generator2_multistage.json"
+  },
+  {
+   "source": "tests/test_granularity_name_migration.py",
+   "corpus": "test_granularity_name_migration.json"
+  },
+  {
+   "source": "tests/test_heal_date_parts.py",
+   "corpus": "test_heal_date_parts.json"
+  },
+  {
+   "source": "tests/test_heal_functional_aggregations.py",
+   "corpus": "test_heal_functional_aggregations.json"
+  },
+  {
+   "source": "tests/test_heal_order_column_object.py",
+   "corpus": "test_heal_order_column_object.json"
+  },
+  {
+   "source": "tests/test_heal_partition_time_bucket.py",
+   "corpus": "test_heal_partition_time_bucket.json"
+  },
+  {
+   "source": "tests/test_heal_refinement_restatement.py",
+   "corpus": "test_heal_refinement_restatement.json"
+  },
+  {
+   "source": "tests/test_heal_transform_named_measures.py",
+   "corpus": "test_heal_transform_named_measures.json"
+  },
+  {
+   "source": "tests/test_help_seed.py",
+   "corpus": "test_help_seed.json"
+  },
+  {
+   "source": "tests/test_id_collision.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_idempotent_ingestion.py",
+   "corpus": "test_idempotent_ingestion.json"
+  },
+  {
+   "source": "tests/test_importer_identifier_fold.py",
+   "corpus": "test_importer_identifier_fold.json"
+  },
+  {
+   "source": "tests/test_importer_physical.py",
+   "corpus": "test_importer_physical.json"
+  },
+  {
+   "source": "tests/test_importer_source_names.py",
+   "corpus": "test_importer_source_names.json"
+  },
+  {
+   "source": "tests/test_ingest_cli_ux.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_ingest_internal_tables.py",
+   "corpus": "test_ingest_internal_tables.json"
+  },
+  {
+   "source": "tests/test_ingest_report_reexport.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_ingested_table_names.py",
+   "corpus": "test_ingested_table_names.json"
+  },
+  {
+   "source": "tests/test_ingestion.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_ingestion_cardinality.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_ingestion_cardinality_reingest.py",
+   "corpus": "test_ingestion_cardinality_reingest.json"
+  },
+  {
+   "source": "tests/test_ingestion_comments.py",
+   "corpus": "test_ingestion_comments.json"
+  },
+  {
+   "source": "tests/test_ingestion_memory_dangling_cleanup.py",
+   "corpus": "test_ingestion_memory_dangling_cleanup.json"
+  },
+  {
+   "source": "tests/test_ingestion_name_sanitize.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_ingestion_schema_qualification.py",
+   "corpus": "test_ingestion_schema_qualification.json"
+  },
+  {
+   "source": "tests/test_ingestion_views.py",
+   "corpus": "test_ingestion_views.json"
+  },
+  {
+   "source": "tests/test_inspect.py",
+   "corpus": "test_inspect.json"
+  },
+  {
+   "source": "tests/test_inspect_batch.py",
+   "corpus": "test_inspect_batch.json"
+  },
+  {
+   "source": "tests/test_inspect_collection.py",
+   "corpus": "test_inspect_collection.json"
+  },
+  {
+   "source": "tests/test_inspect_model_compact.py",
+   "corpus": "test_inspect_model_compact.json"
+  },
+  {
+   "source": "tests/test_inspect_sample_refresh.py",
+   "corpus": "test_inspect_sample_refresh.json"
+  },
+  {
+   "source": "tests/test_inspect_saved_queries.py",
+   "corpus": "test_inspect_saved_queries.json"
+  },
+  {
+   "source": "tests/test_inspect_surfaces.py",
+   "corpus": "test_inspect_surfaces.json"
+  },
+  {
+   "source": "tests/test_int_cast_is_64_bit.py",
+   "corpus": "test_int_cast_is_64_bit.json"
+  },
+  {
+   "source": "tests/test_integer_aggregate_range.py",
+   "corpus": "test_integer_aggregate_range.json"
+  },
+  {
+   "source": "tests/test_join_cardinality_models.py",
+   "corpus": "test_join_cardinality_models.json"
+  },
+  {
+   "source": "tests/test_join_cardinality_producers.py",
+   "corpus": "test_join_cardinality_producers.json"
+  },
+  {
+   "source": "tests/test_join_cardinality_surfacing.py",
+   "corpus": "test_join_cardinality_surfacing.json"
+  },
+  {
+   "source": "tests/test_join_graph.py",
+   "corpus": "test_join_graph.json"
+  },
+  {
+   "source": "tests/test_joined_path_dimension_names.py",
+   "corpus": "test_joined_path_dimension_names.json"
+  },
+  {
+   "source": "tests/test_key_read_failures_reported.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_keys.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_keyword_spelling_hints.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_law_broadcast_coherence.py",
+   "corpus": "test_law_broadcast_coherence.json"
+  },
+  {
+   "source": "tests/test_law_database_door.py",
+   "corpus": "test_law_database_door.json"
+  },
+  {
+   "source": "tests/test_law_dice_slice.py",
+   "corpus": "test_law_dice_slice.json"
+  },
+  {
+   "source": "tests/test_law_grain_union.py",
+   "corpus": "test_law_grain_union.json"
+  },
+  {
+   "source": "tests/test_law_guard_ratchet.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_law_lowering_soundness.py",
+   "corpus": "test_law_lowering_soundness.json"
+  },
+  {
+   "source": "tests/test_law_no_emitted_reparse.py",
+   "corpus": "test_law_no_emitted_reparse.json"
+  },
+  {
+   "source": "tests/test_law_no_statement_reparse.py",
+   "corpus": "test_law_no_statement_reparse.json"
+  },
+  {
+   "source": "tests/test_law_param_text_bound.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_law_population_invariance.py",
+   "corpus": "test_law_population_invariance.json"
+  },
+  {
+   "source": "tests/test_law_read_only_datasources.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_law_removal_tripwire.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_law_split_invariance.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_law_statement_timeout.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_library_growth.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_library_name_shadow_warnings.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_library_name_shadowing.py",
+   "corpus": "test_library_name_shadowing.json"
+  },
+  {
+   "source": "tests/test_list_retype_dependents.py",
+   "corpus": "test_list_retype_dependents.json"
+  },
+  {
+   "source": "tests/test_list_set_equality.py",
+   "corpus": "test_list_set_equality.json"
+  },
+  {
+   "source": "tests/test_mcp_documented_idioms.py",
+   "corpus": "test_mcp_documented_idioms.json"
+  },
+  {
+   "source": "tests/test_mcp_engine_teardown.py",
+   "corpus": "test_mcp_engine_teardown.json"
+  },
+  {
+   "source": "tests/test_mcp_query_arg_errors.py",
+   "corpus": "test_mcp_query_arg_errors.json"
+  },
+  {
+   "source": "tests/test_mcp_row_cap.py",
+   "corpus": "test_mcp_row_cap.json"
+  },
+  {
+   "source": "tests/test_mcp_server.py",
+   "corpus": "test_mcp_server.json"
+  },
+  {
+   "source": "tests/test_mcp_surface_budget.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_measure_name_collision_suggestion.py",
+   "corpus": "test_measure_name_collision_suggestion.json"
+  },
+  {
+   "source": "tests/test_memories_cli.py",
+   "corpus": "test_memories_cli.json"
+  },
+  {
+   "source": "tests/test_memories_client.py",
+   "corpus": "test_memories_client.json"
+  },
+  {
+   "source": "tests/test_memories_inspect.py",
+   "corpus": "test_memories_inspect.json"
+  },
+  {
+   "source": "tests/test_memories_mcp.py",
+   "corpus": "test_memories_mcp.json"
+  },
+  {
+   "source": "tests/test_memories_resolver_typed.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_memories_rest.py",
+   "corpus": "test_memories_rest.json"
+  },
+  {
+   "source": "tests/test_memories_storage.py",
+   "corpus": "test_memories_storage.json"
+  },
+  {
+   "source": "tests/test_memory_description.py",
+   "corpus": "test_memory_description.json"
+  },
+  {
+   "source": "tests/test_memory_id_in_responses.py",
+   "corpus": "test_memory_id_in_responses.json"
+  },
+  {
+   "source": "tests/test_metricflow_setup.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_migrations.py",
+   "corpus": "test_migrations.json"
+  },
+  {
+   "source": "tests/test_missing_driver.py",
+   "corpus": "test_missing_driver.json"
+  },
+  {
+   "source": "tests/test_mode_a_optional_blocks_engine.py",
+   "corpus": "test_mode_a_optional_blocks_engine.json"
+  },
+  {
+   "source": "tests/test_mode_a_variable_substitution.py",
+   "corpus": "test_mode_a_variable_substitution.json"
+  },
+  {
+   "source": "tests/test_mode_b_comments.py",
+   "corpus": "test_mode_b_comments.json"
+  },
+  {
+   "source": "tests/test_mode_b_placeholder_parse.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_mode_b_variables_construction.py",
+   "corpus": "test_mode_b_variables_construction.json"
+  },
+  {
+   "source": "tests/test_mode_b_variables_exec.py",
+   "corpus": "test_mode_b_variables_exec.json"
+  },
+  {
+   "source": "tests/test_model_access.py",
+   "corpus": "test_model_access.json"
+  },
+  {
+   "source": "tests/test_model_access_caches.py",
+   "corpus": "test_model_access_caches.json"
+  },
+  {
+   "source": "tests/test_model_access_fixtures_smoke.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_model_access_memories.py",
+   "corpus": "test_model_access_memories.json"
+  },
+  {
+   "source": "tests/test_model_access_narrowed.py",
+   "corpus": "test_model_access_narrowed.json"
+  },
+  {
+   "source": "tests/test_model_access_reports.py",
+   "corpus": "test_model_access_reports.json"
+  },
+  {
+   "source": "tests/test_model_access_surfaces.py",
+   "corpus": "test_model_access_surfaces.json"
+  },
+  {
+   "source": "tests/test_model_access_tags.py",
+   "corpus": "test_model_access_tags.json"
+  },
+  {
+   "source": "tests/test_model_access_writes.py",
+   "corpus": "test_model_access_writes.json"
+  },
+  {
+   "source": "tests/test_model_source_kind.py",
+   "corpus": "test_model_source_kind.json"
+  },
+  {
+   "source": "tests/test_model_variables_inspect.py",
+   "corpus": "test_model_variables_inspect.json"
+  },
+  {
+   "source": "tests/test_models.py",
+   "corpus": "test_models.json"
+  },
+  {
+   "source": "tests/test_models_summary_compact.py",
+   "corpus": "test_models_summary_compact.json"
+  },
+  {
+   "source": "tests/test_money_exact_numeric.py",
+   "corpus": "test_money_exact_numeric.json"
+  },
+  {
+   "source": "tests/test_moved_module_paths.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_named_measures.py",
+   "corpus": "test_named_measures.json"
+  },
+  {
+   "source": "tests/test_native_type_preservation.py",
+   "corpus": "test_native_type_preservation.json"
+  },
+  {
+   "source": "tests/test_nested_dag_cross_stage_refs.py",
+   "corpus": "test_nested_dag_cross_stage_refs.json"
+  },
+  {
+   "source": "tests/test_one_driver_per_client.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_order_row_expression_wrap.py",
+   "corpus": "test_order_row_expression_wrap.json"
+  },
+  {
+   "source": "tests/test_osi_converter.py",
+   "corpus": "test_osi_converter.json"
+  },
+  {
+   "source": "tests/test_osi_current_spec.py",
+   "corpus": "test_osi_current_spec.json"
+  },
+  {
+   "source": "tests/test_osi_datatypes.py",
+   "corpus": "test_osi_datatypes.json"
+  },
+  {
+   "source": "tests/test_osi_dialects.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_export_datasets.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_export_document.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_export_edges.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_export_extensions.py",
+   "corpus": "test_osi_export_extensions.json"
+  },
+  {
+   "source": "tests/test_osi_export_metrics.py",
+   "corpus": "test_osi_export_metrics.json"
+  },
+  {
+   "source": "tests/test_osi_export_nonportable.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_export_relationships.py",
+   "corpus": "test_osi_export_relationships.json"
+  },
+  {
+   "source": "tests/test_osi_expression.py",
+   "corpus": "test_osi_expression.json"
+  },
+  {
+   "source": "tests/test_osi_extension_migration.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_import_aggregates.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_import_extensions.py",
+   "corpus": "test_osi_import_extensions.json"
+  },
+  {
+   "source": "tests/test_osi_import_nonportable.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_metrics.py",
+   "corpus": "test_osi_metrics.json"
+  },
+  {
+   "source": "tests/test_osi_modeljoin_fields.py",
+   "corpus": "test_osi_modeljoin_fields.json"
+  },
+  {
+   "source": "tests/test_osi_roundtrip.py",
+   "corpus": "test_osi_roundtrip.json"
+  },
+  {
+   "source": "tests/test_osi_schema.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_source_columns.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_osi_source_columns_postgres.py",
+   "corpus": "test_osi_source_columns_postgres.json"
+  },
+  {
+   "source": "tests/test_osi_upstream_examples.py",
+   "corpus": "test_osi_upstream_examples.json"
+  },
+  {
+   "source": "tests/test_planned.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_projection_planner.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_projection_trim.py",
+   "corpus": "test_projection_trim.json"
+  },
+  {
+   "source": "tests/test_query_backed_declared_join_boundaries.py",
+   "corpus": "test_query_backed_declared_join_boundaries.json"
+  },
+  {
+   "source": "tests/test_query_backed_declared_joins.py",
+   "corpus": "test_query_backed_declared_joins.json"
+  },
+  {
+   "source": "tests/test_query_backed_identifier_length.py",
+   "corpus": "test_query_backed_identifier_length.json"
+  },
+  {
+   "source": "tests/test_query_backed_models.py",
+   "corpus": "test_query_backed_models.json"
+  },
+  {
+   "source": "tests/test_query_backed_typed_expansion.py",
+   "corpus": "test_query_backed_typed_expansion.json"
+  },
+  {
+   "source": "tests/test_query_cache.py",
+   "corpus": "test_query_cache.json"
+  },
+  {
+   "source": "tests/test_query_optional_blocks.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_quoted_aggregation_placeholders.py",
+   "corpus": "test_quoted_aggregation_placeholders.json"
+  },
+  {
+   "source": "tests/test_rank_direction.py",
+   "corpus": "test_rank_direction.json"
+  },
+  {
+   "source": "tests/test_rank_direction_golden_sql.py",
+   "corpus": "test_rank_direction_golden_sql.json"
+  },
+  {
+   "source": "tests/test_rank_direction_migration.py",
+   "corpus": "test_rank_direction_migration.json"
+  },
+  {
+   "source": "tests/test_reagg_outer_grain_attribution.py",
+   "corpus": "test_reagg_outer_grain_attribution.json"
+  },
+  {
+   "source": "tests/test_recommend_root_model.py",
+   "corpus": "test_recommend_root_model.json"
+  },
+  {
+   "source": "tests/test_recommend_root_model_surfaces.py",
+   "corpus": "test_recommend_root_model_surfaces.json"
+  },
+  {
+   "source": "tests/test_reference_semantics.py",
+   "corpus": "test_reference_semantics.json"
+  },
+  {
+   "source": "tests/test_release_gate.py",
+   "corpus": "test_release_gate.json"
+  },
+  {
+   "source": "tests/test_removed_2_0_forms.py",
+   "corpus": "test_removed_2_0_forms.json"
+  },
+  {
+   "source": "tests/test_reroot_aggregate_key.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_response_meta.py",
+   "corpus": "test_response_meta.json"
+  },
+  {
+   "source": "tests/test_rest_memory_string_ids.py",
+   "corpus": "test_rest_memory_string_ids.json"
+  },
+  {
+   "source": "tests/test_result_column_type_drivers.py",
+   "corpus": "test_result_column_type_drivers.json"
+  },
+  {
+   "source": "tests/test_result_column_types.py",
+   "corpus": "test_result_column_types.json"
+  },
+  {
+   "source": "tests/test_result_readers.py",
+   "corpus": "test_result_readers.json"
+  },
+  {
+   "source": "tests/test_retriever_abc.py",
+   "corpus": "test_retriever_abc.json"
+  },
+  {
+   "source": "tests/test_retype_finding.py",
+   "corpus": "test_retype_finding.json"
+  },
+  {
+   "source": "tests/test_rollback_safe_persistence.py",
+   "corpus": "test_rollback_safe_persistence.json"
+  },
+  {
+   "source": "tests/test_sample_profiling.py",
+   "corpus": "test_sample_profiling.json"
+  },
+  {
+   "source": "tests/test_save_memory_description_plumbing.py",
+   "corpus": "test_save_memory_description_plumbing.json"
+  },
+  {
+   "source": "tests/test_save_time_sql_validation.py",
+   "corpus": "test_save_time_sql_validation.json"
+  },
+  {
+   "source": "tests/test_saved_query_population_pinning.py",
+   "corpus": "test_saved_query_population_pinning.json"
+  },
+  {
+   "source": "tests/test_saved_query_refinement.py",
+   "corpus": "test_saved_query_refinement.json"
+  },
+  {
+   "source": "tests/test_saved_query_refinement_exec.py",
+   "corpus": "test_saved_query_refinement_exec.json"
+  },
+  {
+   "source": "tests/test_schema_drift_error.py",
+   "corpus": "test_schema_drift_error.json"
+  },
+  {
+   "source": "tests/test_schema_drift_typed.py",
+   "corpus": "test_schema_drift_typed.json"
+  },
+  {
+   "source": "tests/test_scope.py",
+   "corpus": "test_scope.json"
+  },
+  {
+   "source": "tests/test_scope_check.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_scope_schema.py",
+   "corpus": "test_scope_schema.json"
+  },
+  {
+   "source": "tests/test_search_compact.py",
+   "corpus": "test_search_compact.json"
+  },
+  {
+   "source": "tests/test_search_compact_plumbing.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_search_datasource_filter.py",
+   "corpus": "test_search_datasource_filter.json"
+  },
+  {
+   "source": "tests/test_search_description_indexed.py",
+   "corpus": "test_search_description_indexed.json"
+  },
+  {
+   "source": "tests/test_search_example_query_stale_warning.py",
+   "corpus": "test_search_example_query_stale_warning.json"
+  },
+  {
+   "source": "tests/test_search_graph.py",
+   "corpus": "test_search_graph.json"
+  },
+  {
+   "source": "tests/test_search_index.py",
+   "corpus": "test_search_index.json"
+  },
+  {
+   "source": "tests/test_search_invariance.py",
+   "corpus": "test_search_invariance.json"
+  },
+  {
+   "source": "tests/test_search_lenient_validation.py",
+   "corpus": "test_search_lenient_validation.json"
+  },
+  {
+   "source": "tests/test_search_named_entity_surfacing.py",
+   "corpus": "test_search_named_entity_surfacing.json"
+  },
+  {
+   "source": "tests/test_search_numeric_backfill.py",
+   "corpus": "test_search_numeric_backfill.json"
+  },
+  {
+   "source": "tests/test_search_render.py",
+   "corpus": "test_search_render.json"
+  },
+  {
+   "source": "tests/test_search_render_unified.py",
+   "corpus": "test_search_render_unified.json"
+  },
+  {
+   "source": "tests/test_search_service.py",
+   "corpus": "test_search_service.json"
+  },
+  {
+   "source": "tests/test_search_service_dispatch.py",
+   "corpus": "test_search_service_dispatch.json"
+  },
+  {
+   "source": "tests/test_search_service_orchestration.py",
+   "corpus": "test_search_service_orchestration.json"
+  },
+  {
+   "source": "tests/test_search_surfaces.py",
+   "corpus": "test_search_surfaces.json"
+  },
+  {
+   "source": "tests/test_search_three_channel.py",
+   "corpus": "test_search_three_channel.json"
+  },
+  {
+   "source": "tests/test_search_unified.py",
+   "corpus": "test_search_unified.json"
+  },
+  {
+   "source": "tests/test_search_writeback.py",
+   "corpus": "test_search_writeback.json"
+  },
+  {
+   "source": "tests/test_seeded_exec_engine.py",
+   "corpus": "test_seeded_exec_engine.json"
+  },
+  {
+   "source": "tests/test_server_shutdown.py",
+   "corpus": "test_server_shutdown.json"
+  },
+  {
+   "source": "tests/test_session_policy_engine.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_slack_normalization.py",
+   "corpus": "test_slack_normalization.json"
+  },
+  {
+   "source": "tests/test_slayer_now_engine.py",
+   "corpus": "test_slayer_now_engine.json"
+  },
+  {
+   "source": "tests/test_slayer_now_host_clock.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_slayer_now_surfaces.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_source_bundle.py",
+   "corpus": "test_source_bundle.json"
+  },
+  {
+   "source": "tests/test_source_bundle_builder.py",
+   "corpus": "test_source_bundle_builder.json"
+  },
+  {
+   "source": "tests/test_sql_boolean_literal_filters.py",
+   "corpus": "test_sql_boolean_literal_filters.json"
+  },
+  {
+   "source": "tests/test_sql_client.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_sql_client_cancellation.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_sql_client_contract.py",
+   "corpus": "test_sql_client_contract.json"
+  },
+  {
+   "source": "tests/test_sql_client_dialects.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_sql_client_event_loops.py",
+   "corpus": "test_sql_client_event_loops.json"
+  },
+  {
+   "source": "tests/test_sql_client_explain_forwarding.py",
+   "corpus": "test_sql_client_explain_forwarding.json"
+  },
+  {
+   "source": "tests/test_sql_generator.py",
+   "corpus": "test_sql_generator.json"
+  },
+  {
+   "source": "tests/test_sql_mode_retype_postgres.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_sqlite_catalog_reads.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_sqlite_probe.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_sqlite_storage.py",
+   "corpus": "test_sqlite_storage.json"
+  },
+  {
+   "source": "tests/test_stage2_host_migration.py",
+   "corpus": "test_stage2_host_migration.json"
+  },
+  {
+   "source": "tests/test_stage_planner.py",
+   "corpus": "test_stage_planner.json"
+  },
+  {
+   "source": "tests/test_startup_ingest.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_statement_timeout_client.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_statement_timeout_per_connection.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_statement_timeout_reporting.py",
+   "corpus": "test_statement_timeout_reporting.json"
+  },
+  {
+   "source": "tests/test_storage.py",
+   "corpus": "test_storage.json"
+  },
+  {
+   "source": "tests/test_storage_backend_compat.py",
+   "corpus": "test_storage_backend_compat.json"
+  },
+  {
+   "source": "tests/test_storage_fingerprints.py",
+   "corpus": "test_storage_fingerprints.json"
+  },
+  {
+   "source": "tests/test_storage_namespacing.py",
+   "corpus": "test_storage_namespacing.json"
+  },
+  {
+   "source": "tests/test_storage_sampled.py",
+   "corpus": "test_storage_sampled.json"
+  },
+  {
+   "source": "tests/test_storage_type_refinement.py",
+   "corpus": "test_storage_type_refinement.json"
+  },
+  {
+   "source": "tests/test_stored_peer_vocabulary.py",
+   "reason": "new since main"
+  },
+  {
+   "source": "tests/test_stored_upgrade_adjacent_minus.py",
+   "corpus": "test_stored_upgrade_adjacent_minus.json"
+  },
+  {
+   "source": "tests/test_stored_upgrade_backing_sql.py",
+   "corpus": "test_stored_upgrade_backing_sql.json"
+  },
+  {
+   "source": "tests/test_stored_upgrade_date_ranges.py",
+   "corpus": "test_stored_upgrade_date_ranges.json"
+  },
+  {
+   "source": "tests/test_stored_upgrade_distinct_and_gate.py",
+   "corpus": "test_stored_upgrade_distinct_and_gate.json"
+  },
+  {
+   "source": "tests/test_stored_upgrade_filter_literals.py",
+   "corpus": "test_stored_upgrade_filter_literals.json"
+  },
+  {
+   "source": "tests/test_stored_upgrade_join_keys.py",
+   "corpus": "test_stored_upgrade_join_keys.json"
+  },
+  {
+   "source": "tests/test_stored_upgrade_rank_orders.py",
+   "corpus": "test_stored_upgrade_rank_orders.json"
+  },
+  {
+   "source": "tests/test_stored_upgrade_refinement_gate.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_stored_upgrade_spine_date_only.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_strict_deprecated_alias.py",
+   "corpus": "test_strict_deprecated_alias.json"
+  },
+  {
+   "source": "tests/test_syntax.py",
+   "corpus": "test_syntax.json"
+  },
+  {
+   "source": "tests/test_table_names.py",
+   "corpus": "test_table_names.json"
+  },
+  {
+   "source": "tests/test_tantivy_retriever.py",
+   "corpus": "test_tantivy_retriever.json"
+  },
+  {
+   "source": "tests/test_time_dimension_string_surfaces.py",
+   "corpus": "test_time_dimension_string_surfaces.json"
+  },
+  {
+   "source": "tests/test_time_dimensions_filters.py",
+   "corpus": "test_time_dimensions_filters.json"
+  },
+  {
+   "source": "tests/test_time_dimensions_planner.py",
+   "corpus": "test_time_dimensions_planner.json"
+  },
+  {
+   "source": "tests/test_time_points_clock.py",
+   "corpus": "test_time_points_clock.json"
+  },
+  {
+   "source": "tests/test_time_points_compile_guard.py",
+   "corpus": "test_time_points_compile_guard.json"
+  },
+  {
+   "source": "tests/test_time_points_date_range.py",
+   "corpus": "test_time_points_date_range.json"
+  },
+  {
+   "source": "tests/test_time_points_exec.py",
+   "corpus": "test_time_points_exec.json"
+  },
+  {
+   "source": "tests/test_time_points_frame_bounds.py",
+   "corpus": "test_time_points_frame_bounds.json"
+  },
+  {
+   "source": "tests/test_time_points_granularity_conflicts.py",
+   "corpus": "test_time_points_granularity_conflicts.json"
+  },
+  {
+   "source": "tests/test_time_points_mcp_docs.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_time_points_whole_periods.py",
+   "corpus": "test_time_points_whole_periods.json"
+  },
+  {
+   "source": "tests/test_time_shift_period_boundary.py",
+   "corpus": "test_time_shift_period_boundary.json"
+  },
+  {
+   "source": "tests/test_time_trunc_key.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_topologically_order_stages.py",
+   "corpus": "test_topologically_order_stages.json"
+  },
+  {
+   "source": "tests/test_transform_lowerer.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_transforms_planner.py",
+   "corpus": "test_transforms_planner.json"
+  },
+  {
+   "source": "tests/test_try_cast_integer_targets.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_type_probe.py",
+   "corpus": "test_type_probe.json"
+  },
+  {
+   "source": "tests/test_unrelated_datasets.py",
+   "corpus": "test_unrelated_datasets.json"
+  },
+  {
+   "source": "tests/test_upgrade_corpus_v1_8_2.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_usage_reporting_controls.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_usage_reporting_counting.py",
+   "corpus": "test_usage_reporting_counting.json"
+  },
+  {
+   "source": "tests/test_usage_reporting_delivery.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_usage_reporting_features.py",
+   "corpus": "test_usage_reporting_features.json"
+  },
+  {
+   "source": "tests/test_usage_reporting_first_query.py",
+   "corpus": "test_usage_reporting_first_query.json"
+  },
+  {
+   "source": "tests/test_usage_reporting_isolation.py",
+   "corpus": "test_usage_reporting_isolation.json"
+  },
+  {
+   "source": "tests/test_usage_reporting_ossie_vocabulary.py",
+   "reason": "new since main"
+  },
+  {
+   "source": "tests/test_usage_reporting_payload.py",
+   "corpus": "test_usage_reporting_payload.json"
+  },
+  {
+   "source": "tests/test_usage_reporting_retention.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_usage_reporting_scope.py",
+   "corpus": "test_usage_reporting_scope.json"
+  },
+  {
+   "source": "tests/test_usage_reporting_vocabulary.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_v4_migration.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_v6_migration.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_v7_migration.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_validate_models.py",
+   "corpus": "test_validate_models.json"
+  },
+  {
+   "source": "tests/test_value_registry.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_variables_planner.py",
+   "corpus": "test_variables_planner.json"
+  },
+  {
+   "source": "tests/test_xdist_warning_serialization.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_yaml_exact_entry.py",
+   "reason": "no document literal"
+  },
+  {
+   "source": "tests/test_yaml_memories_mdfiles.py",
+   "corpus": "test_yaml_memories_mdfiles.json"
+  },
+  {
+   "source": "tests/test_yaml_storage_cache.py",
+   "corpus": "test_yaml_storage_cache.json"
+  }
+ ]
+}

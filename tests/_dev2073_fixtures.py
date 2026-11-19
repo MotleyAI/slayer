@@ -10,10 +10,11 @@ from collections.abc import AsyncGenerator
 import duckdb
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.schema_drift import IdempotentIngestResult, DatasetAddition
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.database.client import SqlClient
@@ -100,8 +101,8 @@ def run_script(*, db_path: str, dialect: str, script: str) -> None:
         con.executescript(script)
 
 
-def edge_key(model: str, join: ModelJoin) -> EdgeKey:
-    return (model, join.target_model, tuple((p[0], p[1]) for p in join.join_pairs))
+def edge_key(dataset: str, join: DatasetRelationship) -> EdgeKey:
+    return (dataset, join.to, tuple((p[0], p[1]) for p in join.column_pairs))
 
 
 class Live(BaseModel):
@@ -128,16 +129,16 @@ class Live(BaseModel):
         """The workspace engine's client for the live datasource."""
         return self.engine().client_for(self.ds)
 
-    async def ingest(self):
+    async def ingest(self) -> IdempotentIngestResult:
         return await ingest_datasource_idempotent(datasource=self.ds, storage=self.storage, client=self.client())
 
-    async def model(self, name: str) -> SlayerModel:
-        model = await self.storage.get_model(name, data_source=DS)
+    async def dataset(self, name: str) -> SlayerDataset:
+        model = await self.storage.get_dataset(name, data_source=DS)
         assert model is not None, name
         return model
 
-    async def models(self) -> dict[str, SlayerModel]:
-        loaded, failed = await self.storage.load_models(data_source=DS)
+    async def datasets(self) -> dict[str, SlayerDataset]:
+        loaded, failed = await self.storage.load_datasets(data_source=DS)
         assert failed == []
         return {m.name: m for m in loaded}
 
@@ -145,7 +146,7 @@ class Live(BaseModel):
         """Every stored join keyed by (declaring model, target, pairs) → its name."""
         return {
             edge_key(m.name, j): j.name
-            for m in (await self.models()).values() for j in m.joins
+            for m in (await self.datasets()).values() for j in m.relationships
         }
 
     async def query(self, **kwargs):
@@ -173,8 +174,8 @@ async def live(script: str, *, dialect: str = "sqlite") -> AsyncGenerator[Live]:
             await workspace.aclose()
 
 
-def addition_for(result, model_name: str):
-    return next(a for a in result.additions if a.model_name == model_name)
+def addition_for(result: IdempotentIngestResult, dataset_name: str) -> DatasetAddition:
+    return next(a for a in result.additions if a.dataset_name == dataset_name)
 
 
 # Hand-built orders → addresses parallel pair, for surfaces that need no live database.
@@ -182,53 +183,53 @@ BILLING_PAIRS = [["billing_address_id", "id"]]
 SHIPPING_PAIRS = [["shipping_address_id", "id"]]
 
 
-def join_to(pairs: list[list[str]], name: str | None = None, target: str = "addresses") -> ModelJoin:
-    return ModelJoin(target_model=target, join_pairs=pairs, name=name, cardinality=JoinCardinality.MANY_TO_ONE)
+def join_to(pairs: list[list[str]], name: str | None = None, target: str = "addresses") -> DatasetRelationship:
+    return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], name=name, cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
-def orders_with(*joins: ModelJoin) -> SlayerModel:
-    return SlayerModel(
+def orders_with(*joins: DatasetRelationship) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="billing_address_id", type=DataType.INT),
-            Column(name="shipping_address_id", type=DataType.INT),
-            Column(name="legacy_addr", type=DataType.INT),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="billing_address_id", datatype=DataType.INTEGER),
+            DatasetField(name="shipping_address_id", datatype=DataType.INTEGER),
+            DatasetField(name="legacy_addr", datatype=DataType.INTEGER),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        joins=list(joins),
+        relationships=list(joins),
     )
 
 
-def addresses_model() -> SlayerModel:
-    return SlayerModel(
+def addresses_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="addresses", data_source=DS, sql_table="addresses",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="city", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="city", datatype=DataType.STRING)],
     )
 
 
-def named_pair() -> tuple[ModelJoin, ModelJoin]:
+def named_pair() -> tuple[DatasetRelationship, DatasetRelationship]:
     return join_to(BILLING_PAIRS, "billing_address"), join_to(SHIPPING_PAIRS, "shipping_address")
 
 
-def unnamed_pair() -> tuple[ModelJoin, ModelJoin]:
+def unnamed_pair() -> tuple[DatasetRelationship, DatasetRelationship]:
     return join_to(BILLING_PAIRS), join_to(SHIPPING_PAIRS)
 
 
 @contextlib.asynccontextmanager
-async def model_store(*models: SlayerModel) -> AsyncGenerator[YAMLStorage]:
-    """A storage holding ``models`` under an in-memory SQLite datasource."""
+async def dataset_store(*models: SlayerDataset) -> AsyncGenerator[YAMLStorage]:
+    """A storage holding ``datasets`` under an in-memory SQLite datasource."""
     with tempfile.TemporaryDirectory() as tmp:
         store = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         await store.save_datasource(DatasourceConfig(name=DS, type="sqlite", database=":memory:"))
         for model in models:
-            await store.save_model(model)
+            await store.save_dataset(model)
         yield store
 
 
-async def stored_joins(storage: YAMLStorage, model: str = "orders") -> list[tuple[str | None, list[list[str]]]]:
-    stored = await storage.get_model(model, data_source=DS)
+async def stored_joins(storage: YAMLStorage, dataset: str = "orders") -> list[tuple[str | None, list[list[str]]]]:
+    stored = await storage.get_dataset(dataset, data_source=DS)
     assert stored is not None
-    return [(j.name, j.join_pairs) for j in stored.joins]
+    return [(j.name, [list(p) for p in j.column_pairs]) for j in stored.relationships]

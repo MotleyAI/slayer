@@ -1,0 +1,131 @@
+{
+ "source": "tests/test_dev1746_null_safe_grain.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "spend"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "spend"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 316,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 331,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 351,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 369,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 371,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 389,
+   "reason": "not fully literal"
+  }
+ ]
+}

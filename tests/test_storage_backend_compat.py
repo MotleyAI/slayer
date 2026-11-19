@@ -8,7 +8,7 @@ from collections.abc import Generator
 import pytest
 
 from slayer.core.errors import GranularityDefinitionError, StoredDocumentLoadError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.warnings import SlayerUnloadableDocumentWarning
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
@@ -52,30 +52,30 @@ class _DictStore(StorageBackend):
     """Dict-backed hooks unchanged since 0.9.12; subclasses add the datasource write and memory listing."""
 
     def __init__(self) -> None:
-        self.models: dict[tuple[str, str], SlayerModel] = {}
+        self.datasets: dict[tuple[str, str], SlayerDataset] = {}
         self.datasources: dict[str, DatasourceConfig] = {}
         self.memories: dict[str, dict] = {}
         self.embeddings: dict[tuple[str, str], Embedding] = {}
         self.priority: list[str] = []
         self.log: list[str] = []
 
-    async def _save_model_impl(self, model: SlayerModel) -> None:
-        self.models[(model.data_source, model.name)] = model
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        self.datasets[(dataset.data_source, dataset.name)] = dataset
 
-    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
-        return list(self.models)
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
+        return list(self.datasets)
 
-    async def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None:
-        return next((m for (ds, n), m in self.models.items() if n == name and data_source in (None, ds)), None)
+    async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
+        return next((m for (ds, n), m in self.datasets.items() if n == name and data_source in (None, ds)), None)
 
-    async def _delete_model_row(self, *, data_source: str, name: str) -> bool:
-        return self.models.pop((data_source, name), None) is not None
+    async def _delete_dataset_row(self, *, data_source: str, name: str) -> bool:
+        return self.datasets.pop((data_source, name), None) is not None
 
-    async def update_column_sampled(
-        self, *, data_source: str, model_name: str, column_name: str,
+    async def update_field_sampled(
+        self, *, data_source: str, dataset_name: str, field_name: str,
         sampled: str | None, sampled_values: list[str] | None, distinct_count: int | None,
     ) -> None:
-        raise ValueError(model_name)
+        raise ValueError(dataset_name)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
         return self.datasources.get(name)
@@ -242,13 +242,13 @@ class SelfBuildingBackend(_DictStore):
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         self.datasources[datasource.name] = datasource
 
-    async def _save_model_impl(self, model: SlayerModel) -> None:
-        self.raw_models[(model.data_source, model.name)] = model.model_dump(mode="json", exclude_none=True)
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        self.raw_models[(dataset.data_source, dataset.name)] = dataset.model_dump(mode="json", exclude_none=True)
 
-    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
         return list(self.raw_models)
 
-    async def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None:
+    async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         for (ds, n), raw in self.raw_models.items():
             if n == name and data_source in (None, ds):
                 return await self._migrate_and_refine_on_load(name=n, data=raw, data_source=ds)
@@ -280,8 +280,8 @@ def _self_building_backend() -> SelfBuildingBackend:
     """A fresh instance holding datasource ``shop``, model ``shop.orders`` and memory ``1``."""
     backend = SelfBuildingBackend()
     backend.datasources["shop"] = _valid()
-    model = SlayerModel.model_validate({"name": "orders", "data_source": "shop", "sql_table": "orders",
-                                        "columns": [{"name": "id", "type": "INT", "primary_key": True}]})
+    model = SlayerDataset.model_validate({"name": "orders", "data_source": "shop", "sql_table": "orders",
+                                        "fields": [{"name": "id", "datatype": "Integer", "primary_key": True}]})
     backend.raw_models[("shop", "orders")] = model.model_dump(mode="json", exclude_none=True)
     memory = Memory.model_validate({"id": "1", "learning": "note", "entities": ["shop.orders"]})
     backend.memories["1"] = memory.model_dump(mode="json")
@@ -294,8 +294,8 @@ class TestLibraryGranularitySettle:
         backend = _self_building_backend()
 
         async def load_model() -> None:
-            assert await backend.get_model("orders", data_source="shop") is not None
-            models, failed = await backend.load_models()
+            assert await backend.get_dataset("orders", data_source="shop") is not None
+            models, failed = await backend.load_datasets()
             assert ([m.name for m in models], failed) == (["orders"], [])
 
         async def load_memory() -> None:

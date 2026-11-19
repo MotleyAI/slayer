@@ -1,0 +1,17 @@
+{
+ "source": "tests/test_dev1842_broadcast_strict.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.spend_grand",
+    "name": "x"
+   },
+   "new": {
+    "expression": "customers.spend_grand",
+    "name": "x"
+   }
+  }
+ ],
+ "skipped": []
+}

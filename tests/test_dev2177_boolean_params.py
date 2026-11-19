@@ -10,14 +10,14 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2177_fixtures import (
     BOOLEAN_PARAMETER_CHECKS,
     check_custom_aggregation_receives_raw_boolean,
-    dev2177_models,
+    dev2177_datasets,
 )
 from tests._mcp_idiom_fixtures import make_idiom_engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
-    async for e in make_idiom_engine(dialect=request.param, models=dev2177_models()):
+    async for e in make_idiom_engine(dialect=request.param, datasets=dev2177_datasets()):
         yield e
 
 

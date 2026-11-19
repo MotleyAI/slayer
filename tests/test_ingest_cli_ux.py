@@ -22,7 +22,7 @@ from slayer.live_schema.ingestion import (
 from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     IngestionError,
-    ModelAddition,
+    DatasetAddition,
 )
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import open_connection
@@ -51,7 +51,7 @@ def _args(workspace: Path, **overrides) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _patch_ingest(monkeypatch, result: IdempotentIngestResult) -> None:
+def _patch_ingest(monkeypatch: pytest.MonkeyPatch, result: IdempotentIngestResult) -> None:
     """Stub the engine call so these tests pin CLI behaviour only."""
     async def _fake(**_kwargs):
         return result
@@ -82,16 +82,16 @@ def _async_return(value):
 
 class TestIngestExitCodes:
     def test_skipped_objects_exit_nonzero(
-        self, workspace: Path, monkeypatch, capsys
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         """a skipped object is a valid table we declined to model."""
         _patch_ingest(
             monkeypatch,
             IdempotentIngestResult(
                 additions=[
-                    ModelAddition(
-                        model_name="orders", data_source="ds", created=True,
-                        new_columns=["id"],
+                    DatasetAddition(
+                        dataset_name="orders", data_source="ds", created=True,
+                        new_fields=["id"],
                     )
                 ],
                 to_delete=[],
@@ -115,15 +115,15 @@ class TestIngestExitCodes:
         assert "--exclude" in out, "the skip message must name the remedy"
 
     def test_clean_run_exits_zero_with_no_skip_section(
-        self, workspace: Path, monkeypatch, capsys
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         _patch_ingest(
             monkeypatch,
             IdempotentIngestResult(
                 additions=[
-                    ModelAddition(
-                        model_name="orders", data_source="ds", created=True,
-                        new_columns=["id"],
+                    DatasetAddition(
+                        dataset_name="orders", data_source="ds", created=True,
+                        new_fields=["id"],
                     )
                 ],
                 to_delete=[],
@@ -137,7 +137,7 @@ class TestIngestExitCodes:
         assert "Skipped" not in out
 
     def test_zero_objects_prints_message_and_exits_nonzero(
-        self, workspace: Path, monkeypatch, capsys
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         """the reported silence. Before the fix: no output, exit 0."""
         _patch_ingest(
@@ -175,7 +175,7 @@ class TestIngestExitCodes:
         assert "sales" in out
 
     def test_errors_still_exit_nonzero(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Pre-existing behaviour must not regress."""
         _patch_ingest(
@@ -185,7 +185,7 @@ class TestIngestExitCodes:
                 to_delete=[],
                 errors=[
                     IngestionError(
-                        model_name="orders", data_source="ds", error="boom"
+                        dataset_name="orders", data_source="ds", error="boom"
                     )
                 ],
                 skipped=[],
@@ -233,7 +233,7 @@ class TestRenderers:
             to_delete=[],
             errors=[
                 IngestionError(
-                    model_name="orders", data_source="ds", error="disk full"
+                    dataset_name="orders", data_source="ds", error="disk full"
                 )
             ],
             skipped=[SkippedTable(table_name="a__b", reason="name collision")],
@@ -266,7 +266,7 @@ class TestRenderers:
 
 class TestRestExitSemantics:
     def test_skipped_only_returns_200_with_skipped_in_body(
-        self, monkeypatch, workspace: Path
+        self, monkeypatch: pytest.MonkeyPatch, workspace: Path
     ) -> None:
         """Skips must NOT turn into 422; the body carries them alongside the successful additions."""
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
@@ -280,9 +280,9 @@ class TestRestExitSemantics:
         async def _fake(**_kwargs):
             return IdempotentIngestResult(
                 additions=[
-                    ModelAddition(
-                        model_name="orders", data_source="ds", created=True,
-                        new_columns=["id"],
+                    DatasetAddition(
+                        dataset_name="orders", data_source="ds", created=True,
+                        new_fields=["id"],
                     )
                 ],
                 to_delete=[],
@@ -302,7 +302,7 @@ class TestRestExitSemantics:
         assert body["skipped"]
         assert body["skipped"][0]["table_name"] == "a__b"
 
-    def test_errors_still_return_422(self, monkeypatch, workspace: Path) -> None:
+    def test_errors_still_return_422(self, monkeypatch: pytest.MonkeyPatch, workspace: Path) -> None:
         """the existing contract at api/server.py:675 is unchanged."""
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         app = create_app(storage=storage)
@@ -318,7 +318,7 @@ class TestRestExitSemantics:
                 to_delete=[],
                 errors=[
                     IngestionError(
-                        model_name="orders", data_source="ds", error="boom"
+                        dataset_name="orders", data_source="ds", error="boom"
                     )
                 ],
                 skipped=[],
@@ -358,13 +358,13 @@ class TestDatasourcesCreateCarveOut:
             storage=str(workspace / "storage"),
         )
         _run_datasources_create(args, storage)
-        assert "No models were generated." in capsys.readouterr().out
+        assert "No datasets were generated." in capsys.readouterr().out
 
 class TestViewsFlagWiring:
     """The parser is built inline in ``main()``, so drive it through ``main()`` with a stubbed handler that captures the parsed args."""
 
     @staticmethod
-    def _capture(monkeypatch, argv: list[str], handler: str) -> SimpleNamespace:
+    def _capture(monkeypatch: pytest.MonkeyPatch, argv: list[str], handler: str) -> SimpleNamespace:
         captured: dict[str, SimpleNamespace] = {}
 
         def _stub(args, *_rest, **_kwargs):
@@ -376,13 +376,13 @@ class TestViewsFlagWiring:
         main()
         return captured["args"]
 
-    def test_ingest_defaults_to_views_on(self, monkeypatch) -> None:
+    def test_ingest_defaults_to_views_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
         args = self._capture(
             monkeypatch, ["ingest", "--datasource", "ds"], "_run_ingest"
         )
         assert args.include_views is True
 
-    def test_ingest_accepts_no_views_flag(self, monkeypatch) -> None:
+    def test_ingest_accepts_no_views_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         args = self._capture(
             monkeypatch,
             ["ingest", "--datasource", "ds", "--no-views"],
@@ -390,7 +390,7 @@ class TestViewsFlagWiring:
         )
         assert args.include_views is False
 
-    def test_datasources_create_defaults_to_views_on(self, monkeypatch) -> None:
+    def test_datasources_create_defaults_to_views_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The flag exists on this subcommand too, consistent with `slayer ingest`."""
         args = self._capture(
             monkeypatch,
@@ -399,7 +399,7 @@ class TestViewsFlagWiring:
         )
         assert args.include_views is True
 
-    def test_datasources_create_accepts_no_views_flag(self, monkeypatch) -> None:
+    def test_datasources_create_accepts_no_views_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         args = self._capture(
             monkeypatch,
             ["datasources", "create", "sqlite:///x.db", "--ingest", "--no-views"],

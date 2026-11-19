@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import ModelMeasure, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1865_fixtures import q
 
 # gold spend=150, silver spend=200 → only silver clears 175 ('hi').
 CM_BAND = (
@@ -27,15 +29,15 @@ RK_REGION = "orders.customers.regions.name"
 
 class TestKeylessFilterRowRoutes:
     async def test_filter_on_own_keyless_aggregate_executes(self, exec_engine) -> None:
-        dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
+        dims = [{"field": CM_BAND, "alias": "band"}, "customers.regions.name"]
         unfiltered = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         ))).data
         filtered = (await exec_engine.execute(q(
             dimensions=dims,
-            filters=[f"{KEYLESS_AGG} > 175"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            filter=[f"{KEYLESS_AGG} > 175"],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         ))).data
         assert 0 < len(filtered) <= len(unfiltered)
         # Row-routed against the attached tier-total: only silver rows survive → 'hi'.
@@ -53,11 +55,11 @@ class TestKeylessFilterRowRoutes:
 
 class TestKeylessOrderByDimensionName:
     async def test_order_by_computed_dim_name_executes(self, exec_engine) -> None:
-        dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
+        dims = [{"field": CM_BAND, "alias": "band"}, "customers.regions.name"]
         resp = await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
-            order=[{"column": "band", "direction": "asc"}],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
+            order=[{"field": "band", "direction": "asc"}],
         ))
         bands = [r["orders.band"] for r in resp.data]
         assert bands == sorted(bands)
@@ -68,11 +70,11 @@ class TestKeylessDualRoleRejected:
         # The keyless aggregate banded by the computed dim, also selected as a
         # measure while its partition key (tier) is absent → partition-key error.
         query = q(
-            dimensions=[{"expression": CM_BAND, "name": "band"}, "customers.regions.name"],
-            measures=[ModelMeasure(formula=KEYLESS_AGG, name="dual")],
+            dimensions=[{"field": CM_BAND, "alias": "band"}, "customers.regions.name"],
+            metrics=[QueryMetric(metric=KEYLESS_AGG, alias="dual")],
         )
         with pytest.raises(
             ValueError,
-            match="partition_by column 'customers.tier' is not a query dimension",
+            match="partition_by field 'customers.tier' is not a query dimension",
         ):
             await exec_engine.execute(query)

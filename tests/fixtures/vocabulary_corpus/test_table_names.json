@@ -1,0 +1,110 @@
+{
+ "source": "tests/test_table_names.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "filters": [
+     "orders.status = 'x'"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "filter": [
+     "orders.status = 'x'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "filters": [
+     "name = 'a' OR orders.status = 'x'"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "filter": [
+     "name = 'a' OR orders.status = 'x'"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 303,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 317,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 318,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 318,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 321,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 321,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 322,
+   "reason": "not fully literal"
+  }
+ ]
+}

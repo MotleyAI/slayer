@@ -45,7 +45,7 @@ models gain any joins, keys and curated metadata they lack while every user edit
 - **WHEN** stored demo models have no joins (ingested by an affected release) and the demo is set up
   again
 - **THEN** the models carry their FK joins and the README query
-  `{"source_model": "orders", "measures": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
+  `{"population": "orders", "metrics": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
   returns rows
 
 #### Scenario: A user edit survives setup
@@ -71,7 +71,7 @@ existing demo database in place.
 - **THEN** each order has the same status in both
 
 #### Scenario: Region is a two-hop dimension of orders
-- **WHEN** `{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["stores.regions.name"]}`
+- **WHEN** `{"population": "orders", "metrics": ["count(*)"], "dimensions": ["stores.regions.name"]}`
   is queried on the demo
 - **THEN** it returns one row per region that has orders, and the counts sum to the total order count
 

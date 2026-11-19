@@ -16,9 +16,9 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import JoinCardinality, JoinType
-from slayer.core.errors import DerivedColumnFanningError
-from slayer.core.models import Column, ModelMeasure
+from slayer.core.enums import RelationshipCardinality, JoinType
+from slayer.core.errors import DerivedFieldFanningError
+from slayer.core.models import DatasetField, DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -61,13 +61,13 @@ def _joins_on(sql: str, table: str) -> list[exp.Join]:
 class TestReverseDimensionResolves:
     async def test_left_keeps_the_root_side_whole(self, fwd_engine) -> None:
         resp = await fwd_engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["name", "orders.status"]))
+            population="customers", dimensions=["name", "orders.status"]))
         assert rows_set(resp, "customers.name", "customers.orders.status") == \
             CHAIN_REVERSE_DIMS_LEFT
 
     async def test_inner_restricts_to_matched_pairs(self, inner_engine) -> None:
         resp = await inner_engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["name", "orders.status"]))
+            population="customers", dimensions=["name", "orders.status"]))
         assert rows_set(resp, "customers.name", "customers.orders.status") == \
             CHAIN_REVERSE_DIMS_INNER
 
@@ -75,9 +75,9 @@ class TestReverseDimensionResolves:
         self, fwd_engine,
     ) -> None:
         resp = await fwd_engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers",
+            "population": "customers",
             "dimensions": ["name"],
-            "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
         }))
         got = {r["customers.name"]: r["customers.t"] for r in resp.data}
         assert got == CHAIN_AMOUNT_BY_NAME
@@ -87,7 +87,7 @@ class TestReverseDimensionResolves:
 class TestRootRelativeJoinType:
     async def test_reverse_left_emits_left_from_customers(self, fwd_engine) -> None:
         resp = await fwd_engine.execute(
-            SlayerQuery(source_model="customers",
+            SlayerQuery(population="customers",
                         dimensions=["name", "orders.status"]),
             dry_run=True)
         assert resp.sql is not None
@@ -100,7 +100,7 @@ class TestRootRelativeJoinType:
         self, inner_engine,
     ) -> None:
         resp = await inner_engine.execute(
-            SlayerQuery(source_model="customers",
+            SlayerQuery(population="customers",
                         dimensions=["name", "orders.status"]),
             dry_run=True)
         assert resp.sql is not None
@@ -120,12 +120,12 @@ class TestOrientedCardinalityValues:
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(
                 d, declare="reverse",
-                cardinality=JoinCardinality.MANY_TO_ONE,
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
                 customers_id_pk=False)
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.name"],
-                "measures": [{"formula": "sum(amount)", "name": "t"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "t"}],
             }))
             got = {r["orders.customers.name"]: r["orders.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_NAME_WITH_ORPHAN
@@ -140,12 +140,12 @@ class TestOrientedCardinalityValues:
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(
                 d, declare="reverse",
-                cardinality=JoinCardinality.MANY_TO_ONE,
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
                 customers_id_pk=False)
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "customers",
+                "population": "customers",
                 "dimensions": ["tier"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
             }))
             got = {r["customers.tier"]: r["customers.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_TIER_EXACT
@@ -158,9 +158,9 @@ class TestOrientedCardinalityValues:
             engine = await chain_engine(
                 d, declare="forward", cardinality=None, customers_id_pk=False)
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "customers",
+                "population": "customers",
                 "dimensions": ["tier"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
             }))
             assert not broadcast_warnings(resp)
             assert [w for w in resp.warnings or [] if w.kind == "associated"]
@@ -172,9 +172,9 @@ class TestOrientedCardinalityValues:
             engine = await chain_engine(
                 d, declare="forward", cardinality=None, customers_id_pk=False)
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "customers",
+                "population": "customers",
                 "dimensions": ["tier"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
                 "to_many_handling": "broadcast",
             }))
             assert broadcast_warnings(resp)
@@ -186,9 +186,9 @@ class TestOrientedCardinalityValues:
     ) -> None:
         # regions.pop:sum cannot attribute orders.status: the path from
         # regions crosses two fan-out orientations.
-        resp = await fwd_engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["orders.status"],
-            measures=[{"formula": "sum(regions.pop)", "name": "rp"}], to_many_handling="broadcast"))
+        resp = await fwd_engine.execute(SlayerQuery.model_validate({
+            "population": "customers", "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(regions.pop)", "alias": "rp"}], "to_many_handling": "broadcast"}))
         assert broadcast_warnings(resp)
         values = {r["customers.rp"] for r in resp.data}
         assert values == {CHAIN_POP_BROADCAST_TOTAL}
@@ -201,8 +201,8 @@ class TestOrientedCardinalityValues:
         # orders.status is unattributable from a customer (reverse fan-out).
         # Broadcast repeats the distinct-customer total; associate
         # dedups each customer's spend once per status, never join-multiplied.
-        kw = dict(source_model="customers", dimensions=["orders.status"],
-                  measures=[{"formula": "sum(spend)", "name": "s"}])
+        kw = dict(population="customers", dimensions=["orders.status"],
+                  metrics=[{"metric": "sum(spend)", "alias": "s"}])
         bcast = await fwd_engine.execute(SlayerQuery.model_validate({**kw, "to_many_handling": "broadcast"}))
         assert broadcast_warnings(bcast)
         assert {r["customers.s"] for r in bcast.data} == {
@@ -219,7 +219,7 @@ class TestOrientedCardinalityValues:
 class TestMultiHopReverse:
     async def test_two_reverse_hops_from_regions(self, fwd_engine) -> None:
         resp = await fwd_engine.execute(SlayerQuery.model_validate({
-            "source_model": "regions",
+            "population": "regions",
             "dimensions": ["name", "customers.orders.status"],
         }))
         assert rows_set(resp, "regions.name",
@@ -230,8 +230,8 @@ class TestReverseClosure:
     async def test_reverse_cross_model_aggregate_binds(self, fwd_engine) -> None:
         # The source bundle from customers must include orders (reverse BFS).
         resp = await fwd_engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers",
-            "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+            "population": "customers",
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
         }))
         assert len(resp.data) == 1
         assert resp.data[0]["customers.t"] == \
@@ -242,16 +242,16 @@ class TestReverseClosure:
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(d)
             storage = engine.storage
-            orders = await storage.get_model("orders", data_source="test")
+            orders = await storage.get_dataset("orders", data_source="test")
             assert orders is not None
-            orders.measures = [
-                *orders.measures,
-                ModelMeasure(name="total_amount", formula="sum(amount)"),
+            orders.metrics = [
+                *orders.metrics,
+                DatasetMetric(name="total_amount", expression="sum(amount)"),
             ]
-            await storage.save_model(orders)
-            resp = await engine.execute(SlayerQuery(
-                source_model="customers", dimensions=["name"],
-                measures=[{"formula": "orders.total_amount", "name": "t"}]))
+            await storage.save_dataset(orders)
+            resp = await engine.execute(SlayerQuery.model_validate({
+                "population": "customers", "dimensions": ["name"],
+                "metrics": [{"metric": "orders.total_amount", "alias": "t"}]}))
             got = {r["customers.name"]: r["customers.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_NAME
 
@@ -261,12 +261,12 @@ class TestReverseClosure:
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(d)
             storage = engine.storage
-            cust = await storage.get_model("customers", data_source="test")
+            cust = await storage.get_dataset("customers", data_source="test")
             assert cust is not None
-            cust.columns = [
-                *cust.columns, Column(name="o_status", sql="orders.status"),
+            cust.fields = [
+                *cust.fields, DatasetField(name="o_status", sql="orders.status"),
             ]
-            with pytest.raises(DerivedColumnFanningError) as ei:
-                await storage.save_model(cust)
+            with pytest.raises(DerivedFieldFanningError) as ei:
+                await storage.save_dataset(cust)
             assert ei.value.hop == "orders"
             assert ei.value.reference == "orders.status"

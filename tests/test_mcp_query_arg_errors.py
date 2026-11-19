@@ -12,8 +12,8 @@ from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 ONE_ERROR = re.compile(r"\b1 validation error for\b")
-_BAD_NAME_QUERY = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "bad name"}]}
-_FIRST_STAGE = {"name": "a", "source_model": "orders", "measures": ["count(*)"]}
+_BAD_NAME_QUERY = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "bad name"}]}
+_FIRST_STAGE = {"name": "a", "population": "orders", "metrics": ["count(*)"]}
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ async def test_invalid_stage_reports_only_its_errors_at_that_stage(server: Any) 
     message = await _error(server, [_FIRST_STAGE, _BAD_NAME_QUERY])
     assert ONE_ERROR.search(message), message
     assert "Invalid name 'bad name'" in message
-    assert ".1.measures.0.name" in message
+    assert ".1.metrics.0.alias" in message
     assert "valid string" not in message
     assert "valid dictionary" not in message
 

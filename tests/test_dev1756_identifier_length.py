@@ -16,9 +16,9 @@ from sqlglot import exp
 import slayer.sql._identifier_fit as fitmod
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError, SlayerError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.database.client import ExecutionResult, ResultColumnType, TypeProbe
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import PostgresDialect
@@ -28,6 +28,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _emitted_reparse_law as emitted_reparse_law
 from tests._engine_helpers import _engine_generate
+from typing import Any, Protocol
 
 # Marker a length-fit leaves in an alias: ``_<8 hex digits>_``. Its ABSENCE is
 # how the "no churn for the common case" tests prove the write pass was identity.
@@ -39,6 +40,14 @@ _UNPORTED_SURFACE = (
     "Virtual-model-short fitting not ported to the typed pipeline "
     "(no engine._query_as_model / _fit_short); tests exercise removed internals."
 )
+
+
+class _VirtualDatasetEngine(Protocol):
+    async def _query_as_dataset(
+        self, *, inner_query: SlayerQuery, override_name: str | None = None,
+    ) -> SlayerDataset: ...
+
+    async def execute(self, query: list[SlayerQuery], *, dry_run: bool = False) -> SlayerResponse: ...
 
 DS = "sandbox"
 DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
@@ -112,74 +121,74 @@ GOLDEN_SQLITE_REPRO_ORDER = (
 # Fixtures — the reported 3-hop chain
 
 
-def _chain_models(
+def _chain_datasets(
     *,
     case_colliding_columns: bool = False,
     decoy_root_column: str | None = None,
-) -> list[SlayerModel]:
+) -> list[SlayerDataset]:
     consumer_columns = [
-        Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-        Column(name="name", sql="name", type=DataType.TEXT),
-        Column(name="email", sql="email", type=DataType.TEXT),
-        Column(name="lifetimeValue", sql="lifetime_value", type=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.STRING),
+        DatasetField(name="email", sql="email", datatype=DataType.STRING),
+        DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.FLOAT),
     ]
     if case_colliding_columns:
         # Differs from ``email`` only by case; Postgres case-folds the namespace.
-        consumer_columns.append(Column(name="Email", sql="email", type=DataType.TEXT))
+        consumer_columns.append(DatasetField(name="Email", sql="email", datatype=DataType.STRING))
     return [
-        SlayerModel(
+        SlayerDataset(
             name="SandboxInvoiceV2", sql_table="invoices", data_source=DS,
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="totalAmount", sql="total_amount", type=DataType.DOUBLE),
-                Column(name="subscription_id", sql="subscription_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.FLOAT),
+                DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
                 *([
                     # Root column named what a deep join path flattens to; names permit ``__``.
-                    Column(name=decoy_root_column, sql="decoy", type=DataType.TEXT),
+                    DatasetField(name=decoy_root_column, sql="decoy", datatype=DataType.STRING),
                 ] if decoy_root_column else []),
             ],
-            joins=[ModelJoin(
-                target_model="SandboxSubscription", join_pairs=[["subscription_id", "id"]],
+            relationships=[DatasetRelationship(
+                to="SandboxSubscription", from_columns=["subscription_id"], to_columns=["id"],
             )],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="SandboxSubscription", sql_table="subscriptions", data_source=DS,
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="SandboxCustomer", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="SandboxCustomer", from_columns=["customer_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="SandboxCustomer", sql_table="customers", data_source=DS,
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="consumer_id", sql="consumer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="SandboxConsumer", join_pairs=[["consumer_id", "id"]])],
+            relationships=[DatasetRelationship(to="SandboxConsumer", from_columns=["consumer_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="SandboxConsumer", sql_table="consumers", data_source=DS,
-            columns=consumer_columns,
+            fields=consumer_columns,
         ),
     ]
 
 
-async def _build_engine(tmp_path, *, validate: bool = True, **kw) -> tuple[SlayerQueryEngine, SlayerModel]:
+async def _build_engine(tmp_path, *, validate: bool = True, **kw) -> tuple[SlayerQueryEngine, SlayerDataset]:
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(DatasourceConfig(
         name=DS, type="postgres", host="localhost", port=5432,
         database="x", username="u", password="p",
     ))
-    models = _chain_models(**kw)
+    models = _chain_datasets(**kw)
     for m in models:
-        await storage.save_model(m, _validate=validate)
+        await storage.save_dataset(m, _validate=validate)
     return SlayerQueryEngine(storage=storage), models[0]
 
 
 @pytest.fixture
-async def chain(tmp_path):
+async def chain(tmp_path) -> tuple[SlayerQueryEngine, SlayerDataset]:
     """Engine + root model for the 3-hop chain, with a postgres datasource."""
     return await _build_engine(tmp_path)
 
@@ -188,19 +197,19 @@ def _repro_query(*, with_order: bool = False) -> SlayerQuery:
     """The exact query from the original identifier-length report."""
     kwargs = {}
     if with_order:
-        kwargs["order"] = [OrderItem.model_validate({"column": "avg(totalAmount)", "direction": "desc"})]
+        kwargs["order"] = [OrderItem.model_validate({"field": "avg(totalAmount)", "direction": "desc"})]
         kwargs["limit"] = 10
-    return SlayerQuery.model_validate({"source_model": "SandboxInvoiceV2", "dimensions": [
-            ColumnRef(name=f"{DEEP}.name"),
-            ColumnRef(name=f"{DEEP}.email"),
-            ColumnRef(name="status"),
-        ], "measures": [{"formula": "sum(totalAmount)"}, {"formula": "count(*)"}], **kwargs})
+    return SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
+            QueryDimension(field=f"{DEEP}.name"),
+            QueryDimension(field=f"{DEEP}.email"),
+            QueryDimension(field="status"),
+        ], "metrics": [{"metric": "sum(totalAmount)"}, {"metric": "count(*)"}], **kwargs})
 
 
 SHORT_QUERY = SlayerQuery.model_validate({
-    "source_model": "SandboxInvoiceV2",
-    "dimensions": [ColumnRef(name="status")],
-    "measures": [{"formula": "sum(totalAmount)"}],
+    "population": "SandboxInvoiceV2",
+    "dimensions": [QueryDimension(field="status")],
+    "metrics": [{"metric": "sum(totalAmount)"}],
 })
 
 
@@ -305,7 +314,7 @@ def _assert_order_by_refs_resolve(sql: str, dialect: str = "postgres") -> None:
                 )
 
 
-async def _sql(engine, model, query, *, dialect: str = "postgres", mode: str = "outer") -> str:
+async def _sql(engine: SlayerQueryEngine, dataset, query, *, dialect: str = "postgres", mode: str = "outer") -> str:
     """Emit SQL for ``query`` on ``dialect`` via the branch's dry-run pipeline.
 
     Rebuilds a fresh engine on ``dialect`` from the models the passed engine
@@ -316,19 +325,20 @@ async def _sql(engine, model, query, *, dialect: str = "postgres", mode: str = "
     'wrapped' render mode to select.
     """
     del mode
-    names = await engine.storage.list_models(data_source=model.data_source)
-    models = [
-        await engine.storage.get_model(name=n, data_source=model.data_source)
+    names = await engine.storage.list_datasets(data_source=dataset.data_source)
+    loaded = [
+        await engine.storage.get_dataset(name=n, data_source=dataset.data_source)
         for n in names
     ]
-    root = next(m for m in models if m.name == model.name)
-    extras = [m for m in models if m.name != model.name]
+    models = [m for m in loaded if m is not None]
+    root = next(m for m in models if m.name == dataset.name)
+    extras = [m for m in models if m.name != dataset.name]
     return await _engine_generate(
-        query=query, model=root, dialect=dialect, extra_models=extras, validate=False,
+        query=query, dataset=root, dialect=dialect, extra_datasets=extras, validate=False,
     )
 
 
-async def _public_aliases(engine, model, query) -> list[str]:
+async def _public_aliases(engine, dataset, query) -> list[str]:
     """The canonical PUBLIC projection result keys for ``query``.
 
     Read off an unbounded, non-mangling dialect (SQLite) so the outer SELECT's
@@ -336,18 +346,18 @@ async def _public_aliases(engine, model, query) -> list[str]:
     untouched there. Branch replacement for the old
     ``enriched.public_projection_aliases``.
     """
-    sql = await _sql(engine, model, query, dialect="sqlite")
+    sql = await _sql(engine, dataset, query, dialect="sqlite")
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     outer = next(iter(tree.find_all(exp.Select)))
     return list(outer.named_selects)
 
 
-async def _all_aliases(engine, model, query) -> list[str]:
+async def _all_aliases(engine, dataset, query) -> list[str]:
     """Every canonical result key in the statement, public plus hidden
     (e.g. an ORDER-BY-hoisted aggregate that never reaches the outer SELECT).
     Branch replacement for the old ``enriched.all_projection_aliases``.
     """
-    sql = await _sql(engine, model, query, dialect="sqlite")
+    sql = await _sql(engine, dataset, query, dialect="sqlite")
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     seen: set[str] = set()
     out: list[str] = []
@@ -597,14 +607,14 @@ class TestAllProjectionAliases:
 # CTE names (unquoted namespace)
 
 
-def _deep_cross_model_query(*, two_measures: bool = False) -> SlayerQuery:
-    measures = [ModelMeasure(formula=f"sum({DEEP}.lifetimeValue)")]
-    if two_measures:
-        measures.append(ModelMeasure(formula=f"avg({DEEP}.lifetimeValue)"))
+def _deep_cross_dataset_query(*, two_metrics: bool = False) -> SlayerQuery:
+    measures = [QueryMetric(metric=f"sum({DEEP}.lifetimeValue)")]
+    if two_metrics:
+        measures.append(QueryMetric(metric=f"avg({DEEP}.lifetimeValue)"))
     return SlayerQuery(
-        source_model="SandboxInvoiceV2",
-        dimensions=[ColumnRef(name="status")],
-        measures=measures,
+        population="SandboxInvoiceV2",
+        dimensions=[QueryDimension(field="status")],
+        metrics=measures,
     )
 
 
@@ -620,14 +630,14 @@ class TestCteNames:
 
     async def test_cross_model_cte_name_within_limit(self, chain) -> None:
         engine, model = chain
-        sql = await _sql(engine, model, _deep_cross_model_query())
+        sql = await _sql(engine, model, _deep_cross_dataset_query())
         assert "_cm_" in sql, "no cross-model CTE was generated; test is vacuous"
         _assert_within_limit(sql, 63)
 
     async def test_cte_definition_and_references_agree(self, chain) -> None:
         """A CTE name is unquoted; a truncated definition and untruncated reference must agree."""
         engine, model = chain
-        sql = await _sql(engine, model, _deep_cross_model_query())
+        sql = await _sql(engine, model, _deep_cross_dataset_query())
         tree = sqlglot.parse_one(sql, dialect="postgres")
         defined = [n for n, _ in _cte_names(tree)]
         assert defined, "no CTE generated; test is vacuous"
@@ -639,7 +649,7 @@ class TestCteNames:
     async def test_two_deep_cross_model_ctes_stay_distinct(self, chain) -> None:
         """Two over-limit cross-model CTE names must fit and stay distinct after truncation."""
         engine, model = chain
-        sql = await _sql(engine, model, _deep_cross_model_query(two_measures=True))
+        sql = await _sql(engine, model, _deep_cross_dataset_query(two_metrics=True))
         tree = sqlglot.parse_one(sql, dialect="postgres")
         names = [n for n, _ in _cte_names(tree)]
         assert len(names) >= 2, f"expected two cross-model CTEs\n{sql}"
@@ -698,25 +708,25 @@ class TestCteNames:
             name=DS, type="postgres", host="localhost", port=5432,
             database="x", username="u", password="p",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="ShiftOrders", sql_table="orders", data_source=DS,
             default_time_dimension="created_at",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="revenue", sql="revenue", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
         prepared = await engine._prepare_pipeline(
-            query=SlayerQuery(
-                source_model="ShiftOrders",
-                time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-                measures=[
-                    {"formula": "sum(revenue)"},
-                    {"formula": "time_shift(sum(revenue), -1)", "name": long_transform_name},
+            query=SlayerQuery.model_validate({
+                "population": "ShiftOrders",
+                "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+                "metrics": [
+                    {"metric": "sum(revenue)"},
+                    {"metric": "time_shift(sum(revenue), -1)", "alias": long_transform_name},
                 ],
-            ),
+            }),
             named_queries={}, runtime_kwarg={},
         )
         sql = prepared.sql
@@ -736,33 +746,35 @@ def _wrapper_select(vm_sql: str) -> exp.Select:
 class TestVirtualModelShorts:
     pytestmark = pytest.mark.skip(reason=_UNPORTED_SURFACE)
 
-    async def test_short_within_limit_and_matches_column_name(self, chain) -> None:
+    async def test_short_within_limit_and_matches_column_name(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
+        assert vm.sql is not None
         emitted = {n for n, _ in _projection_aliases(_wrapper_select(vm.sql))}
-        for col in vm.columns:
+        for col in vm.fields:
             assert _nbytes(col.name) <= 63, col.name
             assert col.name in emitted, (
                 f"virtual-model column {col.name!r} is not an alias the wrapper "
                 f"emits\n{vm.sql}"
             )
 
-    async def test_long_siblings_get_distinct_shorts(self, chain) -> None:
+    async def test_long_siblings_get_distinct_shorts(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
-        names = [c.name for c in vm.columns]
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
+        names = [c.name for c in vm.fields]
         assert len(names) == len(set(names))
 
     async def test_short_alias_quoting_matches_the_downstream_reference(
-        self, chain,
+        self, chain: tuple[_VirtualDatasetEngine, SlayerDataset],
     ) -> None:
         """The wrapper's ``AS <short>`` is quoted exactly when the downstream reference is."""
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
+        assert vm.sql is not None
         gen = SQLGenerator(dialect="postgres")
         select = _wrapper_select(vm.sql)
         assert select.expressions, vm.sql
-        by_short = {c.name: c for c in vm.columns}
+        by_short = {c.name: c for c in vm.fields}
         for proj in select.expressions:
             assert isinstance(proj, exp.Alias), f"{proj.sql()} is not an aliased projection"
             ident = proj.args.get("alias")
@@ -770,7 +782,9 @@ class TestVirtualModelShorts:
             short = ident.this
             assert short in by_short, f"{short!r} is not a virtual-model column\n{vm.sql}"
             # How the generator will emit a downstream reference to this column.
-            ref = gen._parse(by_short[short].sql).find(exp.Column)
+            short_sql = by_short[short].sql
+            assert short_sql is not None
+            ref = gen._parse(short_sql).find(exp.Column)
             assert ref is not None
             assert ident.quoted == ref.this.quoted, (
                 f"short {short!r} is emitted {'quoted' if ident.quoted else 'bare'} "
@@ -779,10 +793,11 @@ class TestVirtualModelShorts:
                 f"case-folding backend resolves those to different columns\n{vm.sql}"
             )
 
-    async def test_mixed_case_short_is_quoted(self, chain) -> None:
+    async def test_mixed_case_short_is_quoted(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         """The original defect: a mixed-case short emitted bare."""
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
+        assert vm.sql is not None
         mixed = [
             proj for proj in _wrapper_select(vm.sql).expressions
             if isinstance(proj, exp.Alias)
@@ -822,10 +837,11 @@ class TestVirtualModelShorts:
             f"to the same column emits {reference!r}"
         )
 
-    async def test_lowercase_short_stays_bare(self, chain) -> None:
+    async def test_lowercase_short_stays_bare(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         """Mirror image: an all-lowercase short must stay bare on upper-folding backends."""
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
+        assert vm.sql is not None
         lower = [
             proj for proj in _wrapper_select(vm.sql).expressions
             if isinstance(proj, exp.Alias)
@@ -837,9 +853,10 @@ class TestVirtualModelShorts:
                 f"lowercase short {proj.args['alias'].this!r} must stay bare\n{vm.sql}"
             )
 
-    async def test_inner_and_wrapper_agree_on_the_fitted_alias(self, chain) -> None:
+    async def test_inner_and_wrapper_agree_on_the_fitted_alias(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
+        assert vm.sql is not None
         fitted = get_dialect("postgres").fit_alias(LONG_EMAIL)
         select = _wrapper_select(vm.sql)
         sources = {
@@ -855,10 +872,10 @@ class TestVirtualModelShorts:
     async def test_case_colliding_result_names_are_refused(self, tmp_path) -> None:
         """``email`` and ``Email`` (grandfathered) as two result names: refused before SQL generation."""
         engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_columns=True)
-        query = SlayerQuery.model_validate({"source_model": "SandboxInvoiceV2", "dimensions": [
-                ColumnRef(name=f"{DEEP}.email"),
-                ColumnRef(name=f"{DEEP}.Email"),
-            ], "measures": [{"formula": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
+                QueryDimension(field=f"{DEEP}.email"),
+                QueryDimension(field=f"{DEEP}.Email"),
+            ], "metrics": [{"metric": "count(*)"}]})
         with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
         assert not isinstance(exc.value, IdentifierCollisionError), exc.value
@@ -870,31 +887,32 @@ class TestVirtualModelShorts:
         flat = "SandboxSubscription__SandboxCustomer__SandboxConsumer__name"
         engine, _ = await _build_engine(tmp_path, decoy_root_column=flat)
         query = SlayerQuery.model_validate({
-            "source_model": "SandboxInvoiceV2",
-            "dimensions": [ColumnRef(name=f"{DEEP}.name"), ColumnRef(name=flat)],
-            "measures": [{"formula": "count(*)"}],
+            "population": "SandboxInvoiceV2",
+            "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=flat)],
+            "metrics": [{"metric": "count(*)"}],
         })
         with pytest.raises(IdentifierCollisionError) as exc:
             await engine._query_as_model(inner_query=query)
         assert "query-backed model column" in str(exc.value)
         assert flat in str(exc.value)
 
-    async def test_caller_supplied_measure_names_are_fitted(self, chain) -> None:
+    async def test_caller_supplied_measure_names_are_fitted(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         """A caller-supplied measure ``name`` bypasses ``_alias_to_short`` and needs its own fitting."""
         engine, _ = chain
         long_a = "z" * 63 + "b"   # 64 bytes
         long_b = "z" * 63 + "c"   # 64 bytes, identical first 63
         assert long_a[:63] == long_b[:63]
         query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                {"formula": "sum(totalAmount)", "name": long_a},
-                {"formula": "avg(totalAmount)", "name": long_b},
+            population="SandboxInvoiceV2",
+            dimensions=[QueryDimension(field="status")],
+            metrics=[
+                {"metric": "sum(totalAmount)", "alias": long_a},
+                {"metric": "avg(totalAmount)", "alias": long_b},
             ],
         )
-        vm = await engine._query_as_model(inner_query=query)
-        names = [c.name for c in vm.columns]
+        vm = await engine._query_as_dataset(inner_query=query)
+        assert vm.sql is not None
+        names = [c.name for c in vm.fields]
         for name in names:
             assert _nbytes(name) <= 63, f"{name!r} is {_nbytes(name)} bytes"
         # The real defect: distinct after the server's 63-byte truncation.
@@ -905,18 +923,19 @@ class TestVirtualModelShorts:
         assert long_a not in vm.sql, vm.sql
         assert long_b not in vm.sql, vm.sql
 
-    async def test_nested_dag_two_levels_agree(self, chain) -> None:
+    async def test_nested_dag_two_levels_agree(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         """Two stages: stage 2 references stage 1's virtual-model columns."""
         engine, _ = chain
         stage1 = _repro_query().model_copy(update={"name": "stage1"})
-        vm = await engine._query_as_model(inner_query=stage1, override_name="stage1")
-        short = next(c.name for c in vm.columns if "email" in c.name.lower())
+        vm = await engine._query_as_dataset(inner_query=stage1, override_name="stage1")
+        short = next(c.name for c in vm.fields if "email" in c.name.lower())
         stage2 = SlayerQuery.model_validate({
-            "source_model": "stage1",
-            "dimensions": [ColumnRef(name=short)],
-            "measures": [{"formula": "sum(totalAmount_sum)"}],
+            "population": "stage1",
+            "dimensions": [QueryDimension(field=short)],
+            "metrics": [{"metric": "sum(totalAmount_sum)"}],
         })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
+        assert resp.sql is not None
         _assert_within_limit(resp.sql, 63)
         _assert_no_namespace_collision(resp.sql)
         _assert_order_by_refs_resolve(resp.sql)
@@ -926,26 +945,27 @@ class TestVirtualModelShorts:
 
 
 class TestEngineContract:
-    async def test_dry_run_columns_stay_canonical(self, chain) -> None:
+    async def test_dry_run_columns_stay_canonical(self, chain: tuple[SlayerQueryEngine, SlayerDataset]) -> None:
         engine, _ = chain
         resp = await engine.execute(query=_repro_query(), dry_run=True)
         assert LONG_NAME in resp.columns
         assert LONG_EMAIL in resp.columns
 
-    async def test_dry_run_sql_carries_the_shortened_form(self, chain) -> None:
+    async def test_dry_run_sql_carries_the_shortened_form(self, chain: tuple[SlayerQueryEngine, SlayerDataset]) -> None:
         engine, _ = chain
         resp = await engine.execute(query=_repro_query(), dry_run=True)
+        assert resp.sql is not None
         assert LONG_EMAIL not in resp.sql
         assert get_dialect("postgres").fit_alias(LONG_EMAIL) in resp.sql
 
-    async def test_attribute_keys_are_result_keys(self, chain) -> None:
+    async def test_attribute_keys_are_result_keys(self, chain: tuple[SlayerQueryEngine, SlayerDataset]) -> None:
         engine, _ = chain
         resp = await engine.execute(query=_repro_query(), dry_run=True)
         for key in resp.attributes.dimensions:
             assert key in resp.columns
 
     async def test_get_result_column_types_decodes_fitted_aliases(
-        self, chain, monkeypatch: pytest.MonkeyPatch,
+        self, chain: tuple[SlayerQueryEngine, Any], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``get_result_column_types`` probe keys are fitted aliases and must decode back to canonical."""
         engine, _ = chain
@@ -959,20 +979,20 @@ class TestEngineContract:
                 with emitted_reparse_law.as_database():
                     tree = sqlglot.parse_one(probe.sql, dialect="postgres")
                 for name, _ in _projection_aliases(next(iter(tree.args["from_"].this.find_all(exp.Select)))):
-                    captured[name] = ResultColumnType(type=DataType.DOUBLE, db_type="double precision")
+                    captured[name] = ResultColumnType(type=DataType.FLOAT, db_type="double precision")
                 return dict(captured)
 
             async def aclose(self) -> None:  # pragma: no cover — not reached
                 pass
 
-        model = SlayerModel(
+        model = SlayerDataset(
             name="TypeProbe", sql_table="invoices", data_source=DS,
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name=over_limit, sql="total_amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name=over_limit, sql="total_amount", datatype=DataType.FLOAT),
             ],
         )
-        await engine.storage.save_model(model)
+        await engine.storage.save_dataset(model)
         monkeypatch.setattr(
             engine, "_sql_clients", {k: _FakeClient() for k in ("x",)},
         )
@@ -980,7 +1000,7 @@ class TestEngineContract:
             "slayer.engine.query_engine.client_cache_key", lambda ds: "x",
         )
 
-        types = await engine.get_result_column_types(model_name="TypeProbe")
+        types = await engine.get_result_column_types(dataset_name="TypeProbe")
         assert captured, "probe must have emitted at least one alias"
         emitted = [k for k in captured if _nbytes(k) > 63]
         assert not emitted, f"probe SQL should carry fitted aliases, got {emitted}"
@@ -1001,20 +1021,20 @@ class TestSweep:
         return [
             _repro_query(),                                   # plain dims + measures
             _repro_query(with_order=True),                    # ORDER BY hoist + outer wrap
-            _deep_cross_model_query(),                        # cross-model CTE (_cm_ + WITH)
+            _deep_cross_dataset_query(),                        # cross-model CTE (_cm_ + WITH)
             SlayerQuery(                                      # arithmetic expression
-                source_model="SandboxInvoiceV2",
-                dimensions=[ColumnRef(name=f"{DEEP}.email")],
-                measures=[
-                    {"formula": "sum(totalAmount)"},
-                    {"formula": "sum(totalAmount) / count(*)", "name": "avg_ticket"},
+                population="SandboxInvoiceV2",
+                dimensions=[QueryDimension(field=f"{DEEP}.email")],
+                metrics=[
+                    {"metric": "sum(totalAmount)"},
+                    {"metric": "sum(totalAmount) / count(*)", "alias": "avg_ticket"},
                 ],
             ),
             SlayerQuery.model_validate({
-                "source_model": "SandboxInvoiceV2",
-                "dimensions": [ColumnRef(name=f"{DEEP}.name")],
-                "measures": [{"formula": "count(*)"}],
-                "filters": [f"{DEEP}.email IS NOT NULL"],
+                "population": "SandboxInvoiceV2",
+                "dimensions": [QueryDimension(field=f"{DEEP}.name")],
+                "metrics": [{"metric": "count(*)"}],
+                "filter": [f"{DEEP}.email IS NOT NULL"],
             }),
         ]
 

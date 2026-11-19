@@ -7,12 +7,12 @@ from decimal import Decimal
 
 import pytest
 
-from slayer.core.keys import ColumnKey, TransformKey, shift_offset_of
+from slayer.core.keys import FieldKey, TransformKey, shift_offset_of
 from slayer.engine.compile import shift, staging
 
 
 def _key(**kwargs) -> TransformKey:
-    return TransformKey(op="time_shift", input=ColumnKey(path=(), leaf="amount"),
+    return TransformKey(op="time_shift", input=FieldKey(path=(), leaf="amount"),
                         kwargs=tuple(kwargs.items()))
 
 

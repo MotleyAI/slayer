@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_missing_driver.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 378,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 380,
+   "reason": "not fully literal"
+  }
+ ]
+}

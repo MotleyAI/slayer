@@ -34,13 +34,14 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import RK_X, WM_X
 from tests._dev1837_fixtures import (
     CM_TOTAL,
     DIM_FAMILY_DIMS,
     GROUP_M,
     GROUP_M_MONTH,
-    ModelMeasure,
     REGION_LAST,
     REGION_TOTAL,
     TD_TRANSFORM_OPS,
@@ -84,7 +85,7 @@ DIM_FAMILIES = tuple(DIM_FAMILY_DIMS)
 MEASURE_KEYS = tuple(ATTACH_MEASURES) + tuple(TRANSFORM_FORMULAS)
 
 
-def _formula(meas: str) -> str:
+def _expression(meas: str) -> str:
     return ATTACH_MEASURES.get(meas) or TRANSFORM_FORMULAS[meas]
 
 
@@ -93,10 +94,10 @@ def _needs_td(meas: str) -> bool:
 
 
 def _cell_query(family: str, meas: str, *, include_x: bool = True):
-    measures = [ModelMeasure(formula="sum(amount)", name="m")]
+    measures = [QueryMetric(metric="sum(amount)", alias="m")]
     if include_x:
-        measures.append(ModelMeasure(formula=_formula(meas), name="x"))
-    kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "measures": measures}
+        measures.append(QueryMetric(metric=_expression(meas), alias="x"))
+    kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "metrics": measures}
     if _needs_td(meas):
         kwargs["time_dimensions"] = month_td()
     return q(**kwargs)
@@ -214,19 +215,19 @@ class TestCoexistenceTriples:
     the shared oracle tables)."""
 
     @staticmethod
-    def _triple_query(family: str, *, measures):
+    def _triple_query(family: str, *, metrics):
         return q(
             dimensions=DIM_FAMILY_DIMS[family],
             time_dimensions=month_td(),
-            measures=measures,
+            metrics=metrics,
         )
 
     async def _assert_triple(self, exec_backend, *, family: str, op: str) -> None:
         dialect, engine = exec_backend
-        m = ModelMeasure(formula="sum(amount)", name="m")
-        rt = ModelMeasure(formula="sum(amount, partition_by=region)", name="rt")
-        x = ModelMeasure(formula=TRANSFORM_FORMULAS[op], name="x")
-        query = self._triple_query(family, measures=[m, rt, x])
+        m = QueryMetric(metric="sum(amount)", alias="m")
+        rt = QueryMetric(metric="sum(amount, partition_by=region)", alias="rt")
+        x = QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x")
+        query = self._triple_query(family, metrics=[m, rt, x])
         m_map = GROUP_M_MONTH[family]
         x_map = with_nulls(m_map.keys(), TRANSFORM_X[(family, op)])
 
@@ -241,7 +242,7 @@ class TestCoexistenceTriples:
         # Solo runs: each measure alone at the same grain yields the same value.
         for name, measure in (("m", m), ("rt", rt), ("x", x)):
             solo = await engine.execute(
-                self._triple_query(family, measures=[measure]),
+                self._triple_query(family, metrics=[measure]),
             )
             solo_map = _keyed(solo, family=family, with_month=True, cols=(name,))
             assert set(solo_map) == set(got), f"solo {name} moved the grain"
@@ -292,9 +293,9 @@ class TestPartitionedShiftFix:
         query = q(
             dimensions=["region"],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula=TRANSFORM_FORMULAS[op], name="x"),
+            metrics=[
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x"),
             ],
         )
         x_map = with_nulls(GROUP_M_MONTH["col"].keys(), TRANSFORM_X[("col", op)])
@@ -317,9 +318,9 @@ class TestPartitionedShiftFix:
         dry = await engine.execute(q(
             dimensions=["region"],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+            metrics=[
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
             ],
         ), dry_run=True)
         body = _extract_cte_body(dry.sql, r"shifted_\w+")
@@ -370,10 +371,10 @@ class TestConsecutivePeriodsReset:
         resp = await engine.execute(q(
             dimensions=[DIM_FAMILY_DIMS["band"][1]],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(
-                    formula="consecutive_periods(sum(amount) != 40)", name="x",
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(
+                    metric="consecutive_periods(sum(amount) != 40)", alias="x",
                 ),
             ],
         ))
@@ -396,10 +397,10 @@ class TestExplicitTransformPartition:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=DIM_FAMILY_DIMS["band"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(
-                    formula="rank(sum(amount), partition_by=region, direction='desc')", name="x",
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(
+                    metric="rank(sum(amount), partition_by=region, direction='desc')", alias="x",
                 ),
             ],
         ))

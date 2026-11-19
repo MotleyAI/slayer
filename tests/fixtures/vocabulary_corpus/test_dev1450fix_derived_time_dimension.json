@@ -1,0 +1,231 @@
+{
+ "source": "tests/test_dev1450fix_derived_time_dimension.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(count(*))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(count(*))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), periods=-1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), periods=-1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "chg"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "chg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount) > 5)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount) > 5)",
+    "name": "streak"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 219,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 230,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 245,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 253,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 264,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 266,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 274,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 296,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 307,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 309,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 316,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 328,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 347,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 364,
+   "reason": "not fully literal"
+  }
+ ]
+}

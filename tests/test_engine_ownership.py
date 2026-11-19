@@ -23,7 +23,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
@@ -59,11 +59,11 @@ def _file_engine(db: Path) -> SlayerQueryEngine:
     asyncio.run(storage.save_datasource(
         DatasourceConfig(name="lite", type="sqlite", database=str(db)),
     ))
-    asyncio.run(storage.save_model(SlayerModel(
+    asyncio.run(storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="v", sql="v", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="v", sql="v", datatype=DataType.INTEGER),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -77,10 +77,10 @@ def _seeded_in_memory_engine(
     ds = _mem_ds("mem")
     storage = YAMLStorage(base_dir=str(workspace / "mem_store"))
     asyncio.run(storage.save_datasource(ds))
-    asyncio.run(storage.save_model(
-        SlayerModel(
+    asyncio.run(storage.save_dataset(
+        SlayerDataset(
             name="t", data_source="mem", sql_table="t",
-            columns=[Column(name="v", sql="v", type=DataType.INT)],
+            fields=[DatasetField(name="v", sql="v", datatype=DataType.INTEGER)],
         ),
         _validate=False,
     ))
@@ -267,10 +267,10 @@ class TestQueryEngineClose:
         db = workspace / "reuse.db"
         _seed_counter(db, rows=3)
         engine = _file_engine(db)
-        first = engine.execute_sync(SlayerQuery(source_model="t", measures=["count(*)"]))  # type: ignore[arg-type]
+        first = engine.execute_sync(SlayerQuery(population="t", metrics=["count(*)"]))  # type: ignore[arg-type]
         assert first.data[0]["t._count"] == 3
         engine.close()
-        again = engine.execute_sync(SlayerQuery(source_model="t", measures=["count(*)"]))  # type: ignore[arg-type]
+        again = engine.execute_sync(SlayerQuery(population="t", metrics=["count(*)"]))  # type: ignore[arg-type]
         assert again.data[0]["t._count"] == 3
 
     def test_in_memory_query_engine_rebuilds_empty_after_close(self, workspace: Path) -> None:
@@ -279,12 +279,12 @@ class TestQueryEngineClose:
         trace of the seeded table, then a re-seeded query succeeds."""
         engine_factory.reset_cache()
         engine, _client = _seeded_in_memory_engine(workspace, rows=2)
-        seeded = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["count(*)"])))  # type: ignore[arg-type]
+        seeded = asyncio.run(engine.execute(SlayerQuery(population="t", metrics=["count(*)"])))  # type: ignore[arg-type]
         assert seeded.data[0]["t._count"] == 2
         engine.close()
         assert engine._sql_clients == {}
         # The fresh in-memory db is empty — the seeded table is specifically gone.
-        empty_probe = engine.execute(SlayerQuery(source_model="t", measures=["count(*)"]))  # type: ignore[arg-type]
+        empty_probe = engine.execute(SlayerQuery(population="t", metrics=["count(*)"]))  # type: ignore[arg-type]
         with pytest.raises(Exception) as excinfo:  # NOSONAR(S5958) — DB error type varies (schema-drift vs no-such-table across the path); the message asserted next is the contract
             asyncio.run(empty_probe)
         assert "no such table" in str(excinfo.value).lower()
@@ -298,7 +298,7 @@ class TestQueryEngineClose:
             conn.exec_driver_sql("INSERT INTO t (v) VALUES (5)")
             conn.commit()
         engine._sql_clients[client_cache_key(ds)] = fresh
-        reused = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["count(*)"])))  # type: ignore[arg-type]
+        reused = asyncio.run(engine.execute(SlayerQuery(population="t", metrics=["count(*)"])))  # type: ignore[arg-type]
         assert reused.data[0]["t._count"] == 1
         engine_factory.reset_cache()
 

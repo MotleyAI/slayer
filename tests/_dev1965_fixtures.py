@@ -23,7 +23,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -45,34 +45,34 @@ ORDERS_ROWS = [
 CUMSUM_BY_MONTH = {"2024-01": 30.0, "2024-02": 100.0, "2024-03": 210.0, "2024-04": 280.0}
 
 
-def orders_model(*, filters: Optional[list[str]] = None) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, filters: Optional[list[str]] = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at", filters=filters or [],
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="qty", sql="qty", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
     )
 
 
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery.model_validate(kw)
 
 
 def month_td() -> list[dict]:
-    return [{"dimension": "created_at", "granularity": "month"}]
+    return [{"field": "created_at", "granularity": "month"}]
 
 
 def cumsum_chain(**kw) -> SlayerQuery:
     """``cumsum(sum(amount))`` by month (a one-step transform chain)."""
     kw.setdefault("time_dimensions", month_td())
-    kw.setdefault("measures", [{"formula": "cumsum(sum(amount))", "name": "running"}])
+    kw.setdefault("metrics", [{"metric": "cumsum(sum(amount))", "alias": "running"}])
     return q(**kw)
 
 
@@ -81,7 +81,7 @@ MODE_A_OR = "status = 'a' OR status = 'b'"
 
 def where_having_query() -> SlayerQuery:
     """Same-phase WHERE / HAVING conjuncts, two of them ORs."""
-    return q(dimensions=["region"], measures=["sum(amount)"], filters=[
+    return q(dimensions=["region"], metrics=["sum(amount)"], filter=[
         "amount > 15",
         "region == 'US' or region == 'EU'",
         "sum(amount) > 55 or count(amount) > 2",
@@ -89,9 +89,9 @@ def where_having_query() -> SlayerQuery:
     ])
 
 
-async def gen(query, *, dialect: str, model: Optional[SlayerModel] = None) -> str:
+async def gen(query, *, dialect: str, dataset: Optional[SlayerDataset] = None) -> str:
     return await _engine_generate(
-        query=query, model=model or orders_model(), dialect=dialect, validate=False,
+        query=query, dataset=dataset or orders_dataset(), dialect=dialect, validate=False,
     )
 
 
@@ -117,13 +117,13 @@ def _seed_duckdb(db_path: str) -> None:
 
 @asynccontextmanager
 async def exec_engine(
-    dialect: str, *, model: Optional[SlayerModel] = None,
+    dialect: str, *, dataset: Optional[SlayerDataset] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=[model or orders_model()],
+        dialect=dialect, seed=seed, datasets=[dataset or orders_dataset()],
     ) as (engine, _db):
         yield engine
 
@@ -210,6 +210,6 @@ def split_chain(sql: str) -> tuple[str, str]:
 __all__ = [
     "CUMSUM_BY_MONTH", "MODE_A_OR", "ORDERS_ROWS", "OUTER_ALIAS", "TIER1",
     "assert_single_top_level_with", "cte_names", "cumsum_chain", "exec_engine",
-    "from_name", "gen", "month_key", "month_td", "orders_model", "outer_derived",
+    "from_name", "gen", "month_key", "month_td", "orders_dataset", "outer_derived",
     "outer_order", "parse", "post_filter_where", "q", "split_chain", "where_having_query", "where_of",
 ]

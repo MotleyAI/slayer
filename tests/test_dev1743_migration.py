@@ -169,9 +169,9 @@ class TestLegacyAliasRewrittenOnLoad:
                 _orders_v8(region_sql="customers__regions.name"),
                 _customers_v8(), _regions_v8(),
             ])
-            loaded = await storage.get_model("orders", data_source="ds")
+            loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            col = loaded.get_column("region_name")
+            col = loaded.get_field("region_name")
             assert col.sql == "customers.regions.name"
             assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
@@ -182,11 +182,11 @@ class TestLegacyAliasRewrittenOnLoad:
                 _orders_v8(region_sql="customers__regions.name"),
                 _customers_v8(), _regions_v8(),
             ])
-            await storage.get_model("orders", data_source="ds")
+            await storage.get_dataset("orders", data_source="ds")
             on_disk = yaml.safe_load(
                 open(os.path.join(d, "models", "ds", "orders.yaml")).read())
             assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-            region_col = next(c for c in on_disk["columns"]
+            region_col = next(c for c in on_disk["fields"]
                               if c["name"] == "region_name")
             assert region_col["sql"] == "customers.regions.name"
 
@@ -197,9 +197,9 @@ class TestLegacyAliasRewrittenOnLoad:
                 _orders_v8(region_sql="customers__regions.name"),
                 _customers_v8(), _regions_v8(),
             ])
-            loaded = await storage.get_model("orders", data_source="ds")
+            loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_column("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").sql == "customers.regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +208,7 @@ class TestLegacyAliasRewrittenOnLoad:
 class TestRewritePrecedesValidation:
     @pytest.mark.asyncio
     async def test_model_validate_sees_already_dotted_sql(
-        self, monkeypatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(d, [
@@ -216,19 +216,19 @@ class TestRewritePrecedesValidation:
                 _customers_v8(), _regions_v8(),
             ])
             seen: list[dict] = []
-            orig = models_mod.SlayerModel.model_validate
+            orig = models_mod.SlayerDataset.model_validate
 
             def spy(data, *a, **k):
                 if isinstance(data, dict) and data.get("name") == "orders":
                     seen.append(data)
                 return orig(data, *a, **k)
 
-            monkeypatch.setattr(models_mod.SlayerModel, "model_validate", spy)
-            await storage.get_model("orders", data_source="ds")
+            monkeypatch.setattr(models_mod.SlayerDataset, "model_validate", spy)
+            await storage.get_dataset("orders", data_source="ds")
             assert seen, "orders never reached model_validate"
             # The dict handed to Pydantic already carries the dotted form —
             # proving the raw-dict rewrite preceded validation.
-            col = next(c for c in seen[-1]["columns"]
+            col = next(c for c in seen[-1]["fields"]
                        if c["name"] == "region_name")
             assert col["sql"] == "customers.regions.name"
 
@@ -247,9 +247,9 @@ class TestSiblingLoadThroughFactory:
                 _customers_v8(), _regions_v8(),
             ])
             storage = resolve_storage(d)
-            loaded = await storage.get_model("orders", data_source="ds")
+            loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_column("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").sql == "customers.regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -266,9 +266,9 @@ class TestOpaqueQualifierPreserved:
                 _orders_v8(region_sql="foo__bar"),
                 _customers_v8(), _regions_v8(),
             ])
-            loaded = await storage.get_model("orders", data_source="ds")
+            loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_column("region_name").sql == "foo__bar"
+            assert loaded.get_field("region_name").sql == "foo__bar"
 
 
 # --------------------------------------------------------------------------- #
@@ -282,10 +282,10 @@ class TestIdempotence:
                 _orders_v8(region_sql="customers__regions.name"),
                 _customers_v8(), _regions_v8(),
             ])
-            first = await storage.get_model("orders", data_source="ds")
-            second = await storage.get_model("orders", data_source="ds")
-            assert first.get_column("region_name").sql == \
-                second.get_column("region_name").sql == "customers.regions.name"
+            first = await storage.get_dataset("orders", data_source="ds")
+            second = await storage.get_dataset("orders", data_source="ds")
+            assert first.get_field("region_name").sql == \
+                second.get_field("region_name").sql == "customers.regions.name"
             assert second.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -303,9 +303,9 @@ class TestPartialResolvableSubset:
                 _orders_v8(region_sql="customers__regions.name || cte__x.y"),
                 _customers_v8(), _regions_v8(),
             ])
-            loaded = await storage.get_model("orders", data_source="ds")
+            loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            sql = loaded.get_column("region_name").sql
+            sql = loaded.get_field("region_name").sql
             assert "customers.regions.name" in sql
             assert "cte__x.y" in sql
             assert "customers__regions" not in sql
@@ -326,9 +326,9 @@ class TestExactDunderTargetBeatsSplit:
                 _orders_v8_dual(region_sql="customers__regions.name"),
                 _customers_v8(), _regions_v8(), _customers__regions_v8(),
             ])
-            loaded = await storage.get_model("orders", data_source="ds")
+            loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_column("region_name").sql == "customers__regions.name"
+            assert loaded.get_field("region_name").sql == "customers__regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -378,6 +378,6 @@ class TestMigrationDoesNotForceRefinement:
                 pp = os.path.join(d, "models", "ds", f"{p['name']}.yaml")
                 with open(pp, "w") as f:  # NOSONAR(S7493) — test seed
                     yaml.dump(p, f, sort_keys=False)
-            loaded = await storage.get_model("orders", data_source="ds")
+            loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_column("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").sql == "customers.regions.name"

@@ -12,8 +12,8 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name
@@ -101,7 +101,7 @@ def test_tsql_build_date_trunc_casts_non_column_to_timestamp() -> None:
 def _date_add(count: int, unit: str) -> str:
     col = exp.column("created_at")
     out = TsqlDialect().build_date_add(
-        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.TIMESTAMP,
+        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.DATETIME,
     )
     return out.sql(dialect="tsql").upper()
 
@@ -185,7 +185,7 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
 # sit on the statement and pagination is TOP / OFFSET … FETCH.
 
-_DESC_CREATED = [{"column": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
 _FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 
@@ -200,8 +200,8 @@ async def _tsql(query) -> str:
 
 def _plain_hidden_order(**kw) -> SlayerQuery:
     """A no-transform query whose hidden ORDER BY slot forces the outer trim wrap."""
-    return q(dimensions=["status"], measures=["sum(amount)"],
-             order=[{"column": "max(amount)", "direction": "desc"}], **kw)
+    return q(dimensions=["status"], metrics=["sum(amount)"],
+             order=[{"field": "max(amount)", "direction": "desc"}], **kw)
 
 
 async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
@@ -254,7 +254,7 @@ async def test_tsql_chain_with_order_and_offset() -> None:
 
 async def test_tsql_hidden_alias_in_order_by() -> None:
     """ORDER BY may name a carried alias that is not in the public projection."""
-    sql = await _tsql(cumsum_chain(order=[{"column": "max(amount)", "direction": "desc"}]))
+    sql = await _tsql(cumsum_chain(order=[{"field": "max(amount)", "direction": "desc"}]))
     top = parse(sql, "tsql")
     assert [c.name for c in top.args["order"].find_all(exp.Column)] == ["orders___amount_max"]
     assert "orders___amount_max" in outer_derived(top).named_selects
@@ -262,9 +262,9 @@ async def test_tsql_hidden_alias_in_order_by() -> None:
 
 
 async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
-    sql = await _tsql(cumsum_chain(measures=[
-        {"formula": "cumsum(sum(amount))", "name": "running"},
-        {"formula": "change(cumsum(sum(amount)))", "name": "d"},
+    sql = await _tsql(cumsum_chain(metrics=[
+        {"metric": "cumsum(sum(amount))", "alias": "running"},
+        {"metric": "change(cumsum(sum(amount)))", "alias": "d"},
     ]))
     names = cte_names(assert_single_top_level_with(sql, "tsql"))
     assert names[0] == "base", names
@@ -404,16 +404,16 @@ async def _build_tsql_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempf
         database=":memory:",
     )
     await storage.save_datasource(ds)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="orders_t",
         data_source="mssql",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     engine._sql_clients[client_cache_key(ds)] = _FakeTsqlClient(rows, datasource=ds)
     return engine, tmp, ds
@@ -430,9 +430,9 @@ class TestEngineTsqlDecodeIntegration:
         engine, tmp, _ = await _build_tsql_engine(rows)
         try:
             query = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
-                "dimensions": [ColumnRef(name="status")],
+                "population": "orders",
+                "metrics": [{"metric": "count(*)"}],
+                "dimensions": [QueryDimension(field="status")],
             })
             resp = await engine.execute(query)
             assert resp.data == [{"orders._count": 42, "orders.status": "paid"}]
@@ -443,9 +443,9 @@ class TestEngineTsqlDecodeIntegration:
         engine, tmp, _ = await _build_tsql_engine(rows=[])
         try:
             query = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
-                "dimensions": [ColumnRef(name="status")],
+                "population": "orders",
+                "metrics": [{"metric": "count(*)"}],
+                "dimensions": [QueryDimension(field="status")],
             })
             resp = await engine.execute(query)
             assert resp.data == []
@@ -467,16 +467,16 @@ async def _build_labeled_tsql_engine(
     storage = YAMLStorage(base_dir=tmp.name)
     ds = DatasourceConfig(name="mssql", type="mssql", database=":memory:")
     await storage.save_datasource(ds)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="orders_t",
         data_source="mssql",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT, label="Order Status"),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING, label="Order Status"),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     engine._sql_clients[client_cache_key(ds)] = _FakeTsqlClient(rows, datasource=ds)
     return engine, tmp, ds
@@ -486,7 +486,7 @@ async def test_tsql_attributes_survive_alias_mangling() -> None:
     """Mangled expected_columns are decoded so dimension labels survive."""
     engine, tmp, _ = await _build_labeled_tsql_engine([{"orders___status": "paid"}])
     try:
-        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
+        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])
         resp = await engine.execute(query)
         assert "orders.status" in resp.attributes.dimensions, (
             f"T-SQL attributes lost the dimension after mangling: "
@@ -502,7 +502,7 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
     explain_rows = [{"plan": "..."}]
     engine, tmp, _ = await _build_labeled_tsql_engine(explain_rows)
     try:
-        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
+        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])
         with patch.object(
             TsqlDialect, "decode_result_keys", autospec=True,
             side_effect=lambda self, rows, **kw: rows,
@@ -526,20 +526,20 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
 # the ORDER BY resolver unable to match the SELECT alias.
 
 
-async def _tsql_generate(query: SlayerQuery, model: SlayerModel) -> str:
+async def _tsql_generate(query: SlayerQuery, dataset: SlayerDataset) -> str:
     """Render ``query`` for T-SQL and return the full emitted SQL."""
-    return await _engine_generate(query=query, model=model, dialect="tsql")
+    return await _engine_generate(query=query, dataset=dataset, dialect="tsql")
 
 
-def _orders_model_tsql() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset_tsql() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="total", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -547,19 +547,19 @@ def _orders_model_tsql() -> SlayerModel:
 async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     """``change_pct(sum(total))`` builds shifted/self-join/step CTEs."""
     q = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-03-01", "2024-03-31"],
         )],
-        measures=[
-            ModelMeasure(formula="sum(total)"),
-            ModelMeasure(formula="change_pct(sum(total))", name="pct"),
+        metrics=[
+            QueryMetric(metric="sum(total)"),
+            QueryMetric(metric="change_pct(sum(total))", alias="pct"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     )
-    sql = await _tsql_generate(q, _orders_model_tsql())
+    sql = await _tsql_generate(q, _orders_dataset_tsql())
     # No ANSI-quoted identifiers — they'd bypass Bug 2 mangling and the
     # literal-dot form would fail T-SQL's ORDER BY alias resolver.
     assert '"orders.' not in sql, (
@@ -591,11 +591,11 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
 async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> None:
     """ORDER BY references the SELECT alias at top level, not inside a CASE."""
     q = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="id"), ColumnRef(name="created_at")],
-        order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+        population="orders",
+        dimensions=[QueryDimension(field="id"), QueryDimension(field="created_at")],
+        order=[OrderItem(field="id", direction="asc")],
     )
-    sql = await _tsql_generate(q, _orders_model_tsql())
+    sql = await _tsql_generate(q, _orders_dataset_tsql())
     assert "CASE WHEN" not in sql.upper() or "ORDER BY\n  CASE WHEN" not in sql, (
         f"T-SQL ORDER BY must not wrap the alias in a NULLS-emulation "
         f"CASE WHEN sub-expression — alias resolution fails inside it:\n{sql}"

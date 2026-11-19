@@ -11,10 +11,11 @@ import pytest
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1846_fixtures import (
-    ModelMeasure,
     SlayerQuery,
-    dev1846_models,
+    dev1846_datasets,
     make_exec_engine,
     month_key,
     month_td,
@@ -32,13 +33,13 @@ SHIFT_CASES = [
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     return SlayerQuery(**kw)
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1846_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    models = dev1846_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
 def _call(op: str, inner: str) -> str:
@@ -72,7 +73,7 @@ class TestShiftFamilyCovered:
     @pytest.mark.parametrize("op, formula, leaf", SHIFT_CASES)
     def test_rejected_at_plan_time(self, op, formula, leaf) -> None:
         query = _q(time_dimensions=month_td(),
-                   measures=[ModelMeasure(formula=formula, name="t")])
+                   metrics=[QueryMetric(metric=formula, alias="t")])
         bundle = _bundle()
         with pytest.raises(ValueError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -81,7 +82,7 @@ class TestShiftFamilyCovered:
     @pytest.mark.parametrize("op, formula, leaf", SHIFT_CASES)
     async def test_rejected_via_engine(self, exec_engine, op, formula, leaf) -> None:
         query = _q(time_dimensions=month_td(),
-                   measures=[ModelMeasure(formula=formula, name="t")])
+                   metrics=[QueryMetric(metric=formula, alias="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)
         _assert_unified_message(str(ei.value), op=op, leaf=leaf)
@@ -91,7 +92,7 @@ class TestOneMessageForEveryOp:
     @pytest.mark.parametrize("op", RULED_OPS)
     def test_bare_row_leaf_message(self, op) -> None:
         query = _q(time_dimensions=month_td(),
-                   measures=[ModelMeasure(formula=_call(op, "weight"), name="t")])
+                   metrics=[QueryMetric(metric=_call(op, "weight"), alias="t")])
         bundle = _bundle()
         with pytest.raises(ValueError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -102,9 +103,9 @@ class TestProjectedGrainKeyUnderShift:
     async def test_time_shift_over_projected_dimension(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula="time_shift(store, -1)", name="t")], **kw))
+            metrics=[QueryMetric(metric="time_shift(store, -1)", alias="t")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula="sum(revenue)", name="r")], **kw))
+            metrics=[QueryMetric(metric="sum(revenue)", alias="r")], **kw))
         cells = {(r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data}
         assert len(cells) == len(resp.data) == len(plain.data)
         for r in resp.data:
@@ -114,10 +115,10 @@ class TestProjectedGrainKeyUnderShift:
     async def test_predicate_over_projected_dimension(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
-                                   name="t")], **kw))
+            metrics=[QueryMetric(metric="time_shift(store in ('A', 'B'), -1)",
+                                   alias="t")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula="sum(revenue)", name="r")], **kw))
+            metrics=[QueryMetric(metric="sum(revenue)", alias="r")], **kw))
         assert len(resp.data) == len(plain.data)
         for r in resp.data:
             assert r["sales.t"] in (None, r["sales.store"] in ("A", "B")), r
@@ -126,10 +127,10 @@ class TestProjectedGrainKeyUnderShift:
     async def test_time_shift_in_filter_position(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            filters=["time_shift(store, -1) = 'A'"],
-            measures=[ModelMeasure(formula="sum(revenue)", name="r")], **kw))
+            filter=["time_shift(store, -1) = 'A'"],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="r")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula="sum(revenue)", name="r")], **kw))
+            metrics=[QueryMetric(metric="sum(revenue)", alias="r")], **kw))
         store_a = sorted(month_key(r["sales.ordered_at"]) for r in plain.data
                          if r["sales.store"] == "A")
         got = sorted((r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data)

@@ -17,10 +17,10 @@ import pytest_asyncio
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -32,25 +32,25 @@ async def storage() -> AsyncIterator[YAMLStorage]:
         await s.save_datasource(
             DatasourceConfig(name="mydb", type="postgres", host="x")
         )
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="orders",
                 data_source="mydb",
                 sql_table="orders",
-                columns=[
-                    Column(
+                fields=[
+                    DatasetField(
                         name="id",
                         sql="id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    Column(
+                    DatasetField(
                         name="amount",
                         sql="amount",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                     ),
                 ],
-                measures=[ModelMeasure(formula="sum(amount)", name="rev")],
+                metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
             )
         )
         await s.set_datasource_priority(["mydb"])
@@ -81,8 +81,8 @@ class TestSaveMemory:
         resp = await client.save_memory(
             learning="rev",
             linked_entities={
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
             },
         )
         assert resp.memory_id == "1"

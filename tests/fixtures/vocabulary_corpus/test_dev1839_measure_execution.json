@@ -1,0 +1,119 @@
+{
+ "source": "tests/test_dev1839_measure_execution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region) - sum(amount, partition_by=[])",
+    "name": "d"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region) - sum(amount, partition_by=[])",
+    "name": "d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) - sum(amount, partition_by=region)",
+    "name": "d"
+   },
+   "new": {
+    "expression": "sum(amount) - sum(amount, partition_by=region)",
+    "name": "d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 215,
+   "reason": "not fully literal"
+  }
+ ]
+}

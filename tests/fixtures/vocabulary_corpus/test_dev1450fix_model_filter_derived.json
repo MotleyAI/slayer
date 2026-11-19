@@ -1,0 +1,194 @@
+{
+ "source": "tests/test_dev1450fix_model_filter_derived.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_big",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders_big",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_eu",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders_eu",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_base",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders_base",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_win",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders_win",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_meas",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders_meas",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  }
+ ]
+}

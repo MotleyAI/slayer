@@ -34,8 +34,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.compile import stages
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -111,7 +111,7 @@ async def build_exec_engine(
     db_path: str,
     *,
     dialect: str,
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
     datasource: str = "test",
     validate: bool = False,
     clock: Optional[Callable[[], datetime]] = None,
@@ -126,8 +126,8 @@ async def build_exec_engine(
     await storage.save_datasource(_seeded_datasource(
         db_path, dialect=dialect, datasource=datasource, datasource_fields=datasource_fields,
     ))
-    for model in models:
-        await storage.save_model(model, _validate=validate)
+    for model in datasets:
+        await storage.save_dataset(model, _validate=validate)
     if clock is None:
         return SlayerQueryEngine(storage=storage)
     return SlayerQueryEngine(storage=storage, clock=clock)
@@ -138,7 +138,7 @@ async def seeded_exec_engine(
     *,
     dialect: str,
     seed: Callable[[str], None],
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
     datasource: str = "test",
     validate: bool = False,
     clock: Optional[Callable[[], datetime]] = None,
@@ -153,20 +153,20 @@ async def seeded_exec_engine(
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         ds = _seeded_datasource(db_path, dialect=dialect, datasource=datasource, datasource_fields=datasource_fields)
         async with owned_query_engine(storage=storage, datasources=[ds], clock=clock) as engine:
-            for model in models:
-                await storage.save_model(model, _validate=validate)
+            for model in datasets:
+                await storage.save_dataset(model, _validate=validate)
             yield engine, db_path
 
 
 async def make_seeded_sqlite_engine(
-    *, base_dir: str, db_path: str, models: list[SlayerModel], datasource: str = "test"
+    *, base_dir: str, db_path: str, datasets: list[SlayerDataset], datasource: str = "test"
 ) -> SlayerQueryEngine:
     """Storage + engine bound to a seeded SQLite file.
 
     Consolidates the byte-identical ``make_sqlite_engine`` helpers previously
     duplicated across the per-DEV fixture modules; they now delegate here.
     """
-    for model in models:
+    for model in datasets:
         if model.data_source != datasource:
             raise ValueError(
                 f"Model {model.name!r} uses datasource {model.data_source!r}, "
@@ -176,14 +176,14 @@ async def make_seeded_sqlite_engine(
     await storage.save_datasource(
         DatasourceConfig(name=datasource, type="sqlite", database=db_path),
     )
-    for model in models:
-        await storage.save_model(model)
+    for model in datasets:
+        await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 
 
-def models_bundle(models_by_name: dict[str, SlayerModel], *, dialect: str = "postgres") -> ResolvedSourceBundle:
+def datasets_bundle(datasets_by_name: dict[str, SlayerDataset], *, dialect: str = "postgres") -> ResolvedSourceBundle:
     """A rootless bundle over a model map, for unit tests over plain keys."""
-    return ResolvedSourceBundle(dialect=dialect, referenced_models=list(models_by_name.values()))
+    return ResolvedSourceBundle(dialect=dialect, referenced_datasets=list(datasets_by_name.values()))
 
 
 def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
@@ -213,9 +213,9 @@ def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
 async def _engine_generate(
     *,
     query: SlayerQuery | list[SlayerQuery | dict],
-    model: SlayerModel,
+    dataset: SlayerDataset,
     dialect: str = "postgres",
-    extra_models: Optional[list] = None,
+    extra_datasets: Optional[list] = None,
     validate: bool = True,
     clock: Optional[Callable[[], datetime]] = None,
     datasource_fields: Optional[Mapping[str, Any]] = None,
@@ -237,11 +237,11 @@ async def _engine_generate(
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig.model_validate(
-            {"name": model.data_source, "type": dialect, **(datasource_fields or {})},
+            {"name": dataset.data_source, "type": dialect, **(datasource_fields or {})},
         ))
-        await storage.save_model(model, _validate=validate)
-        for extra in extra_models or []:
-            await storage.save_model(extra, _validate=validate)
+        await storage.save_dataset(dataset, _validate=validate)
+        for extra in extra_datasets or []:
+            await storage.save_dataset(extra, _validate=validate)
         async with owned_query_engine(storage=storage, clock=clock) as engine:
             response = await engine.execute(query, dry_run=True)
         sql = response.sql
@@ -369,32 +369,32 @@ def plan_as_producer(*, query: SlayerQuery, bundle):
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
     return stages.compile_synthesized(
-        prebound, source_model=query.source_model if isinstance(query.source_model, str) else None,
+        prebound, source_dataset=query.population if isinstance(query.population, str) else None,
         bundle=bundle, scope=scope, stage_schemas={},
         population=stages.NoInheritedPopulation(reason="compiled as a producer by a test"),
     )
 
 
 async def orders_agg_sql(
-    formula: str, *, dialect: str = "postgres",
+    expression: str, *, dialect: str = "postgres",
     aggregations: Optional[list[Aggregation]] = None,
 ) -> str:
     """Whitespace-normalised SQL for one ``formula`` measure over a flat ``orders`` model
     (``amount``, ``quantity``, ``status`` and the masked ``completed_amount``)."""
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="completed_amount", type=DataType.DOUBLE, sql="amount",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="completed_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="status = 'completed'"),
         ],
         aggregations=aggregations or [],
     )
     sql = await _engine_generate(
-        query=SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula)]),
-        model=model, dialect=dialect,
+        query=SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression)]),
+        dataset=model, dialect=dialect,
     )
     return " ".join(sql.split())

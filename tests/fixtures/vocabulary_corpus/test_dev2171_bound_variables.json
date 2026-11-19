@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_dev2171_bound_variables.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 14,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 15,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 16,
+   "reason": "not fully literal"
+  }
+ ]
+}

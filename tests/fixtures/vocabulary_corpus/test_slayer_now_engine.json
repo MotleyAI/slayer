@@ -1,0 +1,61 @@
+{
+ "source": "tests/test_slayer_now_engine.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "count(ev.id)",
+      "name": "n"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "time_spine.timestamp",
+      "granularity": "month",
+      "date_range": [
+       "2025-05-01",
+       null
+      ]
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "count(ev.id)",
+      "alias": "n"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "time_spine.timestamp",
+      "granularity": "month",
+      "date_range": [
+       "2025-05-01",
+       null
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  }
+ ]
+}

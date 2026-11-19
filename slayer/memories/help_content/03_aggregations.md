@@ -1,8 +1,8 @@
 # Aggregations
 
-An aggregation is a function call over a column, a joined column (dotted path) or a
-row-level expression, which may reach across to-one joins (`sum(amount * customers.credit)`
-from `orders`). It is valid in every expression position: measures,
+An aggregation is a function call over a field, a joined field (dotted path) or a
+row-level expression, which may reach across to-one relationships (`sum(amount * customers.credit)`
+from `orders`). It is valid in every expression position: metrics,
 filters, order, and computed dimensions.
 
 ## Catalogue
@@ -13,16 +13,16 @@ filters, order, and computed dimensions.
 `var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,
 `covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
 latest record's value in each group), `collect(x)` (the distinct sorted values in each
-group, as a list), plus the model's custom aggregations
-(`inspect` the model to list them). Any column argument may be a row-level expression:
+group, as a list), plus the dataset's custom aggregations
+(`inspect` the dataset to list them). Any field argument may be a row-level expression:
 `weighted_avg(x, weight=qty * 2)`, `last(x, coalesce(updated_at, created_at))`.
 In an aggregation or transform call, `name = value` is a keyword argument when `name` is
 one of its parameters (`weighted_avg(x, weight = qty)`) and a comparison otherwise
-(`sum(status = 'paid')` counts the paid rows); write `sum((weight = 1))` to compare a column
+(`sum(status = 'paid')` counts the paid rows); write `sum((weight = 1))` to compare a field
 named like a parameter. In a scalar function (`iif(status = 'paid', …)`) `=` compares.
 
-A sole primary-key column only takes `count`, `count_distinct`,
-`count_distinct_approx`, `min`, `max` and `collect`; a column's `allowed_aggregations` may
+A sole primary-key field only takes `count`, `count_distinct`,
+`count_distinct_approx`, `min`, `max` and `collect`; a field's `allowed_aggregations` may
 restrict it further. Expressions are not gated: `sum(price * quantity)` works.
 
 ## Expressions and booleans
@@ -42,15 +42,15 @@ An aggregate over no rows (a parent without joined rows, an empty window) is 0 f
 
 `sum(amount)` on `orders` returns `orders.amount_sum`, `count(*)` returns
 `orders._count`, an expression is sanitized (`sum(amount - cost)` → `amount_cost_sum`).
-A `name` overrides it. A name equal to a column of the source model is refused with a
+A `name` overrides it. A name equal to a field of the source dataset is refused with a
 suggested free name.
 
 ## partition_by
 
 `partition_by=` computes the aggregate at a coarser grain and repeats it on every row:
-one key, a list, a dotted path for a joined column, or `[]` for the grand total. Keys
+one key, a list, a dotted path for a joined field, or `[]` for the grand total. Keys
 are spelled exactly like the query's dimensions, an expression key (`upper(city)`) being
-the computed dimension with that expression. In a measure, filter, order or
+the computed dimension with that expression. In a metric, filter, order or
 transform input every key must be one of the query's dimensions (a time dimension
 partitions by its bucket). The coarser total is computed over the rows that pass the
 row-level conditions; aggregate conditions and `limit` never change it.

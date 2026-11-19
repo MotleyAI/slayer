@@ -1,0 +1,39 @@
+{
+ "source": "tests/test_dev1892_determination.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=customers.id))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=customers.id))",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=customers.region_id))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=customers.region_id))",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=customers.region_id))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=customers.region_id))",
+    "name": "a"
+   }
+  }
+ ],
+ "skipped": []
+}

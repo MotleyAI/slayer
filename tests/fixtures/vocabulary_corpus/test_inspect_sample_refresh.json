@@ -1,0 +1,57 @@
+{
+ "source": "tests/test_inspect_sample_refresh.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(amount) / count(*)",
+    "description": "Average order value."
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(amount) / count(*)",
+    "description": "Average order value."
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "custom_max",
+    "formula": "MAX({col})",
+    "description": "A custom aggregation."
+   },
+   "new": {
+    "name": "custom_max",
+    "expression": "MAX({col})",
+    "description": "A custom aggregation."
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  }
+ ]
+}

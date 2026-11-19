@@ -30,12 +30,12 @@ from typing import AsyncIterator, Tuple
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import ColumnSqlKey, Phase, TimeTruncKey
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.core.scope import ModelScope
+from slayer.core.keys import FieldSqlKey, Phase, TimeTruncKey
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_time_dimension
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -45,48 +45,48 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             # Non-trivial derived temporal column: "effective" date is the
             # shipped date when present, else the created date.
-            Column(
+            DatasetField(
                 name="effective_at",
                 sql="coalesce(shipped_at, created_at)",
-                type=DataType.TIMESTAMP,
+                datatype=DataType.DATETIME,
                 label="Effective date",
             ),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
 
-def _customers_model() -> SlayerModel:
-    return SlayerModel(
+def _customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="signed_up_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="signed_up_at", datatype=DataType.DATETIME),
             # Derived temporal column on the JOIN TARGET (shifts a month
             # forward so it is unambiguously non-trivial).
-            Column(
+            DatasetField(
                 name="signup_eff",
                 sql="datetime(signed_up_at, '+1 month')",
-                type=DataType.TIMESTAMP,
+                datatype=DataType.DATETIME,
             ),
         ],
     )
@@ -134,16 +134,16 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(_customers_model())
-    await storage.save_model(_orders_model())
+    await storage.save_dataset(_customers_dataset())
+    await storage.save_dataset(_orders_dataset())
     yield SlayerQueryEngine(storage=storage), db_path
 
 
 def _bundle_local() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders_model(),
-        referenced_models=[_customers_model()],
+        population=_orders_dataset(),
+        referenced_datasets=[_customers_dataset()],
     )
 
 
@@ -155,34 +155,34 @@ def _bundle_local() -> ResolvedSourceBundle:
 class TestBindDerivedTimeDimension:
     def test_local_derived_td_binds_to_columnsqlkey(self) -> None:
         td = TimeDimension(
-            dimension="effective_at",
+            field="effective_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
             td,
-            scope=ModelScope(source_model=_orders_model()),
+            scope=DatasetScope(population=_orders_dataset()),
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.source == ColumnSqlKey(
-            path=(), model="orders", column_name="effective_at",
+        assert bound.bound.value_key.source == FieldSqlKey(
+            path=(), dataset="orders", field_name="effective_at",
         )
         assert bound.bound.value_key.granularity == "month"
         assert bound.bound.phase == Phase.ROW
 
     def test_joined_derived_td_carries_path(self) -> None:
         td = TimeDimension(
-            dimension="customers.signup_eff",
+            field="customers.signup_eff",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
             td,
-            scope=ModelScope(source_model=_orders_model()),
+            scope=DatasetScope(population=_orders_dataset()),
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.source == ColumnSqlKey(
-            path=("customers",), model="customers", column_name="signup_eff",
+        assert bound.bound.value_key.source == FieldSqlKey(
+            path=("customers",), dataset="customers", field_name="signup_eff",
         )
 
 
@@ -191,19 +191,19 @@ class TestBindDerivedTimeDimension:
 # ---------------------------------------------------------------------------
 
 
-def _amounts(resp, key: str):
+def _amounts(resp: SlayerResponse, key: str):
     return sorted(r[key] for r in resp.data)
 
 
-async def test_derived_td_dimension_groups_by_derived_expr(engine):
+async def test_derived_td_dimension_groups_by_derived_expr(engine: tuple[SlayerQueryEngine, str]) -> None:
     """A derived TD groups by the EXPANDED expression, not the bare column;
     the result key matches the base-column TD shape (``orders.effective_at``)."""
     eng, _ = engine
     resp = await eng.execute(
-        SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="effective_at",
+        SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "sum(amount)"}, {"formula": "count(*)"}]})
+            )], "metrics": [{"metric": "sum(amount)"}, {"metric": "count(*)"}]})
     )
     assert "orders.effective_at" in resp.columns
     assert resp.row_count == 3
@@ -213,65 +213,65 @@ async def test_derived_td_dimension_groups_by_derived_expr(engine):
     assert _amounts(resp, "orders._count") == [1, 2, 2]
 
 
-async def test_derived_td_carries_attribute_label(engine):
+async def test_derived_td_carries_attribute_label(engine: tuple[SlayerQueryEngine, str]) -> None:
     eng, _ = engine
     resp = await eng.execute(
-        SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="effective_at",
+        SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "sum(amount)"}]})
+            )], "metrics": [{"metric": "sum(amount)"}]})
     )
     assert resp.attributes.dimensions["orders.effective_at"].label == "Effective date"
 
 
-async def test_derived_td_order_by(engine):
+async def test_derived_td_order_by(engine: tuple[SlayerQueryEngine, str]) -> None:
     eng, _ = engine
     resp = await eng.execute(
-        SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="effective_at",
+        SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "sum(amount)"}], "order": [OrderItem(column=ColumnRef(name="effective_at"), direction="asc")]})
+            )], "metrics": [{"metric": "sum(amount)"}], "order": [OrderItem(field="effective_at", direction="asc")]})
     )
     # Ascending by derived month: Jan=10, Feb=12, Mar=12.
     assert [r["orders.amount_sum"] for r in resp.data] == [10.0, 12.0, 12.0]
 
 
-async def test_derived_td_cumsum_over_order(engine):
+async def test_derived_td_cumsum_over_order(engine: tuple[SlayerQueryEngine, str]) -> None:
     """cumsum's OVER(ORDER BY <td>) uses the derived TD's SELECT alias."""
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="effective_at",
+                field="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                {"formula": "count(*)"},
-                {"formula": "cumsum(count(*))", "name": "cs"},
+            metrics=[
+                {"metric": "count(*)"},
+                {"metric": "cumsum(count(*))", "alias": "cs"},
             ],
-            order=[OrderItem(column=ColumnRef(name="effective_at"), direction="asc")],
+            order=[OrderItem(field="effective_at", direction="asc")],
         )
     )
     # Derived counts per month: 1, 2, 2 -> cumsum 1, 3, 5.
     assert [r["orders.cs"] for r in resp.data] == [1, 3, 5]
 
 
-async def test_derived_td_time_shift(engine):
+async def test_derived_td_time_shift(engine: tuple[SlayerQueryEngine, str]) -> None:
     """time_shift's self-join CTE shifts the EXPANDED derived expression."""
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="effective_at",
+                field="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                {"formula": "sum(amount)"},
-                {"formula": "time_shift(sum(amount), periods=-1)", "name": "prev"},
+            metrics=[
+                {"metric": "sum(amount)"},
+                {"metric": "time_shift(sum(amount), periods=-1)", "alias": "prev"},
             ],
-            order=[OrderItem(column=ColumnRef(name="effective_at"), direction="asc")],
+            order=[OrderItem(field="effective_at", direction="asc")],
         )
     )
     # Derived amounts per month: Jan=10, Feb=12, Mar=12.
@@ -279,57 +279,57 @@ async def test_derived_td_time_shift(engine):
     assert [r["orders.prev"] for r in resp.data] == [None, 10.0, 12.0]
 
 
-async def test_derived_td_change(engine):
+async def test_derived_td_change(engine: tuple[SlayerQueryEngine, str]) -> None:
     """change desugars to time_shift + arithmetic over the derived TD."""
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="effective_at",
+                field="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                {"formula": "sum(amount)"},
-                {"formula": "change(sum(amount))", "name": "chg"},
+            metrics=[
+                {"metric": "sum(amount)"},
+                {"metric": "change(sum(amount))", "alias": "chg"},
             ],
-            order=[OrderItem(column=ColumnRef(name="effective_at"), direction="asc")],
+            order=[OrderItem(field="effective_at", direction="asc")],
         )
     )
     # change = current - prev: Jan=None, Feb=12-10=2, Mar=12-12=0.
     assert [r["orders.chg"] for r in resp.data] == [None, 2.0, 0.0]
 
 
-async def test_derived_td_consecutive_periods(engine):
+async def test_derived_td_consecutive_periods(engine: tuple[SlayerQueryEngine, str]) -> None:
     """consecutive_periods reads the materialised derived-TD alias."""
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="effective_at",
+                field="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                {"formula": "consecutive_periods(sum(amount) > 5)", "name": "streak"},
+            metrics=[
+                {"metric": "consecutive_periods(sum(amount) > 5)", "alias": "streak"},
             ],
-            order=[OrderItem(column=ColumnRef(name="effective_at"), direction="asc")],
+            order=[OrderItem(field="effective_at", direction="asc")],
         )
     )
     # All three derived months have amount>5, so the run grows 1,2,3.
     assert [r["orders.streak"] for r in resp.data] == [1, 2, 3]
 
 
-async def test_derived_td_date_range(engine):
+async def test_derived_td_date_range(engine: tuple[SlayerQueryEngine, str]) -> None:
     """date_range builds ``<expanded sql> BETWEEN start AND end`` — filtering
     on the derived effective date, not the bare created date."""
     eng, _ = engine
     resp = await eng.execute(
-        SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="effective_at",
+        SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="effective_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01 00:00:00", "2024-02-28 00:00:00"],
-            )], "measures": [{"formula": "sum(amount)"}, {"formula": "count(*)"}]})
+            )], "metrics": [{"metric": "sum(amount)"}, {"metric": "count(*)"}]})
     )
     # Only the two effective-Feb rows survive (row2 shipped 02-05, row3
     # created 02-15) -> one month bucket, amount 12, count 2. With the bare
@@ -339,15 +339,15 @@ async def test_derived_td_date_range(engine):
     assert resp.data[0]["orders._count"] == 2
 
 
-async def test_joined_derived_td(engine):
+async def test_joined_derived_td(engine: tuple[SlayerQueryEngine, str]) -> None:
     """A derived TD on a JOIN TARGET (``customers.signup_eff``) resolves
     through the join and groups orders by the customer's derived month."""
     eng, _ = engine
     resp = await eng.execute(
-        SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="customers.signup_eff",
+        SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="customers.signup_eff",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "sum(amount)"}]})
+            )], "metrics": [{"metric": "sum(amount)"}]})
     )
     assert "orders.customers.signup_eff" in resp.columns
     assert resp.row_count == 3
@@ -355,16 +355,16 @@ async def test_joined_derived_td(engine):
     assert _amounts(resp, "orders.amount_sum") == [7.0, 12.0, 15.0]
 
 
-async def test_cross_model_agg_with_joined_derived_td_shared_grain(engine):
+async def test_cross_model_agg_with_joined_derived_td_shared_grain(engine: tuple[SlayerQueryEngine, str]) -> None:
     """A cross-model aggregate (``sum(customers.revenue)``) grouped by a
     joined derived TD on the same target shares grain through the derived
     expression."""
     eng, _ = engine
     resp = await eng.execute(
-        SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="customers.signup_eff",
+        SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="customers.signup_eff",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "sum(customers.revenue)"}]})
+            )], "metrics": [{"metric": "sum(customers.revenue)"}]})
     )
     assert "orders.customers.signup_eff" in resp.columns
     assert "orders.customers.revenue_sum" in resp.columns

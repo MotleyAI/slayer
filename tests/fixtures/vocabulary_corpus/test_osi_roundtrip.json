@@ -1,0 +1,44 @@
+{
+ "source": "tests/test_osi_roundtrip.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "units",
+     "total"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "units",
+     "total"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 31,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  }
+ ]
+}

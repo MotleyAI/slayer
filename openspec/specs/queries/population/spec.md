@@ -2,7 +2,7 @@
 
 ## Purpose
 The query population — the quantifier deciding which dimension combinations exist as
-result rows: its explicit declaration via `source_model`, the dimension-determined
+result rows: its explicit declaration via `population`, the dimension-determined
 inference default when it is omitted, the fail-closed ambiguity rules, response
 reporting, and the aligned root-recommendation surface.
 
@@ -10,24 +10,24 @@ reporting, and the aligned root-recommendation surface.
 
 ### Requirement: Population may be omitted
 
-`SlayerQuery.source_model` SHALL be optional. A query naming it — as a stored model or stage name,
+`SlayerQuery.population` SHALL be optional. A query naming it — as a stored model or stage name,
 with or without `extensions` — SHALL behave exactly as before, and the named
 population MAY be a bridge model owning none of the queried items. Population
 inference SHALL run only when the field is absent.
 
 #### Scenario: Explicit population unchanged
 
-- **WHEN** a query names `source_model` explicitly
+- **WHEN** a query names `population` explicitly
 - **THEN** it executes byte-identically to today, and no inference runs
 
 #### Scenario: Omitted population infers
 
-- **WHEN** a query omits `source_model` and a unique minimal determining model exists
+- **WHEN** a query omits `population` and a unique minimal determining model exists
 - **THEN** the query executes with that model as its population
 
 ### Requirement: Dimension-determined default
 
-For a query omitting `source_model`, the population SHALL be the model with the
+For a query omitting `population`, the population SHALL be the model with the
 fewest total routed join hops among viable candidates, where a candidate is viable
 iff every determination item binds from it under the prevailing reference grammar
 along a routed chain whose every oriented hop is provably to-one (declared
@@ -54,20 +54,20 @@ infers only the factor P from the remaining items.
 
 #### Scenario: Canonical default picks the coarse side
 
-- **WHEN** `dimensions=[customers.region]` and `measures=[sum(orders.total)]` are
-  queried without `source_model`, with orders joined many-to-one to customers
+- **WHEN** `dimensions=[customers.region]` and `metrics=[sum(orders.total)]` are
+  queried without `population`, with orders joined many-to-one to customers
 - **THEN** the population is `customers`: one row per region present among
   customers, with order totals attached and NULL where a region has no orders
 
 #### Scenario: Field filter participates as a hidden dimension
 
-- **WHEN** a query without `source_model` has `dimensions=[customers.region]` and a
+- **WHEN** a query without `population` has `dimensions=[customers.region]` and a
   field-typed filter on `orders.status`
 - **THEN** the population must determine `orders.status` too, so `orders` is chosen
 
 #### Scenario: Measure-typed filter does not participate
 
-- **WHEN** a query without `source_model` adds a filter referencing an aggregation
+- **WHEN** a query without `population` adds a filter referencing an aggregation
   or a saved measure
 - **THEN** the inferred population is the same as without that filter
 
@@ -86,7 +86,7 @@ infers only the factor P from the remaining items.
 
 #### Scenario: Short-form dimension infers like its full path
 
-- **WHEN** a query without `source_model` has `dimensions=[regions.name,
+- **WHEN** a query without `population` has `dimensions=[regions.name,
   orders.status]` where `regions.name` is reachable from `orders` only as the
   routed path `customers.regions.name`
 - **THEN** inference routes the short form per candidate and picks the same
@@ -108,13 +108,13 @@ infers only the factor P from the remaining items.
 
 #### Scenario: Raw-row mode uses the same rule
 
-- **WHEN** a `distinct_dimension_values=false` query omits `source_model`
+- **WHEN** a `distinct_dimension_values=false` query omits `population`
 - **THEN** the same inference rule applies and the result has one row per row of
   the inferred population
 
 #### Scenario: Spine time dimensions factor out
 
-- **WHEN** a query without `source_model` groups by `customers.region` and a month
+- **WHEN** a query without `population` groups by `customers.region` and a month
   time dimension on `time_spine.timestamp`, with orders and returns each joined
   many-to-one to customers and each wired to the spine
 - **THEN** P is `customers` (not `orders` or `returns`, which also determine the
@@ -123,10 +123,10 @@ infers only the factor P from the remaining items.
 #### Scenario: A directed cycle needs an explicit population
 
 - **WHEN** `x`, `y` and `z` are joined many-to-one in a directed cycle `x → y → z → x`
-  and a query without `source_model` has `dimensions=[x.v, y.v, z.v]`
+  and a query without `population` has `dimensions=[x.v, y.v, z.v]`
 - **THEN** inference fails closed with no viable candidate, because from every
   candidate one of the items resolves literally across the adjacent edge in its
-  fanning orientation; the same query with `source_model="x"` and the dimension
+  fanning orientation; the same query with `population="x"` and the dimension
   `y.z.v` in place of `z.v` executes
 
 ### Requirement: Inference fails closed
@@ -140,37 +140,37 @@ join path is ambiguous from every otherwise-viable candidate, or datasource scop
 finds zero or several candidate datasources (named). A query whose only
 dimensions and field-typed filters are on the spine SHALL NOT raise the
 nothing-to-infer error: its P is the one-row unit. A stage query omitting
-`source_model` whose determination items are anchored at sibling stage names SHALL
+`population` whose determination items are anchored at sibling stage names SHALL
 fail closed with a diagnostic naming the sibling.
 
 #### Scenario: Tie names the candidates
 
 - **WHEN** two viable candidates tie at the minimal total routed hops
-- **THEN** the error names both and asks for an explicit `source_model`
+- **THEN** the error names both and asks for an explicit `population`
 
 #### Scenario: Nothing to infer from
 
-- **WHEN** a query without `source_model` has only measures (no dimensions, no
+- **WHEN** a query without `population` has only measures (no dimensions, no
   field-typed filters)
 - **THEN** a dedicated error says there is nothing to infer a population from,
   without listing every model
 
 #### Scenario: Spine-only query has the unit as P
 
-- **WHEN** a query without `source_model` has only a spine time dimension with a
+- **WHEN** a query without `population` has only a spine time dimension with a
   `date_range` and measures
 - **THEN** no inference error is raised and the population is `time_spine`
 
 #### Scenario: Sibling-anchored stage refs
 
-- **WHEN** a stage in a multi-stage query omits `source_model` and its dimensions
+- **WHEN** a stage in a multi-stage query omits `population` and its dimensions
   are anchored at a sibling stage's name
 - **THEN** the error tells the author to name that sibling as the stage's
-  `source_model`
+  `population`
 
 ### Requirement: Datasource scoping for root-less queries
 
-For a query omitting `source_model`, the candidate datasources SHALL be those
+For a query omitting `population`, the candidate datasources SHALL be those
 containing every referenced anchor name that matches a saved model; an explicit
 execution-level datasource argument SHALL pin scoping to that datasource before
 anchor voting. Anchor names SHALL derive from the same saved-measure-excluding,
@@ -200,7 +200,7 @@ them.
 
 #### Scenario: Saved-measure name colliding with a sibling stage
 
-- **WHEN** a stage query omitting `source_model` has a filter resolving to a saved
+- **WHEN** a stage query omitting `population` has a filter resolving to a saved
   measure whose model name equals a sibling stage's name, and its determination
   items are anchored elsewhere
 - **THEN** the sibling-stage diagnostic is not raised; inference proceeds from the
@@ -214,7 +214,7 @@ dry-run, explain, cache hits, refresh, and the Python client's response model. A
 spine population SHALL be reported as `time_spine × <P>` when P is a model and as
 `time_spine` when P is the unit; the inferred flag SHALL be true iff P was
 inferred (a spine-only query counts as inferred unless it named
-`source_model: time_spine`).
+`population: time_spine`).
 
 #### Scenario: Inferred population reported
 
@@ -229,28 +229,28 @@ inferred (a spine-only query counts as inferred unless it named
 #### Scenario: Spine population reported
 
 - **WHEN** a query groups by `customers.region` and a spine month without
-  `source_model`, and another names `source_model: customers` for the same shape
+  `population`, and another names `population: customers` for the same shape
 - **THEN** both report population `time_spine × customers`, the first with the
   inferred flag true and the second false
 
 ### Requirement: Root-less queries reach every query surface
 
 The REST query endpoint and the MCP query tool SHALL accept a query without
-`source_model` and run inference end to end.
+`population` and run inference end to end.
 
 #### Scenario: REST rootless query
 
-- **WHEN** a REST query body omits `source_model`
+- **WHEN** a REST query body omits `population`
 - **THEN** the query executes and the response reports the inferred population
 
 #### Scenario: MCP rootless query
 
-- **WHEN** the MCP query tool is called without `source_model`
+- **WHEN** the MCP query tool is called without `population`
 - **THEN** the query executes and the response reports the inferred population
 
 ### Requirement: Root recommendation follows the population rule
 
-`recommend_root_model` SHALL classify each resolved item by entity type: columns
+`recommend_population` SHALL classify each resolved item by entity type: columns
 are determination items (determined, counting routed hops); saved measures and
 aggregation-suffixed items are attachments requiring reachability only and reported
 as such. Selection SHALL use the same rule as population inference so the two
@@ -260,7 +260,7 @@ candidate. Only when no candidate is viable and an item's probe failed solely be
 a hop or its short-form route is ambiguous — never fanning or unreachable — SHALL
 recommendation resolve that item along its tie-break-best fan-out-free route and emit
 that full canonical path, so the recommended root executes once named as
-`source_model`. When the items include at least one determination item, an attachment
+`population`. When the items include at least one determination item, an attachment
 on a dataset that no join path connects to a candidate SHALL NOT count against that
 candidate; once a root is chosen, each such attachment SHALL be reported with the
 path a query rooted there spells it by (its product hop, `queries/unrelated-datasets`)
@@ -282,23 +282,23 @@ warnings with the remedy to name its edges.
 
 #### Scenario: Recommendation matches inference
 
-- **WHEN** the same dimension items are given to `recommend_root_model` and queried
-  without `source_model`
+- **WHEN** the same dimension items are given to `recommend_population` and queried
+  without `population`
 - **THEN** the recommended root equals the inferred population
 
 #### Scenario: Ambiguity is resolved by an explicit path
 
 - **WHEN** `orders` reaches `regions` by two fan-out-free routes (via `customers` and
-  via `warehouses`) and `recommend_root_model` is given `orders.status` and
+  via `warehouses`) and `recommend_population` is given `orders.status` and
   `regions.population`
 - **THEN** the root is `orders` and the path for `regions.population` is
   `customers.regions.population`, while
-  `{"dimensions": ["orders.status", "regions.population"]}` without `source_model`
+  `{"dimensions": ["orders.status", "regions.population"]}` without `population`
   fails with the ambiguous-path error
 
 #### Scenario: Recommendation and inference agree on a directed cycle
 
-- **WHEN** `recommend_root_model` is given `x.v`, `y.v` and `z.v` on the directed
+- **WHEN** `recommend_population` is given `x.v`, `y.v` and `z.v` on the directed
   cycle `x → y → z → x`
 - **THEN** no root is recommended, matching inference's failure, and the coverage
   output reports which items each candidate determines
@@ -306,13 +306,13 @@ warnings with the remedy to name its edges.
 #### Scenario: An unaddressable pair is named in the warnings
 
 - **WHEN** `orders` declares two unnamed joins to `addresses` and
-  `recommend_root_model` is given `orders.id` and `addresses.city`
+  `recommend_population` is given `orders.id` and `addresses.city`
 - **THEN** the response warnings name `orders`↔`addresses` and the remedy to name
   the edges
 
 #### Scenario: An unrelated attachment is reported through the product hop
 
-- **WHEN** `customers` and `events` share no join path and `recommend_root_model` is
+- **WHEN** `customers` and `events` share no join path and `recommend_population` is
   given `customers.city` and `count(events.id)`
 - **THEN** the root is `customers`, `count(events.id)` is reported as an attachment
   flagged `unrelated` with the path `count(events.id)`, `customers.city` is flagged
@@ -320,20 +320,20 @@ warnings with the remedy to name its edges.
 
 #### Scenario: An unrelated column stays unreachable
 
-- **WHEN** `recommend_root_model` is given `customers.city` and `events.kind`
+- **WHEN** `recommend_population` is given `customers.city` and `events.kind`
 - **THEN** no root is recommended, exactly as before this change
 
 #### Scenario: Attachments alone keep join-path selection
 
-- **WHEN** `recommend_root_model` is given only `count(customers.id)` and
+- **WHEN** `recommend_population` is given only `count(customers.id)` and
   `count(events.id)`
 - **THEN** no root is recommended, exactly as before this change
 
 ### Requirement: A saved query's inferred populations are pinned at save
 
-Saving a query-backed model — through `save_model`, `create_model_from_query`, or an edit of its
-`source_queries` on any surface — SHALL store every stage that omits `source_model` with its
-inferred population written as its `source_model`; stages naming `source_model` SHALL be stored as
+Saving a query-backed model — through `save_dataset`, `create_dataset_from_query`, or an edit of its
+`source_queries` on any surface — SHALL store every stage that omits `population` with its
+inferred population written as its `population`; stages naming `population` SHALL be stored as
 written. A stage whose inferred population model shares its name with a stage of the same saved
 query SHALL be refused at save with an error naming the stage and advising to rename it. A stored
 query-backed model with an unpinned stage (saved before pinning) SHALL, when run by name with a
@@ -342,17 +342,17 @@ same name collision; run without a refinement it SHALL execute as before.
 
 #### Scenario: Pinned on save
 
-- **WHEN** a query-backed model is saved whose stages omit `source_model`
-- **THEN** the stored stages carry the inferred models as `source_model`, and running it by name returns the same rows as before saving
+- **WHEN** a query-backed model is saved whose stages omit `population`
+- **THEN** the stored stages carry the inferred models as `population`, and running it by name returns the same rows as before saving
 
 #### Scenario: A refinement never moves the population
 
-- **WHEN** a saved query whose stage omitted `source_model` runs with a refinement whose extra dimension would, written into an unpinned query, infer a different population
+- **WHEN** a saved query whose stage omitted `population` runs with a refinement whose extra dimension would, written into an unpinned query, infer a different population
 - **THEN** the refined run keeps the pinned population
 
 #### Scenario: Name collision refused at save
 
-- **WHEN** a saved query's stage omitting `source_model` infers a model named like another stage of the same saved query
+- **WHEN** a saved query's stage omitting `population` infers a model named like another stage of the same saved query
 - **THEN** the save fails with an error naming the stage and advising to rename it
 
 #### Scenario: Legacy unpinned model refined
@@ -364,53 +364,53 @@ same name collision; run without a refinement it SHALL execute as before.
 
 ### Requirement: A population is named, and typed at construction
 
-A query's `source_model` SHALL accept exactly one form — a saved model or stage name (a
+A query's `population` SHALL accept exactly one form — a saved model or stage name (a
 string) — or be omitted, and SHALL be validated when the query is constructed, before any
 engine resolution. An object without `source_name` SHALL be rejected at construction with an
-error stating that inline models are not accepted and that `source_model` names a stored
+error stating that inline models are not accepted and that `population` names a stored
 model or stage, with `extensions` for query-local measures and joins. An object carrying
 `source_name` is a legacy root extension: it SHALL be converted into `extensions` as the
 `queries/extensions` capability specifies. Any other value SHALL be rejected at construction. Validation errors SHALL name the
-offending keys of the form the object was classified as. The query's JSON schema SHALL describe `source_model` as a
+offending keys of the form the object was classified as. The query's JSON schema SHALL describe `population` as a
 string or null.
 
 #### Scenario: Extension object validates as a typed extension
 
-- **WHEN** a query is constructed without a version with `source_model` =
-  `{"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}`
-- **THEN** the query's `source_model` is `orders`, its `extensions` hold one typed extension
-  of `orders` whose `measures` are typed objects, and the query executes exactly as before
+- **WHEN** a query is constructed without a version with `population` =
+  `{"dataset": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}`
+- **THEN** the query's `population` is `orders`, its `extensions` hold one typed extension
+  of `orders` whose `metrics` are typed objects, and the query executes exactly as before
 
 #### Scenario: Inline model object is rejected
 
-- **WHEN** a query is constructed with `source_model` =
-  `{"name": "ad_hoc", "sql_table": "things", "data_source": "ds", "columns": [...]}`, as a
-  dict or as a `SlayerModel` instance, directly, via REST or via the MCP query tool
+- **WHEN** a query is constructed with `population` =
+  `{"name": "ad_hoc", "sql_table": "things", "data_source": "ds", "fields": [...]}`, as a
+  dict or as a `SlayerDataset` instance, directly, via REST or via the MCP query tool
 - **THEN** construction fails with the inline-model error, and nothing executes
 
 #### Scenario: Copies keep the name form
 
-- **WHEN** a query is copied (without re-validation) with a replacement `source_model` string
-- **THEN** `source_model_name` follows the replacement
+- **WHEN** a query is copied (without re-validation) with a replacement `population` string
+- **THEN** `population_name` follows the replacement
 
 #### Scenario: Unknown extension key is rejected
 
 - **WHEN** a query is constructed with an extension
-  `{"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}`, in `extensions` or
-  in the legacy `source_model` form
+  `{"dataset": "orders", "filters": ["subtotal > tax_paid * 5"]}`, in `extensions` or
+  in the legacy `population` form
 - **THEN** construction fails with a validation error naming `filters` as an unexpected
   key, and nothing is silently dropped
 
 #### Scenario: Object with source_name plus model keys is an extension, never a model
 
-- **WHEN** a query is constructed with `source_model` =
-  `{"source_name": "orders", "name": "x", "sql_table": "t", "data_source": "ds"}`
+- **WHEN** a query is constructed with `population` =
+  `{"dataset": "orders", "name": "x", "sql_table": "t", "data_source": "ds"}`
 - **THEN** construction fails with a validation error naming `name`, `sql_table`, and
   `data_source` as unexpected extension keys
 
 #### Scenario: Non-spec value is rejected
 
-- **WHEN** a query is constructed with `source_model` = `42` or `[1, 2]`
+- **WHEN** a query is constructed with `population` = `42` or `[1, 2]`
 - **THEN** construction fails with a validation error
 
 #### Scenario: Legacy inline shapes still migrate before validation
@@ -431,13 +431,13 @@ string or null.
 #### Scenario: Schema advertises a name or null
 
 - **WHEN** the query's JSON schema is generated
-- **THEN** `source_model` is described as a string or null, with no `SlayerModel`
-  reference, `extensions` as a list of `ModelExtension` references — and the MCP query tool's
+- **THEN** `population` is described as a string or null, with no `SlayerDataset`
+  reference, `extensions` as a list of `DatasetExtension` references — and the MCP query tool's
   input schema carries the same definitions
 
 #### Scenario: REST body rejects a malformed spec at validation
 
-- **WHEN** `POST /query` carries a `source_model` that is neither a name nor a legacy
+- **WHEN** `POST /query` carries a `population` that is neither a name nor a legacy
   extension, or an extension with an unknown key
 - **THEN** the request is rejected with HTTP 422 by body validation, before the query
   reaches the engine; an inline-model body is rejected the same way, and well-formed

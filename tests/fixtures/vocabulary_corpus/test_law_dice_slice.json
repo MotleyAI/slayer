@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_law_dice_slice.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  }
+ ]
+}

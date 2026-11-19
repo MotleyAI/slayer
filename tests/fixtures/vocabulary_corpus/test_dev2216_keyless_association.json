@@ -1,0 +1,93 @@
+{
+ "source": "tests/test_dev2216_keyless_association.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "tags",
+    "join_pairs": [
+     [
+      "tag_id",
+      "tag_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "tags",
+    "from_columns": [
+     "tag_id"
+    ],
+    "to_columns": [
+     "tag_id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "tags",
+    "join_pairs": [
+     [
+      "tag_id",
+      "tag_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "tags",
+    "from_columns": [
+     "tag_id"
+    ],
+    "to_columns": [
+     "tag_id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 229,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 237,
+   "reason": "not fully literal"
+  }
+ ]
+}

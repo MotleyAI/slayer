@@ -6,8 +6,10 @@ emitted SLayer Mode-A text; variables are stashed in ``model.meta`` and reported
 """
 
 
+from slayer.core.query import extract_dataset_variables
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.js_parser import parse_cube_js
+from slayer.cube.models import CubeProject
 from slayer.cube.report import CubeIssueCategory
 
 DS = "test_ds"
@@ -53,11 +55,10 @@ def _convert(source: str, *, honor_required_meta: bool = True):
         parse_issues=result.issues, honor_required_meta=honor_required_meta,
     )
     out = conv.convert()
-    return {m.name: m for m in out.models}, out.report
+    return {m.name: m for m in out.datasets}, out.report
 
 
 def _as_project(js_result):
-    from slayer.cube.models import CubeProject
     return CubeProject(cubes=js_result.cubes, views=js_result.views)
 
 
@@ -134,9 +135,8 @@ def test_meta_declares_list_valued_only_for_the_in_list_form():
 
 
 def test_model_variables_discoverable_required_and_optional():
-    from slayer.core.query import extract_model_variables
     models, _ = _convert(_rr_source())
-    v = extract_model_variables(models["RrDrivers"])
+    v = extract_dataset_variables(models["RrDrivers"])
     # the range arrow references both from and to -> both required.
     assert set(v.required) == {"fulfillment_date_from", "fulfillment_date_to"}
     assert set(v.optional) == {"brand", "market"}

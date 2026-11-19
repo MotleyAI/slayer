@@ -1,6 +1,6 @@
 """Shared entity-inspection service behind the MCP, REST, CLI and client ``inspect`` surfaces.
 
-``entity_type`` is required: it disambiguates a 3-part canonical id shared by, e.g., a column and an aggregation.
+``entity_type`` is required: it disambiguates a 3-part canonical id shared by, e.g., a field and an aggregation.
 """
 
 from __future__ import annotations
@@ -8,56 +8,58 @@ from __future__ import annotations
 import json
 from typing import Any, NamedTuple
 
-from slayer.core.time_spine import TIME_SPINE_MODEL
+from slayer.core.time_spine import TIME_SPINE_DATASET
+from slayer.core.vocabulary import DATASET_KEYS, ENTITY_KINDS, deprecated_spelling, respelled_token
 from slayer.core.errors import (
-    AmbiguousModelError,
+    AmbiguousDatasetError,
     EntityResolutionError,
     MemoryNotFoundError,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
+from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.inspect.collection_render import (
     BLOCK_SEP,
     datasource_skeleton_fields,
     render_datasource_list,
-    render_model_oneliner_index,
-    render_models_summary,
+    render_dataset_oneliner_index,
+    render_datasets_summary,
 )
-from slayer.inspect.model_render import (
+from slayer.inspect.dataset_render import (
     _TRUNCATION_MARKER,
     _truncate_description,
-    load_visible_models,
-    model_skeleton_fields,
-    render_model_inspection,
-    render_model_skeleton,
+    load_visible_datasets,
+    dataset_skeleton_fields,
+    render_dataset_inspection,
+    render_dataset_skeleton,
     saved_queries_index,
 )
-from slayer.memories.help_seed import HELP_ID_PREFIX
+from slayer.memories.help_seed import HELP_ID_PREFIX, RENAMED_HELP_IDS
 from slayer.memories.resolver import resolve_entity
 from slayer.search.render import (
-    collect_model_entity_pairs,
+    collect_dataset_entity_pairs,
     compact_description_from_learning,
     render_memory_text,
 )
 from slayer.storage.base import StorageBackend
 
-try:  # SlayerQueryEngine is only needed for the model sample-data path.
+try:  # SlayerQueryEngine is only needed for the dataset sample-data path.
     from slayer.engine.query_engine import SlayerQueryEngine
 except Exception:  # pragma: no cover - engine import always succeeds in-repo
     SlayerQueryEngine = None  # type: ignore[assignment, misc]
 
 VALID_ENTITY_TYPES = {
-    "datasource", "model", "column", "measure", "aggregation", "memory",
+    "datasource", "dataset", "field", "metric", "aggregation", "memory",
 }
 _VALID_FORMATS = {"markdown", "json"}
 
-_LEAF_KINDS = {"column", "measure", "aggregation"}
+_LEAF_KINDS = {"field", "metric", "aggregation"}
 
 # Kinds for which a null/empty reference renders the collection.
-_COLLECTION_KINDS = {"model", "datasource"}
+_COLLECTION_KINDS = {"dataset", "datasource"}
 _COLLECTION_UNSUPPORTED = (
     "Collection view (null reference) is only supported for entity_type "
-    "'model' or 'datasource'."
+    "'dataset' or 'datasource'."
 )
 
 _DESCRIPTION_PREFIX = "Description: "
@@ -75,11 +77,31 @@ class _OneResult(NamedTuple):
 
 
 def _warn_line(*, arg: str, entity_type: str) -> str:
-    """Model-only-arg warning text (the ``> Warning:`` prefix is added at render time)."""
+    """Dataset-only-arg warning text (the ``> Warning:`` prefix is added at render time)."""
     return (
         f"'{arg}' is ignored for entity_type "
-        f"'{entity_type}' (only applies to models)."
+        f"'{entity_type}' (only applies to datasets)."
     )
+
+
+def _validated_format(*, entity_type: str, format: str, descriptions_max_chars: int | None) -> str:
+    """The normalised output format, after refusing an invalid entity type, format or char cap."""
+    if entity_type not in VALID_ENTITY_TYPES:
+        raise ValueError(
+            f"Invalid entity_type '{entity_type}'. Must be one of: "
+            f"{', '.join(sorted(VALID_ENTITY_TYPES))}."
+        )
+    fmt = format.lower().strip()
+    if fmt not in _VALID_FORMATS:
+        raise ValueError(
+            f"Invalid format '{format}'. Must be 'markdown' or 'json'."
+        )
+    if descriptions_max_chars is not None and descriptions_max_chars < 0:
+        raise ValueError(
+            f"descriptions_max_chars must be >= 0, got "
+            f"{descriptions_max_chars}."
+        )
+    return fmt
 
 
 class InspectService:
@@ -108,36 +130,31 @@ class InspectService:
     ) -> str:
         """Inspect one entity (``str``), a same-kind batch (list), or the collection (``None``/``[]``).
 
-        Batch blocks keep input order with per-id errors isolated; collections support model/datasource only.
+        Batch blocks keep input order with per-id errors isolated; collections support dataset/datasource only.
         """
-        if entity_type not in VALID_ENTITY_TYPES:
-            raise ValueError(
-                f"Invalid entity_type '{entity_type}'. Must be one of: "
-                f"{', '.join(sorted(VALID_ENTITY_TYPES))}."
-            )
-        fmt = format.lower().strip()
-        if fmt not in _VALID_FORMATS:
-            raise ValueError(
-                f"Invalid format '{format}'. Must be 'markdown' or 'json'."
-            )
-        if descriptions_max_chars is not None and descriptions_max_chars < 0:
-            raise ValueError(
-                f"descriptions_max_chars must be >= 0, got "
-                f"{descriptions_max_chars}."
-            )
+        renamed: list[DeprecatedInputWarning] = []
+        entity_type = respelled_token(entity_type, ENTITY_KINDS, renamed)
+        if sections:
+            sections = [respelled_token(section, DATASET_KEYS, renamed) for section in sections]
+        renamed_lines = [r.human_message() for r in renamed]
+        fmt = _validated_format(
+            entity_type=entity_type, format=format, descriptions_max_chars=descriptions_max_chars,
+        )
 
         if reference is None or reference == []:
             if entity_type not in _COLLECTION_KINDS:
                 raise ValueError(_COLLECTION_UNSUPPORTED)
-            if entity_type == "model":
-                return await self._inspect_collection_model(
+            if entity_type == "dataset":
+                collection = await self._inspect_collection_dataset(
                     compact=compact, fmt=fmt,
                     descriptions_max_chars=descriptions_max_chars,
                 )
-            return await self._inspect_collection_datasource(
-                compact=compact, fmt=fmt,
-                descriptions_max_chars=descriptions_max_chars,
-            )
+            else:
+                collection = await self._inspect_collection_datasource(
+                    compact=compact, fmt=fmt,
+                    descriptions_max_chars=descriptions_max_chars,
+                )
+            return self._with_renamed(collection, renamed_lines, fmt=fmt)
 
         if isinstance(reference, list):
             if any(not isinstance(ref, str) for ref in reference):
@@ -146,7 +163,7 @@ class InspectService:
             raise ValueError("reference must be a string or a list of strings.")
 
         # Seeds every batch id; each id appends its resolver warnings to a copy.
-        warnings: list[str] = self._model_only_arg_warnings(
+        warnings: list[str] = renamed_lines + self._dataset_only_arg_warnings(
             entity_type=entity_type,
             num_rows=num_rows,
             show_sql=show_sql,
@@ -181,8 +198,8 @@ class InspectService:
         warnings: list[str],
     ) -> _OneResult:
         """Dispatch a single id to its per-kind helper."""
-        if entity_type == "model":
-            return await self._inspect_model(
+        if entity_type == "dataset":
+            return await self._inspect_dataset(
                 reference=reference, compact=compact, fmt=fmt,
                 num_rows=num_rows, show_sql=show_sql, sections=sections,
                 descriptions_max_chars=descriptions_max_chars,
@@ -200,7 +217,7 @@ class InspectService:
                 descriptions_max_chars=descriptions_max_chars,
                 warnings=warnings,
             )
-        # column / measure / aggregation
+        # field / metric / aggregation
         return await self._inspect_leaf(
             reference=reference, entity_type=entity_type, compact=compact,
             fmt=fmt, descriptions_max_chars=descriptions_max_chars,
@@ -249,14 +266,14 @@ class InspectService:
         return _BATCH_BLOCK_SEP.join(blocks)
 
     @staticmethod
-    def _model_only_arg_warnings(
+    def _dataset_only_arg_warnings(
         *,
         entity_type: str,
         num_rows: int,
         show_sql: bool,
         sections: list[str] | None,
     ) -> list[str]:
-        if entity_type == "model":
+        if entity_type == "dataset":
             return []
         out: list[str] = []
         if num_rows != 3:
@@ -288,6 +305,17 @@ class InspectService:
             out.append(line)
         return "\n".join(out)
 
+    @classmethod
+    def _with_renamed(cls, rendered: str, renamed: list[str], *, fmt: str) -> str:
+        """A collection render with the pre-2.0 spellings it read reported (a JSON object's ``warnings``)."""
+        if not renamed:
+            return rendered
+        if fmt != "json":
+            return cls._markdown_with_warnings(rendered, renamed)
+        payload = json.loads(rendered)
+        payload["warnings"] = [*payload.get("warnings", []), *renamed]
+        return json.dumps(payload, indent=2)
+
     @staticmethod
     def _markdown_with_warnings(body: str, warnings: list[str]) -> str:
         if not warnings:
@@ -299,14 +327,14 @@ class InspectService:
 
     # Collection views (null / [] reference)
 
-    async def _load_visible_models(self, ds_name: str) -> list[SlayerModel]:
-        """Visible, name-sorted models of one datasource, built-in models included."""
-        models = await load_visible_models(self._storage, ds_name)
-        models.extend(await self._storage.builtin_models(ds_name))
-        models.sort(key=lambda m: m.name)
-        return models
+    async def _load_visible_datasets(self, ds_name: str) -> list[SlayerDataset]:
+        """Visible, name-sorted datasets of one datasource, built-in datasets included."""
+        datasets = await load_visible_datasets(self._storage, ds_name)
+        datasets.extend(await self._storage.builtin_datasets(ds_name))
+        datasets.sort(key=lambda m: m.name)
+        return datasets
 
-    async def _inspect_collection_model(
+    async def _inspect_collection_dataset(
         self,
         *,
         compact: bool,
@@ -317,72 +345,72 @@ class InspectService:
         if not ds_names:
             if fmt == "json":
                 return json.dumps({
-                    "entity_type": "model",
+                    "entity_type": "dataset",
                     "collection": True,
                     "datasources": [],
                     "warnings": [],
                 }, indent=2)
-            return "No models found."
+            return "No datasets found."
 
-        # Build per-DS groups; ``models is None`` marks an invalid-config DS.
-        groups: list[tuple[str, list[SlayerModel] | None]] = []
+        # Build per-DS groups; ``datasets is None`` marks an invalid-config DS.
+        groups: list[tuple[str, list[SlayerDataset] | None]] = []
         for ds in ds_names:
             try:
                 await self._storage.get_datasource(ds)
             except Exception:  # noqa: BLE001 — invalid config: mark + continue
                 groups.append((ds, None))
                 continue
-            groups.append((ds, await self._load_visible_models(ds)))
+            groups.append((ds, await self._load_visible_datasets(ds)))
 
         if compact:
-            return render_model_oneliner_index(
+            return render_dataset_oneliner_index(
                 groups=groups, fmt=fmt, warnings=[],
             )
         if fmt == "json":
-            return self._collection_model_verbose_json(
+            return self._collection_dataset_verbose_json(
                 groups=groups, descriptions_max_chars=descriptions_max_chars,
             )
-        return self._collection_model_verbose_markdown(
+        return self._collection_dataset_verbose_markdown(
             groups=groups, descriptions_max_chars=descriptions_max_chars,
         )
 
     @staticmethod
-    def _collection_model_verbose_json(
+    def _collection_dataset_verbose_json(
         *,
-        groups: list[tuple[str, list[SlayerModel] | None]],
+        groups: list[tuple[str, list[SlayerDataset] | None]],
         descriptions_max_chars: int | None,
     ) -> str:
         entries: list[dict[str, Any]] = []
-        for ds, models in groups:
-            if models is None:
+        for ds, datasets in groups:
+            if datasets is None:
                 entries.append(
-                    {"data_source": ds, "error": "invalid config", "models": []}
+                    {"data_source": ds, "error": "invalid config", "datasets": []}
                 )
             else:
-                entries.append(json.loads(render_models_summary(
-                    datasource_name=ds, models=models, fmt="json",
+                entries.append(json.loads(render_datasets_summary(
+                    datasource_name=ds, datasets=datasets, fmt="json",
                     compact=False, descriptions_max_chars=descriptions_max_chars,
                 )))
         return json.dumps({
-            "entity_type": "model",
+            "entity_type": "dataset",
             "collection": True,
             "datasources": entries,
             "warnings": [],
         }, indent=2, default=str)
 
     @staticmethod
-    def _collection_model_verbose_markdown(
+    def _collection_dataset_verbose_markdown(
         *,
-        groups: list[tuple[str, list[SlayerModel] | None]],
+        groups: list[tuple[str, list[SlayerDataset] | None]],
         descriptions_max_chars: int | None,
     ) -> str:
         blocks: list[str] = []
-        for ds, models in groups:
-            if models is None:
+        for ds, datasets in groups:
+            if datasets is None:
                 blocks.append(f"Datasource '{ds}' has an invalid config.")
                 continue
-            blocks.append(render_models_summary(
-                datasource_name=ds, models=models, fmt="markdown",
+            blocks.append(render_datasets_summary(
+                datasource_name=ds, datasets=datasets, fmt="markdown",
                 compact=False, descriptions_max_chars=descriptions_max_chars,
             ))
         return BLOCK_SEP.join(blocks)
@@ -432,7 +460,7 @@ class InspectService:
             entries.append(datasource_skeleton_fields(
                 name=ds,
                 description=cfg.description if cfg is not None else None,
-                models=await self._load_visible_models(ds),
+                datasets=await self._load_visible_datasets(ds),
                 descriptions_max_chars=descriptions_max_chars,
             ))
         return json.dumps({
@@ -477,6 +505,10 @@ class InspectService:
                 f"'memory:'."
             ))
         memory_id = reference[len("memory:"):]
+        if memory_id in RENAMED_HELP_IDS:
+            renamed = deprecated_spelling(reference, f"memory:{RENAMED_HELP_IDS[memory_id]}")
+            warnings.append(renamed.human_message())
+            memory_id = RENAMED_HELP_IDS[memory_id]
         try:
             mem = await self._storage.get_memory(memory_id)
         except MemoryNotFoundError:
@@ -532,10 +564,10 @@ class InspectService:
         """``(canonical, warnings)`` for a single-canonical reference, else an error ``_OneResult``."""
         try:
             res = await resolve_entity(
-                reference, storage=self._storage, source_model=None,
+                reference, storage=self._storage, source_dataset=None,
             )
-        except (EntityResolutionError, AmbiguousModelError) as exc:
-            # AmbiguousModelError is not an EntityResolutionError subclass.
+        except (EntityResolutionError, AmbiguousDatasetError) as exc:
+            # AmbiguousDatasetError is not an EntityResolutionError subclass.
             return _OneResult(None, True, str(exc))
         warnings = warnings + list(res.warnings)
         if len(res.canonical_forms) != 1:
@@ -604,9 +636,9 @@ class InspectService:
                 })
             return self._markdown_with_warnings(trunc_desc or "", warnings)
 
-        models = await self._load_visible_models(ds_name)
+        datasets = await self._load_visible_datasets(ds_name)
         granularities = [g.model_dump(mode="json") for g in (cfg.granularities if cfg is not None else [])]
-        saved = saved_queries_index(models, max_chars=descriptions_max_chars)
+        saved = saved_queries_index(datasets, max_chars=descriptions_max_chars)
 
         if fmt == "json":
             return json.dumps({
@@ -614,11 +646,11 @@ class InspectService:
                 "entity_type": "datasource",
                 "description": trunc_desc,
                 "granularities": granularities,
-                "models": [
-                    model_skeleton_fields(
-                        model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
+                "datasets": [
+                    dataset_skeleton_fields(
+                        dataset=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
                     )
-                    for m in models
+                    for m in datasets
                 ],
                 "warnings": warnings,
             }, indent=2, default=str)
@@ -630,16 +662,16 @@ class InspectService:
             md_lines.append("Custom granularities: " + ", ".join(
                 f"`{g['name']}` ({g['multiple']} × {g['base']} from {g['origin']})" for g in granularities
             ))
-        for m in models:
+        for m in datasets:
             md_lines.append(f"\n## `{m.name}`")
             md_lines.append(
-                render_model_skeleton(
-                    model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
+                render_dataset_skeleton(
+                    dataset=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
                 )
             )
         return self._markdown_with_warnings("\n".join(md_lines), warnings)
 
-    async def _inspect_model(
+    async def _inspect_dataset(
         self,
         *,
         reference: str,
@@ -652,50 +684,50 @@ class InspectService:
         warnings: list[str],
     ) -> _OneResult:
         try:
-            canonical = await self._resolve_model_canonical(reference)
-        except AmbiguousModelError as exc:
+            canonical = await self._resolve_dataset_canonical(reference)
+        except AmbiguousDatasetError as exc:
             return _OneResult(None, True, str(exc))
-        if canonical is None and reference.split(".")[-1] == TIME_SPINE_MODEL:
-            spine = await self._storage.get_model_or_builtin(
-                TIME_SPINE_MODEL, data_source=reference.split(".")[0] if "." in reference else None,
+        if canonical is None and reference.split(".")[-1] == TIME_SPINE_DATASET:
+            spine = await self._storage.get_dataset_or_builtin(
+                TIME_SPINE_DATASET, data_source=reference.split(".")[0] if "." in reference else None,
             )
-            canonical = f"{spine.data_source}.{TIME_SPINE_MODEL}" if spine is not None else None
+            canonical = f"{spine.data_source}.{TIME_SPINE_DATASET}" if spine is not None else None
         if canonical is None:
             return _OneResult(None, True, (
-                f"'{reference}' does not resolve to a model. Pass a "
-                f"datasource-qualified model id (e.g. '<ds>.<model>') or a "
-                f"bare model name."
+                f"'{reference}' does not resolve to a dataset. Pass a "
+                f"datasource-qualified dataset id (e.g. '<ds>.<dataset>') or a "
+                f"bare dataset name."
             ))
-        ds_name, model_name = canonical.split(".", 1)
-        model = await self._storage.get_model_or_builtin(model_name, data_source=ds_name)
-        if model is None:
+        ds_name, dataset_name = canonical.split(".", 1)
+        dataset = await self._storage.get_dataset_or_builtin(dataset_name, data_source=ds_name)
+        if dataset is None:
             return _OneResult(None, True, (
-                f"Model '{canonical}' not found "
+                f"Dataset '{canonical}' not found "
                 f"(reference '{reference}')."
             ))
         if compact:
             # DB-free skeleton; short-circuits the full renderer's DB work.
             saved_queries = saved_queries_index(
-                await self._load_visible_models(ds_name), max_chars=descriptions_max_chars,
-            ).get(model.name)
+                await self._load_visible_datasets(ds_name), max_chars=descriptions_max_chars,
+            ).get(dataset.name)
             if fmt == "json":
-                payload = dict(model_skeleton_fields(
-                    model=model, max_chars=descriptions_max_chars, saved_queries=saved_queries,
+                payload = dict(dataset_skeleton_fields(
+                    dataset=dataset, max_chars=descriptions_max_chars, saved_queries=saved_queries,
                 ))
                 payload["canonical_id"] = canonical
-                payload["entity_type"] = "model"
+                payload["entity_type"] = "dataset"
                 payload["warnings"] = warnings
                 return _OneResult(
                     canonical, False, json.dumps(payload, indent=2, default=str),
                 )
-            body = render_model_skeleton(
-                model=model, max_chars=descriptions_max_chars, saved_queries=saved_queries,
+            body = render_dataset_skeleton(
+                dataset=dataset, max_chars=descriptions_max_chars, saved_queries=saved_queries,
             )
             return _OneResult(canonical, False, self._markdown_with_warnings(
-                f"# `{model.name}`\n{body}", warnings,
+                f"# `{dataset.name}`\n{body}", warnings,
             ))
-        rendered = await render_model_inspection(
-            model=model,
+        rendered = await render_dataset_inspection(
+            dataset=dataset,
             storage=self._storage,
             engine=self._engine,
             num_rows=num_rows,
@@ -715,13 +747,13 @@ class InspectService:
             canonical, False, self._markdown_with_warnings(rendered, warnings),
         )
 
-    async def _resolve_model_canonical(self, reference: str) -> str | None:
-        """Resolve ``reference`` to a ``<ds>.<model>`` id, even when the resolver picked a same-named datasource."""
+    async def _resolve_dataset_canonical(self, reference: str) -> str | None:
+        """Resolve ``reference`` to a ``<ds>.<dataset>`` id, even when the resolver picked a same-named datasource."""
         try:
             res = await resolve_entity(
-                reference, storage=self._storage, source_model=None,
+                reference, storage=self._storage, source_dataset=None,
             )
-        except AmbiguousModelError:
+        except AmbiguousDatasetError:
             raise
         except EntityResolutionError:
             res = None
@@ -729,10 +761,10 @@ class InspectService:
             canonical = res.canonical_forms[0]
             if canonical.count(".") == 1:
                 return canonical
-        # Only the whole reference is a model candidate, never a dotted ref's last segment.
+        # Only the whole reference is a dataset candidate, never a dotted ref's last segment.
         try:
-            ident = await self._storage.resolve_model_identity(reference)
-        except AmbiguousModelError:
+            ident = await self._storage.resolve_dataset_identity(reference)
+        except AmbiguousDatasetError:
             raise
         except Exception:
             ident = None
@@ -759,21 +791,21 @@ class InspectService:
         if canonical.count(".") != 2:
             return _OneResult(canonical, True, (
                 f"'{reference}' resolved to '{canonical}', which is not a "
-                f"{entity_type} (expected a '<ds>.<model>.<leaf>' id)."
+                f"{entity_type} (expected a '<ds>.<dataset>.<leaf>' id)."
             ))
-        ds_name, model_name, leaf = canonical.split(".", 2)
-        model = await self._storage.get_model(model_name, data_source=ds_name)
-        if model is None:
+        ds_name, dataset_name, leaf = canonical.split(".", 2)
+        dataset = await self._storage.get_dataset(dataset_name, data_source=ds_name)
+        if dataset is None:
             return _OneResult(None, True, (
-                f"Model '{ds_name}.{model_name}' not found "
+                f"Dataset '{ds_name}.{dataset_name}' not found "
                 f"(reference '{reference}')."
             ))
 
-        model =await self._maybe_refresh_leaf_sample(
-            model=model, entity_type=entity_type, compact=compact, leaf=leaf,
+        dataset =await self._maybe_refresh_leaf_sample(
+            dataset=dataset, entity_type=entity_type, compact=compact, leaf=leaf,
         )
 
-        pairs = collect_model_entity_pairs(model=model, include_hidden=True)
+        pairs = collect_dataset_entity_pairs(dataset=dataset, include_hidden=True)
         matches = [
             p for p in pairs
             if p.canonical_id == canonical and p.kind == entity_type
@@ -788,37 +820,37 @@ class InspectService:
             return _OneResult(canonical, False, body)
         return _OneResult(canonical, True, self._leaf_lookup_error(
             canonical=canonical, entity_type=entity_type, leaf=leaf,
-            ds_name=ds_name, model_name=model_name, pairs=pairs,
+            ds_name=ds_name, dataset_name=dataset_name, pairs=pairs,
             match_count=len(matches),
         ))
 
     async def _maybe_refresh_leaf_sample(
         self,
         *,
-        model: SlayerModel,
+        dataset: SlayerDataset,
         entity_type: str,
         compact: bool,
         leaf: str,
-    ) -> SlayerModel:
-        """Lazily back-fill a column's sample on a ``compact=False`` column read (engine-guarded).
+    ) -> SlayerDataset:
+        """Lazily back-fill a field's sample on a ``compact=False`` field read (engine-guarded).
 
-        Returns ``model`` unchanged when nothing changed, else a copy with the returned column.
+        Returns ``dataset`` unchanged when nothing changed, else a copy with the returned field.
         """
-        if entity_type != "column" or compact or self._engine is None:
-            return model
-        col = model.get_column(leaf)
+        if entity_type != "field" or compact or self._engine is None:
+            return dataset
+        col = dataset.get_field(leaf)
         if col is None:
-            return model
+            return dataset
         outcome = await ensure_samples_fresh(
-            model=model, columns=[col], engine=self._engine, storage=self._storage,
+            dataset=dataset, fields=[col], engine=self._engine, storage=self._storage,
         )
-        refreshed = outcome.columns[0]
+        refreshed = outcome.fields[0]
         if refreshed is col:
-            return model
-        return model.model_copy(update={
-            "columns": [
+            return dataset
+        return dataset.model_copy(update={
+            "fields": [
                 refreshed if c.name == col.name else c
-                for c in model.columns
+                for c in dataset.fields
             ],
         })
 
@@ -839,9 +871,9 @@ class InspectService:
         full_text = self._truncate_description_field(
             text=entry.text, max_chars=descriptions_max_chars,
         )
-        # Measure/aggregation text is essential and sample-free, so shown even when compact.
+        # Metric/aggregation text is essential and sample-free, so shown even when compact.
         show_full = bool(full_text) and (
-            not compact or entity_type in {"measure", "aggregation"}
+            not compact or entity_type in {"metric", "aggregation"}
         )
         if fmt == "json":
             payload = {
@@ -863,14 +895,14 @@ class InspectService:
         entity_type: str,
         leaf: str,
         ds_name: str,
-        model_name: str,
+        dataset_name: str,
         pairs,
         match_count: int,
     ) -> str:
         if match_count > 1:
             return (
                 f"'{canonical}' matches {match_count} {entity_type}s on "
-                f"model '{ds_name}.{model_name}'; cannot uniquely identify "
+                f"dataset '{ds_name}.{dataset_name}'; cannot uniquely identify "
                 f"which to inspect."
             )
         other_kinds = sorted({
@@ -882,6 +914,6 @@ class InspectService:
                 f"{entity_type}. Available here: {', '.join(other_kinds)}."
             )
         return (
-            f"No {entity_type} '{leaf}' found on model "
-            f"'{ds_name}.{model_name}'."
+            f"No {entity_type} '{leaf}' found on dataset "
+            f"'{ds_name}.{dataset_name}'."
         )

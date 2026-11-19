@@ -25,7 +25,7 @@ import sqlglot
 from sqlglot import exp
 
 import slayer
-from slayer.core.query import ModelExtension
+from slayer.core.query import DatasetExtension, QueryMetric
 
 from tests._dev1838_fixtures import (
     BAND,
@@ -33,9 +33,7 @@ from tests._dev1838_fixtures import (
     BAND_GOLD,
     BAND_TIER_ORDER,
     BAND_WMAX_BY_REGION,
-    ColumnRef,
     LASTDIM_GOLD,
-    ModelMeasure,
     OrderItem,
     SPEND_LAST_BAND,
     SlayerQuery,
@@ -48,7 +46,7 @@ from tests._dev1838_fixtures import (
 )
 from tests.test_dev1837_guards import ARM_COMBINED_CTE_BODY, ARM_ROW_CTE_BODY
 
-M = ModelMeasure(formula="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 #: The generator's re-rooted first/last CTE-body residual (generator.py) —
 #: the third guard the lift removes.
@@ -84,7 +82,7 @@ class TestNestedAttachInsideProducer:
     async def test_row_attach_inside_filtered_local_subplan(self, exec_backend):
         dialect, engine = exec_backend
         query = q(dimensions=["status", BAND],
-                  measures=[M, ModelMeasure(formula="sum(gold_amount)", name="g")])
+                  metrics=[M, QueryMetric(metric="sum(gold_amount)", alias="g")])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.band")
         got = {
@@ -103,8 +101,8 @@ class TestNestedAttachInsideProducer:
 
     async def test_row_attach_inside_host_grain_wrap_subplan(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=["status", BAND], measures=[M],
-                  order=[OrderItem(column=ColumnRef(name="tier", model="customers"),
+        query = q(dimensions=["status", BAND], metrics=[M],
+                  order=[OrderItem(field="customers.tier",
                                    direction="asc")])
         resp = await engine.execute(query)
         got = [(r["orders.status"], int(r["orders.band"]), float(r["orders.m"]))
@@ -119,9 +117,9 @@ class TestNestedAttachInsideProducer:
         producer rides inside the filtered-local sub-plan's grain."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["status", {"expression": "last(amount, partition_by=city)",
-                                   "name": "cl"}],
-            measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
+            dimensions=["status", {"field": "last(amount, partition_by=city)",
+                                   "alias": "cl"}],
+            metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.cl")
@@ -146,8 +144,8 @@ class TestNestedAttachInsideProducer:
         regress it."""
         dialect, engine = exec_backend
         query = q(dimensions=["status", BAND],
-                  measures=[ModelMeasure(formula="last(customers.spend)",
-                                         name="sl")],
+                  metrics=[QueryMetric(metric="last(customers.spend)",
+                                         alias="sl")],
                   to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.band")
@@ -165,8 +163,8 @@ class TestNestedAttachInsideProducer:
         filtered-local measure renders one flat WITH today."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"],
-                  measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
-                  order=[OrderItem.model_validate({"column": "last(amount)", "direction": "desc"})])
+                  metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
+                  order=[OrderItem.model_validate({"field": "last(amount)", "direction": "desc"})])
         resp = await engine.execute(query)
         got = [(r["orders.status"], float(r["orders.g"])) for r in resp.data]
         assert got == [("new", 20.0), ("ok", 10.0)]
@@ -180,9 +178,9 @@ class TestNonFinalStage:
     @staticmethod
     def _banded_stages(**stage2_kwargs) -> list:
         stage1 = q(name="banded", dimensions=["region", BAND],
-                   measures=[ModelMeasure(formula="sum(amount)", name="bt")])
-        stage2 = SlayerQuery(source_model="banded",
-                             extensions=[ModelExtension(source_name="banded")],
+                   metrics=[QueryMetric(metric="sum(amount)", alias="bt")])
+        stage2 = SlayerQuery(population="banded",
+                             extensions=[DatasetExtension(dataset="banded")],
                              **stage2_kwargs)
         return [stage1, stage2]
 
@@ -191,8 +189,8 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = self._banded_stages(
-            dimensions=["region"], filters=["band == 1"],
-            measures=[ModelMeasure(formula="sum(bt)", name="total")],
+            dimensions=["region"], filter=["band == 1"],
+            metrics=[QueryMetric(metric="sum(bt)", alias="total")],
         )
         resp = await engine.execute(stages)
         by = rows_by(resp, "banded.region")
@@ -210,13 +208,13 @@ class TestNonFinalStage:
         dialect, engine = exec_backend
         stages = [
             q(name="s1", dimensions=["region"],
-              measures=[ModelMeasure(formula="sum(amount)", name="m"),
-                        ModelMeasure(formula="sum(amount, partition_by=[])",
-                                     name="gt")]),
-            SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
+              metrics=[QueryMetric(metric="sum(amount)", alias="m"),
+                        QueryMetric(metric="sum(amount, partition_by=[])",
+                                     alias="gt")]),
+            SlayerQuery(population="s1", extensions=[DatasetExtension(dataset="s1")],
                         dimensions=["region"],
-                        measures=[ModelMeasure(formula="sum(m)", name="ms"),
-                                  ModelMeasure(formula="max(gt)", name="gts")]),
+                        metrics=[QueryMetric(metric="sum(m)", alias="ms"),
+                                  QueryMetric(metric="max(gt)", alias="gts")]),
         ]
         resp = await engine.execute(stages)
         by = rows_by(resp, "s1.region")
@@ -233,12 +231,12 @@ class TestNonFinalStage:
         stages = [
             q(name="s1", dimensions=["region", BAND],
               time_dimensions=month_td(),
-              measures=[ModelMeasure(formula="sum(amount)", name="m"),
-                        ModelMeasure(formula="sum(amount, window='1y')",
-                                     name="w")]),
-            SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
+              metrics=[QueryMetric(metric="sum(amount)", alias="m"),
+                        QueryMetric(metric="sum(amount, window='1y')",
+                                     alias="w")]),
+            SlayerQuery(population="s1", extensions=[DatasetExtension(dataset="s1")],
                         dimensions=["region"],
-                        measures=[ModelMeasure(formula="max(w)", name="wm")]),
+                        metrics=[QueryMetric(metric="max(w)", alias="wm")]),
         ]
         resp = await engine.execute(stages)
         by = rows_by(resp, "s1.region")
@@ -260,10 +258,10 @@ class TestNestingIsCardinalityNeutral:
             dims = ["region", BAND] if with_band else ["region"]
             return [
                 q(name="s1", dimensions=dims,
-                  measures=[ModelMeasure(formula="sum(amount)", name="bt")]),
-                SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
+                  metrics=[QueryMetric(metric="sum(amount)", alias="bt")]),
+                SlayerQuery(population="s1", extensions=[DatasetExtension(dataset="s1")],
                             dimensions=["region"],
-                            measures=[ModelMeasure(formula="sum(bt)", name="t")]),
+                            metrics=[QueryMetric(metric="sum(bt)", alias="t")]),
             ]
 
         with_attach = await engine.execute(stages(True))

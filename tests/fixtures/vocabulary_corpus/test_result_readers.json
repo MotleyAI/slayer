@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_result_readers.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  }
+ ]
+}

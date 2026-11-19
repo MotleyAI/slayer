@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_join_graph.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 18,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -150,7 +150,7 @@ def _run_recording(run: Runner, client: SlayerSQLClient, *, timeout: int = 120) 
         ("snowflake", "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 120"),
     ],
 )
-def test_timeout_statement_precedes_query(monkeypatch, run: Runner, ds_type: str | None, timeout_sql: str) -> None:
+def test_timeout_statement_precedes_query(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str | None, timeout_sql: str) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     result, record = _run_recording(run, _client(ds_type))
@@ -161,14 +161,14 @@ def test_timeout_statement_precedes_query(monkeypatch, run: Runner, ds_type: str
     assert _skipped(record) == []
 
 
-def test_mariadb_sends_no_max_execution_time(monkeypatch, run: Runner) -> None:
+def test_mariadb_sends_no_max_execution_time(monkeypatch: pytest.MonkeyPatch, run: Runner) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     run(_client("mariadb"), SQL, 120)
     assert not any("max_execution_time" in s for s in rec.log)
 
 
-def test_duckdb_sends_no_timeout_and_warns_nothing(monkeypatch, run: Runner) -> None:
+def test_duckdb_sends_no_timeout_and_warns_nothing(monkeypatch: pytest.MonkeyPatch, run: Runner) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     result, record = _run_recording(run, _client("duckdb"))
@@ -179,7 +179,7 @@ def test_duckdb_sends_no_timeout_and_warns_nothing(monkeypatch, run: Runner) -> 
 
 
 @pytest.mark.parametrize("ds_type", ["postgres", None, "totally_unknown"])
-def test_postgres_rejected_timeout_runs_without_rollback(monkeypatch, run: Runner, ds_type: str | None) -> None:
+def test_postgres_rejected_timeout_runs_without_rollback(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str | None) -> None:
     rec = Recorder(
         reject_prefix="SET statement_timeout",
         reject_exc=sqlalchemy.exc.ProgrammingError("SET", {}, Exception("unrecognized configuration parameter")),
@@ -197,7 +197,7 @@ def test_postgres_rejected_timeout_runs_without_rollback(monkeypatch, run: Runne
     ("ds_type", "prefix"),
     [("mysql", "SET max_execution_time"), ("mariadb", "SET max_statement_time"), ("snowflake", "ALTER SESSION")],
 )
-def test_fail_closed_rejected_timeout_raises(monkeypatch, run: Runner, ds_type: str, prefix: str) -> None:
+def test_fail_closed_rejected_timeout_raises(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str, prefix: str) -> None:
     rec = Recorder(
         reject_prefix=prefix,
         reject_exc=sqlalchemy.exc.OperationalError(prefix, {}, Exception("(1193, \"Unknown system variable\")")),
@@ -222,7 +222,7 @@ def _probe(client: SlayerSQLClient) -> tuple[dict[str, ResultColumnType], list[w
 
 
 def _numeric_x(types: dict[str, ResultColumnType]) -> bool:
-    return list(types) == ["x"] and types["x"].type in (DataType.INT, DataType.DOUBLE)
+    return list(types) == ["x"] and types["x"].type in (DataType.INTEGER, DataType.FLOAT)
 
 
 @pytest.mark.parametrize(
@@ -237,7 +237,7 @@ def _numeric_x(types: dict[str, ResultColumnType]) -> bool:
         ("duckdb", []),
     ],
 )
-def test_probe_timeout_before_read_only_guard(monkeypatch, ds_type: str | None, prelude: list[str]) -> None:
+def test_probe_timeout_before_read_only_guard(monkeypatch: pytest.MonkeyPatch, ds_type: str | None, prelude: list[str]) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     types, record = _probe(_client(ds_type))
@@ -249,7 +249,7 @@ def test_probe_timeout_before_read_only_guard(monkeypatch, ds_type: str | None, 
 
 
 @pytest.mark.parametrize("ds_type", ["postgres", "totally_unknown", None])
-def test_probe_rejected_timeout_keeps_guard_and_warns(monkeypatch, ds_type: str | None) -> None:
+def test_probe_rejected_timeout_keeps_guard_and_warns(monkeypatch: pytest.MonkeyPatch, ds_type: str | None) -> None:
     rec = Recorder(
         reject_prefix="SET statement_timeout",
         reject_exc=sqlalchemy.exc.ProgrammingError("SET", {}, Exception("unrecognized configuration parameter")),
@@ -264,7 +264,7 @@ def test_probe_rejected_timeout_keeps_guard_and_warns(monkeypatch, ds_type: str 
     ]
 
 
-def test_probe_fail_closed_rejected_timeout_raises(monkeypatch) -> None:
+def test_probe_fail_closed_rejected_timeout_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     rec = Recorder(
         reject_prefix="SET max_execution_time",
         reject_exc=sqlalchemy.exc.OperationalError("SET", {}, Exception("(1193, \"Unknown system variable\")")),

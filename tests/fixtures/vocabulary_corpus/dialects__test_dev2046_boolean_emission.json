@@ -1,0 +1,22 @@
+{
+ "source": "tests/dialects/test_dev2046_boolean_emission.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "trues",
+    "formula": "COUNT(CASE WHEN {value} THEN 1 END)"
+   },
+   "new": {
+    "name": "trues",
+    "expression": "COUNT(CASE WHEN {value} THEN 1 END)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  }
+ ]
+}

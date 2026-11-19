@@ -1,0 +1,119 @@
+{
+ "source": "tests/test_dev1827_value_key_traversal.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 596,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 599,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 600,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 601,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 610,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 613,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 614,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 688,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 691,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 692,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 693,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 702,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 704,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 717,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 719,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 731,
+   "reason": "not fully literal"
+  }
+ ]
+}

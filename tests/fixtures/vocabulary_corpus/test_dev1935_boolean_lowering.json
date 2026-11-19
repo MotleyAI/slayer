@@ -1,0 +1,91 @@
+{
+ "source": "tests/test_dev1935_boolean_lowering.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "csp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "csp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend, partition_by=tier)",
+    "name": "pt"
+   },
+   "new": {
+    "expression": "sum(spend, partition_by=tier)",
+    "name": "pt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 385,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 408,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 483,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 497,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 578,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 588,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 600,
+   "reason": "not fully literal"
+  }
+ ]
+}

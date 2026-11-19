@@ -1,0 +1,58 @@
+{
+ "source": "tests/test_dev2021_profiling.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "min(amount)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "min(amount)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  }
+ ]
+}

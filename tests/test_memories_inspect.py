@@ -16,12 +16,12 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -81,33 +81,33 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="x")
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             data_source="mydb",
             sql_table="orders",
-            columns=[
-                Column(
-                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+            fields=[
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
-            measures=[
-                ModelMeasure(formula="sum(amount) / count(*)", name="aov"),
+            metrics=[
+                DatasetMetric(expression="sum(amount) / count(*)", name="aov"),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             data_source="mydb",
             sql_table="customers",
-            columns=[
-                Column(
-                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+            fields=[
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                Column(name="name", sql="name", type=DataType.TEXT),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
     )
@@ -143,7 +143,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "Learnings" in result or "learnings" in result.lower()
         assert "orders.amount in cents not dollars" in result
@@ -156,14 +156,14 @@ class TestInspectModelLearningsSection:
             learning="example query",
             entities=["mydb.orders.amount"],
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount)")],
+                population="orders",
+                metrics=[QueryMetric(metric="sum(amount)")],
             ),
         )
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "## Learnings" not in result
         assert "example query" not in result
@@ -178,7 +178,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "customer-only note" not in result
         # Pin the section header itself — an empty "## Learnings"
@@ -191,7 +191,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "## Learnings" not in result
         assert "## learnings" not in result.lower()
@@ -206,7 +206,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "aov measure excludes refunded orders" in result
 
@@ -220,7 +220,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "orders is the canonical revenue table" in result
 
@@ -235,8 +235,8 @@ class TestInspectModelLearningsSection:
             mcp_server,
             name="inspect",
             arguments={
-                "entity_type": "model", "reference": "mydb.orders", "compact": False,
-                "sections": ["columns"],
+                "entity_type": "dataset", "reference": "mydb.orders", "compact": False,
+                "sections": ["fields"],
             },
         )
         assert "amount is in cents" not in result
@@ -254,7 +254,7 @@ class TestInspectModelLearningsSection:
             mcp_server,
             name="inspect",
             arguments={
-                "entity_type": "model", "reference": "mydb.orders",
+                "entity_type": "dataset", "reference": "mydb.orders",
                 "format": "json",
                 "sections": ["learnings"],
                 "compact": False,

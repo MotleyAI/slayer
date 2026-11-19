@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.engine.plan import plan_query
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import (
-    ModelMeasure,
     SPEND_ALL_BY_TIER,
     SPEND_BASIC_BY_TIER,
-    ambiguity_models,
+    ambiguity_datasets,
     bundle,
     make_exec_engine,
     q,
@@ -33,19 +34,19 @@ async def exec_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_amb(request):
-    async for engine in make_exec_engine(request, models=ambiguity_models()):
+    async for engine in make_exec_engine(request, datasets=ambiguity_datasets()):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
 class TestGraphExecutes:
     async def test_unfiltered_cross_model_by_tier(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=["customers.tier"],
-                                      measures=[M, CM]))
+                                      metrics=[M, CM]))
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",), ("silver",), ("bronze",), (None,)}
         for tier, spend in SPEND_ALL_BY_TIER.items():
@@ -58,8 +59,8 @@ class TestGraphExecutes:
         """strong plans: the m:1 hop is proven, the filter applies inline."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.plans.level = 'basic'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.plans.level = 'basic'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",), ("silver",)}
@@ -72,21 +73,21 @@ class TestGraphExecutes:
         fails closed. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
-            tq(measures=[ModelMeasure(formula="sum(reviews.stars)", name="rv")]),
+            tq(metrics=[QueryMetric(metric="sum(reviews.stars)", alias="rv")]),
         )
         assert float(resp.data[0]["tickets.rv"]) == pytest.approx(11.0)
         ambiguous = tq(
-            measures=[ModelMeasure(formula="sum(agents.score)", name="sm")],
+            metrics=[QueryMetric(metric="sum(agents.score)", alias="sm")],
         )
-        with pytest.raises(AmbiguousJoinPathError):
+        with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(ambiguous)
 
 
 def test_planner_entry_point_builds_the_producer() -> None:
     planned = plan_query(
-        query=q(dimensions=["customers.tier"], measures=[CM],
-                filters=["channel = 'app'"]),
+        query=q(dimensions=["customers.tier"], metrics=[CM],
+                filter=["channel = 'app'"]),
         bundle=bundle(),
     )
     assert len(planned.regroup_attach_plans) == 1
-    assert planned.regroup_attach_plans[0].producer_root_model == "customers"
+    assert planned.regroup_attach_plans[0].producer_root_dataset == "customers"

@@ -12,8 +12,9 @@ from collections.abc import Generator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.mcp.server import create_mcp_server
+from slayer.search import service as svc_mod
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -33,7 +34,7 @@ async def _call(mcp_server, *, name: str, arguments: dict) -> str:
 
 @pytest.mark.asyncio
 async def test_edit_datasource_calls_refresh_datasource_with_new_description(
-    yaml_storage: YAMLStorage, monkeypatch,
+    yaml_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pin the refresh-on-edit contract: ``SearchService.refresh_datasource``
     must be called with the post-edit description so the persisted
@@ -44,25 +45,23 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
         database=":memory:",
         description="old description",
     ))
-    await yaml_storage.save_model(SlayerModel(
+    await yaml_storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="warehouse",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     ))
 
     refresh_calls: list = []
 
-    from slayer.search import service as svc_mod
-
     original = svc_mod.SearchService.refresh_datasource
 
-    async def recording_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
+    async def recording_refresh(self, *, name, datasets, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
         refresh_calls.append({
             "name": name,
             "description": description,
-            "model_count": len(models),
+            "model_count": len(datasets),
         })
         return await original(
-            self, name=name, models=models, description=description,
+            self, name=name, datasets=datasets, description=description,
         )
 
     monkeypatch.setattr(
@@ -89,7 +88,7 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
 
 @pytest.mark.asyncio
 async def test_edit_datasource_refresh_failure_is_best_effort(
-    yaml_storage: YAMLStorage, monkeypatch,
+    yaml_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Round-7 (CodeRabbit): when ``refresh_datasource`` raises after the
     save commits, the tool reports partial success rather than failing
@@ -99,9 +98,7 @@ async def test_edit_datasource_refresh_failure_is_best_effort(
         description="old",
     ))
 
-    from slayer.search import service as svc_mod
-
-    async def raising_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine
+    async def raising_refresh(self, *, name, datasets, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine
         raise RuntimeError("simulated embedding outage")
 
     monkeypatch.setattr(
@@ -125,7 +122,7 @@ async def test_edit_datasource_refresh_failure_is_best_effort(
 
 @pytest.mark.asyncio
 async def test_edit_datasource_no_refresh_when_description_unchanged(
-    yaml_storage: YAMLStorage, monkeypatch,
+    yaml_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The refresh is a no-op when description didn't actually change —
     saves a litellm round-trip on inert edits."""
@@ -135,9 +132,8 @@ async def test_edit_datasource_no_refresh_when_description_unchanged(
     ))
 
     refresh_calls: list = []
-    from slayer.search import service as svc_mod
 
-    async def recording_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine
+    async def recording_refresh(self, *, name, datasets, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine
         refresh_calls.append(name)
         return []
 
@@ -158,16 +154,14 @@ async def test_edit_datasource_no_refresh_when_description_unchanged(
 
 @pytest.mark.asyncio
 async def test_edit_datasource_unknown_no_refresh(
-    yaml_storage: YAMLStorage, monkeypatch,
+    yaml_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Editing a missing datasource returns a friendly error AND does
     not trigger any refresh call (otherwise we'd embed nothing under
     the unknown name)."""
     refresh_calls: list = []
 
-    from slayer.search import service as svc_mod
-
-    async def recording_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
+    async def recording_refresh(self, *, name, datasets, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
         refresh_calls.append(name)
         return []
 

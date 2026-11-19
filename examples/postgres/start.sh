@@ -1,5 +1,5 @@
 #!/bin/sh
-# Ingest models from Postgres and start the SLayer API server.
+# Ingest datasets from Postgres and start the SLayer API server.
 set -e
 
 python -c "
@@ -16,10 +16,10 @@ ds = DatasourceConfig(
     database='slayer_demo', username='slayer', password='slayer',
 )
 run_sync(storage.save_datasource(ds))
-models = engine.ingest_sync(ds, schema='public')
-for m in models:
-    run_sync(storage.save_model(m))
-print(f'Ingested {len(models)} models')
+datasets = engine.ingest_sync(ds, schema='public')
+for d in datasets:
+    run_sync(storage.save_dataset(d))
+print(f'Ingested {len(datasets)} datasets')
 "
 
 exec slayer serve --host 0.0.0.0 --port 5143 --storage /data

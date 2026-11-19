@@ -29,65 +29,66 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormat
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def orders_model(*, data_source: str = "test", flag_format: Optional[NumberFormat] = None) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, data_source: str = "test", flag_format: Optional[NumberFormat] = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.DATE),
-            Column(name="amount", type=DataType.INT),
-            Column(name="flag", type=DataType.BOOLEAN, format=flag_format),
-            Column(name="big_order", type=DataType.BOOLEAN, sql="amount > 15"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATE),
+            DatasetField(name="amount", datatype=DataType.INTEGER),
+            DatasetField(name="flag", datatype=DataType.BOOLEAN, format=flag_format),
+            DatasetField(name="big_order", datatype=DataType.BOOLEAN, sql="amount > 15"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="vip", type=DataType.BOOLEAN),
-            Column(name="score", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="vip", datatype=DataType.BOOLEAN),
+            DatasetField(name="score", datatype=DataType.INTEGER),
         ],
     )
 
 
-def dev2046_models(*, data_source: str = "test") -> List[SlayerModel]:
-    return [orders_model(data_source=data_source), customers_model(data_source=data_source)]
+def dev2046_datasets(*, data_source: str = "test") -> List[SlayerDataset]:
+    return [orders_dataset(data_source=data_source), customers_dataset(data_source=data_source)]
 
 
 # --------------------------------------------------------------------------- #
 # Query shorthands
 # --------------------------------------------------------------------------- #
-def m(formula: str, name: str = "v") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def month_td() -> List[TimeDimension]:
-    return [TimeDimension(dimension="ordered_at", granularity=TimeGranularity.MONTH)]
+    return [TimeDimension(field="ordered_at", granularity=TimeGranularity.MONTH)]
 
 
 # --------------------------------------------------------------------------- #
@@ -184,7 +185,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev2046_models()) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev2046_datasets()) as (engine, _):
         yield engine
 
 
@@ -201,19 +202,19 @@ def as_bool(value) -> Optional[bool]:
     return None if value is None else bool(value)
 
 
-def by_dim(resp, dim: str, name: str = "v", *, model: str = "orders") -> dict:
-    out = {r[f"{model}.{dim}"]: r[f"{model}.{name}"] for r in resp.data}
+def by_dim(resp, dim: str, name: str = "v", *, dataset: str = "orders") -> dict:
+    out = {r[f"{dataset}.{dim}"]: r[f"{dataset}.{name}"] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {dim}"
     return out
 
 
-def by_month(resp, name: str = "v") -> dict:
+def by_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "ordered_at" in k)
     out = {month_key(r[tkey]): r[f"orders.{name}"] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one month"
     return out
 
 
-def single(resp, name: str = "v", *, model: str = "orders"):
+def single(resp, name: str = "v", *, dataset: str = "orders"):
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{model}.{name}"]
+    return resp.data[0][f"{dataset}.{name}"]

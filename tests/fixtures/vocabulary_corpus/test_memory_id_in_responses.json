@@ -1,0 +1,20 @@
+{
+ "source": "tests/test_memory_id_in_responses.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -119,7 +119,7 @@ def test_non_sql_dialects_only_metric_is_unconverted(db: Path) -> None:
     reason = " ".join(e.message for e in mentions(result, "mdx_metric"))
     assert "MDX" in reason
     assert "DAX" in reason
-    assert {x.name for x in by_name(result)["orders"].measures} == {"total"}
+    assert {x.name for x in by_name(result)["orders"].metrics} == {"total"}
 
 
 def test_non_sql_dialect_only_field_is_reported(db: Path) -> None:
@@ -147,7 +147,7 @@ def test_expression_with_neither_form_is_reported(db: Path) -> None:
     assert "empty_field" not in visible(orders)
     assert mentions(result, "empty_field")
     assert unconverted(result, "empty_metric")
-    assert {x.name for x in orders.measures} == {"total"}
+    assert {x.name for x in orders.metrics} == {"total"}
 
 
 # ─────────────────────── rendering for the target ──────────────────────────
@@ -168,20 +168,20 @@ async def test_portable_function_executes_on_target(
     db = seed_db(directory=tmp_path, dialect=dialect)
     result = convert(db=db, docs=documents(_orders(field)), db_dialect=dialect)
     assert not mentions(result, field["name"])
-    assert await scalar(result=result, db=db, model="orders", formula=formula, dialect=dialect) == expected
+    assert await scalar(result=result, db=db, dataset="orders", expression=formula, dialect=dialect) == expected
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "sqlite"])
 async def test_dateadd_executes_on_target(tmp_path: Path, dialect: str) -> None:
     db = seed_db(directory=tmp_path, dialect=dialect)
     result = convert(db=db, docs=documents(_orders(f("next_day", "DATEADD(day, 1, ordered_on)"))), db_dialect=dialect)
-    value = await scalar(result=result, db=db, model="orders", formula="max(next_day)", dialect=dialect)
+    value = await scalar(result=result, db=db, dataset="orders", expression="max(next_day)", dialect=dialect)
     assert str(value)[:10] == "2026-02-02"
 
 
 async def test_startswith_executes_on_duckdb(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("is_comp", "STARTSWITH(status, 'comp')"))))
-    assert await scalar(result=result, db=db, model="orders", formula="sum(is_comp)") == 2
+    assert await scalar(result=result, db=db, dataset="orders", expression="sum(is_comp)") == 2
 
 
 @pytest.fixture
@@ -240,7 +240,7 @@ def test_target_native_syntax_the_default_reader_rejects(db: Path) -> None:
 
 async def test_quoted_mixed_case_identifier(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("legal_type", '"LegalType"'))))
-    assert await scalar(result=result, db=db, model="orders", formula="count_distinct(legal_type)") == 2
+    assert await scalar(result=result, db=db, dataset="orders", expression="count_distinct(legal_type)") == 2
 
 
 def test_unparseable_expression_is_reported(db: Path) -> None:
@@ -253,5 +253,5 @@ def test_unparseable_expression_is_reported(db: Path) -> None:
 
 async def test_vendor_entry_rendered_for_the_target(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f_dialects("pos", ("SNOWFLAKE", "IFF(amount > 6, amount, 0)")))))
-    assert await scalar(result=result, db=db, model="orders", formula="sum(pos)") == 17
+    assert await scalar(result=result, db=db, dataset="orders", expression="sum(pos)") == 17
 

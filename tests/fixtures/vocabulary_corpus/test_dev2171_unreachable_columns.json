@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev2171_unreachable_columns.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  }
+ ]
+}

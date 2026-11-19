@@ -1,0 +1,94 @@
+{
+ "source": "tests/test_model_access_reports.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "pub",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "pub",
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "spend"
+     }
+    ],
+    "order": [
+     {
+      "column": "spend",
+      "direction": "desc"
+     },
+     {
+      "column": "staff_id",
+      "direction": "asc"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "spend"
+     }
+    ],
+    "order": [
+     {
+      "field": "spend",
+      "direction": "desc"
+     },
+     {
+      "field": "staff_id",
+      "direction": "asc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "dimensions": [
+     {
+      "expression": "amount * 2",
+      "name": "dbl"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "dimensions": [
+     {
+      "field": "amount * 2",
+      "alias": "dbl"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  }
+ ]
+}

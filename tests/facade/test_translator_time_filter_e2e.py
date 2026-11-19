@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
@@ -19,13 +19,13 @@ from slayer.storage.yaml_storage import YAMLStorage
 duckdb = pytest.importorskip("duckdb")
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -45,7 +45,7 @@ def _seed(db_path: str) -> None:
 
 
 def _translated_query(sql: str) -> SlayerQuery:
-    catalog = build_catalog(models_by_datasource={"test": [_orders()]})
+    catalog = build_catalog(datasets_by_datasource={"test": [_orders()]})
     result = translate(sql=sql, catalog=catalog, dialect="postgres")
     assert isinstance(result, QueryResult), result
     return result.query
@@ -58,7 +58,7 @@ async def _execute_facade_sql(tmp_path, sql: str):
     await storage.save_datasource(
         DatasourceConfig(name="test", type="duckdb", database=db_path)
     )
-    await storage.save_model(_orders())
+    await storage.save_dataset(_orders())
     engine = SlayerQueryEngine(storage=storage)
     return await engine.execute(_translated_query(sql))
 

@@ -29,7 +29,7 @@ def stamp(value: Any) -> Any:
 
 
 async def dimension(engine: SlayerQueryEngine, expr: str) -> dict[int, Any]:
-    resp = await engine.execute(q(dimensions=["id", {"expression": expr, "name": "v"}]))
+    resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "v"}]))
     return {int(k): stamp(v) for k, v in by_key(resp, "id").items()}
 
 
@@ -56,7 +56,7 @@ async def test_non_temporal_input_is_null(sqlite_engine: SlayerQueryEngine) -> N
 
 
 async def test_timestamp_cast_in_a_filter(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(dimensions=["id"], filters=["created_at <= CAST('2024-04-10' AS TIMESTAMP)"]))
+    resp = await engine.execute(q(dimensions=["id"], filter=["created_at <= CAST('2024-04-10' AS TIMESTAMP)"]))
     assert ids(resp) == {1}
 
 

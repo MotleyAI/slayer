@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
@@ -22,7 +22,6 @@ from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER_STATUS,
     AMOUNT_TOTAL,
     GOLD_SPEND_BY_REGION,
-    ModelMeasure,
     SPEND_BY_REGION,
     SPEND_BY_TIER,
     SPEND_TOTAL,
@@ -38,8 +37,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 #: spend over the distinct customers reaching each segment label.
 SPEND_BY_LABEL = {"Alpha": 160.0, "Beta": 150.0, None: 40.0}
 
@@ -64,7 +63,7 @@ class TestTargetRootedExactness:
         """c1 and c3 each have two orders; a fanned join would inflate
         gold to 320 and the grand total to 510 (``SPEND_FANNED``)."""
         dialect, engine = exec_backend
-        query = q(dimensions=["customers.tier"], measures=[M, CM])
+        query = q(dimensions=["customers.tier"], metrics=[M, CM])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",), ("silver",), ("bronze",), (None,)}
@@ -80,7 +79,7 @@ class TestTargetRootedExactness:
         """customers → regions is PK-proven: exact per-region spend, NULL
         grain key included (null-safe attach)."""
         dialect, engine = exec_backend
-        query = q(dimensions=["customers.regions.name"], measures=[M, CM])
+        query = q(dimensions=["customers.regions.name"], metrics=[M, CM])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.regions.name")
         assert set(by) == {("North",), ("South",), (None,)}
@@ -90,8 +89,8 @@ class TestTargetRootedExactness:
 
     async def test_adding_cm_measure_is_cardinality_neutral(self, exec_backend):
         _, engine = exec_backend
-        solo = await engine.execute(q(dimensions=["customers.tier"], measures=[M]))
-        both = await engine.execute(q(dimensions=["customers.tier"], measures=[M, CM]))
+        solo = await engine.execute(q(dimensions=["customers.tier"], metrics=[M]))
+        both = await engine.execute(q(dimensions=["customers.tier"], metrics=[M, CM]))
         solo_by = rows_by(solo, "orders.customers.tier")
         both_by = rows_by(both, "orders.customers.tier")
         assert set(solo_by) == set(both_by)
@@ -104,7 +103,7 @@ class TestBroadcast:
         """orders.status is unreachable from customers over safe hops: every
         status row carries the grand total; the grain is unchanged."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"], measures=[M, CM], to_many_handling="broadcast")
+        query = q(dimensions=["status"], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status")
         assert set(by) == {("ok",), ("new",)}
@@ -117,7 +116,7 @@ class TestBroadcast:
         """customers → segments has unproven arity: each metric aggregates the
         distinct rows associated with each label, never a join-multiplied value."""
         dialect, engine = exec_backend
-        query = q(dimensions=["customers.segments.label"], measures=[M, CM])
+        query = q(dimensions=["customers.segments.label"], metrics=[M, CM])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.segments.label")
         assert {label for (label,) in by} == set(SPEND_BY_LABEL)
@@ -131,7 +130,7 @@ class TestBroadcast:
         """Under explicit broadcast neither metric joins through the unproven hop:
         both broadcast their grand total instead of double-counting."""
         dialect, engine = exec_backend
-        query = q(dimensions=["customers.segments.label"], measures=[M, CM], to_many_handling="broadcast")
+        query = q(dimensions=["customers.segments.label"], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.segments.label")
         assert set(by) == {("Alpha",), ("Beta",), (None,)}
@@ -143,7 +142,7 @@ class TestBroadcast:
     async def test_mixed_grain_broadcasts_only_the_unsafe_member(self, exec_backend):
         """S(A) = {tier}: exact per tier, broadcast across status."""
         dialect, engine = exec_backend
-        query = q(dimensions=["customers.tier", "status"], measures=[M, CM], to_many_handling="broadcast")
+        query = q(dimensions=["customers.tier", "status"], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.tier", "orders.status")
         assert set(by) == set(AMOUNT_BY_TIER_STATUS)
@@ -161,7 +160,7 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(formula="sum(customers.gold_spend)", name="gs")],
+            metrics=[QueryMetric(metric="sum(customers.gold_spend)", alias="gs")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.regions.name")
@@ -173,8 +172,8 @@ class TestProducerShapes:
     async def test_order_only_cm_orders_rows(self, exec_backend):
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier"], measures=[M],
-            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
+            dimensions=["customers.tier"], metrics=[M],
+            order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
         )
         resp = await engine.execute(query)
         tiers = [r["orders.customers.tier"] for r in resp.data]
@@ -187,8 +186,8 @@ class TestProducerShapes:
         """A hidden (filter-only) cross-model aggregate use."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier"], measures=[M],
-            filters=["sum(customers.spend) > 100"],
+            dimensions=["customers.tier"], metrics=[M],
+            filter=["sum(customers.spend) > 100"],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.tier")
@@ -202,8 +201,8 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend) / sum(amount)", name="ratio",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend) / sum(amount)", alias="ratio",
             )],
         )
         resp = await engine.execute(query)

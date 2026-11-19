@@ -84,5 +84,5 @@ def test_demo_database_detected_by_bundled_layout(database: str, demo: bool) -> 
     ("sum(", [], []),
 ])
 def test_function_names_classified(formula: str, transforms: list[str], aggregations: list[str]) -> None:
-    found = features.query_features({"source_model": "m", "measures": [formula]})
+    found = features.query_features({"population": "m", "metrics": [formula]})
     assert (sorted(found.transforms), sorted(found.aggregations)) == (sorted(transforms), sorted(aggregations))

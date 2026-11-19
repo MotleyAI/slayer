@@ -14,7 +14,7 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.inspect.service import InspectService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
@@ -27,9 +27,9 @@ DS = "tagds"
 SECRET_TAG = "zz-secret-tag"
 
 
-def _model(name: str = "items", **extra) -> SlayerModel:
-    return SlayerModel(name=name, sql_table="items", data_source=DS,
-                       columns=[Column(name="id", type=DataType.INT, primary_key=True)], **extra)
+def _dataset(name: str = "items", **extra) -> SlayerDataset:
+    return SlayerDataset(name=name, sql_table="items", data_source=DS,
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)], **extra)
 
 
 @pytest.fixture(params=["yaml", "sqlite"])
@@ -42,15 +42,15 @@ async def storage(request) -> AsyncGenerator[StorageBackend]:
 
 class TestField:
     def test_defaults_to_untagged(self) -> None:
-        assert _model().access_tags == []
+        assert _dataset().access_tags == []
 
     def test_a_new_model_is_at_the_current_version(self) -> None:
         assert CURRENT_VERSIONS["SlayerModel"] >= 15
-        assert _model().version == CURRENT_VERSIONS["SlayerModel"]
+        assert _dataset().version == CURRENT_VERSIONS["SlayerModel"]
 
     def test_json_round_trip(self) -> None:
-        model = _model(access_tags=["hr", "HR Team"], hidden=True)
-        again = SlayerModel.model_validate(json.loads(model.model_dump_json()))
+        model = _dataset(access_tags=["hr", "HR Team"], hidden=True)
+        again = SlayerDataset.model_validate(json.loads(model.model_dump_json()))
         assert again.access_tags == ["hr", "HR Team"]
         assert again.hidden is True
 
@@ -58,7 +58,7 @@ class TestField:
 class TestStorage:
     @pytest.mark.parametrize("tags", [["hr"], ["HR Team"], ["hr", "fin"]])
     async def test_tags_round_trip(self, storage: StorageBackend, tags: list[str]) -> None:
-        await storage.save_model(_model(access_tags=tags))
+        await storage.save_dataset(_dataset(access_tags=tags))
         assert (await must_get(storage, "items", DS)).access_tags == tags
 
 
@@ -79,41 +79,41 @@ class TestMcp:
         return await mcp_text(storage, tool, **arguments)
 
     async def test_create_model_sets_tags(self, storage: StorageBackend) -> None:
-        out = await self.call(storage, "create_model", name="items", sql_table="items", data_source=DS,
-                              columns=[{"name": "id", "type": "number", "primary_key": True}], access_tags=["hr"])
+        out = await self.call(storage, "create_dataset", name="items", sql_table="items", data_source=DS,
+                              fields=[{"name": "id", "datatype": "number", "primary_key": True}], access_tags=["hr"])
         assert "Error" not in out, out
         assert (await must_get(storage, "items", DS)).access_tags == ["hr"]
 
     async def test_create_query_backed_model_sets_tags(self, storage: StorageBackend) -> None:
-        await storage.save_model(_model())
-        out = await self.call(storage, "create_model", name="item_count", access_tags=["hr"],
-                              query={"source_model": "items", "measures": [{"formula": "count(*)", "name": "n"}]})
+        await storage.save_dataset(_dataset())
+        out = await self.call(storage, "create_dataset", name="item_count", access_tags=["hr"],
+                              query={"population": "items", "metrics": [{"metric": "count(*)", "alias": "n"}]})
         assert "Error" not in out, out
         assert (await must_get(storage, "item_count", DS)).access_tags == ["hr"]
 
     async def test_edit_model_changes_tags(self, storage: StorageBackend) -> None:
-        await storage.save_model(_model(access_tags=["hr"]))
-        out = await self.call(storage, "edit_model", model_name="items", access_tags=["hr", "HR Team"])
+        await storage.save_dataset(_dataset(access_tags=["hr"]))
+        out = await self.call(storage, "edit_dataset", dataset_name="items", access_tags=["hr", "HR Team"])
         assert "Error" not in out, out
         assert (await must_get(storage, "items", DS)).access_tags == ["hr", "HR Team"]
 
     async def test_edit_model_without_tags_keeps_them(self, storage: StorageBackend) -> None:
-        await storage.save_model(_model(access_tags=["hr"]))
-        await self.call(storage, "edit_model", model_name="items", description="d")
+        await storage.save_dataset(_dataset(access_tags=["hr"]))
+        await self.call(storage, "edit_dataset", dataset_name="items", description="d")
         assert (await must_get(storage, "items", DS)).access_tags == ["hr"]
 
 
 class TestInspectAndSearch:
     async def test_inspect_shows_tags(self, storage: StorageBackend) -> None:
-        await storage.save_model(_model(access_tags=[SECRET_TAG]))
+        await storage.save_dataset(_dataset(access_tags=[SECRET_TAG]))
         for fmt in ("markdown", "json"):
             out = await InspectService(storage=storage).inspect(
-                reference=f"{DS}.items", entity_type="model", compact=False, format=fmt,
+                reference=f"{DS}.items", entity_type="dataset", compact=False, format=fmt,
             )
             assert SECRET_TAG in out
 
     async def test_tags_are_not_search_text(self, storage: StorageBackend) -> None:
-        await storage.save_model(_model(access_tags=[SECRET_TAG]))
+        await storage.save_dataset(_dataset(access_tags=[SECRET_TAG]))
         response = await SearchService(storage=storage).search(question="items", compact=False, max_results=20)
         assert response.results
         assert all(SECRET_TAG not in hit.text for hit in response.results)
@@ -129,22 +129,22 @@ class TestRestAndClient:
 
     def test_rest_create_and_get(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, storage = rest
-        resp = client.post("/models", json=_model(access_tags=["hr"]).model_dump(mode="json"))
+        resp = client.post("/datasets", json=_dataset(access_tags=["hr"]).model_dump(mode="json"))
         assert resp.status_code == 200, resp.text
         assert run_sync(must_get(storage, "items", DS)).access_tags == ["hr"]
-        got = client.get("/models/items", params={"data_source": DS})
+        got = client.get("/datasets/items", params={"data_source": DS})
         assert got.status_code == 200
         assert got.json()["access_tags"] == ["hr"]
 
     def test_rest_update_changes_tags(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, storage = rest
-        run_sync(storage.save_model(_model(access_tags=["hr"])))
-        resp = client.put("/models/items", json=_model(access_tags=["fin"]).model_dump(mode="json"))
+        run_sync(storage.save_dataset(_dataset(access_tags=["hr"])))
+        resp = client.put("/datasets/items", json=_dataset(access_tags=["fin"]).model_dump(mode="json"))
         assert resp.status_code == 200, resp.text
         assert run_sync(must_get(storage, "items", DS)).access_tags == ["fin"]
 
     async def test_local_client_reads_tags(self, storage: StorageBackend) -> None:
-        await storage.save_model(_model(access_tags=["hr"]))
-        model = await SlayerClient(storage=storage).get_model("items", data_source=DS)
+        await storage.save_dataset(_dataset(access_tags=["hr"]))
+        model = await SlayerClient(storage=storage).get_dataset("items", data_source=DS)
         assert model is not None
         assert model.access_tags == ["hr"]

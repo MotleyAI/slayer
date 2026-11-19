@@ -1,11 +1,11 @@
-"""DEV-1892 task 1.4 — the folded pick path renders every value-source shape
-identically, whether or not a parameter rides alongside: a to-one-path measure
+"""The folded pick path renders every value-source shape identically, whether
+or not a parameter rides alongside: a to-one-path measure
 filter and ``count(*)`` keep their executed values (fold regression), a
 cross-model to-one derived source carries a weight, and a definition default
 anchored on the owner binds the TARGET column even when the host shares the bare
 name.
 
-Spec: queries/attribution-modes — "Association eligibility and input handling";
+Spec: queries/attribution-modes — "Association eligibility, input handling and row identity";
 queries/semantics — "Definition-default parameter follows the same rule".
 """
 
@@ -13,19 +13,20 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
     ASSOC_COUNT_BY_STATUS,
-    ModelMeasure,
     assoc_q,
     make_exec_engine,
     status_key,
 )
 from tests._dev1892_fixtures import (
     ASSOC_WSUM_BY_STATUS,
-    expr_default_name_models,
-    shared_default_name_models,
-    toone_default_models,
-    toone_filter_models,
+    expr_default_name_datasets,
+    shared_default_name_datasets,
+    toone_default_datasets,
+    toone_filter_datasets,
 )
 
 #: wsum3 weight default = to-one path regions.pop, picked once per entity:
@@ -49,30 +50,30 @@ async def assoc_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def toone_filter_engine(request):
-    async for engine in make_exec_engine(request, models=toone_filter_models()):
+    async for engine in make_exec_engine(request, datasets=toone_filter_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def shared_default_engine(request):
-    async for engine in make_exec_engine(request, models=shared_default_name_models()):
+    async for engine in make_exec_engine(request, datasets=shared_default_name_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def expr_default_engine(request):
-    async for engine in make_exec_engine(request, models=expr_default_name_models()):
+    async for engine in make_exec_engine(request, datasets=expr_default_name_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def toone_default_engine(request):
-    async for engine in make_exec_engine(request, models=toone_default_models()):
+    async for engine in make_exec_engine(request, datasets=toone_default_datasets()):
         yield engine
 
 
-def _vals(resp, measure):
-    return {k[0]: v[measure] for k, v in status_key(resp).items()}
+def _vals(resp, metric):
+    return {k[0]: v[metric] for k, v in status_key(resp).items()}
 
 
 class TestBaseValueFoldRegression:
@@ -80,7 +81,7 @@ class TestBaseValueFoldRegression:
         """The fold's no-value (``count(*)``) branch is unchanged."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="count(customers.*)", name="nc")]))
+            metrics=[QueryMetric(metric="count(customers.*)", alias="nc")]))
         vals = _vals(resp, "orders.nc")
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(vals[status]) == n
@@ -91,7 +92,7 @@ class TestBaseValueFoldRegression:
         fold."""
         resp = await toone_filter_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(customers.north_spend)", name="ns")]))
+            metrics=[QueryMetric(metric="sum(customers.north_spend)", alias="ns")]))
         vals = _vals(resp, "orders.ns")
         for status, spend in NORTH_SPEND_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(spend)
@@ -104,9 +105,9 @@ class TestParameterOverSourceShapes:
         term."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="weighted_avg(customers.regions.pop, weight=customers.spend)",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric="weighted_avg(customers.regions.pop, weight=customers.spend)",
+                alias="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in WAVG_POPVAL_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -117,7 +118,7 @@ class TestParameterOverSourceShapes:
         owner-anchored default, never the host's per-order value."""
         resp = await shared_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum(customers.spend)", alias="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -127,7 +128,7 @@ class TestParameterOverSourceShapes:
         and evaluates once per entity — SUM(spend * spend)."""
         resp = await expr_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum2(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum2(customers.spend)", alias="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -138,7 +139,7 @@ class TestParameterOverSourceShapes:
         SUM(spend * pop)."""
         resp = await toone_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum3(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum3(customers.spend)", alias="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM3_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)

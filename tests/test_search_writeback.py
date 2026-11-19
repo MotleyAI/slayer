@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
@@ -27,6 +27,14 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.base import resolve_storage
 from slayer.storage.sqlite_conn import transaction
+from slayer.storage.base import StorageBackend
+from typing import Any
+
+
+def _stored_col(dataset: SlayerDataset, name: str) -> DatasetField:
+    col = dataset.get_field(name)
+    assert col is not None
+    return col
 
 
 @pytest.fixture
@@ -50,7 +58,7 @@ def sqlite_table_setup(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
+async def test_ingest_does_not_profile_columns(sqlite_table_setup: tuple[StorageBackend, Any]) -> None:
     """Ingest is fast: it no longer fires a per-column full-table scan.
     Column samples are populated lazily on the first ``inspect`` of the
     column (or explicitly via ``slayer datasources refresh-samples``)."""
@@ -63,11 +71,12 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
     finally:
         await engine.aclose()
         engine.close()
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
+    assert loaded is not None
     # Columns are ingested but NOT profiled — samples stay unpopulated.
-    assert loaded.get_column("amount").sampled is None
-    assert loaded.get_column("status").sampled is None
-    assert loaded.get_column("status").sampled_values is None
+    assert _stored_col(loaded, "amount").sampled is None
+    assert _stored_col(loaded, "status").sampled is None
+    assert _stored_col(loaded, "status").sampled_values is None
 
 
 # ---------------------------------------------------------------------------
@@ -76,19 +85,19 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
 
 
 @pytest.mark.asyncio
-async def test_refresh_samples_via_engine_helper(sqlite_table_setup) -> None:
+async def test_refresh_samples_via_engine_helper(sqlite_table_setup: tuple[StorageBackend, Any]) -> None:
     """The CLI subcommand wires through to a single engine helper that can
     be exercised directly."""
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     ))
     engine = SlayerQueryEngine(storage=storage)
@@ -96,8 +105,9 @@ async def test_refresh_samples_via_engine_helper(sqlite_table_setup) -> None:
         engine=engine, storage=storage, data_source="ds",
     )
     assert errors == [], f"Unexpected refresh errors: {errors}"
-    loaded = await storage.get_model("orders", data_source="ds")
-    assert loaded.get_column("amount").sampled is not None
+    loaded = await storage.get_dataset("orders", data_source="ds")
+    assert loaded is not None
+    assert _stored_col(loaded, "amount").sampled is not None
 
 
 # ---------------------------------------------------------------------------
@@ -107,66 +117,68 @@ async def test_refresh_samples_via_engine_helper(sqlite_table_setup) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_model_column_change_recomputes_only_that_column(
-    sqlite_table_setup,
+    sqlite_table_setup: tuple[StorageBackend, Any],
 ) -> None:
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="amount", type=DataType.DOUBLE, sampled="OLD AMOUNT"),
-            Column(name="status", type=DataType.TEXT, sampled="OLD STATUS"),
+        fields=[
+            DatasetField(name="amount", datatype=DataType.FLOAT, sampled="OLD AMOUNT"),
+            DatasetField(name="status", datatype=DataType.STRING, sampled="OLD STATUS"),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     await handle_edit_refresh(
         engine=engine,
         storage=storage,
         data_source="ds",
-        model_name="orders",
-        changed_columns={"amount"},
-        model_level_change=False,
+        dataset_name="orders",
+        changed_fields={"amount"},
+        dataset_level_change=False,
     )
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
+    assert loaded is not None
     # amount was recomputed (no longer "OLD AMOUNT")
-    assert loaded.get_column("amount").sampled != "OLD AMOUNT"
-    assert loaded.get_column("amount").sampled is not None
+    assert _stored_col(loaded, "amount").sampled != "OLD AMOUNT"
+    assert _stored_col(loaded, "amount").sampled is not None
     # status was untouched
-    assert loaded.get_column("status").sampled == "OLD STATUS"
+    assert _stored_col(loaded, "status").sampled == "OLD STATUS"
 
 
 @pytest.mark.asyncio
 async def test_edit_model_model_level_change_recomputes_all_columns(
-    sqlite_table_setup,
+    sqlite_table_setup: tuple[StorageBackend, Any],
 ) -> None:
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="amount", type=DataType.DOUBLE, sampled="OLD AMOUNT"),
-            Column(name="status", type=DataType.TEXT, sampled="OLD STATUS"),
+        fields=[
+            DatasetField(name="amount", datatype=DataType.FLOAT, sampled="OLD AMOUNT"),
+            DatasetField(name="status", datatype=DataType.STRING, sampled="OLD STATUS"),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     await handle_edit_refresh(
         engine=engine,
         storage=storage,
         data_source="ds",
-        model_name="orders",
-        changed_columns=set(),
-        model_level_change=True,
+        dataset_name="orders",
+        changed_fields=set(),
+        dataset_level_change=True,
     )
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
+    assert loaded is not None
     # Both columns recomputed.
-    assert loaded.get_column("amount").sampled != "OLD AMOUNT"
-    assert loaded.get_column("status").sampled != "OLD STATUS"
+    assert _stored_col(loaded, "amount").sampled != "OLD AMOUNT"
+    assert _stored_col(loaded, "status").sampled != "OLD STATUS"
 
 
 # ---------------------------------------------------------------------------
@@ -176,45 +188,46 @@ async def test_edit_model_model_level_change_recomputes_all_columns(
 
 @pytest.mark.asyncio
 async def test_inspect_model_writes_back_on_sampled_miss(
-    sqlite_table_setup, monkeypatch,
+    sqlite_table_setup: tuple[StorageBackend, Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),  # NOSONAR(S125) — sampled=None test annotation
-            Column(name="status", type=DataType.TEXT),    # NOSONAR(S125) — sampled=None test annotation
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),  # NOSONAR(S125) — sampled=None test annotation
+            DatasetField(name="status", datatype=DataType.STRING),    # NOSONAR(S125) — sampled=None test annotation
         ],
     ))
     mcp = create_mcp_server(storage=storage)
     # First call: sampled is None → live profile + writeback
     result = await mcp.call_tool("inspect", {
-        "entity_type": "model", "reference": "ds.orders", "compact": False, "sections": ["columns"],
+        "entity_type": "dataset", "reference": "ds.orders", "compact": False, "sections": ["fields"],
     })
     assert result is not None
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
+    assert loaded is not None
     # After the call, sampled should be populated for non-PK columns.
-    assert loaded.get_column("amount").sampled is not None
-    assert loaded.get_column("status").sampled is not None
+    assert _stored_col(loaded, "amount").sampled is not None
+    assert _stored_col(loaded, "status").sampled is not None
 
 
 @pytest.mark.asyncio
 async def test_inspect_model_reads_cached_sampled_without_recompute(
-    sqlite_table_setup, monkeypatch,
+    sqlite_table_setup: tuple[StorageBackend, Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When Column.sampled is set, the model inspect uses it and runs no profiling query."""
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="amount", type=DataType.DOUBLE, sampled="cached value"),
+        fields=[
+            DatasetField(name="amount", datatype=DataType.FLOAT, sampled="cached value"),
         ],
     ))
     profile_call_count = {"n": 0}
@@ -230,6 +243,6 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
 
     mcp = create_mcp_server(storage=storage)
     await mcp.call_tool("inspect", {
-        "entity_type": "model", "reference": "ds.orders", "compact": False, "sections": ["columns"],
+        "entity_type": "dataset", "reference": "ds.orders", "compact": False, "sections": ["fields"],
     })
     assert profile_call_count["n"] == 0

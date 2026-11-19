@@ -10,7 +10,7 @@ import inspect
 from pydantic import TypeAdapter
 
 from slayer.core.deprecation import deprecated_input
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.warnings import AnySlayerWarning, DeprecatedInputWarning
 from slayer.engine.query_engine import SlayerResponse
@@ -59,22 +59,22 @@ class TestAttribution:
     def test_direct_construction(self) -> None:
         with recorded() as caught:
             line = _next_line()
-            SlayerQuery(source_model="orders", strict=True)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
+            SlayerQuery(population="orders", strict=True)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
         [w] = deprecations(caught)
         assert (w.filename, w.lineno) == (__file__, line)
 
     def test_model_validate(self) -> None:
         with recorded() as caught:
             line = _next_line()
-            SlayerQuery.model_validate({"source_model": "orders", "strict": True})
+            SlayerQuery.model_validate({"population": "orders", "strict": True})
         [w] = deprecations(caught)
         assert (w.filename, w.lineno) == (__file__, line)
 
     def test_nested_inside_a_model(self) -> None:
-        stage = {"source_model": "orders", "measures": ["count(*)"], "strict": True}
+        stage = {"population": "orders", "metrics": ["count(*)"], "strict": True}
         with recorded() as caught:
             line = _next_line()
-            SlayerModel(name="m", source_queries=[stage])
+            SlayerDataset.model_validate({"name": "m", "source_queries": [stage]})
         [w] = deprecations(caught)
         assert (w.filename, w.lineno) == (__file__, line)
 
@@ -87,7 +87,7 @@ class TestAttribution:
 
     def test_payload_names_strict_its_replacement_and_removal(self) -> None:
         with recorded() as caught:
-            SlayerQuery(source_model="orders", strict=True)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
+            SlayerQuery(population="orders", strict=True)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
         [w] = deprecations(caught)
         payload = payload_of(w)
         assert "strict" in payload.old
@@ -96,7 +96,7 @@ class TestAttribution:
 
     def test_a_false_payload_says_to_drop_strict(self) -> None:
         with recorded() as caught:
-            SlayerQuery(source_model="orders", strict=False)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
+            SlayerQuery(population="orders", strict=False)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
         [w] = deprecations(caught)
         payload = payload_of(w)
         assert "strict" in payload.old

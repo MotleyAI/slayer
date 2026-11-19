@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_search_description_indexed.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  }
+ ]
+}

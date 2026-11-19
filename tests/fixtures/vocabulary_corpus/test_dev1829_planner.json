@@ -1,0 +1,259 @@
+{
+ "source": "tests/test_dev1829_planner.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[])",
+    "name": "g"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[])",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "rsum"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "rsum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(amount, partition_by=region)",
+    "name": "ravg"
+   },
+   "new": {
+    "expression": "avg(amount, partition_by=region)",
+    "name": "ravg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "rsum"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "rsum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(amount, partition_by=region)",
+    "name": "ravg"
+   },
+   "new": {
+    "expression": "avg(amount, partition_by=region)",
+    "name": "ravg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "b"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "b"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "rr"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "rr"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[region, channel])",
+    "name": "rc"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[region, channel])",
+    "name": "rc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "lst"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "lst"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  }
+ ],
+ "skipped": []
+}

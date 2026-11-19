@@ -8,11 +8,11 @@ from typing import Literal
 
 import pytest
 
-from slayer.core.errors import DuplicateMeasureNameError, NameCollisionError
+from slayer.core.errors import DuplicateMetricNameError, NameCollisionError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     LiteralKey,
     Phase,
@@ -24,7 +24,9 @@ from slayer.core.refs import auto_name_from_expression, key_display
 from slayer.engine.compile.projection import ValueRegistry
 from slayer.sql.naming import canonical_aggregate_alias, expression_source_leaf
 
-from tests._dev2070_fixtures import dev2070_models, make_exec_engine
+from tests._dev2070_fixtures import dev2070_datasets, make_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerResponse
 
 _CLOCK_2024_03 = datetime(2024, 3, 20, 12, 0)
 _CLOCK_2025_02 = datetime(2025, 2, 15, 12, 0)
@@ -38,19 +40,19 @@ async def engine(request):
 
 
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery.model_validate(kw)
 
 
-async def only_value(engine, formula: str, key: str, **kw):
+async def only_value(engine: SlayerQueryEngine, expression: str, key: str, **kw):
     """Execute ``formula`` as the query's one measure; assert its key, return the single value."""
-    resp = await engine.execute(q(measures=[formula], **kw))
+    resp = await engine.execute(q(metrics=[expression], **kw))
     assert key in resp.columns, resp.columns
     assert len(resp.data) == 1, resp.data
     return resp.data[0][key]
 
 
-def by(resp, *, dim: str, key: str) -> dict:
+def by(resp: SlayerResponse, *, dim: str, key: str) -> dict:
     assert key in resp.columns, resp.columns
     return {r[dim]: r[key] for r in resp.data}
 
@@ -64,7 +66,7 @@ REPRO_KEY = "regions.customers.orders.iif_order_date_2025_01_01_1_0_sum"
 
 async def test_repro_date_comparison_inside_a_scalar_call(engine) -> None:
     for _ in range(2):
-        resp = await engine.execute(q(source_model="regions", dimensions=["name"], measures=[REPRO]))
+        resp = await engine.execute(q(population="regions", dimensions=["name"], metrics=[REPRO]))
         assert by(resp, dim="regions.name", key=REPRO_KEY) == {"north": 1, "south": 1}
 
 
@@ -115,11 +117,11 @@ NESTED_TRANSFORM_KEY = (
 
 
 @pytest.mark.parametrize("partition", ["[status, ordered_at]", "[ordered_at, status]"])
-async def test_nested_transform_operand(engine, partition) -> None:
+async def test_nested_transform_operand(engine: SlayerQueryEngine, partition) -> None:
     formula = f"sum(cumsum(sum(amount, partition_by={partition})) - 1)"
-    month = {"dimension": "ordered_at", "granularity": "month"}
+    month = {"field": "ordered_at", "granularity": "month"}
     for _ in range(2):
-        resp = await engine.execute(q(measures=[formula], time_dimensions=[month]))
+        resp = await engine.execute(q(metrics=[formula], time_dimensions=[month]))
         key = next(c for c in resp.columns if c != "orders.ordered_at")
         assert key == NESTED_TRANSFORM_KEY
         assert not any(t in key for t in _INTERNAL_TOKENS), key
@@ -174,7 +176,7 @@ async def test_nested_constituent_keeps_its_spelling(engine) -> None:
 # --------------------------------------------------------------------------- #
 async def test_equal_and_not_equal_date_comparisons_collide_loudly(engine) -> None:
     eq, ne = "sum(iif(ordered_at == '2024-02', 1, 0))", "sum(iif(ordered_at != '2024-02', 1, 0))"
-    query = q(measures=[eq, ne])
+    query = q(metrics=[eq, ne])
     with pytest.raises(NameCollisionError, match="(?s)Rename") as exc:
         await engine.execute(query)
     assert eq in str(exc.value)
@@ -183,22 +185,22 @@ async def test_equal_and_not_equal_date_comparisons_collide_loudly(engine) -> No
 
 def _outer_over_inner(*, locus: Literal["target", "host"]) -> AggregateKey:
     inner = AggregateKey(
-        source=ColumnKey(leaf="amount"), agg="sum", locus=locus,
-        partition_keys=Grain.of([ColumnKey(leaf="status")]),
+        source=FieldKey(leaf="amount"), agg="sum", locus=locus,
+        partition_keys=Grain.of([FieldKey(leaf="status")]),
     )
-    return AggregateKey(source=ArithmeticKey(op="*", operands=(ColumnKey(leaf="amount"), inner)), agg="sum")
+    return AggregateKey(source=ArithmeticKey(op="*", operands=(FieldKey(leaf="amount"), inner)), agg="sum")
 
 
 def test_constituents_differing_only_in_locus_never_share_a_slot() -> None:
     target, host = _outer_over_inner(locus="target"), _outer_over_inner(locus="host")
     assert target != host
-    alias = canonical_aggregate_alias(target, profile="stage_formula")
-    assert alias == canonical_aggregate_alias(host, profile="stage_formula")
+    alias = canonical_aggregate_alias(target, profile="stage_expression")
+    assert alias == canonical_aggregate_alias(host, profile="stage_expression")
     assert alias is not None
 
     public = ValueRegistry()
     public.intern(key=target, declared_name=alias, public_name=alias, phase=Phase.AGGREGATE)
-    with pytest.raises(DuplicateMeasureNameError):
+    with pytest.raises(DuplicateMetricNameError):
         public.intern(key=host, declared_name=alias, public_name=alias, phase=Phase.AGGREGATE)
 
     hidden = ValueRegistry()
@@ -213,20 +215,20 @@ def test_constituents_differing_only_in_locus_never_share_a_slot() -> None:
 # --------------------------------------------------------------------------- #
 _REFERENCED = [
     pytest.param(
-        {"source_model": "regions", "dimensions": ["name"],
-         "measures": ["sum(iif(customers.orders.order_date >= '2024-02-01', 1, 0))"]},
+        {"population": "regions", "dimensions": ["name"],
+         "metrics": ["sum(iif(customers.orders.order_date >= '2024-02-01', 1, 0))"]},
         "name", "customers.orders.iif_order_date_2024_02_01_1_0_sum",
         {"north": 3, "south": 2}, id="pathed-date-comparison",
     ),
     pytest.param(
-        {"source_model": "orders", "dimensions": ["status"],
-         "measures": ["sum(iif(ordered_at >= 'last month', 1, 0))"]},
+        {"population": "orders", "dimensions": ["status"],
+         "metrics": ["sum(iif(ordered_at >= 'last month', 1, 0))"]},
         "status", "iif_ordered_at_last_month_1_0_sum",
         {"paid": 3, "pending": 2}, id="relative-point",
     ),
     pytest.param(
-        {"source_model": "orders", "dimensions": ["customers.regions.name"],
-         "measures": ["sum(customers.spend - 1)"]},
+        {"population": "orders", "dimensions": ["customers.regions.name"],
+         "metrics": ["sum(customers.spend - 1)"]},
         "customers.regions.name", "customers.spend_1_sum",
         {"north": 148, "south": 199}, id="pathed-operand",
     ),
@@ -239,17 +241,17 @@ def _rows(resp, *, root: str, dim: str, key: str) -> list:
 
 @pytest.mark.parametrize(("query", "dim", "key", "values"), _REFERENCED)
 async def test_derived_key_in_filter(engine, query, dim, key, values) -> None:
-    root, top = query["source_model"], max(values.values())
-    resp = await engine.execute(SlayerQuery.model_validate({**query, "filters": [f"{key} >= {top}"]}))
+    root, top = query["population"], max(values.values())
+    resp = await engine.execute(SlayerQuery.model_validate({**query, "filter": [f"{key} >= {top}"]}))
     assert _rows(resp, root=root, dim=dim, key=key) == [(k, v) for k, v in values.items() if v == top]
 
 
 @pytest.mark.parametrize(("query", "dim", "key", "values"), _REFERENCED)
 async def test_derived_key_in_order(engine, query, dim, key, values) -> None:
-    root = query["source_model"]
+    root = query["population"]
     for direction, reverse in (("asc", False), ("desc", True)):
         resp = await engine.execute(SlayerQuery.model_validate(
-            {**query, "order": [{"column": key, "direction": direction}]},
+            {**query, "order": [{"field": key, "direction": direction}]},
         ))
         assert _rows(resp, root=root, dim=dim, key=key) == sorted(
             values.items(), key=lambda kv: kv[1], reverse=reverse,
@@ -260,7 +262,7 @@ async def test_derived_key_in_order(engine, query, dim, key, values) -> None:
 async def test_derived_key_from_a_downstream_stage(engine, query, dim, key, values) -> None:
     flat_dim, flat_key = dim.replace(".", "__"), key.replace(".", "__")
     inner = SlayerQuery.model_validate({**query, "name": "s"})
-    outer = SlayerQuery.model_validate({"source_model": "s", "dimensions": [flat_dim], "measures": [f"max({flat_key})"]})
+    outer = SlayerQuery.model_validate({"population": "s", "dimensions": [flat_dim], "metrics": [f"max({flat_key})"]})
     resp = await engine.execute([inner, outer])
     assert {r[f"s.{flat_dim}"]: r[f"s.{flat_key}_max"] for r in resp.data} == values
 
@@ -268,16 +270,16 @@ async def test_derived_key_from_a_downstream_stage(engine, query, dim, key, valu
 @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
 @pytest.mark.parametrize("spelling", ["buyer__spend_1_sum", "customers__spend_1_sum"])
 async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, spelling) -> None:
-    models = dev2070_models()
-    models[0].joins[0].name = "buyer"
+    models = dev2070_datasets()
+    models[0].relationships[0].name = "buyer"
     inner = SlayerQuery.model_validate({
-        "source_model": "orders", "name": "s",
-        "dimensions": ["buyer.regions.name"], "measures": ["sum(buyer.spend - 1)"],
+        "population": "orders", "name": "s",
+        "dimensions": ["buyer.regions.name"], "metrics": ["sum(buyer.spend - 1)"],
     })
     outer = SlayerQuery.model_validate({
-        "source_model": "s", "dimensions": ["buyer__regions__name"], "measures": [f"max({spelling})"],
+        "population": "s", "dimensions": ["buyer__regions__name"], "metrics": [f"max({spelling})"],
     })
-    async for e in make_exec_engine(dialect, models=models):
+    async for e in make_exec_engine(dialect, datasets=models):
         resp = await e.execute([inner, outer])
         assert by(resp, dim="s.buyer__regions__name", key="s.buyer__spend_1_sum_max") == {"north": 148, "south": 199}
 
@@ -285,8 +287,8 @@ async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, sp
 # --------------------------------------------------------------------------- #
 # The leaf derivation
 # --------------------------------------------------------------------------- #
-def _col(*path: str) -> ColumnKey:
-    return ColumnKey(path=tuple(path[:-1]), leaf=path[-1])
+def _col(*path: str) -> FieldKey:
+    return FieldKey(path=tuple(path[:-1]), leaf=path[-1])
 
 
 class _AlienKey(_FrozenKey, frozen=True):

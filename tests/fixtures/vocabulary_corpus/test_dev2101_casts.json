@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_dev2101_casts.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id"
+   },
+   "new": {
+    "field": "id"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "TRY_CAST(code AS INT)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "TRY_CAST(code AS INT)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": []
+}

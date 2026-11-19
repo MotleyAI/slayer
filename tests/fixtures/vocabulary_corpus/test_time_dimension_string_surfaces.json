@@ -1,0 +1,174 @@
+{
+ "source": "tests/test_time_dimension_string_surfaces.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "date_trunc('month', created_at)"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "date_trunc('month', created_at)"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "monthly_rev",
+    "data_source": "test",
+    "source_queries": [
+     {
+      "source_model": "orders",
+      "time_dimensions": [
+       "date_trunc('month', created_at)"
+      ],
+      "measures": [
+       {
+        "formula": "sum(amount)"
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "monthly_rev",
+    "data_source": "test",
+    "source_queries": [
+     {
+      "population": "orders",
+      "time_dimensions": [
+       "date_trunc('month', created_at)"
+      ],
+      "metrics": [
+       {
+        "metric": "sum(amount)"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

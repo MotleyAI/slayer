@@ -1,0 +1,235 @@
+{
+ "source": "tests/test_time_points_exec.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "dimensions": [
+     "code"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "max(ts) >= 'last month'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "dimensions": [
+     "code"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ],
+    "filter": [
+     "max(ts) >= 'last month'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "dimensions": [
+     "code"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "max(ts) < '2024-06'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "dimensions": [
+     "code"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ],
+    "filter": [
+     "max(ts) < '2024-06'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "daily",
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "filters": [
+     "ts = '2025-Q1'"
+    ]
+   },
+   "new": {
+    "population": "daily",
+    "metrics": [
+     {
+      "metric": "sum(rev)",
+      "alias": "r"
+     }
+    ],
+    "filter": [
+     "ts = '2025-Q1'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "dimensions": [
+     "id",
+     "code"
+    ],
+    "filters": [
+     "max(ts, partition_by=[code]) >= 'last month'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "dimensions": [
+     "id",
+     "code"
+    ],
+    "filter": [
+     "max(ts, partition_by=[code]) >= 'last month'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "measures": [
+     {
+      "formula": "count_distinct(date_trunc('month', ts))",
+      "name": "m"
+     }
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "metrics": [
+     {
+      "metric": "count_distinct(date_trunc('month', ts))",
+      "alias": "m"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "dimensions": [
+     {
+      "expression": "date_trunc('year', ts)",
+      "name": "y"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "dimensions": [
+     {
+      "field": "date_trunc('year', ts)",
+      "alias": "y"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "measures": [
+     {
+      "formula": "count_distinct(date_trunc('month', code))",
+      "name": "m"
+     }
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "metrics": [
+     {
+      "metric": "count_distinct(date_trunc('month', code))",
+      "alias": "m"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "dimensions": [
+     "id",
+     {
+      "expression": "date_add('2024-01-31 10:15', 1, 'month')",
+      "name": "v"
+     }
+    ],
+    "filters": [
+     "id = 1"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "dimensions": [
+     "id",
+     {
+      "field": "date_add('2024-01-31 10:15', 1, 'month')",
+      "alias": "v"
+     }
+    ],
+    "filter": [
+     "id = 1"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 382,
+   "reason": "not fully literal"
+  }
+ ]
+}

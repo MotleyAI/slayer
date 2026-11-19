@@ -1,0 +1,664 @@
+{
+ "source": "tests/test_dev1748_first_last_matrix.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, shipped_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, shipped_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, shipped_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, shipped_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(big_amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(big_amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(big_amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(big_amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(big_amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(big_amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(gold_amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(gold_amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(doubled_big)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(doubled_big)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(big_amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(big_amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(big_amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(big_amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, shipped_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, shipped_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, created_at)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "last(amount, created_at)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, shipped_at)",
+    "name": "b"
+   },
+   "new": {
+    "expression": "last(amount, shipped_at)",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, created_alias)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, created_alias)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, created_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, created_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, customers.signup_alias)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, customers.signup_alias)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers.spend)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(customers.spend)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_alias)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_alias)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.deep_opened)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.deep_opened)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(cust_region)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(cust_region)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l1"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l2"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount) - first(amount)",
+    "name": "d"
+   },
+   "new": {
+    "expression": "last(amount) - first(amount)",
+    "name": "d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(last(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "cumsum(last(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "l",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "l",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "last(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "last(amount)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 148,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 779,
+   "reason": "unclassifiable"
+  }
+ ]
+}

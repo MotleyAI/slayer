@@ -49,7 +49,7 @@ from slayer.osi.models import (
 )
 
 # Shared fixtures (calling a ``__``-named builder raises TODAY — the fail signal).
-from tests._dev1743_fixtures import chain_models
+from tests._dev1743_fixtures import chain_datasets
 from tests._engine_helpers import disposable_engine
 from tests._osi_helpers import run_converter
 
@@ -118,11 +118,11 @@ def test_dbt_hidden_regular_model_dunder_name_is_imported(
         ],
     )
     result = run_converter(
-        DbtToSlayerConverter(project=project, data_source=DS, include_hidden_models=True),
+        DbtToSlayerConverter(project=project, data_source=DS, include_hidden_datasets=True),
         datasource=_datasource(sqlite_engine),
     )
 
-    names = {m.name for m in result.models}
+    names = {m.name for m in result.datasets}
     assert "stg_jaffle_shop__orders" in names, (
         f"dunder-named hidden model was dropped instead of imported: {names}"
     )
@@ -152,7 +152,7 @@ def test_dbt_semantic_model_dunder_name_imports() -> None:
         ],
     )
     result = DbtToSlayerConverter(project=project, data_source=DS).convert()
-    names = {m.name for m in result.models}
+    names = {m.name for m in result.datasets}
     assert "stg_jaffle_shop__orders" in names, (
         f"dunder-named semantic model not converted: {names}"
     )
@@ -179,7 +179,7 @@ def test_cube_dunder_name_builds_model() -> None:
         ],
     )])
     result = CubeToSlayerConverter(project=project, data_source=DS).convert()
-    names = {m.name for m in result.models}
+    names = {m.name for m in result.datasets}
     assert "foo__bar" in names, (
         f"dunder-named cube was dropped as a PARSE_ERROR instead of built: {names}"
     )
@@ -209,7 +209,7 @@ def test_osi_dunder_dataset_name_is_accepted(sqlite_engine: sa.Engine) -> None:
         OsiToSlayerConverter(documents=[doc], data_source=DS),
         datasource=_datasource(sqlite_engine),
     )
-    names = {m.name for m in result.models}
+    names = {m.name for m in result.datasets}
     assert "foo__bar" in names, (
         f"dunder-named OSI dataset was skipped as illegal instead of built: {names}"
     )
@@ -239,8 +239,8 @@ def test_osi_walk_join_alias_does_not_split_legacy_dunder_chain(
     make strict (slayer/osi/converter.py ``_walk_join_alias``).
     """
     conv = OsiToSlayerConverter(documents=[], data_source=DS)
-    conv._models = {m.name: m for m in chain_models()}  # orders → customers → regions
-    orders = conv._models["orders"]
+    conv._datasets = {m.name: m for m in chain_datasets()}  # orders → customers → regions
+    orders = conv._datasets["orders"]
 
     resolved = conv._walk_join_alias(host=orders, alias="customers__regions")
     assert resolved is None, (
@@ -277,9 +277,9 @@ def test_invariant_dbt_dimension_filter_lowers_to_one_hop_dotted_ref() -> None:
 
     lowered = convert_dbt_filter(
         filter_str="{{ Dimension('customer_id__status') }} = 'active'",
-        source_model_name="orders",
+        population_name="orders",
         entity_registry=registry,
-        model_entity_names={"order_id": "primary", "customer_id": "foreign"},
+        dataset_entity_names={"order_id": "primary", "customer_id": "foreign"},
         all_semantic_models={"orders": orders, "customers": customers},
     )
     assert lowered == "customers.status = 'active'", lowered

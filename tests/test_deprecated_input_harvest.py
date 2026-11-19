@@ -37,10 +37,10 @@ from tests._deprecated_input_helpers import (
     strict,
 )
 
-STAGE_A = {"name": "a", "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "count(*)", "name": "n"}]}
-STAGE_B = {"name": "b", "source_model": "a", "measures": [{"formula": "sum(n)", "name": "total"}]}
-ROOT_ON_A = {"source_model": "a", "measures": [{"formula": "sum(n)", "name": "grand"}]}
-ROOT_ON_B = {"source_model": "b", "measures": [{"formula": "sum(total)", "name": "grand"}]}
+STAGE_A = {"name": "a", "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]}
+STAGE_B = {"name": "b", "population": "a", "metrics": [{"metric": "sum(n)", "alias": "total"}]}
+ROOT_ON_A = {"population": "a", "metrics": [{"metric": "sum(n)", "alias": "grand"}]}
+ROOT_ON_B = {"population": "b", "metrics": [{"metric": "sum(total)", "alias": "grand"}]}
 
 #: (stages, deprecated_input warnings the run reports)
 STAGED = {
@@ -100,7 +100,7 @@ class TestEngine:
         assert deprecated_in(response.warnings) == [payload]
 
     async def test_runtime_variables_keep_the_report(self, engine: SlayerQueryEngine) -> None:
-        query, payload = _built(strict({**CLEAN, "filters": ["status = '{s}'"]}))
+        query, payload = _built(strict({**CLEAN, "filter": ["status = '{s}'"]}))
         response = await engine.execute(query, variables={"s": "ok"})
         assert deprecated_in(response.warnings) == [payload]
 
@@ -180,7 +180,7 @@ class TestStoredStages:
         _store_strict_stage(engine)
         return engine
 
-    @pytest.mark.parametrize("query", [SAVED, {"source_model": SAVED, "measures": ["sum(n)"]}], ids=["by_name", "as_source"])
+    @pytest.mark.parametrize("query", [SAVED, {"population": SAVED, "metrics": ["sum(n)"]}], ids=["by_name", "as_source"])
     async def test_every_run_reports(self, stored: SlayerQueryEngine, query: Any) -> None:
         for _ in range(2):
             with recorded():

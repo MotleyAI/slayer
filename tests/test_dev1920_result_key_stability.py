@@ -9,10 +9,10 @@ from typing import Any
 
 import pytest
 
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from tests._dev1920_fixtures import FISCAL_QUARTER, StoreFactory, make_store, run  # noqa: F401 — fixture
 
-MONTH = {"dimension": "created_at", "granularity": "month"}
+MONTH = {"field": "created_at", "granularity": "month"}
 
 #: (unnamed measure, its result key).
 MEASURE_KEYS = [
@@ -46,25 +46,25 @@ MEASURE_KEYS = [
 
 #: (query fields, the result keys in order).
 QUERY_KEYS = [
-    pytest.param({"measures": ["cumsum(sum(amount))"], "time_dimensions": [MONTH]},
+    pytest.param({"metrics": ["cumsum(sum(amount))"], "time_dimensions": [MONTH]},
                  ["orders.created_at", "orders.cumsum_amount_sum"], id="transform"),
-    pytest.param({"measures": ["sum(amount, window='30d')"], "time_dimensions": [MONTH]},
+    pytest.param({"metrics": ["sum(amount, window='30d')"], "time_dimensions": [MONTH]},
                  ["orders.created_at", "orders.amount_sum_window_30d"], id="window-kwarg"),
-    pytest.param({"measures": ["sum(amount)"], "dimensions": ["sum(amount, partition_by=region)"]},
+    pytest.param({"metrics": ["sum(amount)"], "dimensions": ["sum(amount, partition_by=region)"]},
                  ["orders.amount_sum_partition_by_region", "orders.amount_sum"], id="partitioned-dimension"),
-    pytest.param({"measures": ["sum(amount)"], "dimensions": ["upper(status)"]},
+    pytest.param({"metrics": ["sum(amount)"], "dimensions": ["upper(status)"]},
                  ["orders.upper_status", "orders.amount_sum"], id="scalar-dimension"),
-    pytest.param({"measures": ["sum(amount)"], "dimensions": ["status || '-' || region"]},
+    pytest.param({"metrics": ["sum(amount)"], "dimensions": ["status || '-' || region"]},
                  ["orders.concat_concat_status_region", "orders.amount_sum"], id="concat-dimension"),
-    pytest.param({"measures": ["sum(amount)"],
+    pytest.param({"metrics": ["sum(amount)"],
                   "dimensions": ["case when sum(amount, partition_by=customer_id) > 50 then 'high' else 'other' end"]},
                  ["orders.iif_amount_sum_partition_by_002eb04b_gh_other", "orders.amount_sum"],
                  id="hashed-dimension"),
-    pytest.param({"measures": ["sum(amount)"], "dimensions": ["date_trunc('month', created_at)"]},
+    pytest.param({"metrics": ["sum(amount)"], "dimensions": ["date_trunc('month', created_at)"]},
                  ["orders.created_at", "orders.amount_sum"], id="date-trunc-dimension"),
-    pytest.param({"measures": ["sum(amount)"], "time_dimensions": ["date_trunc('month', created_at)"]},
+    pytest.param({"metrics": ["sum(amount)"], "time_dimensions": ["date_trunc('month', created_at)"]},
                  ["orders.created_at", "orders.amount_sum"], id="date-trunc-time-dimension"),
-    pytest.param({"measures": ["sum(amount)"], "dimensions": ["date_trunc('fiscal_quarter', created_at)"]},
+    pytest.param({"metrics": ["sum(amount)"], "dimensions": ["date_trunc('fiscal_quarter', created_at)"]},
                  ["orders.created_at", "orders.amount_sum"], id="custom-granularity-dimension"),
 ]
 
@@ -81,13 +81,13 @@ DIMENSION_NAMES = [
 
 async def _keys(factory: StoreFactory, fields: dict[str, Any]) -> list[str]:
     storage = await factory(granularities=[FISCAL_QUARTER])
-    resp = await run(storage, {"source_model": "orders", **fields})
+    resp = await run(storage, {"population": "orders", **fields})
     return resp.columns
 
 
 @pytest.mark.parametrize(("measure", "key"), MEASURE_KEYS)
 async def test_measure_key(make_store: StoreFactory, measure: str, key: str) -> None:  # noqa: F811
-    assert await _keys(make_store, {"measures": [measure], "variables": {"k": 2}}) == [key]
+    assert await _keys(make_store, {"metrics": [measure], "variables": {"k": 2}}) == [key]
 
 
 @pytest.mark.parametrize(("fields", "keys"), QUERY_KEYS)
@@ -97,7 +97,7 @@ async def test_query_keys(make_store: StoreFactory, fields: dict, keys: list[str
 
 @pytest.mark.parametrize(("expression", "name"), DIMENSION_NAMES)
 def test_computed_dimension_auto_name(expression: str, name: str) -> None:
-    assert ComputedDimension(expression=expression).name == name
-    [dim] = SlayerQuery.model_validate({"source_model": "orders", "dimensions": [expression]}).dimensions or []
-    assert isinstance(dim, ComputedDimension)
+    assert QueryDimension(field=expression).name == name
+    [dim] = SlayerQuery.model_validate({"population": "orders", "dimensions": [expression]}).dimensions or []
+    assert dim.ref is None
     assert dim.name == name

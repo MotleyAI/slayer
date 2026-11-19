@@ -23,14 +23,14 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import (
     ingest_datasource_idempotent,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import EditModelDelete, validate_datasource
+from slayer.live_schema.schema_drift import EditDatasetDelete, validate_datasource
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient, SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
@@ -40,20 +40,20 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
-    contractors_model,
+    contractors_dataset,
     contractors_statements,
-    lib_model,
+    lib_dataset,
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
-from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
-from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._dev2137_fixtures import as_list, assignments_dataset, assignments_statements, check_lists, num
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._sql_mode_retype_fixtures import (
     check_query_carries_finding,
     check_reingest_retypes,
     check_validation_finding,
     sql_shapes,
-    stale_sql_model,
+    stale_sql_dataset,
 )
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 from tests._reserved_alias_probe import (
@@ -61,6 +61,7 @@ from tests._reserved_alias_probe import (
     keyword_universe,
     unquoted_alias_failures,
 )
+from slayer.storage.base import StorageBackend
 
 pytest.importorskip("sqlalchemy_bigquery")
 bigquery = pytest.importorskip("google.cloud.bigquery")
@@ -142,7 +143,7 @@ def _ds_config(dataset_id: str, *, name: str = "bqtest", description: str | None
     )
 
 
-async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerDataset]:
     sql_client = SlayerSQLClient(datasource=ds)
     try:
         return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
@@ -163,37 +164,37 @@ async def client_for(tmp_path: Path) -> AsyncIterator[Callable[[DatasourceConfig
 
 
 @pytest.fixture(scope="module")
-def bq_models(bq_dataset):
+def bq_datasets(bq_dataset) -> tuple[dict[str, SlayerDataset], str]:
     _, dataset_id = bq_dataset
     models = run_sync(_ingest(_ds_config(dataset_id), schema=dataset_id))
     return {m.name: m for m in models}, dataset_id
 
 
 class TestBigQueryCommentIngestion:
-    def test_column_descriptions_imported(self, bq_models) -> None:
-        models, _ = bq_models
-        cols = {c.name: c for c in models["orders"].columns}
+    def test_column_descriptions_imported(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
+        models, _ = bq_datasets
+        cols = {c.name: c for c in models["orders"].fields}
         assert cols["id"].description == "Order id"
         assert cols["amount"].description == "Order amount in USD"
         assert cols["status"].description is None
 
-    def test_table_description_imported(self, bq_models) -> None:
-        models, _ = bq_models
+    def test_table_description_imported(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
+        models, _ = bq_datasets
         assert models["orders"].description == "All orders"
         assert models["plain"].description is None
 
-    def test_record_column_description(self, bq_models) -> None:
-        models, _ = bq_models
-        cols = {c.name: c for c in models["orders"].columns}
+    def test_record_column_description(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
+        models, _ = bq_datasets
+        cols = {c.name: c for c in models["orders"].fields}
         assert cols["payload"].description == "Structured payload"
         # Flattened RECORD subfields (dotted names) never become columns.
         assert not any("." in name for name in cols)
 
-    def test_types_sanity(self, bq_models) -> None:
-        models, _ = bq_models
-        cols = {c.name: c for c in models["orders"].columns}
-        assert cols["id"].type is DataType.INT
-        assert cols["amount"].type is DataType.DOUBLE
+    def test_types_sanity(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
+        models, _ = bq_datasets
+        cols = {c.name: c for c in models["orders"].fields}
+        assert cols["id"].datatype is DataType.INTEGER
+        assert cols["amount"].datatype is DataType.FLOAT
 
 
 class TestBigQueryDatasetDescription:
@@ -246,21 +247,21 @@ class TestBigQueryReingest:
             datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
 
-        loaded = await storage.get_model("orders", data_source="bqtest")
-        for c in loaded.columns:
+        loaded = await storage.get_dataset("orders", data_source="bqtest")
+        for c in loaded.fields:
             if c.name == "amount":
                 c.description = None
             if c.name == "status":
                 c.description = "hand-authored"
-        await storage.save_model(loaded)
+        await storage.save_dataset(loaded)
 
         result = await ingest_datasource_idempotent(
             datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
-        addition = next(a for a in result.additions if a.model_name == "orders")
-        assert addition.described_columns == ["amount"]
-        loaded2 = await storage.get_model("orders", data_source="bqtest")
-        cols = {c.name: c for c in loaded2.columns}
+        addition = next(a for a in result.additions if a.dataset_name == "orders")
+        assert addition.described_fields == ["amount"]
+        loaded2 = await storage.get_dataset("orders", data_source="bqtest")
+        cols = {c.name: c for c in loaded2.fields}
         assert cols["amount"].description == "Order amount in USD"
         assert cols["status"].description == "hand-authored"
 
@@ -284,11 +285,11 @@ class TestBigQueryReingest:
         result = await ingest_datasource_idempotent(
             datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
-        addition = next(a for a in result.additions if a.model_name == "orders")
-        assert "discount" in addition.new_columns
-        assert "discount" not in addition.described_columns
-        loaded = await storage.get_model("orders", data_source="bqtest")
-        discount = next(c for c in loaded.columns if c.name == "discount")
+        addition = next(a for a in result.additions if a.dataset_name == "orders")
+        assert "discount" in addition.new_fields
+        assert "discount" not in addition.described_fields
+        loaded = await storage.get_dataset("orders", data_source="bqtest")
+        discount = next(c for c in loaded.fields if c.name == "discount")
         assert discount.description == "Discount applied"
 
 
@@ -315,17 +316,17 @@ class TestBigQueryDriftWithSecondDataset:
         models = await ingestion.ingest_datasource_async(ds, client=client_for(ds))
         assert {m.sql_table for m in models} == {"orders", "plain"}
         plain = next(m for m in models if m.name == "plain")
-        plain.columns.append(Column(name="ghost", type=DataType.TEXT))
+        plain.fields.append(DatasetField(name="ghost", datatype=DataType.STRING))
 
-        entries = await validate_datasource(datasource=ds, models=models, client=client_for(ds))
+        entries = await validate_datasource(datasource=ds, datasets=models, client=client_for(ds))
 
         assert [
-            (type(e).__name__, e.model_name, e.remove.columns if isinstance(e, EditModelDelete) else None)
+            (type(e).__name__, e.dataset_name, e.remove.fields if isinstance(e, EditDatasetDelete) else None)
             for e in entries
-        ] == [("EditModelDelete", "plain", ["ghost"])]
+        ] == [("EditDatasetDelete", "plain", ["ghost"])]
 
 
-async def test_default_schema_is_the_url_dataset_without_a_request(bq_dataset, monkeypatch) -> None:
+async def test_default_schema_is_the_url_dataset_without_a_request(bq_dataset, monkeypatch: pytest.MonkeyPatch) -> None:
     bq_client, dataset_id = bq_dataset
     second = f"{_PROJECT}.slayer_test_{uuid.uuid4().hex[:12]}"
     bq_client.create_dataset(bigquery.Dataset(second))
@@ -382,9 +383,9 @@ def bq_dev2120_storage(bq_dataset, tmp_path_factory):
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_dev2120")))
     run_sync(storage.save_datasource(ds))
-    run_sync(storage.save_model(lib_model(data_source=ds.name)))
+    run_sync(storage.save_dataset(lib_dataset(data_source=ds.name)))
     for model in run_sync(_ingest(ds, include_tables=["docs", "events"])):
-        run_sync(storage.save_model(model))
+        run_sync(storage.save_dataset(model))
     return storage
 
 
@@ -393,7 +394,7 @@ async def test_dev2120_library(bq_dev2120_storage) -> None:
 
 
 async def test_try_cast_integer_targets(bq_dev2120_storage) -> None:
-    await check_try_cast_targets(SlayerQueryEngine(storage=bq_dev2120_storage), model=LIB.name)
+    await check_try_cast_targets(SlayerQueryEngine(storage=bq_dev2120_storage), dataset=LIB.name)
 
 
 async def test_dev2120_native_json_column(bq_dev2120_storage) -> None:
@@ -404,21 +405,22 @@ _EVENT_ROWS = ("(1, TIMESTAMP '2024-02-29 10:00:00 UTC', DATETIME '2024-02-29 10
                "(2, TIMESTAMP '2025-06-01 23:30:00 UTC', DATETIME '2025-06-01 23:30:00')")
 
 
-async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage) -> None:
-    model = await bq_dev2120_storage.get_model("events", data_source="bqtest")
-    db_types = {c.name: c.db_type for c in model.columns if c.name in ("zoned_ts", "wall_ts")}
+async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage: StorageBackend) -> None:
+    model = await bq_dev2120_storage.get_dataset("events", data_source="bqtest")
+    assert model is not None
+    db_types = {c.name: c.db_type for c in model.fields if c.name in ("zoned_ts", "wall_ts")}
     assert db_types == {"zoned_ts": "TIMESTAMP", "wall_ts": None}
     engine = SlayerQueryEngine(storage=bq_dev2120_storage)
     for column in ("zoned_ts", "wall_ts"):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "events", "dimensions": ["id", {"expression": f"date_add({column}, 1, 'day')", "name": "v"}],
-            "filters": [f"{column} < now()", f"{column} > date_add(now(), -36500, 'day')"],
+            "population": "events", "dimensions": ["id", {"field": f"date_add({column}, 1, 'day')", "alias": "v"}],
+            "filter": [f"{column} < now()", f"{column} > date_add(now(), -36500, 'day')"],
         }))
         got = {int(r["events.id"]): r["events.v"] for r in resp.data}
         assert got == {1: datetime(2024, 3, 1, 10, 0), 2: datetime(2025, 6, 2, 23, 30)}, (column, resp.sql)
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "events",
-            "dimensions": ["id", column, {"expression": f"date_trunc('month', {column})", "name": "bucket"}],
+            "population": "events",
+            "dimensions": ["id", column, {"field": f"date_trunc('month', {column})", "alias": "bucket"}],
         }))
         rows = {int(r["events.id"]): (r[f"events.{column}"], r["events.bucket"]) for r in resp.data}
         assert rows == {1: (datetime(2024, 2, 29, 10, 0), datetime(2024, 2, 1)),
@@ -431,10 +433,10 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stale_contractors(data_source: str) -> SlayerModel:
+def _stale_contractors(data_source: str) -> SlayerDataset:
     """``contractors`` as stored before list columns: ``skills`` as TEXT."""
-    return SlayerModel(name="stale", sql_table="contractors", data_source=data_source, columns=[
-        Column(name="id", type=DataType.INT, primary_key=True), Column(name="skills", type=DataType.TEXT)])
+    return SlayerDataset(name="stale", sql_table="contractors", data_source=data_source, fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="skills", datatype=DataType.STRING)])
 
 
 @pytest.fixture(scope="module")
@@ -448,9 +450,9 @@ def bq_lists(bq_dataset, tmp_path_factory):
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_lists")))
     run_sync(storage.save_datasource(ds))
-    for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
-                  mixed_numbers_model(data_source=ds.name), _stale_contractors(ds.name)):
-        run_sync(storage.save_model(model))
+    for model in (contractors_dataset(data_source=ds.name), assignments_dataset(data_source=ds.name),
+                  mixed_numbers_dataset(data_source=ds.name), _stale_contractors(ds.name)):
+        run_sync(storage.save_dataset(model))
     return storage, ds
 
 
@@ -464,15 +466,15 @@ async def test_mixed_numeric_lists(bq_lists) -> None:
 
 def test_repeated_field_ingested(bq_lists) -> None:
     (model,) = run_sync(_ingest(bq_lists[1], include_tables=["contractors"]))
-    skills = model.get_column("skills")
+    skills = model.get_field("skills")
     assert skills is not None
-    assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.STRING)
     assert "STRING" in (skills.db_type or "").upper(), skills.db_type
 
 
 async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> None:
     engine = SlayerQueryEngine(storage=bq_lists[0])
-    stale = SlayerQuery.model_validate({"source_model": "stale", "dimensions": ["skills"]})
+    stale = SlayerQuery.model_validate({"population": "stale", "dimensions": ["skills"]})
     with pytest.raises(SchemaDriftError) as info:
         await engine.execute(stale)
     assert "skills" in str(info.value), str(info.value)
@@ -495,14 +497,14 @@ def bq_amounts(bq_dataset, tmp_path_factory):
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_amounts")))
     run_sync(storage.save_datasource(ds))
     for model in run_sync(_ingest(ds, include_tables=["amounts"])):
-        run_sync(storage.save_model(model))
+        run_sync(storage.save_dataset(model))
     return storage
 
 
 async def test_collect_over_exact_numerics(bq_amounts) -> None:
     resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
-        "source_model": "amounts", "dimensions": ["team"],
-        "measures": [{"formula": f"collect({c})", "name": f"{c}_set"} for c in _AMOUNT_COLUMNS],
+        "population": "amounts", "dimensions": ["team"],
+        "metrics": [{"metric": f"collect({c})", "alias": f"{c}_set"} for c in _AMOUNT_COLUMNS],
     }))
     got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_COLUMNS}
            for r in resp.data}
@@ -514,10 +516,10 @@ async def test_collect_over_exact_numerics(bq_amounts) -> None:
 # Last in the module: re-ingest re-types the shared ``stale`` model too. The BigQuery driver reports a
 # REPEATED result column by its element type, so only sqlglot typing finds the list (no untypeable shape).
 @pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores", untypeable=None))
-async def test_sql_mode_list_retype(bq_lists, sql: str, column: str, element: DataType) -> None:
+async def test_sql_mode_list_retype(bq_lists: tuple[StorageBackend, Any], sql: str, column: str, element: DataType) -> None:
     storage, ds = bq_lists
     engine = SlayerQueryEngine(storage=storage)
-    await storage.save_model(stale_sql_model(sql=sql, column=column, data_source=ds.name))
+    await storage.save_dataset(stale_sql_dataset(sql=sql, column=column, data_source=ds.name))
     await check_validation_finding(engine, data_source=ds.name, column=column)
     await check_query_carries_finding(engine, column=column)
     await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)

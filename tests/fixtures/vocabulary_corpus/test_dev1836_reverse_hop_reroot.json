@@ -1,0 +1,162 @@
+{
+ "source": "tests/test_dev1836_reverse_hop_reroot.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "policy_amount",
+    "join_pairs": [
+     [
+      "policy_identifier",
+      "policy_identifier"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "policy_amount",
+    "join_type": "inner",
+    "from_columns": [
+     "policy_identifier"
+    ],
+    "to_columns": [
+     "policy_identifier"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "party",
+    "join_pairs": [
+     [
+      "party_a",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "party",
+    "from_columns": [
+     "party_a"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "party",
+    "join_pairs": [
+     [
+      "party_b",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "party",
+    "from_columns": [
+     "party_b"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(policy_amount.policy_amount)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(policy_amount.policy_amount)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(policy_amount.policy_amount, window='20d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(policy_amount.policy_amount, window='20d')",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  }
+ ]
+}

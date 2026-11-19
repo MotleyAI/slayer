@@ -23,7 +23,7 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
-from tests.search_helpers import call_mcp_tool, seed_warehouse_models
+from tests.search_helpers import call_mcp_tool, seed_warehouse_datasets
 
 import slayer.search.service as svc_mod
 from slayer.api.server import create_app
@@ -31,8 +31,8 @@ from slayer.cli import main
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.search import graph as _search_graph
 from slayer.search.service import (
@@ -53,7 +53,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
     """1 datasource, 2 models, 5 memories (3 learning-only, 2 query-bearing)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
-        await seed_warehouse_models(storage)
+        await seed_warehouse_datasets(storage)
         # learning-only memories
         await storage.save_memory(
             learning="amount_paid is gross of refunds.",
@@ -72,16 +72,16 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             learning="Example: sum of paid amounts.",
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount_paid)")],
+                population="orders",
+                metrics=[QueryMetric(metric="sum(amount_paid)")],
             ),
         )
         await storage.save_memory(
             learning="Example: count of customers.",
             entities=["warehouse.customers.email"],
             query=SlayerQuery(
-                source_model="customers",
-                measures=[ModelMeasure(formula="count(*)")],
+                population="customers",
+                metrics=[QueryMetric(metric="count(*)")],
             ),
         )
         yield storage
@@ -247,7 +247,7 @@ async def test_entity_hits_appear_in_flat_list(service: SearchService) -> None:
         max_results=20,
     )
     entity_kinds = {h.kind for h in response.results if h.kind != "memory"}
-    valid_kinds = {"datasource", "model", "column", "measure", "aggregation"}
+    valid_kinds = {"datasource", "dataset", "field", "metric", "aggregation"}
     assert entity_kinds & valid_kinds, "expected at least one entity hit"
 
 
@@ -353,15 +353,15 @@ async def test_naive_cypher_single_model_label_filters_results(
     service: SearchService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MATCH (n:Model) RETURN n.id AS id filters to model-kind entities only."""
+    """MATCH (n:Dataset) RETURN n.id AS id filters to model-kind entities only."""
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     response = await service.search(
         question="orders amount customers",
-        cypher_filter="MATCH (n:Model) RETURN n.id AS id",
+        cypher_filter="MATCH (n:Dataset) RETURN n.id AS id",
         max_results=20,
     )
     for hit in response.results:
-        assert hit.kind == "model", (
+        assert hit.kind == "dataset", (
             f"expected only model hits; got kind={hit.kind!r}, id={hit.id!r}"
         )
 
@@ -371,15 +371,15 @@ async def test_naive_cypher_multi_label_colon_separated(
     service: SearchService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MATCH (n:Memory:Model) RETURN n.id AS id filters to memory + model."""
+    """MATCH (n:Memory:Dataset) RETURN n.id AS id filters to memory + model."""
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     response = await service.search(
         question="orders amount customers",
-        cypher_filter="MATCH (n:Memory:Model) RETURN n.id AS id",
+        cypher_filter="MATCH (n:Memory:Dataset) RETURN n.id AS id",
         max_results=20,
     )
     for hit in response.results:
-        assert hit.kind in ("memory", "model"), (
+        assert hit.kind in ("memory", "dataset"), (
             f"expected only memory/model hits; got kind={hit.kind!r}"
         )
 
@@ -408,11 +408,11 @@ async def test_naive_cypher_case_insensitive(
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     response = await service.search(
         question="orders",
-        cypher_filter="match (n:model) return n.id as id",
+        cypher_filter="match (n:dataset) return n.id as id",
         max_results=20,
     )
     for hit in response.results:
-        assert hit.kind == "model"
+        assert hit.kind == "dataset"
 
 
 @pytest.mark.asyncio
@@ -459,7 +459,7 @@ async def test_naive_cypher_complex_query_raises_slayer_error_with_install_hint(
         await service.search(
             question="x",
             cypher_filter=(
-                "MATCH (m:Memory)-[:MENTIONS]->(e:Model) "
+                "MATCH (m:Memory)-[:MENTIONS]->(e:Dataset) "
                 "RETURN m.id AS id"
             ),
         )
@@ -475,7 +475,7 @@ async def test_naive_cypher_where_clause_raises_slayer_error(
         await service.search(
             question="x",
             cypher_filter=(
-                "MATCH (n:Model) WHERE n.name = 'orders' RETURN n.id AS id"
+                "MATCH (n:Dataset) WHERE n.name = 'orders' RETURN n.id AS id"
             ),
         )
 
@@ -490,7 +490,7 @@ async def test_naive_cypher_missing_as_id_raises_slayer_error(
     with pytest.raises(SlayerError):
         await service.search(
             question="x",
-            cypher_filter="MATCH (n:Model) RETURN n.id",
+            cypher_filter="MATCH (n:Dataset) RETURN n.id",
         )
 
 
@@ -506,11 +506,11 @@ def _make_rest_client(tmp_path):
         await storage.save_datasource(
             DatasourceConfig(name="warehouse", type="sqlite", database=":memory:")
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -634,7 +634,7 @@ async def test_mcp_search_response_has_results_key(
 # ---------------------------------------------------------------------------
 
 
-def _run_cli(args: list[str], monkeypatch, capsys) -> tuple[int, str]:
+def _run_cli(args: list[str], monkeypatch: pytest.MonkeyPatch, capsys) -> tuple[int, str]:
     monkeypatch.setattr(sys, "argv", ["slayer"] + args)
     try:
         main()
@@ -653,11 +653,11 @@ def _seed_cli_storage(tmp_path) -> str:
         await storage.save_datasource(
             DatasourceConfig(name="warehouse", type="sqlite", database=":memory:")
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -668,13 +668,13 @@ def _seed_cli_storage(tmp_path) -> str:
     return storage_dir
 
 
-def test_cli_search_help_has_max_results_flag(monkeypatch, capsys) -> None:
+def test_cli_search_help_has_max_results_flag(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     code, out = _run_cli(["search", "--help"], monkeypatch, capsys)
     assert code == 0
     assert "--max-results" in out
 
 
-def test_cli_search_help_does_not_have_old_flags(monkeypatch, capsys) -> None:
+def test_cli_search_help_does_not_have_old_flags(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     code, out = _run_cli(["search", "--help"], monkeypatch, capsys)
     assert code == 0
     assert "--max-memories" not in out
@@ -682,7 +682,7 @@ def test_cli_search_help_does_not_have_old_flags(monkeypatch, capsys) -> None:
     assert "--max-entities" not in out
 
 
-def test_cli_search_json_output_has_results_key(tmp_path, monkeypatch, capsys) -> None:
+def test_cli_search_json_output_has_results_key(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(
         ["search", "--storage", storage_dir,

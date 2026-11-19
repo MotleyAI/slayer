@@ -4,19 +4,19 @@ from pathlib import Path
 
 import pytest
 
-from slayer.core.enums import JoinCardinality, JoinType
-from slayer.core.models import DatasourceConfig, ModelJoin
+from slayer.core.enums import RelationshipCardinality, JoinType
+from slayer.core.models import DatasourceConfig, DatasetRelationship
 from slayer.ingest_report import ConversionReport, ConversionResult
 from slayer.osi import slayer_extension as ext
 from slayer.osi.exporter import OsiExportResult
 from slayer.osi.models import OSIExpression
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
-    BASIC_MEASURES, col, customers, measure, monthly_revenue, orders, orders_columns, rich_orders, to_customers,
+    BASIC_MEASURES, col, customers, slayer_metric, monthly_revenue, orders, orders_columns, rich_orders, to_customers,
     visits,
 )
 from tests._osi_export_helpers import (
-    SLAYER, all_metrics, carries, dataset, dataset_names, doc_text, entities, export, export_models, field,
+    SLAYER, all_metrics, carries, dataset, dataset_names, doc_text, entities, export, export_datasets, field,
     make_env, mentions, payload, reimport, relationships, slayer_entries, validate,
 )
 from tests._osi_helpers import ds, f, flat
@@ -36,7 +36,7 @@ def _metric_names(document: dict) -> set[str]:
 # ───────────────────────────── SLAYER extension ────────────────────────────
 
 async def test_every_entity_carries_one_versioned_slayer_extension(env) -> None:
-    result = await export_models(env, customers(), rich_orders(), visits(), monthly_revenue())
+    result = await export_datasets(env, customers(), rich_orders(), visits(), monthly_revenue())
     for entity in entities(result.document):
         assert len(slayer_entries(entity)) == 1, entity["name"]
         assert isinstance(payload(entity)["version"], int)
@@ -59,16 +59,16 @@ def test_fingerprint_normalization_is_stable() -> None:
 @pytest.mark.parametrize("name", _SLAYER_ONLY_MEASURES)
 async def test_slayer_only_measure_travels_in_the_extension(env, name: str) -> None:
     model = rich_orders()
-    result = await export_models(env, customers(), model)
+    result = await export_datasets(env, customers(), model)
     assert name not in _metric_names(result.document)
-    formula = next(m.formula for m in model.measures if m.name == name)
+    formula = next(m.expression for m in model.metrics if m.name == name)
     assert carries(dataset(result.document, "orders"), formula)
     [entry] = mentions(result, name, severity="info", category="extension_only")
     assert entry.suggestion
 
 
 async def test_column_reading_joined_model_travels_in_the_extension(env) -> None:
-    result = await export_models(env, customers(), rich_orders())
+    result = await export_datasets(env, customers(), rich_orders())
     orders_ds = dataset(result.document, "orders")
     assert field(orders_ds, "segment") is None
     assert carries(orders_ds, "customers.segment")
@@ -76,14 +76,14 @@ async def test_column_reading_joined_model_travels_in_the_extension(env) -> None
 
 
 async def test_join_attributes_travel_in_the_extension(env) -> None:
-    model = orders(measures=BASIC_MEASURES, joins=[to_customers(name="buyer", join_type=JoinType.INNER)])
-    [rel] = relationships((await export_models(env, customers(), model)).document)
+    model = orders(metrics=BASIC_MEASURES, joins=[to_customers(name="buyer", join_type=JoinType.INNER)])
+    [rel] = relationships((await export_datasets(env, customers(), model)).document)
     assert carries(rel, "inner")
     assert carries(rel, "buyer")
 
 
 async def test_access_tags_travel_in_the_extension(env) -> None:
-    result = await export_models(env, customers(), orders(measures=BASIC_MEASURES, access_tags=["finance"]))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, access_tags=["finance"]))
     assert carries(dataset(result.document, "orders"), "finance")
 
 
@@ -103,7 +103,7 @@ async def test_foreign_extension_preserved(env) -> None:
 async def test_malformed_foreign_extension_is_reported_and_omitted(env) -> None:
     malformed = col("amount", meta={"osi_nonportable_extensions": [{"vendor_name": "ACME"}]})
     columns = [malformed if c.name == "amount" else c for c in orders_columns()]
-    result = await export_models(env, customers(), orders(columns=columns, measures=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(columns=columns, metrics=BASIC_MEASURES))
     amount = field(dataset(result.document, "orders"), "amount")
     assert amount is not None
     assert all(e["vendor_name"] == SLAYER for e in amount.get("nonportable_extensions") or [])
@@ -112,7 +112,7 @@ async def test_malformed_foreign_extension_is_reported_and_omitted(env) -> None:
 
 
 async def test_reexport_keeps_one_slayer_extension_per_entity(env) -> None:
-    first = await export_models(env, customers(), rich_orders())
+    first = await export_datasets(env, customers(), rich_orders())
     imported, _ = await reimport(env, first.document)
     for entity in entities((await export(imported)).document):
         assert len(slayer_entries(entity)) == 1, entity["name"]
@@ -121,21 +121,21 @@ async def test_reexport_keeps_one_slayer_extension_per_entity(env) -> None:
 # ──────────────────────────── --no-extensions ──────────────────────────────
 
 async def test_no_extensions_writes_no_slayer_extension(env) -> None:
-    result = await export_models(env, customers(), rich_orders(), visits(), extensions=False)
+    result = await export_datasets(env, customers(), rich_orders(), visits(), extensions=False)
     assert all(not slayer_entries(e) for e in entities(result.document))
     validate(result.document)
 
 
 async def test_access_tagged_model_not_exported_without_extensions(env) -> None:
-    payroll = orders(name="payroll", joins=[], measures=BASIC_MEASURES, access_tags=["hr"])
-    result = await export_models(env, customers(), payroll, extensions=False)
+    payroll = orders(name="payroll", joins=[], metrics=BASIC_MEASURES, access_tags=["hr"])
+    result = await export_datasets(env, customers(), payroll, extensions=False)
     assert "payroll" not in dataset_names(result.document)
     assert mentions(result, "payroll", severity="dropped")
 
 
 async def test_inner_join_is_lossy_without_extensions(env) -> None:
-    model = orders(measures=BASIC_MEASURES, joins=[to_customers(join_type=JoinType.INNER)])
-    result = await export_models(env, customers(), model, extensions=False)
+    model = orders(metrics=BASIC_MEASURES, joins=[to_customers(join_type=JoinType.INNER)])
+    result = await export_datasets(env, customers(), model, extensions=False)
     assert len(relationships(result.document)) == 1
     [entry] = [e for e in result.entries if e.category == "lossy"]
     assert entry.severity == "info"
@@ -143,22 +143,22 @@ async def test_inner_join_is_lossy_without_extensions(env) -> None:
 
 
 async def test_one_to_many_join_is_lossy_without_extensions(env) -> None:
-    to_orders = ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]],
-                          cardinality=JoinCardinality.ONE_TO_MANY)
-    result = await export_models(env, customers(joins=[to_orders]), orders(measures=BASIC_MEASURES, joins=[]),
+    to_orders = DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"],
+                          cardinality=RelationshipCardinality.ONE_TO_MANY)
+    result = await export_datasets(env, customers(joins=[to_orders]), orders(metrics=BASIC_MEASURES, joins=[]),
                                  extensions=False)
     assert len(relationships(result.document)) == 1
     assert [e.category for e in result.entries] == ["lossy"]
 
 
 async def test_relocated_measure_is_lossy_without_extensions(env) -> None:
-    model = orders(measures=[*BASIC_MEASURES, measure("customer_discount", "sum(customers.discount)")])
-    result = await export_models(env, customers(), model, extensions=False)
+    model = orders(metrics=[*BASIC_MEASURES, slayer_metric("customer_discount", "sum(customers.discount)")])
+    result = await export_datasets(env, customers(), model, extensions=False)
     assert mentions(result, "customer_discount", severity="info", category="lossy")
 
 
 async def test_slayer_only_content_is_dropped_without_extensions(env) -> None:
-    result = await export_models(env, customers(), rich_orders(), extensions=False)
+    result = await export_datasets(env, customers(), rich_orders(), extensions=False)
     for name in [*_SLAYER_ONLY_MEASURES, "segment"]:
         assert mentions(result, name, severity="dropped"), name
     assert not [e for e in result.entries if e.category == "extension_only"]
@@ -167,32 +167,32 @@ async def test_slayer_only_content_is_dropped_without_extensions(env) -> None:
 # ─────────────────────────────── report ────────────────────────────────────
 
 async def test_complete_report(env) -> None:
-    m2m = ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                    cardinality=JoinCardinality.MANY_TO_MANY)
-    growth = measure("revenue_growth", "change_pct(revenue)")
-    result = await export_models(env, customers(), orders(measures=[*BASIC_MEASURES, growth]), visits(joins=[m2m]))
+    m2m = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+                    cardinality=RelationshipCardinality.MANY_TO_MANY)
+    growth = slayer_metric("revenue_growth", "change_pct(revenue)")
+    result = await export_datasets(env, customers(), orders(metrics=[*BASIC_MEASURES, growth]), visits(relationships=[m2m]))
     assert sorted((e.severity, e.category if e.severity == "info" else None) for e in result.entries) == [
         ("dropped", None), ("info", "extension_only")]
     dropped = next(e for e in result.entries if e.severity == "dropped")
-    assert "visits" in (dropped.model_name, dropped.metric_name) or "visits" in dropped.message
+    assert "visits" in (dropped.dataset_name, dropped.metric_name) or "visits" in dropped.message
     assert mentions(result, "revenue_growth", severity="info")
     assert all(e.suggestion for e in result.entries)
 
 
 @pytest.mark.parametrize("extensions", [True, False])
 async def test_every_entry_has_entity_reason_and_workaround(env, extensions: bool) -> None:
-    b2b = orders(name="b2b_orders", filters=["customers.segment = 'b2b'"], measures=BASIC_MEASURES)
-    result = await export_models(env, customers(), rich_orders(), b2b, visits(), extensions=extensions)
+    b2b = orders(name="b2b_orders", filters=["customers.segment = 'b2b'"], metrics=BASIC_MEASURES)
+    result = await export_datasets(env, customers(), rich_orders(), b2b, visits(), extensions=extensions)
     assert result.entries
     for entry in result.entries:
-        assert entry.model_name or entry.metric_name
+        assert entry.dataset_name or entry.metric_name
         assert entry.message
         assert entry.suggestion
         assert entry.severity in ("dropped", "info")
 
 
 async def test_report_renders_workarounds(env) -> None:
-    result = await export_models(env, customers(), rich_orders())
+    result = await export_datasets(env, customers(), rich_orders())
     rendered = result.render_report()
     assert "revenue_growth" in rendered
     assert "workaround:" in rendered
@@ -210,10 +210,10 @@ async def test_connection_details_memories_and_samples_are_not_exported(env) -> 
     await storage.save_datasource(config.model_copy(update={"username": "u53r", "password": "s3cret"}))
     await storage.save_memory(learning="zzmemory: refunds live in status", entities=["orders.status"])
     model = customers()
-    for c in model.columns:
+    for c in model.fields:
         if c.name == "segment":
             c.sampled, c.sampled_values, c.distinct_count = "zzsampled", ["zzvalue"], 2
-    result = await export_models(env, model, orders(measures=BASIC_MEASURES))
+    result = await export_datasets(env, model, orders(metrics=BASIC_MEASURES))
     text = doc_text(result.document)
     for secret in ("s3cret", "u53r", str(env.db), "zzmemory", "zzsampled", "zzvalue"):
         assert secret not in text, secret

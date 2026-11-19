@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev2137_collect.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "unclassifiable"
+  }
+ ]
+}

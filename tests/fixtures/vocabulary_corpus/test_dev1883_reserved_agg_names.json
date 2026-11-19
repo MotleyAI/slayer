@@ -1,0 +1,52 @@
+{
+ "source": "tests/test_dev1883_reserved_agg_names.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "quarter",
+    "formula": "SUM({x})"
+   },
+   "new": {
+    "name": "quarter",
+    "expression": "SUM({x})"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_median",
+    "formula": "MEDIAN({x})"
+   },
+   "new": {
+    "name": "my_median",
+    "expression": "MEDIAN({x})"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "round",
+    "formula": "ROUND({x})"
+   },
+   "new": {
+    "name": "round",
+    "expression": "ROUND({x})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 20,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not a standalone aggregation: ValidationError"
+  }
+ ]
+}

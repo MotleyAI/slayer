@@ -1,0 +1,136 @@
+{
+ "source": "tests/_dev1737_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 172,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 173,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 470,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 474,
+   "reason": "not fully literal"
+  }
+ ]
+}

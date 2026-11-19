@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_dev1847_equivalence.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "ct"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "ct"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  }
+ ]
+}

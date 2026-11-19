@@ -1,0 +1,113 @@
+{
+ "source": "tests/test_docs_guards.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "per_customer",
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "name": "per_customer",
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "per_customer",
+    "measures": [
+     "avg(total)"
+    ],
+    "filters": [
+     "total > 100"
+    ]
+   },
+   "new": {
+    "population": "per_customer",
+    "metrics": [
+     "avg(total)"
+    ],
+    "filter": [
+     "total > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))"
+   },
+   "new": {
+    "metric": "cumsum(sum(revenue))"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "wavg",
+    "formula": "SUM({value})",
+    "params": [
+     {
+      "name": "w",
+      "sql": "1"
+     }
+    ]
+   },
+   "new": {
+    "name": "wavg",
+    "expression": "SUM({value})",
+    "params": [
+     {
+      "name": "w",
+      "sql": "1"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 156,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 172,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 182,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 188,
+   "reason": "not a standalone dataset: ValidationError"
+  },
+  {
+   "line": 200,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 205,
+   "reason": "unclassifiable"
+  }
+ ]
+}

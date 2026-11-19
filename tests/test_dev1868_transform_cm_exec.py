@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1836_fixtures import (
-    ModelMeasure,
     make_exec_engine,
     month_td,
     q,
@@ -35,7 +36,7 @@ class TestCumsumOverCrossModelPartitioned:
     async def test_accumulates_the_per_tier_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=f"cumsum({CM_PART_TIER})", name="c")],
+            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")],
         ))
         by = keyed_by_month(resp, TIER)
         assert set(by) == set(CUMSUM_PART_BY_TIER_MONTH)
@@ -53,8 +54,8 @@ class TestChangeOverCrossModelRanked:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=f"change({LAST_REGION})", name="ch"),
-                      ModelMeasure(formula=LAST_REGION, name="l")],
+            metrics=[QueryMetric(metric=f"change({LAST_REGION})", alias="ch"),
+                      QueryMetric(metric=LAST_REGION, alias="l")],
         ))
         by = keyed_by_month(resp, REGION)
         assert set(by) == set(CHANGE_LAST_BY_REGION_MONTH)
@@ -73,8 +74,8 @@ class TestTransformFilterAndOrderPositions:
     async def test_transform_in_filter_position(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            filters=[f"cumsum({CM_PART_TIER}) > 200"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filter=[f"cumsum({CM_PART_TIER}) > 200"],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         by = keyed_by_month(resp, TIER)
         # Only gold's running total clears 200, from February on.
@@ -85,9 +86,9 @@ class TestTransformFilterAndOrderPositions:
     async def test_transform_as_order_target(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            filters=["customers.tier is not null"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
-            order=[{"column": f"cumsum({CM_PART_TIER})", "direction": "desc"}],
+            filter=["customers.tier is not null"],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            order=[{"field": f"cumsum({CM_PART_TIER})", "direction": "desc"}],
         ))
         by = keyed_by_month(resp, TIER)
         # Sorted by the hidden running total: 480, 320, 160, 150, 40.
@@ -101,8 +102,8 @@ class TestSharedInnerAcrossConsumers:
     async def test_transform_and_filter_share_one_inner(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            filters=[f"{CM_PART_TIER} > 100"],
-            measures=[ModelMeasure(formula=f"cumsum({CM_PART_TIER})", name="c")],
+            filter=[f"{CM_PART_TIER} > 100"],
+            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")],
         ))
         by = keyed_by_month(resp, TIER)
         expected = {k: v for k, v in CUMSUM_PART_BY_TIER_MONTH.items()

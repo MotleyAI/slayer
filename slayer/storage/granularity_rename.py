@@ -13,6 +13,8 @@ from typing import Any
 from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.models import reserved_granularity_names
 from slayer.core.time_points import relative_unit_word
+from slayer.core.vocabulary import extension_dataset, is_extension_object
+from slayer.storage.document_keys import DocumentKeys, keys_for, query_keys
 from slayer.storage.rank_direction_migration import rewrite_query_fields
 
 #: Casefolded stored name → its new name.
@@ -109,18 +111,24 @@ def rename_relative(text: str, *, renames: Renames) -> str:
     return text
 
 
-def rename_in_query(data: dict, *, renames: Renames) -> dict:
-    """A stored query dict with every granularity reference renamed (inline models and extensions included)."""
+def _version_keys(*, entity: str, data: dict) -> DocumentKeys:
+    version = data.get("version")
+    return keys_for(entity=entity, version=version if isinstance(version, int) else 1)
+
+
+def rename_in_query(data: dict, *, renames: Renames, keys: DocumentKeys) -> dict:
+    """A stored query dict with every granularity reference renamed (inline datasets and extensions included)."""
     text = partial(rename_in_text, renames=renames)
-    data = rewrite_query_fields(dict(data), text)
+    keys = query_keys(data, enclosing=keys)
+    data = rewrite_query_fields(dict(data), text, keys)
     if isinstance(data.get("time_dimensions"), list):
         data["time_dimensions"] = [_renamed_time_dimension(td, renames=renames) for td in data["time_dimensions"]]
-    source = data.get("source_model")
+    source = data.get(keys.population)
     if isinstance(source, dict):
-        data["source_model"] = rename_in_model(source, renames=renames)
+        data[keys.population] = _renamed_dataset(source, renames=renames, keys=keys)
     if isinstance(data.get("extensions"), list):
         data["extensions"] = [
-            rename_in_model(e, renames=renames) if isinstance(e, dict) else e for e in data["extensions"]
+            _renamed_dataset(e, renames=renames, keys=keys) if isinstance(e, dict) else e for e in data["extensions"]
         ]
     return data
 
@@ -139,29 +147,34 @@ def _renamed_time_dimension(item: Any, *, renames: Renames) -> Any:
     return out
 
 
-def _renamed_formula(measure: Any, text: Callable[[str], str]) -> Any:
-    if isinstance(measure, dict) and isinstance(measure.get("formula"), str):
-        return {**measure, "formula": text(measure["formula"])}
-    return measure
+def _renamed_expression(metric: Any, text: Callable[[str], str], *, keys: DocumentKeys) -> Any:
+    if isinstance(metric, dict) and isinstance(metric.get(keys.expression), str):
+        return {**metric, keys.expression: text(metric[keys.expression])}
+    return metric
 
 
-def rename_in_model(data: dict, *, renames: Renames) -> dict:
-    """A stored model or inline extension dict with every granularity reference renamed (column granularities,
-    measures, stages)."""
+def rename_in_dataset(data: dict, *, renames: Renames) -> dict:
+    """A stored dataset dict, in the keys of its version, with every granularity reference renamed."""
+    return _renamed_dataset(data, renames=renames, keys=_version_keys(entity="SlayerModel", data=data))
+
+
+def _renamed_dataset(data: dict, *, renames: Renames, keys: DocumentKeys) -> dict:
+    """A dataset or inline extension dict with every granularity reference renamed (field granularities, metrics,
+    stages)."""
     out = dict(data)
     text = partial(rename_in_text, renames=renames)
-    if isinstance(out.get("columns"), list):
-        out["columns"] = [
+    if isinstance(out.get(keys.fields), list):
+        out[keys.fields] = [
             {**c, "granularity": renames[c["granularity"].casefold()]}
             if isinstance(c, dict) and isinstance(c.get("granularity"), str) and c["granularity"].casefold() in renames
             else c
-            for c in out["columns"]
+            for c in out[keys.fields]
         ]
-    if isinstance(out.get("measures"), list):
-        out["measures"] = [_renamed_formula(m, text) for m in out["measures"]]
+    if isinstance(out.get(keys.metrics), list):
+        out[keys.metrics] = [_renamed_expression(m, text, keys=keys) for m in out[keys.metrics]]
     if isinstance(out.get("source_queries"), list):
         out["source_queries"] = [
-            rename_in_query(q, renames=renames) if isinstance(q, dict) else q for q in out["source_queries"]
+            rename_in_query(q, renames=renames, keys=keys) if isinstance(q, dict) else q for q in out["source_queries"]
         ]
     return out
 
@@ -169,7 +182,8 @@ def rename_in_model(data: dict, *, renames: Renames) -> dict:
 def rename_in_memory(data: dict, *, renames: Renames) -> dict:
     if not isinstance(data.get("query"), dict):
         return data
-    return {**data, "query": rename_in_query(data["query"], renames=renames)}
+    keys = _version_keys(entity="Memory", data=data)
+    return {**data, "query": rename_in_query(data["query"], renames=renames, keys=keys)}
 
 
 def renamed_datasource(data: dict, *, renames: Renames) -> dict:
@@ -181,13 +195,15 @@ def renamed_datasource(data: dict, *, renames: Renames) -> dict:
     return {**data, "granularities": granularities}
 
 
-def memory_source_model(data: dict) -> tuple[str | None, str | None]:
-    """``(inline model's data_source, saved root model name)`` a stored memory's query reads, each if any."""
+def memory_source_dataset(data: dict) -> tuple[str | None, str | None]:
+    """``(inline dataset's data_source, saved root dataset name)`` a stored memory's query reads, each if any."""
     query = data.get("query")
-    source = query.get("source_model") if isinstance(query, dict) else None
-    if isinstance(source, dict) and "source_name" not in source:
+    if not isinstance(query, dict):
+        return None, None
+    source = query.get(query_keys(query, enclosing=_version_keys(entity="Memory", data=data)).population)
+    if isinstance(source, dict) and not is_extension_object(source):
         data_source = source.get("data_source")
         return (data_source if isinstance(data_source, str) else None), None
     if isinstance(source, dict):
-        source = source.get("source_name")
+        source = extension_dataset(source)
     return None, (source if isinstance(source, str) else None)

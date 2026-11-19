@@ -1,0 +1,229 @@
+{
+ "source": "tests/test_dev2187_one_reader_law.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(iif(note = 'see orders.x', amount, 0))",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(iif(note = 'see orders.x', amount, 0))",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "iif(note = 'see orders.x', 0, 1)"
+   },
+   "new": {
+    "field": "iif(note = 'see orders.x', 0, 1)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "filters": [
+     "\"status\" = 'paid'"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "filter": [
+     "\"status\" = 'paid'"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "filters": [
+     "status = 'paid'"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "filter": [
+     "status = 'paid'"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(\"amount\")"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(\"amount\")"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     "date_trunc('month', created_at)",
+     "date_trunc('month', shipped_at)"
+    ],
+    "measures": [
+     {
+      "formula": "change(count(*))",
+      "name": "c"
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     "date_trunc('month', created_at)",
+     "date_trunc('month', shipped_at)"
+    ],
+    "metrics": [
+     {
+      "metric": "change(count(*))",
+      "alias": "c"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qb",
+    "measures": [
+     "sum(tot)"
+    ]
+   },
+   "new": {
+    "population": "qb",
+    "metrics": [
+     "sum(tot)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qbv",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "qbv",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qbv",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "qbv",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     "date_trunc('fiscal_year', created_at)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     "date_trunc('fiscal_year', created_at)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "upper(status)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "upper(status)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 41,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 86,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 307,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 308,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 339,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 346,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 387,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 400,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,97 @@
+{
+ "source": "tests/test_additive_merge_physical_spelling.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount_col)",
+    "name": "amount"
+   },
+   "new": {
+    "expression": "sum(amount_col)",
+    "name": "amount"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "premium"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "premium"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 12,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 15,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 16,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  }
+ ]
+}

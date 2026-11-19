@@ -12,8 +12,10 @@ from typing import Any
 import pytest
 
 from slayer.core.models import DatasourceConfig
+from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_keys import dataset_in, keys_for
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, raw_store, run
@@ -80,8 +82,8 @@ LITERAL_TESTED = "'2024-04-10' BETWEEN created_at AND created_at"
 
 
 def orders_doc(*, version: int = PRE["SlayerModel"], **extra: Any) -> dict:
-    return {"version": version, "name": "orders", "sql_table": "orders", "data_source": DS,
-            "columns": COLUMNS, **extra}
+    doc = {"version": version, "name": "orders", "sql_table": "orders", "data_source": DS, "columns": COLUMNS, **extra}
+    return dataset_in(doc, keys_for(entity="SlayerModel", version=version))
 
 
 def saved_query_doc(name: str, *stages: dict, version: int = PRE["SlayerModel"],
@@ -151,10 +153,11 @@ class TestRewrites:
         storage = await store(tmp_path, shop_ds, backend=backend, models=(
             saved_query_doc("year_end", {"source_model": "orders", "dimensions": ["id"],
                                          "filters": ["created_at <= '2024-12-31'"]}),))
-        model = await storage.get_model("year_end", data_source=DS)
+        model = await storage.get_dataset("year_end", data_source=DS)
         assert model is not None
-        assert (model.source_queries or [])[0].filters == ["created_at < '2025-01-01'"]
-        resp = await run(storage, {"source_model": "year_end", "dimensions": ["id"]})
+        stage = (model.source_queries or [])[0]
+        assert stage.filter == ["created_at < '2025-01-01'"]
+        resp = await run(storage, {"population": "year_end", "dimensions": ["id"]})
         assert ids(resp, model="year_end") == {1, 2, 3, 4, 5, 6}
         assert notices(resp) == []
 
@@ -164,9 +167,9 @@ class TestRewrites:
                               memories=(memory("m_ops", query(*OPERATORS)),))
         mem = await storage.get_memory("m_ops")
         assert mem.query is not None
-        assert mem.query.filters == [upgraded for upgraded, _ in OPERATORS.values()]
+        assert mem.query.filter == [upgraded for upgraded, _ in OPERATORS.values()]
         for upgraded, before in OPERATORS.values():
-            resp = await run(storage, mem.query.model_copy(update={"filters": [upgraded]}))
+            resp = await run(storage, mem.query.model_copy(update={"filter": [upgraded]}))
             assert ids(resp) == before, upgraded
 
     async def test_saved_measure_and_column_filter(self, tmp_path: Path, shop_ds: DatasourceConfig,
@@ -174,12 +177,12 @@ class TestRewrites:
         doc = orders_doc(columns=[*COLUMNS, LATE_AMOUNT], measures=[{"name": "early", "formula": EARLY_COUNT}])
         storage = await raw_store(backend=backend, base=str(tmp_path / f"store-{backend}"), datasource=shop_ds,
                                   models=[doc])
-        model = await storage.get_model("orders", data_source=DS)
+        model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
-        assert [m.formula for m in model.measures] == [EARLY_COUNT_UPGRADED]
-        assert next(c for c in model.columns if c.name == "late_amount").filter == LATE_AMOUNT_UPGRADED
-        assert next(c for c in model.columns if c.name == "late_amount").sql == "amount"
-        resp = await run(storage, {"source_model": "orders", "measures": ["early", "sum(late_amount)"]})
+        assert [m.expression for m in model.metrics] == [EARLY_COUNT_UPGRADED]
+        assert next(c for c in model.fields if c.name == "late_amount").filter == LATE_AMOUNT_UPGRADED
+        assert next(c for c in model.fields if c.name == "late_amount").sql == "amount"
+        resp = await run(storage, {"population": "orders", "metrics": ["early", "sum(late_amount)"]})
         row = resp.data[0]
         assert int(row["orders.early"]) == 3
         assert float(next(v for k, v in row.items() if k != "orders.early")) == pytest.approx(220.0)
@@ -199,8 +202,8 @@ class TestRewrites:
         text = dumped(mem.query)
         for stale in ("<= '2024-04-10'", "> '2024-04-10'", "= '2024-04-10'"):
             assert stale not in text, text
-        assert mem.query.filters == ["created_at < '2024-04-11'"]
-        assert [m.formula for m in mem.query.measures or []] == [EARLY_COUNT_UPGRADED]
+        assert mem.query.filter == ["created_at < '2024-04-11'"]
+        assert [m.metric for m in mem.query.metrics or []] == [EARLY_COUNT_UPGRADED]
         assert "iif(created_at >= '2024-04-11', 'late', 'early')" in text
         assert "iif(created_at < '2024-04-11', created_at, NULL)" in text
         assert "iif(created_at in '2024-04-10', 0, 1)" in text
@@ -224,9 +227,9 @@ class TestRewrites:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_mixed", query(*MIXED_BOUNDS)),))
         mem = await storage.get_memory("m_mixed")
         assert mem.query is not None
-        for upgraded, (instant, before) in zip(mem.query.filters or [], MIXED_BOUNDS.values(), strict=True):
+        for upgraded, (instant, before) in zip(mem.query.filter or [], MIXED_BOUNDS.values(), strict=True):
             assert instant in upgraded, upgraded
-            assert ids(await run(storage, mem.query.model_copy(update={"filters": [upgraded]}))) == before, upgraded
+            assert ids(await run(storage, mem.query.model_copy(update={"filter": [upgraded]}))) == before, upgraded
 
     async def test_an_interrupted_load_completes(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                  backend: str) -> None:
@@ -234,7 +237,7 @@ class TestRewrites:
             memory("m_half", query("created_at < '2025-01-01'", "created_at <= '2024-04-10'")),))
         mem = await storage.get_memory("m_half")
         assert mem.query is not None
-        assert mem.query.filters == ["created_at < '2025-01-01'", "created_at < '2024-04-11'"]
+        assert mem.query.filter == ["created_at < '2025-01-01'", "created_at < '2024-04-11'"]
         assert ids(await run(storage, mem.query)) == {1, 2, 3}
 
     async def test_last_representable_day(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
@@ -253,12 +256,12 @@ class TestRewrites:
                               memories=(memory("m_last", query(*stored)),))
         mem = await storage.get_memory("m_last")
         assert mem.query is not None
-        assert mem.query.filters == list(stored.values())
-        for upgraded in mem.query.filters or []:
-            await run(storage, mem.query.model_copy(update={"filters": [upgraded]}))
-        model = await storage.get_model("orders_last", data_source=DS)
+        assert mem.query.filter == list(stored.values())
+        for upgraded in mem.query.filter or []:
+            await run(storage, mem.query.model_copy(update={"filter": [upgraded]}))
+        model = await storage.get_dataset("orders_last", data_source=DS)
         assert model is not None
-        assert next(c for c in model.columns if c.name == "late_amount").filter == "code > '9999-12-31'"
+        assert next(c for c in model.fields if c.name == "late_amount").filter == "code > '9999-12-31'"
         resp = await run(storage, query("created_at <= '9999-12-31'", version=CURRENT_VERSIONS["SlayerQuery"]))
         assert ids(resp) == {i for i, _ in ROWS}
         assert len(notices(resp)) == 1
@@ -270,7 +273,7 @@ class TestRewrites:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_case", body),))
         mem = await storage.get_memory("m_case")
         assert mem.query is not None
-        assert mem.query.filters == ["Created_At < '2024-04-11'", "ORDERS.created_at >= '2024-04-11'"]
+        assert mem.query.filter == ["Created_At < '2024-04-11'", "ORDERS.created_at >= '2024-04-11'"]
 
     @pytest.mark.parametrize("column", ['"created_at"', '"cre""ated"'])
     async def test_quoted_operand(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, column: str) -> None:
@@ -279,7 +282,7 @@ class TestRewrites:
                                   models=[doc], memories=[memory("m_quoted", query(f"{column} <= '2024-04-10'"))])
         mem = await storage.get_memory("m_quoted")
         assert mem.query is not None
-        assert mem.query.filters == [f"{column} < '2024-04-11'"]
+        assert mem.query.filter == [f"{column} < '2024-04-11'"]
 
     async def test_exact_inverse_twins_are_one_join(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                     backend: str) -> None:
@@ -291,7 +294,7 @@ class TestRewrites:
                               memories=(memory("m_twins", body),))
         mem = await storage.get_memory("m_twins")
         assert mem.query is not None
-        assert mem.query.filters == ["purchases.created_at < '2024-04-11'"]
+        assert mem.query.filter == ["purchases.created_at < '2024-04-11'"]
 
     async def test_repaired_legacy_date_keeps_its_day(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                      backend: str) -> None:
@@ -299,7 +302,7 @@ class TestRewrites:
             memory("m_slashed", query("created_at <= '2024/04/10'", version=1), version=3),))
         mem = await storage.get_memory("m_slashed")
         assert mem.query is not None
-        assert mem.query.filters == ["created_at < '2024-04-11'"]
+        assert mem.query.filter == ["created_at < '2024-04-11'"]
         assert ids(await run(storage, mem.query)) == {1, 2, 3}
 
     async def test_repair_leaves_a_current_query_midnight(self, tmp_path: Path, shop_ds: DatasourceConfig,
@@ -308,7 +311,7 @@ class TestRewrites:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_mixed_age", body, version=3),))
         mem = await storage.get_memory("m_mixed_age")
         assert mem.query is not None
-        assert mem.query.filters == ["created_at <= '2024-04-10' or created_at = '2025-01-01'"]
+        assert mem.query.filter == ["created_at <= '2024-04-10' or created_at = '2025-01-01'"]
 
     async def test_join_walked_backwards(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         customers = orders_doc(name="customers", joins=[])
@@ -321,7 +324,7 @@ class TestRewrites:
                               memories=(memory("m_back", body),))
         mem = await storage.get_memory("m_back")
         assert mem.query is not None
-        assert mem.query.filters == ["purchases.created_at < '2024-04-11'", "refunded.created_at >= '2024-04-11'"]
+        assert mem.query.filter == ["purchases.created_at < '2024-04-11'", "refunded.created_at >= '2024-04-11'"]
 
     async def test_date_column_keeps_its_rows(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         storage = await store(tmp_path, shop_ds, backend=backend,
@@ -337,7 +340,7 @@ class TestLeftAlone:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_same", query(*UNCHANGED)),))
         mem = await storage.get_memory("m_same")
         assert mem.query is not None
-        assert mem.query.filters == UNCHANGED
+        assert mem.query.filter == UNCHANGED
 
     async def test_mode_a_text_and_date_range(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         doc = orders_doc(name="orders_a", filters=["created_at <= '2024-12-31'"],
@@ -346,10 +349,10 @@ class TestLeftAlone:
         td = {"dimension": "created_at", "granularity": "day", "date_range": ["2024-03-05", "2024-04-10"]}
         storage = await store(tmp_path, shop_ds, backend=backend, models=(doc,),
                               memories=(memory("m_range", query(time_dimensions=[td])),))
-        model = await storage.get_model("orders_a", data_source=DS)
+        model = await storage.get_dataset("orders_a", data_source=DS)
         assert model is not None
         assert model.filters == ["created_at <= '2024-12-31'"]
-        assert next(c for c in model.columns if c.name == "flag").sql == "CASE WHEN created_at <= '2024-04-10' THEN 1 END"
+        assert next(c for c in model.fields if c.name == "flag").sql == "CASE WHEN created_at <= '2024-04-10' THEN 1 END"
         mem = await storage.get_memory("m_range")
         assert mem.query is not None
         assert [list(t.date_range or []) for t in mem.query.time_dimensions or []] == [["2024-03-05", "2024-04-10"]]
@@ -361,7 +364,7 @@ class TestLeftAlone:
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_untyped")
         assert mem.query is not None
-        assert mem.query.filters == ["raw <= '2024-12-31'"]
+        assert mem.query.filter == ["raw <= '2024-12-31'"]
         assert any("m_untyped" in t and "raw <= '2024-12-31'" in t for t in texts), texts
 
     async def test_literal_tested_between_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig,
@@ -371,7 +374,7 @@ class TestLeftAlone:
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_lit")
         assert mem.query is not None
-        assert mem.query.filters == [LITERAL_TESTED]
+        assert mem.query.filter == [LITERAL_TESTED]
         assert any("m_lit" in t and LITERAL_TESTED in t for t in texts), texts
 
     async def test_a_sibling_stage_is_not_its_namesake_model(self, tmp_path: Path, shop_ds: DatasourceConfig,
@@ -381,9 +384,11 @@ class TestLeftAlone:
         namesake = orders_doc(name="base", columns=[*COLUMNS[:3], {"name": "code", "type": "TIMESTAMP"}])
         storage = await store(tmp_path, shop_ds, backend=backend,
                               models=(namesake, saved_query_doc("staged", stage, reader)))
-        model = await storage.get_model("staged", data_source=DS)
+        model = await storage.get_dataset("staged", data_source=DS)
         assert model is not None
-        assert (model.source_queries or [])[1].filters == ["code <= '2024-04-10'"]
+        loaded = (model.source_queries or [])[1]
+        assert isinstance(loaded, SlayerQuery)
+        assert loaded.filter == ["code <= '2024-04-10'"]
 
     async def test_missing_model_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                     caplog: pytest.LogCaptureFixture) -> None:
@@ -392,7 +397,7 @@ class TestLeftAlone:
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_gone")
         assert mem.query is not None
-        assert mem.query.filters == ["created_at <= '2024-12-31'"]
+        assert mem.query.filter == ["created_at <= '2024-12-31'"]
         assert any("m_gone" in t and "created_at <= '2024-12-31'" in t for t in texts), texts
 
 
@@ -404,9 +409,10 @@ class TestVersionGating:
                                         "filters": ["created_at <= '2024-12-31'"]},
                               version=CURRENT_VERSIONS["SlayerModel"])
         storage = await store(tmp_path, shop_ds, backend=backend, models=(doc,))
-        model = await storage.get_model("mixed", data_source=DS)
+        model = await storage.get_dataset("mixed", data_source=DS)
         assert model is not None
-        assert (model.source_queries or [])[0].filters == ["created_at < '2025-01-01'"]
+        stage = (model.source_queries or [])[0]
+        assert stage.filter == ["created_at < '2025-01-01'"]
 
     async def test_current_memory_with_an_older_query(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                       backend: str) -> None:
@@ -414,7 +420,7 @@ class TestVersionGating:
             memory("m_cur", query("created_at <= '2024-12-31'"), version=CURRENT_VERSIONS["Memory"]),))
         mem = await storage.get_memory("m_cur")
         assert mem.query is not None
-        assert mem.query.filters == ["created_at < '2025-01-01'"]
+        assert mem.query.filter == ["created_at < '2025-01-01'"]
 
     async def test_current_memory_with_an_older_query_holding_an_extension(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
@@ -424,7 +430,7 @@ class TestVersionGating:
                               memories=(memory("m_ext_old", body, version=CURRENT_VERSIONS["Memory"]),))
         mem = await storage.get_memory("m_ext_old")
         assert mem.query is not None
-        assert [m.formula for e in mem.query.extensions or [] for m in e.measures or []] == [EARLY_COUNT_UPGRADED]
+        assert [m.expression for e in mem.query.extensions or [] for m in e.metrics or []] == [EARLY_COUNT_UPGRADED]
 
     async def test_datasource_models_read_only_for_a_date_literal(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, monkeypatch: pytest.MonkeyPatch,
@@ -432,13 +438,13 @@ class TestVersionGating:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(
             memory("m_plain", query("code = 'zz'")), memory("m_dated", query("created_at <= '2024-12-31'"))))
         reads: list[str | None] = []
-        stored_models = storage._stored_models
+        stored_models = storage._stored_datasets
 
         async def counted(data_source: str | None) -> Any:
             reads.append(data_source)
             return await stored_models(data_source)
 
-        monkeypatch.setattr(storage, "_stored_models", counted)
+        monkeypatch.setattr(storage, "_stored_datasets", counted)
         await storage.get_memory("m_plain")
         assert reads == []
         await storage.get_memory("m_dated")
@@ -453,16 +459,16 @@ class TestVersionGating:
         again = await storage.get_memory("m_twice")
         assert first.query is not None
         assert again.query is not None
-        assert again.query.filters == first.query.filters == [upgraded for upgraded, _ in OPERATORS.values()]
+        assert again.query.filter == first.query.filter == [upgraded for upgraded, _ in OPERATORS.values()]
         fresh = await storage.get_memory("m_fresh")
         assert fresh.query is not None
-        assert fresh.query.filters == ["created_at <= '2024-12-31'"]
+        assert fresh.query.filter == ["created_at <= '2024-12-31'"]
 
     async def test_a_model_saved_after_the_change_is_untouched(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                                backend: str) -> None:
         doc = orders_doc(version=CURRENT_VERSIONS["SlayerModel"], name="orders_new",
                          measures=[{"name": "early", "formula": EARLY_COUNT}])
         storage = await store(tmp_path, shop_ds, backend=backend, models=(doc,))
-        model = await storage.get_model("orders_new", data_source=DS)
+        model = await storage.get_dataset("orders_new", data_source=DS)
         assert model is not None
-        assert [m.formula for m in model.measures] == [EARLY_COUNT]
+        assert [m.expression for m in model.metrics] == [EARLY_COUNT]

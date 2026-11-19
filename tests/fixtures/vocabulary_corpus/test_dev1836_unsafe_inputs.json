@@ -1,0 +1,105 @@
+{
+ "source": "tests/test_dev1836_unsafe_inputs.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(customers.seg_label)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "count(customers.seg_label)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.vip_spend)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(customers.vip_spend)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, ordered_at)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "last(customers.spend, ordered_at)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=status)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=status)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=customers.segments.label)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=customers.segments.label)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=customers.segments.label)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=customers.segments.label)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=status)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=status)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=customers.tier)",
+    "name": "pt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=customers.tier)",
+    "name": "pt"
+   }
+  }
+ ],
+ "skipped": []
+}

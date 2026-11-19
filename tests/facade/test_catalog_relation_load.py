@@ -19,9 +19,9 @@ ROWS = [
     {"MixedCase": None, 'say "hi"': "x", "n": 3},
 ]
 RELATION = CatalogRelation(name='Odd "Tbl"', columns=[
-    FacadeColumn(name="MixedCase", type=DataType.TEXT),
-    FacadeColumn(name='say "hi"', type=DataType.TEXT),
-    FacadeColumn(name="n", type=DataType.INT),
+    FacadeColumn(name="MixedCase", type=DataType.STRING),
+    FacadeColumn(name='say "hi"', type=DataType.STRING),
+    FacadeColumn(name="n", type=DataType.INTEGER),
 ], rows=ROWS)
 
 
@@ -49,7 +49,7 @@ def loaded(monkeypatch: pytest.MonkeyPatch) -> tuple[CatalogSqlExecutor, list[st
     seen: list[str] = []
     real = duckdb.connect
     monkeypatch.setattr(catalog_sql.duckdb, "connect", lambda *a, **k: _Recording(real(*a, **k), seen))
-    executor = CatalogSqlExecutor(catalog=build_catalog_grouped_by_schema(models_by_datasource={}),
+    executor = CatalogSqlExecutor(catalog=build_catalog_grouped_by_schema(datasets_by_datasource={}),
                                   datasource="ds", extra_relations=[RELATION])
     return executor, seen
 

@@ -8,7 +8,7 @@ import pytest
 import sqlalchemy as sa
 from pytest_postgresql import factories
 
-from slayer.core.enums import JoinCardinality
+from slayer.core.enums import RelationshipCardinality
 from slayer.core.models import DatasourceConfig
 from slayer.live_schema import ingestion
 from slayer.database.client import SlayerSQLClient
@@ -93,11 +93,11 @@ async def test_ingestion_flags_and_joins(pg_ds) -> None:
     finally:
         await client.aclose()
         client.close()
-    models = {m.name: m for m in report.models}
+    models = {m.name: m for m in report.datasets}
     customers, orders = models["customers"], models["orders"]
-    assert [c.name for c in customers.columns if c.primary_key] == ["id"]
-    assert {c.name for c in customers.columns if c.unique} == {"email", "code"}
-    assert {tuple(map(tuple, j.join_pairs)): j.cardinality for j in orders.joins} == {
-        (("customer_id", "id"),): JoinCardinality.MANY_TO_ONE,
-        (("a", "a"), ("b", "b")): JoinCardinality.MANY_TO_ONE,
+    assert [c.name for c in customers.fields if c.primary_key] == ["id"]
+    assert {c.name for c in customers.fields if c.unique} == {"email", "code"}
+    assert {tuple(map(tuple, j.column_pairs)): j.cardinality for j in orders.relationships} == {
+        (("customer_id", "id"),): RelationshipCardinality.MANY_TO_ONE,
+        (("a", "a"), ("b", "b")): RelationshipCardinality.MANY_TO_ONE,
     }

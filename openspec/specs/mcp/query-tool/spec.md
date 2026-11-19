@@ -7,7 +7,7 @@ Defines the MCP `query` tool's input contract — one polymorphic `query` argume
 
 ### Requirement: Single polymorphic query argument
 
-The MCP server SHALL expose exactly one query-execution tool, named `query`, whose input schema consists of a required `query` argument accepting a string, a single query object, or a list of query objects, plus only the execution-wrapper arguments `variables`, `refine`, `show_sql`, `dry_run`, `explain`, and `format`. Per-field query arguments (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`, `whole_periods_only`, `to_many_handling`, `distinct_dimension_values`) SHALL NOT appear in the tool schema, and no `query_nested` tool SHALL be registered.
+The MCP server SHALL expose exactly one query-execution tool, named `query`, whose input schema consists of a required `query` argument accepting a string, a single query object, or a list of query objects, plus only the execution-wrapper arguments `variables`, `refine`, `show_sql`, `dry_run`, `explain`, and `format`. Per-field query arguments (`population`, `metrics`, `dimensions`, `filter`, `time_dimensions`, `order`, `limit`, `offset`, `whole_periods_only`, `to_many_handling`, `distinct_dimension_values`) SHALL NOT appear in the tool schema, and no `query_nested` tool SHALL be registered.
 
 #### Scenario: Tool schema exposes only the unified arguments
 
@@ -17,11 +17,11 @@ The MCP server SHALL expose exactly one query-execution tool, named `query`, who
 
 ### Requirement: Query-object execution
 
-The `query` tool SHALL accept a single query object with the documented query fields (`source_model` as a stored model or stage name, or omitted, plus `extensions`, measures, dimensions, filters, time dimensions, `main_time_dimension`, order, limit, offset, `whole_periods_only`, per-query `variables`, and the in-query control fields `to_many_handling` and `distinct_dimension_values`) and SHALL execute it with the same semantics as the engine's single-query execution.
+The `query` tool SHALL accept a single query object with the documented query fields (`population` as a stored model or stage name, or omitted, plus `extensions`, measures, dimensions, filters, time dimensions, `main_time_dimension`, order, limit, offset, `whole_periods_only`, per-query `variables`, and the in-query control fields `to_many_handling` and `distinct_dimension_values`) and SHALL execute it with the same semantics as the engine's single-query execution.
 
 #### Scenario: Single query object runs
 
-- **WHEN** `query` is called with `query={"source_model": "orders", "measures": [{"formula": "count(*)"}], "dimensions": ["status"]}`
+- **WHEN** `query` is called with `query={"population": "orders", "metrics": [{"metric": "count(*)"}], "dimensions": ["status"]}`
 - **THEN** the aggregated result rows are returned in the requested output format
 
 #### Scenario: In-query control fields are honored
@@ -31,11 +31,11 @@ The `query` tool SHALL accept a single query object with the documented query fi
 
 ### Requirement: Multi-stage list execution
 
-The `query` tool SHALL accept a non-empty list of query objects forming a multi-stage DAG with the engine's list semantics: every non-final entry is named, stages reference siblings by name (as a `source_model` string, an extension's `source_name`, or an `extensions[].joins[].target_model` — there is no top-level `joins` field), the engine reorders stages so references resolve, and the last entry is the root whose rows are returned. An empty list SHALL be rejected with a clear error.
+The `query` tool SHALL accept a non-empty list of query objects forming a multi-stage DAG with the engine's list semantics: every non-final entry is named, stages reference siblings by name (as a `population` string, an extension's `dataset`, or an `extensions[].relationships[].to` — there is no top-level `relationships` field), the engine reorders stages so references resolve, and the last entry is the root whose rows are returned. An empty list SHALL be rejected with a clear error.
 
 #### Scenario: Two-stage query returns the root stage's rows
 
-- **WHEN** `query` is called with `query=[{"name": "monthly", "source_model": "orders", "measures": [{"formula": "sum(revenue)"}], "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]}, {"source_model": "monthly", "measures": [{"formula": "count(*)"}]}]`
+- **WHEN** `query` is called with `query=[{"name": "monthly", "population": "orders", "metrics": [{"metric": "sum(revenue)"}], "time_dimensions": [{"field": "created_at", "granularity": "month"}]}, {"population": "monthly", "metrics": [{"metric": "count(*)"}]}]`
 - **THEN** the result of the final (root) stage is returned
 
 #### Scenario: Empty list is rejected
@@ -45,7 +45,7 @@ The `query` tool SHALL accept a non-empty list of query objects forming a multi-
 
 ### Requirement: Run-by-name string execution
 
-The `query` tool SHALL treat a bare string as run-by-name execution of a query-backed model, with exactly the engine's string semantics: a query-backed model's backing query runs (honoring `variables`, and merging an optional `refine` into its final stage as the engine does); a stored model that is not query-backed SHALL raise the engine's error directing the caller to pass a query object with `source_model` instead. A `refine` passed with a query object or a list SHALL raise the engine's error that a refinement applies only to a saved query run by name.
+The `query` tool SHALL treat a bare string as run-by-name execution of a query-backed model, with exactly the engine's string semantics: a query-backed model's backing query runs (honoring `variables`, and merging an optional `refine` into its final stage as the engine does); a stored model that is not query-backed SHALL raise the engine's error directing the caller to pass a query object with `population` instead. A `refine` passed with a query object or a list SHALL raise the engine's error that a refinement applies only to a saved query run by name.
 
 #### Scenario: Query-backed model runs by name
 
@@ -55,7 +55,7 @@ The `query` tool SHALL treat a bare string as run-by-name execution of a query-b
 #### Scenario: Non-query-backed model name errors
 
 - **WHEN** `query` is called with `query="orders"` and `orders` is a plain table-backed model
-- **THEN** an error states the model is not query-backed and directs the caller to pass a query with `source_model="orders"`
+- **THEN** an error states the model is not query-backed and directs the caller to pass a query with `population="orders"`
 
 #### Scenario: Query-backed model runs refined
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 import sqlglot
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 
 from tests._engine_helpers import _engine_generate, _extract_cte_body, _norm
@@ -64,79 +64,79 @@ def _joinback_on_predicate(sql: str, *, dialect: str = "postgres") -> str:
 # Model builders — chain: orders_x → customers_v2 → regions → countries.
 # Postgres dialect for SQL-shape assertions (alias mangling is identity there).
 # --------------------------------------------------------------------------- #
-def _countries() -> SlayerModel:
-    return SlayerModel(
+def _countries() -> SlayerDataset:
+    return SlayerDataset(
         name="countries", sql_table="countries", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="gdp", sql="gdp", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="gdp", sql="gdp", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _regions(*, extra_columns=None) -> SlayerModel:
+def _regions(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="name", sql="name", type=DataType.TEXT),
-        Column(name="population", sql="population", type=DataType.DOUBLE),
-        Column(name="weight", sql="weight", type=DataType.DOUBLE),
-        Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
-        Column(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.STRING),
+        DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+        DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
+        DatasetField(name="country_id", sql="country_id", datatype=DataType.FLOAT),
+        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.DATETIME),
     ]
     if extra_columns:
         cols.extend(extra_columns)
-    return SlayerModel(
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=cols,
-        joins=[ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])],
+        fields=cols,
+        relationships=[DatasetRelationship(to="countries", from_columns=["country_id"], to_columns=["id"])],
     )
 
 
-def _customers_v2(*, extra_columns=None) -> SlayerModel:
+def _customers_v2(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-        Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE),
-        Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
-        Column(name="status", sql="status", type=DataType.TEXT),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+        DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
+        DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
+        DatasetField(name="status", sql="status", datatype=DataType.STRING),
         # Target-LOCAL derived dims (expand to customers_v2-only columns):
-        Column(name="ltv_x2", sql="lifetime_value * 2", type=DataType.DOUBLE),
-        Column(name="ltv_third", sql="lifetime_value / 3.0", type=DataType.INT),
+        DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
+        DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INTEGER),
         # Derived, one-hop crossing (customers_v2 → regions):
-        Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
-        Column(name="deep_pop_x2", sql="regions.population * 2", type=DataType.DOUBLE),
-        Column(name="deep_weight", sql="regions.weight", type=DataType.DOUBLE),
+        DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+        DatasetField(name="deep_pop_x2", sql="regions.population * 2", datatype=DataType.FLOAT),
+        DatasetField(name="deep_weight", sql="regions.weight", datatype=DataType.FLOAT),
         # Derived, TWO-hop crossing (customers_v2 → regions → countries):
-        Column(name="deep_gdp", sql="regions.countries.gdp", type=DataType.DOUBLE),
+        DatasetField(name="deep_gdp", sql="regions.countries.gdp", datatype=DataType.FLOAT),
         # Derived TIME dim whose sql crosses a further join (DEV-1701):
-        Column(name="region_opened_eff",
+        DatasetField(name="region_opened_eff",
                sql="coalesce(regions.opened_at, signup_at)",
-               type=DataType.TIMESTAMP),
+               datatype=DataType.DATETIME),
     ]
     if extra_columns:
         cols.extend(extra_columns)
-    return SlayerModel(
+    return SlayerDataset(
         name="customers_v2", sql_table="customers", data_source="test",
-        columns=cols,
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        fields=cols,
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         default_time_dimension="signup_at",
     )
 
 
-def _orders_x(*, extra_columns=None) -> SlayerModel:
+def _orders_x(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-        Column(name="amount", sql="amount", type=DataType.DOUBLE),
-        Column(name="status", sql="status", type=DataType.TEXT),
-        Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="status", sql="status", datatype=DataType.STRING),
+        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
     ]
     if extra_columns:
         cols.extend(extra_columns)
-    return SlayerModel(
+    return SlayerDataset(
         name="orders_x", sql_table="orders", data_source="test",
-        columns=cols,
-        joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
+        fields=cols,
+        relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],
         default_time_dimension="created_at",
     )
 
@@ -152,9 +152,9 @@ async def _gen(
     """Render ``query`` against the orders_x chain and return the SQL."""
     return await _engine_generate(
         query=query,
-        model=_orders_x(extra_columns=orders_extra),
+        dataset=_orders_x(extra_columns=orders_extra),
         dialect=dialect,
-        extra_models=[
+        extra_datasets=[
             _customers_v2(extra_columns=customers_extra),
             _regions(extra_columns=regions_extra),
             _countries(),

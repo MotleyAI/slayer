@@ -1,0 +1,50 @@
+{
+ "source": "tests/_reagg_outer_grain_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 120,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 142,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  }
+ ]
+}

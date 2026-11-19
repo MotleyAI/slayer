@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_tantivy_retriever.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  }
+ ]
+}

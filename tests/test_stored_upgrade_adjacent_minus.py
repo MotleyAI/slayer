@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import parse_expr
 from slayer.database import engine_factory
@@ -62,18 +62,18 @@ def test_loaded_text_parses(stored: str, loaded: str) -> None:
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_model_measure_formula(stored: str, loaded: str) -> None:
     doc = {**orders_v10(version=15), "measures": [{"name": "x", "formula": stored}]}
-    assert SlayerModel.model_validate(doc).measures[0].formula == _fully_loaded(stored, loaded)
+    assert SlayerDataset.model_validate(doc).metrics[0].expression == _fully_loaded(stored, loaded)
 
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_query_filter(stored: str, loaded: str) -> None:
     query = SlayerQuery.model_validate({"version": 6, "source_model": "orders", "filters": [stored]})
-    assert query.filters == [_fully_loaded(stored, loaded)]
+    assert query.filter == [_fully_loaded(stored, loaded)]
 
 
 def test_current_version_text_is_never_rewritten() -> None:
     doc = {**orders_v10(version=16), "measures": [{"name": "x", "formula": "sum(a) --note"}]}
-    assert SlayerModel.model_validate(doc).measures[0].formula == "sum(a) --note"
+    assert SlayerDataset.model_validate(doc).metrics[0].expression == "sum(a) --note"
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ async def test_stored_double_negation_returns_its_old_value(tmp_path, shop_ds, b
                              "measures": [{"formula": "sum(amount) --sum(amount)", "name": "rev"}]}
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), query_backed_v10(name="rev_q", stages=[stage])])
-    total = measure_total(await run(storage, {"source_model": "orders", "measures": [{"formula": "sum(amount)",
-                                                                                     "name": "t"}]}), measure="t")
-    resp = await run(storage, {"source_model": "rev_q", "measures": ["sum(rev)"]})
+    total = measure_total(await run(storage, {"population": "orders", "metrics": [{"metric": "sum(amount)",
+                                                                                     "alias": "t"}]}), measure="t")
+    resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev)"]})
     assert measure_total(resp, measure="rev_sum") == 2 * total

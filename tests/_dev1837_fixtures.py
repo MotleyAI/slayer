@@ -54,9 +54,9 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     BAND35,
     BAND35_OF,
     CITY_TOTAL,
-    ColumnRef,
+    FieldRef,
     GRAND_TOTAL,
-    ModelMeasure,
+    DatasetMetric,
     REGION_LAST,
     REGION_TOTAL,
     SlayerQuery,
@@ -82,11 +82,11 @@ CP_PRED = "consecutive_periods(sum(amount) > 28)"
 #: Dimension-family query dimensions, in projection order.
 DIM_FAMILY_DIMS = {
     "col": ["region"],
-    "expr": ["region", {"expression": "lower(city)", "name": "lc"}],
-    "band": ["region", {"expression": BAND35, "name": "band"}],
-    "bare": ["region", {"expression": BARE_DIM, "name": "ct"}],
-    "rank": ["region", {"expression": RANK_DIM, "name": "rr"}],
-    "mixed": ["region", "city", {"expression": MIXED_DIM, "name": "mr"}],
+    "expr": ["region", {"field": "lower(city)", "alias": "lc"}],
+    "band": ["region", {"field": BAND35, "alias": "band"}],
+    "bare": ["region", {"field": BARE_DIM, "alias": "ct"}],
+    "rank": ["region", {"field": RANK_DIM, "alias": "rr"}],
+    "mixed": ["region", "city", {"field": MIXED_DIM, "alias": "mr"}],
 }
 
 #: Transform-measure formulas, keyed by op (the M-transform family).
@@ -316,8 +316,8 @@ def dim_key(row: dict, *, family: str, with_month: bool):
 
 __all__ = [
     "BAND35", "BAND35_OF", "BARE_DIM", "CITY_TOTAL", "CM_TOTAL", "COL_WM",
-    "CP_PRED", "ColumnRef", "DIM_FAMILY_DIMS", "GRAND_TOTAL", "GROUP_M",
-    "GROUP_M_MONTH", "MIXED_DIM", "ModelMeasure", "RANK_DIM", "REGION_LAST",
+    "CP_PRED", "FieldRef", "DIM_FAMILY_DIMS", "GRAND_TOTAL", "GROUP_M",
+    "GROUP_M_MONTH", "MIXED_DIM", "DatasetMetric", "RANK_DIM", "REGION_LAST",
     "REGION_TOTAL",
     "SlayerQuery", "TD_TRANSFORM_OPS", "TRAILING_90D_REGION", "TRANSFORM_FORMULAS",
     "TRANSFORM_X", "TimeDimension", "TimeGranularity", "dev1837_models", "dim_key",

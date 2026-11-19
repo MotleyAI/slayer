@@ -16,7 +16,7 @@ from slayer.core.time_points import host_clock
     ("  2025-07-15T12:00:00  ", datetime(2025, 7, 15, 12)),
     ("2025-07-15", datetime(2025, 7, 15)),
 ], ids=["datetime", "space-fractional", "padded", "date-only"])
-def test_pinned_value(monkeypatch, value, expected) -> None:
+def test_pinned_value(monkeypatch: pytest.MonkeyPatch, value, expected) -> None:
     monkeypatch.setenv("SLAYER_NOW", value)
     clock = host_clock()
     assert clock() == expected
@@ -24,7 +24,7 @@ def test_pinned_value(monkeypatch, value, expected) -> None:
 
 
 @pytest.mark.parametrize("value", [None, "", "   "], ids=["unset", "empty", "whitespace"])
-def test_blank_is_the_host_wall_clock(monkeypatch, value) -> None:
+def test_blank_is_the_host_wall_clock(monkeypatch: pytest.MonkeyPatch, value) -> None:
     if value is None:
         monkeypatch.delenv("SLAYER_NOW", raising=False)
     else:
@@ -38,7 +38,7 @@ def test_blank_is_the_host_wall_clock(monkeypatch, value) -> None:
 
 
 @pytest.mark.parametrize("value", ["2025-07-15T12:00:00Z", "2025-07-15T12:00:00+02:00"], ids=["Z", "offset"])
-def test_timezone_aware_is_rejected(monkeypatch, value) -> None:
+def test_timezone_aware_is_rejected(monkeypatch: pytest.MonkeyPatch, value) -> None:
     monkeypatch.setenv("SLAYER_NOW", value)
     with pytest.raises(SlayerError) as exc:
         host_clock()
@@ -48,7 +48,7 @@ def test_timezone_aware_is_rejected(monkeypatch, value) -> None:
     assert "naive" in msg.lower()
 
 
-def test_unparseable_is_rejected(monkeypatch) -> None:
+def test_unparseable_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", "yesterday-ish")
     with pytest.raises(SlayerError) as exc:
         host_clock()

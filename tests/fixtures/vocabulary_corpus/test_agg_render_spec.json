@@ -1,0 +1,86 @@
+{
+ "source": "tests/test_agg_render_spec.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 605,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 608,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 609,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 610,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 658,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 663,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 664,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -13,7 +13,7 @@ DS = "test_ds"
 
 def _convert(project: CubeProject):
     result = CubeToSlayerConverter(project=project, data_source=DS).convert()
-    return {m.name: m for m in result.models}, result.report
+    return {m.name: m for m in result.datasets}, result.report
 
 
 def test_child_inherits_base_members():
@@ -31,10 +31,10 @@ def test_child_inherits_base_members():
     models, _ = _convert(project)
     clicks = models["clicks"]
     # Inherited dimensions + measure, plus the child's own measure.
-    assert clicks.get_column("id") is not None
-    assert clicks.get_column("event_type") is not None
-    assert clicks.get_measure("count") is not None
-    assert clicks.get_measure("click_value") is not None
+    assert clicks.get_field("id") is not None
+    assert clicks.get_field("event_type") is not None
+    assert clicks.get_metric("count") is not None
+    assert clicks.get_metric("click_value") is not None
     assert clicks.sql_table == "public.clicks"  # child source wins
 
 
@@ -60,7 +60,7 @@ def test_child_overrides_inherited_member():
     ])
     models, _ = _convert(project)
     # Child wins on name conflict.
-    assert models["child"].get_column("label").sql == "new_label"
+    assert models["child"].get_field("label").sql == "new_label"
 
 
 def test_multi_level_extends_chain():
@@ -74,9 +74,9 @@ def test_multi_level_extends_chain():
     ])
     models, _ = _convert(project)
     c = models["c"]
-    assert c.get_column("x") is not None  # from a, transitively
-    assert c.get_column("y") is not None  # from b
-    assert c.get_column("z") is not None  # own
+    assert c.get_field("x") is not None  # from a, transitively
+    assert c.get_field("y") is not None  # from b
+    assert c.get_field("z") is not None  # own
 
 
 def test_extends_cycle_is_reported():
@@ -98,6 +98,6 @@ def test_extends_cycle_flattens_without_inheritance():
                  dimensions=[CubeDimension(name="b_col", sql="{CUBE}.b_col", type="number")]),
     ])
     models, _ = _convert(project)
-    assert models["a"].get_column("a_col") is not None
-    assert models["a"].get_column("b_col") is None  # did NOT inherit across the cycle
-    assert models["b"].get_column("a_col") is None
+    assert models["a"].get_field("a_col") is not None
+    assert models["a"].get_field("b_col") is None  # did NOT inherit across the cycle
+    assert models["b"].get_field("a_col") is None

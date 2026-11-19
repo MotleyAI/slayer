@@ -9,21 +9,22 @@ builders) can map types without importing pyarrow. The Arrow-specific half
 
 from __future__ import annotations
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind
 
-_DATATYPE_TO_JDBC: dict[DataType, str] = {
-    DataType.TEXT: "VARCHAR",
-    DataType.INT: "BIGINT",
-    DataType.DOUBLE: "DOUBLE",
-    DataType.BOOLEAN: "BOOLEAN",
-    DataType.DATE: "DATE",
-    DataType.TIMESTAMP: "TIMESTAMP",
+_KIND_TO_JDBC: dict[TypeKind, str] = {
+    TypeKind.TEXT: "VARCHAR",
+    TypeKind.INT: "BIGINT",
+    TypeKind.DOUBLE: "DOUBLE",
+    TypeKind.BOOLEAN: "BOOLEAN",
+    TypeKind.DATE: "DATE",
+    TypeKind.TIMESTAMP: "TIMESTAMP",
     # Opaque columns travel as text over the wire — the value is whatever the
     # driver stringified, and no client-side type claim would be honest.
-    DataType.UNKNOWN: "VARCHAR",
+    TypeKind.UNKNOWN: "VARCHAR",
     # Lists travel as their JSON array text.
-    DataType.ARRAY: "VARCHAR",
+    TypeKind.ARRAY: "VARCHAR",
 }
+_DATATYPE_TO_JDBC: dict[DataType, str] = {t: _KIND_TO_JDBC[t.kind] for t in DataType}
 
 
 def datatype_to_jdbc(dt: DataType) -> str:

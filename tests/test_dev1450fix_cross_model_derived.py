@@ -23,8 +23,8 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.keys import ColumnSqlKey
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.keys import FieldSqlKey
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -37,12 +37,12 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 def test_agg_kwarg_canonical_str_columnsqlkey_local():
-    v = ColumnSqlKey(path=(), model="customers", column_name="net")
+    v = FieldSqlKey(path=(), dataset="customers", field_name="net")
     assert agg_kwarg_canonical_str(v) == "net"
 
 
 def test_agg_kwarg_canonical_str_columnsqlkey_joined():
-    v = ColumnSqlKey(path=("customers",), model="customers", column_name="net")
+    v = FieldSqlKey(path=("customers",), dataset="customers", field_name="net")
     assert agg_kwarg_canonical_str(v) == "customers.net"
 
 
@@ -85,35 +85,35 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
     )
     # Customers with a derived model filter (is_active) AND a derived
     # column used in a query filter (big_spender).
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="revenue", type=DataType.DOUBLE, label="Revenue"),
-                Column(name="is_active", sql="status = 'active'", type=DataType.BOOLEAN),
-                Column(name="big_spender", sql="revenue > 60", type=DataType.BOOLEAN),
-                Column(name="rev_x2", sql="revenue * 2", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT, label="Revenue"),
+                DatasetField(name="is_active", sql="status = 'active'", datatype=DataType.BOOLEAN),
+                DatasetField(name="big_spender", sql="revenue > 60", datatype=DataType.BOOLEAN),
+                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT),
             ],
             filters=["is_active"],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -125,16 +125,16 @@ async def test_c1_target_derived_model_filter_expands(engine):
     (is_active = status='active') — inactive customers are excluded."""
     resp = await engine.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         })
     )
     dry = await engine.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         }),
         dry_run=True,
     )
@@ -154,10 +154,10 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
     """A query filter on a joined derived column (customers.big_spender)
     routes into the target CTE and renders the expanded predicate."""
     q = SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "sum(customers.revenue)"}],
-        "filters": ["customers.big_spender == 1"],
+        "metrics": [{"metric": "sum(customers.revenue)"}],
+        "filter": ["customers.big_spender == 1"],
     })
     dry = await engine.execute(q, dry_run=True)
     assert "big_spender" not in dry.sql, dry.sql
@@ -172,15 +172,15 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
     assert by_region == pytest.approx({"NA": 100.0, "EU": 70.0})
 
 
-async def test_derived_column_as_cross_model_agg_source(engine):
+async def test_derived_column_as_cross_model_agg_source(engine: SlayerQueryEngine):
     """A DERIVED column used as a cross-model aggregate source
     (``sum(customers.rev_x2)`` where rev_x2 = revenue*2) re-roots and
     expands correctly in the CTE, and aliases as ``rev_x2_sum`` (not the
     star ``_sum`` form)."""
     q = SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "sum(customers.rev_x2)"}],
+        "metrics": [{"metric": "sum(customers.rev_x2)"}],
     })
     dry = await engine.execute(q, dry_run=True)
     assert "orders.customers.rev_x2_sum" in dry.columns, dry.columns
@@ -195,17 +195,17 @@ async def test_derived_column_as_cross_model_agg_source(engine):
     assert by_region == pytest.approx({"NA": 200.0, "EU": 140.0, None: None})
 
 
-async def test_cr11_cross_model_agg_over_derived_column_metadata(engine):
+async def test_cr11_cross_model_agg_over_derived_column_metadata(engine: SlayerQueryEngine):
     """An aggregate over a derived column resolves label/format via
     src.model (not a path walk that could miss it)."""
     resp = await engine.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         })
     )
     # revenue carries label "Revenue"; the cross-model measure inherits it.
-    meta = resp.attributes.measures.get("orders.customers.revenue_sum")
+    meta = resp.attributes.metrics.get("orders.customers.revenue_sum")
     assert meta is not None
     assert meta.label == "Revenue"

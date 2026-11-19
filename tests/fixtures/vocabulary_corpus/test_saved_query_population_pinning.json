@@ -1,0 +1,152 @@
+{
+ "source": "tests/test_saved_query_population_pinning.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "products",
+    "join_pairs": [
+     [
+      "product_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "products",
+    "from_columns": [
+     "product_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "per_customer",
+    "measures": [
+     {
+      "formula": "sum(revenue)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "per_customer",
+    "metrics": [
+     {
+      "metric": "sum(revenue)",
+      "alias": "total"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 133,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 191,
+   "reason": "unclassifiable"
+  }
+ ]
+}

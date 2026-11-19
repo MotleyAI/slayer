@@ -1,0 +1,110 @@
+{
+ "source": "tests/_unrelated_datasets_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 172,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 176,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 177,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 216,
+   "reason": "not fully literal"
+  }
+ ]
+}

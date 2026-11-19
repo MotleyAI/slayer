@@ -1,0 +1,106 @@
+{
+ "source": "tests/test_dev1965_statement_assembly.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "created_at",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     {
+      "expression": "lower(status)",
+      "name": "ls"
+     }
+    ],
+    "filters": [
+     "cumsum(sum(amount)) > 50 or lower(status) == 'c'"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     {
+      "field": "lower(status)",
+      "alias": "ls"
+     }
+    ],
+    "filter": [
+     "cumsum(sum(amount)) > 50 or lower(status) == 'c'"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 284,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 339,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 357,
+   "reason": "unclassifiable"
+  }
+ ]
+}

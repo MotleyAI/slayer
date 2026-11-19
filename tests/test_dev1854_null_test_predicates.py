@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1846_fixtures import (
-    ModelMeasure,
     SlayerQuery,
     make_exec_engine,
     month_key,
@@ -26,8 +27,8 @@ async def exec_engine(request):
         yield engine
 
 
-def _q(*, measures, dimensions=None) -> SlayerQuery:
-    kw = dict(source_model="sales", time_dimensions=month_td(), measures=measures)
+def _q(*, metrics, dimensions=None) -> SlayerQuery:
+    kw = dict(population="sales", time_dimensions=month_td(), metrics=metrics)
     if dimensions is not None:
         kw["dimensions"] = dimensions
     return SlayerQuery.model_validate(kw)
@@ -46,9 +47,9 @@ class TestNullTestExecution:
         B NULL in March → 1, 2, 0."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            measures=[ModelMeasure(
-                formula="consecutive_periods(sum(hi_rev) is not None)",
-                name="streak")],
+            metrics=[QueryMetric(
+                metric="consecutive_periods(sum(hi_rev) is not None)",
+                alias="streak")],
         ))
         by = _by_store_month(resp)
         assert int(by[("A", "2024-01")]["sales.streak"]) == 1
@@ -62,9 +63,9 @@ class TestNullTestExecution:
         """The complementary ``is None`` form: A → 0,0,0; B → 0,0,1."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            measures=[ModelMeasure(
-                formula="consecutive_periods(sum(hi_rev) is None)",
-                name="streak")],
+            metrics=[QueryMetric(
+                metric="consecutive_periods(sum(hi_rev) is None)",
+                alias="streak")],
         ))
         by = _by_store_month(resp)
         assert int(by[("A", "2024-01")]["sales.streak"]) == 0
@@ -80,9 +81,9 @@ class TestNullTestExecution:
         B 1,2,0."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            measures=[ModelMeasure(
-                formula="consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
-                name="streak")],
+            metrics=[QueryMetric(
+                metric="consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
+                alias="streak")],
         ))
         by = _by_store_month(resp)
         assert int(by[("A", "2024-01")]["sales.streak"]) == 1
@@ -97,8 +98,8 @@ class TestNullTestExecution:
         both streaks 1, 2, 3."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            measures=[ModelMeasure(
-                formula="consecutive_periods(store is not None)", name="streak")],
+            metrics=[QueryMetric(
+                metric="consecutive_periods(store is not None)", alias="streak")],
         ))
         by = _by_store_month(resp)
         for store in ("A", "B"):
@@ -112,7 +113,7 @@ class TestNullTestTypingContract:
         """``(… is None) + 1`` is 1 or 2, never 0: B's NULL March keeps the run going."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            measures=[ModelMeasure(formula="consecutive_periods((sum(hi_rev) is None) + 1)", name="streak")],
+            metrics=[QueryMetric(metric="consecutive_periods((sum(hi_rev) is None) + 1)", alias="streak")],
         ))
         by = _by_store_month(resp)
         for store in ("A", "B"):

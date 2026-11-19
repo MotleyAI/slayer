@@ -84,7 +84,7 @@ dimension combination, or repeats one.
 
 #### Scenario: Raw rows are never multiplied by a population filter's join
 - **WHEN** a query rooted at `customers` selects `dimensions: ["tier"]` with
-  `distinct_dimension_values: false` and `filters: ["orders.status = 'ok'"]`, and one
+  `distinct_dimension_values: false` and `filter: ["orders.status = 'ok'"]`, and one
   customer has two `ok` orders
 - **THEN** by executed values the result has one row per customer with at least one `ok`
   order (five rows on the reference dataset), never one row per matching order
@@ -203,14 +203,14 @@ related row.
 
 #### Scenario: Filter and dimension on one branch bind to the same row
 - **WHEN** a query rooted at `customers` selects `dimensions: ["orders.status"]`, the
-  local `sum(spend)`, and `filters: ["orders.amount = 20"]`, where the only order of
+  local `sum(spend)`, and `filter: ["orders.amount = 20"]`, where the only order of
   amount 20 has status `new` and its customer also has `ok` orders
 - **THEN** the result has exactly one cell, `new`, by executed values — the filter and
   the dimension are evaluated on the same joined row, never on the customer's other orders
 
 #### Scenario: Two branches restrict the population independently
 - **WHEN** a query rooted at `customers` selects `sum(spend)` with
-  `filters: ["orders.status = 'ok'", "regions.region_events.value >= 50"]`, where
+  `filter: ["orders.status = 'ok'", "regions.region_events.value >= 50"]`, where
   `customers → orders` and `regions → region_events` are one-to-many
 - **THEN** by executed values the metric counts exactly the customers with at least one
   `ok` order whose region has at least one event of value 50 or more, each once (280 on the
@@ -270,7 +270,7 @@ related row.
 
 #### Scenario: A materialised branch binds to the grouped row inside a multi-branch conjunct
 - **WHEN** a query rooted at `customers` selects `dimensions: ["orders.id"]` and no measures
-  with `filters: ["orders.status = 'ok' or regions.name = 'South'"]`
+  with `filter: ["orders.status = 'ok' or regions.name = 'South'"]`
 - **THEN** by executed values the result has one cell per order that is itself `ok` or whose
   customer's region is `South` (orders 1, 3, 5, 7, 9 and 10 on the reference dataset), plus the
   null-order cell for the orderless customer whose region is `South` (its LEFT-extended row
@@ -279,7 +279,7 @@ related row.
 
 #### Scenario: Out-of-scope conjunct without an inline aggregate keeps applying
 - **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`
-  with `filters: ["tier = 'bronze' or orders.status = 'ok'"]`, in any `to_many_handling`
+  with `filter: ["tier = 'bronze' or orders.status = 'ok'"]`, in any `to_many_handling`
   mode
 - **THEN** the conjunct keeps applying, now by association in the producer too: by executed
   values each tier cell equals the spend of that tier's distinct customers passing the
@@ -290,7 +290,7 @@ related row.
 
 #### Scenario: Out-of-scope conjunct in raw-row mode fails closed
 - **WHEN** a query rooted at `customers` selects `dimensions: ["tier"]` with
-  `distinct_dimension_values: false` and `filters: ["tier = 'bronze' or orders.status = 'ok'"]`,
+  `distinct_dimension_values: false` and `filter: ["tier = 'bronze' or orders.status = 'ok'"]`,
   and one customer has two `ok` orders
 - **THEN** the query no longer fails closed: by executed values the result has one row per
   bronze customer or customer with at least one `ok` order (six rows on the reference
@@ -827,7 +827,7 @@ closed rather than silently re-anchor at the root. An edge-name segment never
 cancels. Only a definition default cancels: a query-typed path that revisits a
 dataset stays refused with the circular-join error, and so does a default reference
 that is circular from the query root. (Whether a derived column whose
-own `Column.sql` revisits is likewise refused is out of scope here — DEV-1952.) A
+own `DatasetField.sql` revisits is likewise refused is out of scope here — DEV-1952.) A
 default is resolved once, when the query is bound, and is thereafter the same value as
 its explicit spelling — the column it resolves to, or for an expression default each
 of its references: it homes, is checked for input safety and renders exactly as that
@@ -1041,12 +1041,12 @@ applies exactly as for a single-column source rooted at the home.
   name and a `customers`-declared aggregation defaults its weight to that bare name
 - **THEN** the default reads the owner's (`customers`) column in every producer kind,
   equal by executed values on SQLite and DuckDB to the explicit
-  `weight=customers.<column>` twin
+  `weight=customers.<field>` twin
 
 #### Scenario: A mixed-frame expression default keeps a quoted column's identity
 - **WHEN** an expression default combines an owner-local column whose physical name
   must be quoted (mixed-case or a reserved word) with a root-anchored column
-  (`<owner column> + orders.amount`)
+  (`<owner field> + orders.amount`)
 - **THEN** the quoted column renders with its exact identity and the executed value on
   SQLite and DuckDB equals the explicit two-reference spelling
 

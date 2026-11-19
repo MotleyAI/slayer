@@ -9,21 +9,21 @@ import tempfile
 
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _model_with_join() -> SlayerModel:
-    return SlayerModel(
+def _dataset_with_relationship() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="testds",
-        columns=[Column(name="customer_id", type=DataType.INT)],
-        joins=[
-            ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "customer_id"]],
+        fields=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[
+            DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["customer_id"],
                 join_type=JoinType.LEFT,
                 description="Each order has one customer.",
                 meta={"osi_ai_context": {"instructions": "Each order has one customer."}},
@@ -33,15 +33,15 @@ def _model_with_join() -> SlayerModel:
 
 
 def test_modeljoin_has_optional_description_and_meta_defaulting_none() -> None:
-    j = ModelJoin(target_model="c", join_pairs=[["a", "b"]])
+    j = DatasetRelationship(to="c", from_columns=["a"], to_columns=["b"])
     assert j.description is None
     assert j.meta is None
 
 
 def test_modeljoin_accepts_description_and_meta() -> None:
-    j = ModelJoin(
-        target_model="c",
-        join_pairs=[["a", "b"]],
+    j = DatasetRelationship(
+        to="c",
+        from_columns=["a"], to_columns=["b"],
         description="desc",
         meta={"k": "v"},
     )
@@ -51,10 +51,11 @@ def test_modeljoin_accepts_description_and_meta() -> None:
 
 def test_old_v7_join_without_new_fields_validates() -> None:
     # Data written before the fields existed omits them entirely.
-    j = ModelJoin.model_validate({"target_model": "c", "join_pairs": [["a", "b"]]})
-    assert j.description is None and j.meta is None
+    j = DatasetRelationship.model_validate({"to": "c", "from_columns": ["a"], "to_columns": ["b"]})
+    assert j.description is None
+    assert j.meta is None
     # And a whole v7 model whose join lacks the fields still loads.
-    m = SlayerModel.model_validate(
+    m = SlayerDataset.model_validate(
         {
             "version": 7,
             "name": "orders",
@@ -64,17 +65,18 @@ def test_old_v7_join_without_new_fields_validates() -> None:
             "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "customer_id"]]}],
         }
     )
-    assert m.joins[0].description is None and m.joins[0].meta is None
+    assert m.relationships[0].description is None
+    assert m.relationships[0].meta is None
 
 
 async def test_yaml_roundtrip_preserves_join_fields() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = YAMLStorage(base_dir=tmp)
-        await storage.save_model(_model_with_join())
-        loaded = await storage.get_model("orders", data_source="testds")
+        await storage.save_dataset(_dataset_with_relationship())
+        loaded = await storage.get_dataset("orders", data_source="testds")
         assert loaded is not None
-        assert loaded.joins[0].description == "Each order has one customer."
-        assert loaded.joins[0].meta == {
+        assert loaded.relationships[0].description == "Each order has one customer."
+        assert loaded.relationships[0].meta == {
             "osi_ai_context": {"instructions": "Each order has one customer."}
         }
 
@@ -82,10 +84,10 @@ async def test_yaml_roundtrip_preserves_join_fields() -> None:
 async def test_sqlite_roundtrip_preserves_join_fields() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = SQLiteStorage(db_path=f"{tmp}/s.db")
-        await storage.save_model(_model_with_join())
-        loaded = await storage.get_model("orders", data_source="testds")
+        await storage.save_dataset(_dataset_with_relationship())
+        loaded = await storage.get_dataset("orders", data_source="testds")
         assert loaded is not None
-        assert loaded.joins[0].description == "Each order has one customer."
-        assert loaded.joins[0].meta["osi_ai_context"]["instructions"] == (
+        assert loaded.relationships[0].description == "Each order has one customer."
+        assert loaded.relationships[0].meta["osi_ai_context"]["instructions"] == (
             "Each order has one customer."
         )

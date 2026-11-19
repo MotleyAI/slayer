@@ -6,7 +6,7 @@ Mode A — SQL expression: Column.sql, Column.filter, SlayerModel.filters.
     ``customers__regions.name``). Rejects aggregation colon syntax, transform
     calls, ModelMeasure refs, and (for filters) raw OVER (...).
 
-Mode B — DSL expression: ModelMeasure.formula, SlayerQuery.{measures,
+Mode B — DSL expression: ModelMeasure.expression, SlayerQuery.{measures,
     filters, dimensions, time_dimensions, order, main_time_dimension}.
     Pure DSL via Python AST. Accepts only Column / ModelMeasure references,
     aggregation colon syntax, transforms, single-dot dotted paths, and
@@ -22,31 +22,31 @@ columns) is preserved.
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _dataset_where_text, _engine_generate
 
 
-def _make_planets_model(*, with_window_column: bool = False) -> SlayerModel:
+def _make_planets_dataset(*, with_window_column: bool = False) -> SlayerDataset:
     columns = [
-        Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-        Column(name="name", sql="name", type=DataType.TEXT),
-        Column(name="mass", sql="mass", type=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.STRING),
+        DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
     ]
     if with_window_column:
         columns.append(
-            Column(
+            DatasetField(
                 name="rn",
                 sql="row_number() over (order by mass desc)",
-                type=DataType.INT,
+                datatype=DataType.INTEGER,
             )
         )
-    return SlayerModel(
+    return SlayerDataset(
         name="planets",
         sql_table="planets",
         data_source="test",
-        columns=columns,
+        fields=columns,
     )
 
 
@@ -59,83 +59,83 @@ class TestSqlModeAcceptance:
     """Free SQL function calls and SQL-spelled predicates are accepted."""
 
     def test_column_filter_accepts_json_extract(self) -> None:
-        col = Column(
+        col = DatasetField(
             name="active_amount",
             sql="amount",
             filter="json_extract(metadata, '$.active') = 1",
-            type=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         )
         assert col.filter is not None
         assert "json_extract" in col.filter.lower()
 
     def test_column_filter_accepts_coalesce_is_null(self) -> None:
-        col = Column(
+        col = DatasetField(
             name="amt",
             sql="amount",
             filter="coalesce(a, b) IS NULL",
-            type=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         )
         assert col.filter is not None
         assert "coalesce" in col.filter.lower()
         assert "IS NULL" in col.filter.upper()
 
     def test_column_filter_accepts_case_when(self) -> None:
-        col = Column(
+        col = DatasetField(
             name="amt",
             sql="amount",
             filter="CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1",
-            type=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         )
         assert col.filter is not None
         assert "CASE" in col.filter.upper()
 
     def test_model_filter_accepts_json_extract(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
             filters=["json_extract(metadata, '$.active') = 1"],
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert "json_extract" in model.filters[0].lower()
 
     def test_model_filter_accepts_lower_function(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
             filters=["lower(status) = 'active'"],
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert model.filters == ["lower(status) = 'active'"]
 
     def test_model_filter_accepts_double_underscore_join_path(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
             filters=["customers__regions.name = 'US'"],
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert "customers__regions.name" in model.filters[0]
 
     def test_model_filter_accepts_in_operator(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
             filters=["status IN ('a', 'b', 'c')"],
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert "IN" in model.filters[0].upper()
 
     def test_model_filter_accepts_is_null(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
             filters=["deleted_at IS NULL"],
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert "IS NULL" in model.filters[0].upper()
 
@@ -150,49 +150,49 @@ class TestSqlModeRuntime:
     """
 
     async def test_model_filter_with_json_extract_enriches(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
             filters=["json_extract(metadata, '$.active') = 1"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
-            source_model="m",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="m",
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         # This once raised "Unknown filter function 'json_extract'" at enrichment
         # time; it renders — the Mode A model filter survives into the WHERE of
         # the model's filtered dataset.
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         assert "json_extract" in _dataset_where_text(sql).lower(), (
             f"model filter dropped from WHERE clause:\n{sql}"
         )
 
     async def test_column_filter_with_lower_enriches(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(
                     name="active_amount",
                     sql="amount",
                     filter="lower(status) = 'active'",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
-                Column(name="status", sql="status", type=DataType.TEXT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
-            source_model="m",
-            measures=[ModelMeasure(formula="sum(active_amount)")],
+            population="m",
+            metrics=[QueryMetric(metric="sum(active_amount)")],
         )
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         # The Column.filter goes onto the measure as a CASE WHEN wrapper
         # inside the aggregate — the lowercase ``lower(...)`` predicate must
         # appear within the SUM expression.
@@ -207,38 +207,38 @@ class TestSqlModeRuntime:
         # With a real join target the ``__``-alias resolves to a bound
         # ``LEFT JOIN r AS customers__regions``, so the emitted SQL is
         # scope-closed AND the ``__``-path survives into it.
-        regions = SlayerModel(
+        regions = SlayerDataset(
             name="regions", sql_table="r", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers", sql_table="c", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="region_id", sql="region_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
             filters=["customers.regions.name = 'EU'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         query = SlayerQuery(
-            source_model="m",
-            measures=[ModelMeasure(formula="count(*)")],
+            population="m",
+            metrics=[QueryMetric(metric="count(*)")],
         )
         sql = await _engine_generate(
-            query=query, model=model, extra_models=[customers, regions],
+            query=query, dataset=model, extra_datasets=[customers, regions],
         )
         assert "customers__regions.name" in sql, (
             f"__-delimited join path dropped from emitted SQL:\n{sql}"
@@ -254,63 +254,63 @@ class TestSqlModeRejection:
 
     def test_column_filter_rejects_aggregation_colon(self) -> None:
         with pytest.raises(ValueError, match="(?i)aggregat|colon|measure|DSL"):
-            Column(
+            DatasetField(
                 name="x",
                 sql="amount",
                 filter="revenue:sum > 100",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             )
 
     def test_column_filter_rejects_transform_call(self) -> None:
         with pytest.raises(ValueError, match="(?i)transform|cumsum|DSL"):
-            Column(
+            DatasetField(
                 name="x",
                 sql="amount",
                 filter="cumsum(amount) > 0",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             )
 
     def test_model_filter_rejects_aggregation_colon(self) -> None:
-        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
+        columns = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)aggregat|colon|measure|DSL"):
-            SlayerModel(
+            SlayerDataset(
                 name="m",
                 sql_table="t",
                 data_source="test",
                 filters=["revenue:sum > 100"],
-                columns=columns,
+                fields=columns,
             )
 
     def test_model_filter_rejects_transform_call(self) -> None:
-        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
+        columns = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)transform|cumsum|DSL"):
-            SlayerModel(
+            SlayerDataset(
                 name="m",
                 sql_table="t",
                 data_source="test",
                 filters=["cumsum(sum(revenue)) > 0"],
-                columns=columns,
+                fields=columns,
             )
 
     def test_model_filter_rejects_raw_over(self) -> None:
         """Raw OVER (...) in a model filter is rejected (existing behavior preserved)."""
-        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
+        columns = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
-            SlayerModel(
+            SlayerDataset(
                 name="m",
                 sql_table="t",
                 data_source="test",
                 filters=["row_number() over (order by mass desc) <= 3"],
-                columns=columns,
+                fields=columns,
             )
 
     def test_column_filter_rejects_raw_over(self) -> None:
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
-            Column(
+            DatasetField(
                 name="x",
                 sql="amount",
                 filter="row_number() over (order by mass) <= 3",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             )
 
 
@@ -324,44 +324,44 @@ class TestDslModeAcceptance:
 
     def test_query_filter_accepts_aggregation(self) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            filters=["sum(revenue) > 100"],
+            population="orders",
+            filter=["sum(revenue) > 100"],
         )
-        assert q.filters == ["sum(revenue) > 100"]
+        assert q.filter == ["sum(revenue) > 100"]
 
     def test_query_filter_accepts_transform_predicate(self) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            filters=["change(sum(revenue)) > 0"],
+            population="orders",
+            filter=["change(sum(revenue)) > 0"],
         )
-        assert q.filters == ["change(sum(revenue)) > 0"]
+        assert q.filter == ["change(sum(revenue)) > 0"]
 
     def test_query_filter_accepts_nested_transform(self) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            filters=["last(change(sum(revenue))) < 0"],
+            population="orders",
+            filter=["last(change(sum(revenue))) < 0"],
         )
-        assert q.filters == ["last(change(sum(revenue))) < 0"]
+        assert q.filter == ["last(change(sum(revenue))) < 0"]
 
     def test_query_filter_accepts_dotted_join_path(self) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            filters=["customers.region == 'EU'"],
+            population="orders",
+            filter=["customers.region == 'EU'"],
         )
-        assert q.filters == ["customers.region == 'EU'"]
+        assert q.filter == ["customers.region == 'EU'"]
 
     def test_query_filter_accepts_variable_placeholder(self) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            filters=["status = '{status_val}'"],
+            population="orders",
+            filter=["status = '{status_val}'"],
             variables={"status_val": "active"},
         )
-        assert q.filters == ["status = '{status_val}'"]
+        assert q.filter == ["status = '{status_val}'"]
 
     def test_model_measure_accepts_cross_model_dotted_ref(self) -> None:
         """Cross-model dotted refs in ModelMeasure formulas remain supported (per spec)."""
-        m = ModelMeasure(name="cust_rev", formula="sum(customers.revenue)")
-        assert m.formula == "sum(customers.revenue)"
+        m = DatasetMetric(name="cust_rev", expression="sum(customers.revenue)")
+        assert m.expression == "sum(customers.revenue)"
 
 
 class TestDslModeRejection:
@@ -378,22 +378,22 @@ class TestDslModeRejection:
         referenced from the DSL. The rejection fires at enrichment time, where the DSL parser has
         full custom-aggregation context and can produce an accurate ``Unknown filter function`` error.
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="data", sql="data", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="data", sql="data", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             dimensions=["id"],
-            filters=["initcap(data) = 'X'"],
+            filter=["initcap(data) = 'X'"],
         )
         with pytest.raises(Exception, match="(?i)function|initcap|raw SQL|unknown|transform"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
     async def test_query_filter_rejects_unknown_double_underscore_at_enrichment(self) -> None:
         """``customers__region`` is a typo (no virtual column with that name on
@@ -401,25 +401,25 @@ class TestDslModeRejection:
         ``__`` is NOT rejected at construction because virtual-model columns
         produced by query-backed expansion legitimately contain ``__`` in their
         names (e.g. ``kpis__total_amount_sum``)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             dimensions=["id"],
-            filters=["customers__region = 'EU'"],
+            filter=["customers__region = 'EU'"],
         )
         with pytest.raises(Exception, match="(?i)customers__region|unknown|not a Column"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
     def test_query_filter_rejects_raw_over(self) -> None:
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
             SlayerQuery(
-                source_model="orders",
-                filters=["row_number() over (order by mass) <= 3"],
+                population="orders",
+                filter=["row_number() over (order by mass) <= 3"],
             )
 
     async def test_model_measure_rejects_raw_sql_function_at_enrichment(self) -> None:
@@ -427,20 +427,20 @@ class TestDslModeRejection:
         rejection fires at enrichment time (where the DSL parser runs with
         full custom-aggregation context), not at ModelMeasure construction.
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="bad", formula="json_extract(data, '$.x')")],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
+            metrics=[DatasetMetric(name="bad", expression="json_extract(data, '$.x')")],
         )
         query = SlayerQuery(
-            source_model="m",
-            measures=["bad"],
+            population="m",
+            metrics=["bad"],
             dimensions=["id"],
         )
         with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
 
 # ---------------------------------------------------------------------------
@@ -454,19 +454,19 @@ class TestStrictResolution:
     """
 
     async def test_unknown_filter_name_raises_at_enrichment(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         query = SlayerQuery(
-            source_model="m",
+            population="m",
             dimensions=["id"],
-            filters=["unknown_col > 0"],
+            filter=["unknown_col > 0"],
         )
         with pytest.raises(Exception, match="(?i)unknown_col|not.*column.*measure|undefined|unknown"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
     async def test_unknown_canonical_agg_shaped_typo_raises_at_enrichment(self) -> None:
         """Regression for round-2 review: a name that *looks* like a canonical
@@ -474,20 +474,20 @@ class TestStrictResolution:
         was never synthesised by the parser must NOT pass the strict-resolution
         check. The prior implementation used a permissive regex over
         BUILTIN_AGGREGATIONS that let these typos through."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         for typo in ("made_up_sum", "typo_count_distinct", "foo_avg"):
             query = SlayerQuery(
-                source_model="m",
+                population="m",
                 dimensions=["id"],
-                filters=[f"{typo} > 0"],
+                filter=[f"{typo} > 0"],
             )
             with pytest.raises(Exception, match=f"(?i){typo}|unknown|not a Column"):
-                await _engine_generate(query=query, model=model)
+                await _engine_generate(query=query, dataset=model)
 
     async def test_filter_referencing_unjoined_model_raises(self) -> None:
         """A filter like ``transportation_assets.total_vehicles >= 3``
@@ -497,52 +497,52 @@ class TestStrictResolution:
         error. The strict-resolution check now raises at enrichment with
         a clear "not in joins" message so agents can recover on retry.
         """
-        households = SlayerModel(
+        households = SlayerDataset(
             name="households",
             sql_table="households",
             data_source="test",
-            columns=[
-                Column(name="housenum", sql="housenum", type=DataType.INT, primary_key=True),
+            fields=[
+                DatasetField(name="housenum", sql="housenum", datatype=DataType.INTEGER, primary_key=True),
             ],
             # Note: NO join to ``transportation_assets``.
         )
         query = SlayerQuery(
-            source_model="households",
+            population="households",
             dimensions=["housenum"],
-            filters=["transportation_assets.total_vehicles >= 3"],
+            filter=["transportation_assets.total_vehicles >= 3"],
         )
         # An unreachable short form is route-aware-rejected (a ValueError) — still a loud raise, never silent unbound SQL.
         with pytest.raises(
             ValueError,
             match=(
-                r"no join to 'transportation_assets'"
+                r"no relationship to 'transportation_assets'"
                 r"|Cannot resolve reference 'transportation_assets"
-                r"|not a valid join path from 'households'"
+                r"|not a valid relationship path from 'households'"
             ),
         ):
-            await _engine_generate(query=query, model=households)
+            await _engine_generate(query=query, dataset=households)
 
     # The two former lenient-drop tests moved to producer filter
     # inheritance (tests/test_dev1836_filter_inheritance, test_dev1747_reroot_filter_routing).
 
     async def test_known_filter_name_passes(self) -> None:
         """Control: a filter naming a defined Column enriches without error."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
-            source_model="m",
+            population="m",
             dimensions=["id"],
-            filters=["status = 'active'"],
+            filter=["status = 'active'"],
         )
         # Should not raise.
-        await _engine_generate(query=query, model=model)
+        await _engine_generate(query=query, dataset=model)
 
 
 # ---------------------------------------------------------------------------
@@ -557,14 +557,14 @@ class TestPredicatePromotionRemoved:
     """
 
     async def test_filter_on_windowed_column_raises_with_actionable_message(self) -> None:
-        model = _make_planets_model(with_window_column=True)
+        model = _make_planets_dataset(with_window_column=True)
         query = SlayerQuery(
-            source_model="planets",
+            population="planets",
             dimensions=["name"],
-            filters=["rn <= 3"],
+            filter=["rn <= 3"],
         )
         with pytest.raises(Exception) as excinfo:
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
         msg = str(excinfo.value).lower()
         assert "window function" in msg or "rank" in msg, (
             f"Expected message to mention 'window function' and/or 'rank' "
@@ -574,13 +574,13 @@ class TestPredicatePromotionRemoved:
     async def test_select_only_on_windowed_column_still_works(self) -> None:
         """A windowed Column.sql is still legal as a *projection* — only as a
         filter target does it now error."""
-        model = _make_planets_model(with_window_column=True)
+        model = _make_planets_dataset(with_window_column=True)
         query = SlayerQuery(
-            source_model="planets",
+            population="planets",
             dimensions=["name", "rn"],
         )
         # Should render without error; only filter use is restricted.
-        await _engine_generate(query=query, model=model)
+        await _engine_generate(query=query, dataset=model)
 
 
 # ---------------------------------------------------------------------------
@@ -597,9 +597,9 @@ class TestVirtualModelColumnCarveOut:
     """
 
     def test_column_with_double_underscore_name_accepted(self) -> None:
-        col = Column(name="stores__name", type=DataType.TEXT)
+        col = DatasetField(name="stores__name", datatype=DataType.STRING)
         assert col.name == "stores__name"
 
     def test_column_with_three_segment_double_underscore_name_accepted(self) -> None:
-        col = Column(name="customers__regions__name", type=DataType.TEXT)
+        col = DatasetField(name="customers__regions__name", datatype=DataType.STRING)
         assert col.name == "customers__regions__name"

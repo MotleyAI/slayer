@@ -7,7 +7,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.storage import atomic_write as atomic_write_module
 from slayer.storage import yaml_storage as yaml_storage_module
 from slayer.storage.yaml_storage import YAMLStorage
@@ -20,15 +20,15 @@ def storage() -> YAMLStorage:
 
 
 @pytest.fixture
-def sample_model() -> SlayerModel:
-    return SlayerModel(
+def sample_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="test_model",
         sql_table="public.test_table",
         data_source="test_ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -101,7 +101,7 @@ def test_atomic_write_long_multibyte_basename(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == [path]
 
 
-def test_atomic_write_dir_sync_failure_does_not_fail_write(tmp_path, monkeypatch) -> None:
+def test_atomic_write_dir_sync_failure_does_not_fail_write(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The post-replace directory sync is best-effort: a failure there (here the
     # dir-fd close) must not turn an already-installed write into a raised error.
     path = tmp_path / "model.yaml"
@@ -117,7 +117,7 @@ def test_atomic_write_dir_sync_failure_does_not_fail_write(tmp_path, monkeypatch
     assert path.read_text() == "new"
 
 
-def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch) -> None:
+def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "model.yaml"
     path.write_text("old")
 
@@ -130,12 +130,13 @@ def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch
     monkeypatch.setattr(atomic_write_module.os, "fsync", failing_fsync)
     monkeypatch.setattr(atomic_write_module.os, "remove", failing_remove)
     # The real failure (fsync) must surface, not the cleanup unlink error.
+    target = str(path)
     with pytest.raises(OSError, match="simulated fsync failure"):
-        yaml_storage_module._atomic_write_text(path=str(path), text="new")
+        yaml_storage_module._atomic_write_text(path=target, text="new")
     assert path.read_text() == "old"
 
 
-def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeypatch) -> None:
+def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "model.yaml"
     path.write_text("old")
     real_fdopen = os.fdopen
@@ -156,112 +157,113 @@ def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeyp
             raise OSError("simulated temp-file write failure")
 
     monkeypatch.setattr(yaml_storage_module.os, "fdopen", PartialWriter)
+    target = str(path)
     with pytest.raises(OSError, match="simulated temp-file write failure"):
-        yaml_storage_module._atomic_write_text(path=str(path), text="new")
+        yaml_storage_module._atomic_write_text(path=target, text="new")
 
     assert path.read_text() == "old"
     assert list(tmp_path.iterdir()) == [path]
 
 
 class TestModelStorage:
-    async def test_save_and_get(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
-        await storage.save_model(sample_model)
-        loaded = await storage.get_model("test_model")
+    async def test_save_and_get(self, storage: YAMLStorage, sample_dataset: SlayerDataset) -> None:
+        await storage.save_dataset(sample_dataset)
+        loaded = await storage.get_dataset("test_model")
         assert loaded is not None
         assert loaded.name == "test_model"
         assert loaded.sql_table == "public.test_table"
-        assert len(loaded.columns) == 3
-        assert loaded.measures == []
+        assert len(loaded.fields) == 3
+        assert loaded.metrics == []
 
-    async def test_list_models(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
-        assert await storage.list_models() == []
-        await storage.save_model(sample_model)
-        assert await storage.list_models() == ["test_model"]
+    async def test_list_models(self, storage: YAMLStorage, sample_dataset: SlayerDataset) -> None:
+        assert await storage.list_datasets() == []
+        await storage.save_dataset(sample_dataset)
+        assert await storage.list_datasets() == ["test_model"]
 
-    async def test_delete_model(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
-        await storage.save_model(sample_model)
-        assert await storage.delete_model("test_model") is True
-        assert await storage.get_model("test_model") is None
-        assert await storage.delete_model("nonexistent") is False
+    async def test_delete_model(self, storage: YAMLStorage, sample_dataset: SlayerDataset) -> None:
+        await storage.save_dataset(sample_dataset)
+        assert await storage.delete_dataset("test_model") is True
+        assert await storage.get_dataset("test_model") is None
+        assert await storage.delete_dataset("nonexistent") is False
 
     async def test_get_nonexistent(self, storage: YAMLStorage) -> None:
-        assert await storage.get_model("nonexistent") is None
+        assert await storage.get_dataset("nonexistent") is None
 
-    async def test_update_model(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
-        await storage.save_model(sample_model)
-        sample_model.description = "Updated description"
-        await storage.save_model(sample_model)
-        loaded = await storage.get_model("test_model")
+    async def test_update_model(self, storage: YAMLStorage, sample_dataset: SlayerDataset) -> None:
+        await storage.save_dataset(sample_dataset)
+        sample_dataset.description = "Updated description"
+        await storage.save_dataset(sample_dataset)
+        loaded = await storage.get_dataset("test_model")
         assert loaded.description == "Updated description"
 
     async def test_failed_update_preserves_model(
         self,
         storage: YAMLStorage,
-        sample_model: SlayerModel,
+        sample_dataset: SlayerDataset,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        await storage.save_model(sample_model)
+        await storage.save_dataset(sample_dataset)
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
         original = open(path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
 
         monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _yaml_dump_raises)
-        replacement = sample_model.model_copy(update={"description": "lost update"})
+        replacement = sample_dataset.model_copy(update={"description": "lost update"})
         with pytest.raises(OSError, match="simulated disk full"):
-            await storage.save_model(replacement)
+            await storage.save_dataset(replacement)
 
         assert open(path).read() == original  # NOSONAR(S7493) — sync fixture I/O is intentional
-        assert (await storage.get_model("test_model")).description is None
+        assert (await storage.get_dataset("test_model")).description is None
 
     async def test_failed_sample_update_preserves_model(
         self,
         storage: YAMLStorage,
-        sample_model: SlayerModel,
+        sample_dataset: SlayerDataset,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        await storage.save_model(sample_model)
+        await storage.save_dataset(sample_dataset)
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
         original = open(path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
 
         monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _yaml_dump_raises)
         with pytest.raises(OSError, match="simulated disk full"):
-            await storage.update_column_sampled(
+            await storage.update_field_sampled(
                 data_source="test_ds",
-                model_name="test_model",
-                column_name="name",
+                dataset_name="test_model",
+                field_name="name",
                 sampled="2026-08-21T00:00:00Z",
                 sampled_values=["alice"],
                 distinct_count=1,
             )
 
         assert open(path).read() == original  # NOSONAR(S7493) — sync fixture I/O is intentional
-        assert (await storage.get_model("test_model")).columns[1].sampled is None
+        assert (await storage.get_dataset("test_model")).fields[1].sampled is None
 
     async def test_empty_model_file_raises_clear_error(
-        self, storage: YAMLStorage, sample_model: SlayerModel
+        self, storage: YAMLStorage, sample_dataset: SlayerDataset
     ) -> None:
         # A zero-byte model file (disk-full / interrupted write) must surface
         # an actionable error, not a bare Pydantic model_type failure.
-        await storage.save_model(sample_model)
+        await storage.save_dataset(sample_dataset)
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
         open(path, "w").close()  # NOSONAR(S7493) — test corrupts a tiny local fixture file; sync I/O is intentional
 
         with pytest.raises(ValueError, match="empty or corrupt") as excinfo:
-            await storage.get_model("test_model")
+            await storage.get_dataset("test_model")
         assert "test_model" in str(excinfo.value)
         assert "slayer ingest" in str(excinfo.value)
 
     async def test_truncated_model_file_raises_clear_error(
-        self, storage: YAMLStorage, sample_model: SlayerModel
+        self, storage: YAMLStorage, sample_dataset: SlayerDataset
     ) -> None:
         # A file cut off mid-write (full disk) is invalid YAML; the error must
         # name the file and the remediation, not surface a bare yaml trace.
-        await storage.save_model(sample_model)
+        await storage.save_dataset(sample_dataset)
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
         with open(path, "w") as f:  # NOSONAR(S7493) — test corrupts a tiny local fixture file; sync I/O is intentional
             f.write('name: "test_model\ncolumns:\n  - name: "id\n')
 
         with pytest.raises(ValueError, match="invalid YAML") as excinfo:
-            await storage.get_model("test_model")
+            await storage.get_dataset("test_model")
         assert "test_model.yaml" in str(excinfo.value)
         assert "slayer ingest" in str(excinfo.value)
 

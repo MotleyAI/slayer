@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -36,13 +36,13 @@ def _make_engine(rows: list[tuple[int, float, str]]) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=tmp)
     asyncio.run(storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=db_path)))
-    asyncio.run(storage.save_model(SlayerModel(
+    asyncio.run(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="cost", sql="cost", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="cost", sql="cost", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -50,11 +50,11 @@ def _make_engine(rows: list[tuple[int, float, str]]) -> SlayerQueryEngine:
 
 def _monthly(engine: SlayerQueryEngine, shift: str) -> dict[str, float | None]:
     resp = engine.execute_sync(query={
-        "source_model": "orders",
-        "measures": ["sum(cost)",
-                     {"formula": f"time_shift(sum(cost), -1, '{shift}')", "name": "prev"}],
-        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-        "order": [{"column": "created_at", "direction": "asc"}],
+        "population": "orders",
+        "metrics": ["sum(cost)",
+                     {"metric": f"time_shift(sum(cost), -1, '{shift}')", "alias": "prev"}],
+        "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+        "order": [{"field": "created_at", "direction": "asc"}],
     })
     return {str(r["orders.created_at"])[:7]: r["orders.prev"] for r in resp.data}
 
@@ -96,10 +96,10 @@ def test_change_uses_full_previous_month():
         (3, 70.0, "2024-02-10 09:00:00"),
     ])
     resp = engine.execute_sync(query={
-        "source_model": "orders",
-        "measures": ["sum(cost)", {"formula": "change(sum(cost))", "name": "chg"}],
-        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-        "order": [{"column": "created_at", "direction": "asc"}],
+        "population": "orders",
+        "metrics": ["sum(cost)", {"metric": "change(sum(cost))", "alias": "chg"}],
+        "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+        "order": [{"field": "created_at", "direction": "asc"}],
     })
     by_month = {str(r["orders.created_at"])[:7]: r["orders.chg"] for r in resp.data}
     assert by_month["2024-02"] == pytest.approx(70.0 - 150.0)
@@ -110,10 +110,10 @@ def test_aligned_shift_truncates_once():
     # so the join-back lookup offsets the bucket without re-truncating it
     engine = _make_engine([(1, 1.0, "2024-01-10 12:00:00")])
     resp = engine.execute_sync(query={
-        "source_model": "orders",
-        "measures": ["sum(cost)",
-                     {"formula": "time_shift(sum(cost), -1, 'month')", "name": "prev"}],
-        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+        "population": "orders",
+        "metrics": ["sum(cost)",
+                     {"metric": "time_shift(sum(cost), -1, 'month')", "alias": "prev"}],
+        "time_dimensions": [{"field": "created_at", "granularity": "month"}],
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "'month')" in ln.lower()]
     assert shifted, resp.sql
@@ -127,10 +127,10 @@ def test_unaligned_shift_still_rebuckets():
         (2, 70.0, "2024-02-10 09:00:00"),
     ])
     resp = engine.execute_sync(query={
-        "source_model": "orders",
-        "measures": ["sum(cost)",
-                     {"formula": "time_shift(sum(cost), -1, 'day')", "name": "prev"}],
-        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+        "population": "orders",
+        "metrics": ["sum(cost)",
+                     {"metric": "time_shift(sum(cost), -1, 'day')", "alias": "prev"}],
+        "time_dimensions": [{"field": "created_at", "granularity": "month"}],
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "'day')" in ln.lower()]
     assert shifted, resp.sql

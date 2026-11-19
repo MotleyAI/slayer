@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_importer_physical.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 9,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 11,
+   "reason": "not fully literal"
+  }
+ ]
+}
