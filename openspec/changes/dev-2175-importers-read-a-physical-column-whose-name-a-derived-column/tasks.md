@@ -36,8 +36,8 @@
 
 ## 6. Suite respelling
 
-- [ ] 6.1 Value pass: a script built on the production conversion rewrites test field `sql` values that need qualification or a dialect entry, in Python sources and YAML fixtures; re-run each touched test; rewrite test reads of a field's `.sql` (outside the deprecated-spelling tests) to read its stored `expression` (shorthand string or object), keeping each assertion's meaning; list for the owner any test whose expected value would change and wait for consent before touching it.
-- [ ] 6.2 Keyword pass: once DEV-2295 and DEV-2292 are released, bump the la pin and respell `sql=` and the field-level dict keys to `expression` with `la:deterministic-refactor` (dry-run, review, apply, full gate); verify no field-level `sql=` remains outside the deprecated-spelling tests and the gate is green.
+- [x] ~~6.1 Value pass: a script built on the production conversion rewrites test field `sql` values that need qualification or a dialect entry, in Python sources and YAML fixtures; re-run each touched test; rewrite test reads of a field's `.sql` (outside the deprecated-spelling tests) to read its stored `expression` (shorthand string or object), keeping each assertion's meaning; list for the owner any test whose expected value would change and wait for consent before touching it.~~ — deferred to DEV-2376
+- [x] ~~6.2 Keyword pass: once DEV-2295 and DEV-2292 are released, bump the la pin and respell `sql=` and the field-level dict keys to `expression` with `la:deterministic-refactor` (dry-run, review, apply, full gate); verify no field-level `sql=` remains outside the deprecated-spelling tests and the gate is green.~~ — deferred to DEV-2376
 
 ## 7. Architecture and docs
 
@@ -47,4 +47,4 @@
 
 ## 8. Finish
 
-- [ ] 8.1 Run the local test scope (`la-affected-tests`), `ruff`, `basedpyright` against its baseline and the enforcement bundle (`la-arch-check`, LikeC4 validation, `la-typecheck`); verify all green.
+- [x] 8.1 Run the local test scope (`la-affected-tests`), `ruff`, `basedpyright` against its baseline and the enforcement bundle (`la-arch-check`, LikeC4 validation, `la-typecheck`); verify all green.
