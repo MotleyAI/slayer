@@ -134,34 +134,40 @@ def reset() -> None:
 
 def _close_owned() -> None:
     global _owned
-    with _redaction:
+    with _redaction:  # the providers move from owned to pending in one step
         providers, _owned = _owned, []
-    close_providers(providers)
+        workers = _pending_shutdowns(providers)
+    _await_shutdowns(workers)
 
 
 def close_providers(providers: list[Any]) -> bool:
     """Shut each provider down in its own thread, so a slow backend delays no other signal's final batch.
 
-    Returns whether no shutdown, of this call or an earlier one, is still running.
+    Returns whether no shutdown, of this call or an earlier one, is still pending.
     """
+    with _redaction:
+        workers = _pending_shutdowns(providers)
+    return _await_shutdowns(workers)
+
+
+def _pending_shutdowns(providers: list[Any]) -> list[threading.Thread]:
+    """One shutdown thread per provider, counted in ``_lingering`` until it ends; holds ``_redaction``."""
     workers = [
         threading.Thread(target=_shutdown_one, kwargs={"provider": provider}, name="slayer-otel-shutdown", daemon=True)
         for provider in providers
     ]
-    with _redaction:
-        _lingering.extend(workers)
-    for provider, worker in zip(providers, workers, strict=True):
-        try:
-            worker.start()
-        except RuntimeError:  # no thread to spare: close it on this one
-            with _redaction:
-                _lingering.remove(worker)
-            _shutdown_one(provider=provider)
+    _lingering.extend(workers)
+    return workers
+
+
+def _await_shutdowns(workers: list[threading.Thread]) -> bool:
     deadline = time.monotonic() + SHUTDOWN_WAIT_SECONDS
     for worker in workers:
-        if worker.ident is None:  # never started
-            continue
-        worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        with contextlib.suppress(RuntimeError):  # no thread to spare: its provider stays open, and pending
+            worker.start()
+    for worker in workers:
+        if worker.ident is not None:
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
     with _redaction:
         _show_export_text_when_idle()
         return not _lingering

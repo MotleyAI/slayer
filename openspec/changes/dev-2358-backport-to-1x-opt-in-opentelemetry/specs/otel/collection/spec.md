@@ -56,7 +56,7 @@ A query SHALL produce a `slayer.query` span with the children `slayer.query.norm
 - **THEN** `slayer.db.execute` is a child of `slayer.query.run`, and `slayer.query.run` is a child of `slayer.query`
 
 #### Scenario: EXPLAIN query
-- **WHEN** a query runs with `explain=True`
+- **WHEN** a query without a session policy runs with `explain=True` and without `dry_run=True`
 - **THEN** exactly one database span exists, `slayer.db.execute`, a child of `slayer.query`, and no `slayer.query.run` span exists
 
 ### Requirement: A dry run runs no query

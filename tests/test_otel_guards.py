@@ -330,7 +330,7 @@ def test_a_slow_provider_does_not_hold_back_the_others(monkeypatch: pytest.Monke
     assert fast.closed.is_set()
 
 
-def test_a_shutdown_thread_that_cannot_start_closes_its_provider_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_shutdown_thread_that_cannot_start_keeps_the_bound_and_stays_pending(monkeypatch: pytest.MonkeyPatch) -> None:
     original = threading.Thread.start
 
     def refuse(self: threading.Thread) -> None:
@@ -338,12 +338,52 @@ def test_a_shutdown_thread_that_cannot_start_closes_its_provider_inline(monkeypa
             raise RuntimeError("can't start new thread")
         original(self)
 
-    fast = _FastProvider()
+    slow = _GatedProvider()  # an inline shutdown would wait out its 10 s gate
     monkeypatch.setattr(threading.Thread, "start", refuse)
     monkeypatch.setattr(recorder, "_lingering", [])
-    monkeypatch.setattr(recorder, "_owned", [fast])
+    monkeypatch.setattr(recorder, "_owned", [slow])
+    began = time.monotonic()
     otel.reset()
-    assert (fast.closed.is_set(), recorder._lingering) == (True, [])
+    elapsed = time.monotonic() - began
+    assert (elapsed < recorder.SHUTDOWN_WAIT_SECONDS + 1, len(recorder._lingering)) == (True, 1)
+
+
+class _IterHook(list):
+    """A provider list that runs ``hook`` the first time it is iterated."""
+
+    def __init__(self, items: list[Any], *, hook: Any) -> None:
+        super().__init__(items)
+        self.hook = hook
+
+    def __iter__(self) -> Any:
+        hook, self.hook = self.hook, None
+        if hook is not None:
+            hook()
+        return super().__iter__()
+
+
+def test_an_earlier_shutdown_ending_during_the_handoff_keeps_the_text_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(recorder, "_lingering", [])
+    monkeypatch.setattr(recorder, "_export_text_hidden", True)
+    earlier, current = _GatedProvider(), _GatedProvider()
+    exporter_logger = logging.getLogger(logs.EXPORTER_LOGGERS[1])
+    logs.hide_export_text()
+    try:
+        recorder.close_providers([earlier])  # outlives the bound
+        (earlier_worker,) = recorder._lingering
+
+        def end_the_earlier_shutdown() -> None:
+            earlier.release.set()
+            earlier_worker.join(timeout=0.5)  # blocks on the lock while the handoff holds it
+
+        monkeypatch.setattr(recorder, "_owned", _IterHook([current], hook=end_the_earlier_shutdown))
+        otel.reset()  # `current` outlives the bound too
+        hidden = _export_text_hidden(exporter_logger)
+    finally:
+        earlier.release.set()
+        current.release.set()
+        logs.show_export_text()
+    assert hidden
 
 
 def test_reset_closes_the_owned_providers(monkeypatch: pytest.MonkeyPatch) -> None:
