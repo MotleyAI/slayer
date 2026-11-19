@@ -1,3 +1,7 @@
+## Purpose
+
+How OpenTelemetry is switched on and off, the opt-in for sensitive data, and the `slayer otel status` and `slayer otel test` commands.
+
 ## ADDED Requirements
 
 ### Requirement: Off by default with a fixed precedence
@@ -33,7 +37,7 @@ Outside processes started by the `slayer` command, SLayer SHALL NOT turn on OTel
 
 #### Scenario: Instrument twice
 - **WHEN** a caller calls `otel.instrument()` twice
-- **THEN** each stage produces one span
+- **THEN** each probe produces one span
 
 ### Requirement: A missing extra or a failing setup stays silent
 If OTel is on but the `otel` extra is not installed, or if the OTel setup raises, SLayer SHALL stay off. It SHALL log the cause at DEBUG only. The command SHALL run with unchanged output and exit status.
@@ -80,7 +84,7 @@ If OTel is on but the `otel` extra is not installed, or if the OTel setup raises
 - **THEN** the output names `console` as an ignored exporter value and `grpc` as an unsupported protocol
 
 ### Requirement: slayer otel test checks each endpoint
-`slayer otel test` SHALL send one empty OTLP request, as `application/x-protobuf`, to the endpoint of each exported signal. It SHALL send the configured headers, and use the configured CA and client certificate files. It SHALL print the result for each signal. For HTTP 401, 403, 404, 405 and 413 it SHALL print a hint about the cause.
+`slayer otel test` SHALL send one empty OTLP request, as `application/x-protobuf`, to the endpoint of each exported signal. It SHALL send the configured headers, and use the configured CA and client certificate files. A user name and password in the endpoint SHALL be sent as Basic authentication, as the exporter sends them, and not in the URL. An endpoint or header that cannot be sent SHALL be reported as a failure without the error text. It SHALL print the result for each signal. For HTTP 401, 403, 404, 405 and 413 it SHALL print a hint about the cause.
 
 If any endpoint fails, it SHALL exit 1. A signal whose exporter is `none` SHALL be reported as skipped.
 
@@ -100,6 +104,14 @@ If any endpoint fails, it SHALL exit 1. A signal whose exporter is `none` SHALL 
 - **WHEN** `OTEL_LOGS_EXPORTER=none` is set
 - **THEN** the logs line reads `skipped, not exported`, and no request goes to `/v1/logs`
 
+#### Scenario: Credentials in the endpoint
+- **WHEN** the endpoint is `http://user:<password>@collector:4318` and the backend requires that Basic login
+- **THEN** the command prints `ok, HTTP 200` for each signal and exits 0
+
+#### Scenario: Unsendable header
+- **WHEN** a header value contains a line break
+- **THEN** the command reports each signal as failed, prints no header value, and exits 1
+
 ### Requirement: slayer otel test follows no redirect
 `slayer otel test` SHALL NOT follow a redirect, because a redirect resends the headers to another URL. It SHALL report a redirect as a failure, with a hint to set the final URL.
 
@@ -108,7 +120,11 @@ If any endpoint fails, it SHALL exit 1. A signal whose exporter is `none` SHALL 
 - **THEN** the command sends no second request, prints a hint about the redirect, and exits 1
 
 ### Requirement: slayer otel test sends one test span
-If every endpoint accepts and traces are exported, `slayer otel test` SHALL send one span named `slayer.otel.test`, whatever the configured sampler. If the backend rejects the span, it SHALL exit 1. Otherwise it SHALL exit 0.
+If every endpoint accepts and traces are exported, `slayer otel test` SHALL send one span named `slayer.otel.test`, whatever the configured sampler. If the backend rejects the span, it SHALL exit 1. Otherwise it SHALL exit 0. Without the `otel` extra, it SHALL send no test span, say so, and exit 0.
+
+#### Scenario: Extra not installed
+- **WHEN** the OTel packages cannot be imported and every endpoint accepts
+- **THEN** the command reports that the test span was not sent because the extra is missing, and exits 0
 
 #### Scenario: Traces not exported
 - **WHEN** `OTEL_TRACES_EXPORTER=none` is set and the other endpoints accept

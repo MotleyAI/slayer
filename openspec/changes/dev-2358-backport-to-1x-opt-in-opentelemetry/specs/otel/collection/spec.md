@@ -1,10 +1,14 @@
+## Purpose
+
+Which spans, attributes, metrics and log records SLayer produces for OpenTelemetry, and what stays in the process.
+
 ## ADDED Requirements
 
 ### Requirement: One request span per surface call
 Each call on a surface SHALL open one span named `slayer.request`. It SHALL carry `slayer.surface` (`cli`, `rest`, `mcp`, `flight` or `pg`) and `slayer.operation`. The operation SHALL come from the fixed vocabulary that usage reporting uses, never from argument values. Flight SQL and the Postgres facade SHALL use `query`. Their request spans SHALL have kind `SERVER`, and other request spans kind `INTERNAL`.
 
 #### Scenario: Span kinds
-- **WHEN** request stages run for the surfaces `pg`, `flight` and `cli`
+- **WHEN** request probes run for the surfaces `pg`, `flight` and `cli`
 - **THEN** their spans have the kinds `SERVER`, `SERVER` and `INTERNAL`
 
 ### Requirement: Which CLI, Flight and Postgres calls open a request span
@@ -59,11 +63,11 @@ A dry run SHALL produce no `slayer.db.execute` or `slayer.db.explain` span. With
 - **THEN** a `slayer.query` span exists, and no span name starts with `slayer.db.`
 
 ### Requirement: An ingest is one span tree with its outcome
-An ingest SHALL produce a `slayer.ingest` span with the children `slayer.ingest.scan.schema`, `slayer.ingest.merge`, `slayer.ingest.drift` and `slayer.ingest.embeddings`. The ingest span SHALL carry its outcome: `slayer.ingest.models.added`, `.updated`, `.skipped` and `slayer.ingest.drift.entries`. `.updated` SHALL count only the existing models with a reported change, not the unchanged ones.
+An ingest SHALL produce a `slayer.ingest` span with the children `slayer.ingest.scan.schema`, `slayer.ingest.merge`, `slayer.ingest.drift` and `slayer.ingest.embeddings`. The ingest span SHALL carry its outcome: `slayer.ingest.datasets.added`, `.updated`, `.skipped` and `slayer.ingest.drift.entries`. `.updated` SHALL count only the existing models with a reported change, not the unchanged ones.
 
 #### Scenario: Ingest of one changed model
 - **WHEN** an idempotent ingest updates one model
-- **THEN** the `slayer.ingest` span has `slayer.ingest.models.updated=1`, and the four step spans are its children
+- **THEN** the `slayer.ingest` span has `slayer.ingest.datasets.updated=1`, and the four step spans are its children
 
 ### Requirement: Spans nest under the caller's span
 If a span is current at the call into SLayer, SLayer's top-level span SHALL be its child. SLayer's other spans keep the tree that the other requirements define.
@@ -76,7 +80,7 @@ If a span is current at the call into SLayer, SLayer's top-level span SHALL be i
 An attribute that an OTel semantic convention defines SHALL keep its standard name: `error.type`, `db.*`, `server.*`, `mcp.*` and `gen_ai.*`. The standard metric `db.client.operation.duration` and the standard `exception` event SHALL also keep their names. Every other span, attribute, event and metric name SHALL start with `slayer.`.
 
 #### Scenario: Exported names
-- **WHEN** a stage sets `query.rows`, `error.type` and `db.system.name`
+- **WHEN** a probe sets `query.rows`, `error.type` and `db.system.name`
 - **THEN** they are exported as `slayer.query.rows`, `error.type` and `db.system.name`
 
 ### Requirement: Database spans follow the OTel database conventions
@@ -91,7 +95,7 @@ Database spans SHALL have kind `CLIENT`. If these values are known, they SHALL c
 - **THEN** the `slayer.db.execute` span has kind `CLIENT`, `db.system.name=sqlite` and `db.response.returned_rows=2`
 
 ### Requirement: Errors are reported by class
-A stage that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the content capture, no exception message, exception event or stack trace SHALL be recorded.
+A probe that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the content capture, no exception message, exception event or stack trace SHALL be recorded. A surface that handles a failure and answers with an error SHALL mark its request span the same way: a REST response with status 500 or above, with `error.type` set to the status code, and a failed Postgres-facade query, with `error.type` set to the exception class. A REST request span SHALL carry `http.response.status_code`.
 
 #### Scenario: Unknown model
 - **WHEN** a query names a model that does not exist
@@ -109,7 +113,7 @@ SLayer SHALL record durations in seconds. `db.client.operation.duration` SHALL u
 - **THEN** `slayer.query.duration` records one value labeled `error.type=ModelNotFoundError`
 
 ### Requirement: Counters for retries, cache and ingest
-SLayer SHALL count retried transient database errors in `slayer.db.retries`. It SHALL count result-cache lookups in `slayer.cache.lookups`, labeled with `slayer.cache.hit`. It SHALL count ingested models in `slayer.ingest.models`, labeled with `slayer.ingest.change` (`added`, `updated` or `skipped`). It SHALL count drift entries in `slayer.ingest.drift.entries`.
+SLayer SHALL count retried transient database errors in `slayer.db.retries`. It SHALL count result-cache lookups in `slayer.cache.lookups`, labeled with `slayer.cache.hit`. It SHALL count ingested models in `slayer.ingest.datasets`, labeled with `slayer.ingest.change` (`added`, `updated` or `skipped`). It SHALL count drift entries in `slayer.ingest.drift.entries`.
 
 #### Scenario: Cache lookups
 - **WHEN** the same cached query runs twice

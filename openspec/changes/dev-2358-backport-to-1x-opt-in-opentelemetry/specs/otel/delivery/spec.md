@@ -1,3 +1,7 @@
+## Purpose
+
+How OpenTelemetry data leaves the process, how SLayer shares OTel with a host, and the bounds on its cost to the host.
+
 ## ADDED Requirements
 
 ### Requirement: OTLP over HTTP with protobuf
@@ -62,15 +66,19 @@ No export SHALL run on the request path. At exit, SLayer SHALL wait at most 1 se
 - **WHEN** the backend answers HTTP 401
 - **THEN** the command exits 0, and stderr contains no `Traceback`
 
-### Requirement: Inactive stages cost no measurable time
-A stage with no listener SHALL take no timestamp, bind no arguments and allocate no objects. The decorator SHALL keep the function's name, signature, return value and exceptions. At decoration time, it SHALL refuse a generator function and an unknown parameter name.
+### Requirement: Inactive probes cost no measurable time
+A probe with no listener SHALL take no timestamp, bind no arguments and allocate no objects. The decorator SHALL keep the function's name, signature, return value and exceptions, and the file and line that its warnings name. At decoration time, it SHALL refuse a generator function and an unknown parameter name.
 
 #### Scenario: Behavior unchanged
 - **WHEN** a decorated function returns a value or raises, with no listener
 - **THEN** the caller gets the same value or the same exception as without the decorator
 
+#### Scenario: Warning location unchanged
+- **WHEN** a query run through `engine.execute` emits a deprecation warning, with or without a listener
+- **THEN** the warning names the caller's file and line
+
 #### Scenario: Unknown parameter
-- **WHEN** `@staged` names a parameter that the function does not have
+- **WHEN** `@probe` names a parameter that the function does not have
 - **THEN** the decoration raises at import time
 
 ### Requirement: Each provider flushes on its own thread
