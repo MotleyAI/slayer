@@ -44,10 +44,10 @@ FUNCTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 #: Branch pairs every conditional accepts → the joined type.
 COMPATIBLE: dict[str, tuple[str, str, DataType]] = {
-    "null-absorbed": ("amount", "NULL", DataType.INTEGER),
-    "int-double": ("amount", "0.5", DataType.FLOAT),
-    "date-timestamp": ("order_date", TS, DataType.DATETIME),
-    "boolean-number": ("orders.status = 'paid'", "amount", DataType.INTEGER),
+    "null-absorbed": ("orders.amount", "NULL", DataType.INTEGER),
+    "int-double": ("orders.amount", "0.5", DataType.FLOAT),
+    "date-timestamp": ("orders.order_date", TS, DataType.DATETIME),
+    "boolean-number": ("orders.status = 'paid'", "orders.amount", DataType.INTEGER),
 }
 #: ``greatest`` / ``least`` read a TEXT operand beside a number as a number; the others reject the mix.
 TEXT_AS_NUMBER = {"greatest", "least"}
@@ -115,7 +115,7 @@ class TestFunctionMatrix:
     @pytest.mark.parametrize("function", list(FUNCTIONS))
     async def test_text_beside_a_number(self, engine: SlayerQueryEngine, dialect: str, function: str) -> None:
         template, names = FUNCTIONS[function]
-        expression = template.format(a="status", b="amount")
+        expression = template.format(a="orders.status", b="orders.amount")
         if function in TEXT_AS_NUMBER:
             await engine.execute(dimension_query(expression))
             assert inferred_type(as_dimension(expression), dialect=dialect) is DataType.FLOAT
@@ -125,7 +125,7 @@ class TestFunctionMatrix:
     @pytest.mark.parametrize("function", list(FUNCTIONS))
     async def test_non_numeric_text_literal_rejected(self, engine: SlayerQueryEngine, function: str) -> None:
         template, names = FUNCTIONS[function]
-        query = dimension_query(template.format(a="'abc'", b="amount"))
+        query = dimension_query(template.format(a="'abc'", b="orders.amount"))
         if function in TEXT_AS_NUMBER:
             with pytest.raises(ScalarOperandTypeError):
                 await engine.execute(query)
@@ -136,7 +136,7 @@ class TestFunctionMatrix:
     async def test_date_beside_a_number_rejected(self, engine: SlayerQueryEngine, function: str) -> None:
         template, names = FUNCTIONS[function]
         await assert_branch_mismatch(
-            engine, dimension_query(template.format(a="order_date", b="amount")), "Date", "Integer", call=names,
+            engine, dimension_query(template.format(a="orders.order_date", b="orders.amount")), "Date", "Integer", call=names,
         )
 
 
@@ -170,7 +170,7 @@ class TestScenarios:
 
     @pytest.mark.parametrize(("expression", "joined"), [
         ("CASE WHEN orders.amount > 1 THEN orders.amount ELSE 0.5 END", DataType.FLOAT),
-        (f"coalesce(order_date, {TS})", DataType.DATETIME),
+        (f"coalesce(orders.order_date, {TS})", DataType.DATETIME),
         ("iif(orders.amount > 15, orders.status = 'paid', 2)", DataType.INTEGER),
         ("CASE WHEN orders.amount > 1 THEN orders.status END", DataType.STRING),
         ("greatest(orders.status, orders.amount)", DataType.FLOAT),
@@ -201,7 +201,7 @@ class TestEveryPosition:
         pytest.param(q(metrics=[m("coalesce(sum(orders.amount), max(orders.status))")]), ("String", "Integer"), id="over-aggregates"),
         pytest.param(q(time_dimensions=MONTH, metrics=[m(f"time_shift(max({MIXED}), -1)")]), ("String", "Integer"),
                      id="transform"),
-        pytest.param(q(metrics=[m(f"count(*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("String", "Integer"),
+        pytest.param(q(metrics=[m(f"count(orders.*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("String", "Integer"),
                      id="filter-clause"),
         pytest.param(q(metrics=["count(orders.*)"], filter=[f"{MIXED} IS NOT NULL"]), ("String", "Integer"), id="row-filter"),
         pytest.param(q(dimensions=["orders.status"], metrics=["count(orders.*)"],
@@ -244,11 +244,11 @@ class TestValueType:
     @pytest.mark.parametrize(("expression", "joined"), [
         ("coalesce(orders.amount, 0.5)", DataType.FLOAT),
         ("ifnull(orders.amount, NULL)", DataType.INTEGER),
-        (f"greatest(order_date, {TS})", DataType.DATETIME),
+        (f"greatest(orders.order_date, {TS})", DataType.DATETIME),
         ("least(orders.status = 'paid', orders.amount)", DataType.INTEGER),
         ("iif(orders.amount > 1, orders.amount, 0.5)", DataType.FLOAT),
         ("coalesce(opaque, amount)", DataType.INTEGER),
-        ("coalesce(status, order_date)", None),
+        ("coalesce(orders.status, orders.order_date)", None),
     ])
     def test_joined_branch_type(self, expression: str, joined: DataType | None) -> None:
         assert self._value_type(expression) is joined

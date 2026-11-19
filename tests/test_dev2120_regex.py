@@ -72,9 +72,9 @@ class TestPatternSource:
         resp = await engine.execute(lib_query(filter=["regexp_like(lib.s, {p})"], variables={"p": "^a.c$"}))
         assert lib_ids(resp) == {9}
 
-    @pytest.mark.parametrize("pattern", ["prefix", "'^' || prefix", "lower(prefix)"])
+    @pytest.mark.parametrize("pattern", ["lib.prefix", "'^' || lib.prefix", "lower(lib.prefix)"])
     async def test_non_literal_pattern_rejected(self, engine: SlayerQueryEngine, pattern: str) -> None:
-        await _rejected(engine, "pattern", filter=[f"regexp_like(word, {pattern})"])
+        await _rejected(engine, "pattern", filter=[f"regexp_like(lib.word, {pattern})"])
 
     async def test_non_literal_replacement_rejected(self, engine: SlayerQueryEngine) -> None:
         await _rejected(engine, "replacement", dimensions=["lib.id", {"field": "regexp_replace(lib.word, 'a', lib.p)",
@@ -121,7 +121,7 @@ class TestPortableSubset:
     @pytest.mark.parametrize(("pattern", "names"), UNSUPPORTED, ids=[p for p, _ in UNSUPPORTED])
     async def test_unsupported_construct_named(self, engine: SlayerQueryEngine, pattern: str,
                                                names: tuple[str, ...]) -> None:
-        await _rejected(engine, any_of=names, filter=[f"regexp_like(word, '{pattern}')"])
+        await _rejected(engine, any_of=names, filter=[f"regexp_like(lib.word, '{pattern}')"])
 
     async def test_unsupported_construct_in_a_variable_names_it(self, engine: SlayerQueryEngine) -> None:
         msg = await _rejected(engine, "\\b", filter=["regexp_like(lib.word, {p})"], variables={"p": "\\bword"})
@@ -133,7 +133,7 @@ class TestPortableSubset:
         "(a|b)+", "^$", "[\\s\\d]",
     ])
     async def test_subset_construct_accepted(self, engine: SlayerQueryEngine, pattern: str) -> None:
-        await engine.execute(lib_query(filter=[f"regexp_like(word, '{pattern}')"]))
+        await engine.execute(lib_query(filter=[f"regexp_like(lib.word, '{pattern}')"]))
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_classes_emit_as_ascii(self, dialect: str) -> None:
@@ -150,9 +150,9 @@ class TestFunctionArguments:
     async def test_bad_group_rejected(self, engine: SlayerQueryEngine, expr: str) -> None:
         await _rejected(engine, "group", dimensions=["lib.id", {"field": expr, "alias": "v"}])
 
-    @pytest.mark.parametrize("flags", ["'g'", "'c'", "'im'", "word"])
+    @pytest.mark.parametrize("flags", ["'g'", "'c'", "'im'", "lib.word"])
     async def test_only_the_i_flag(self, engine: SlayerQueryEngine, flags: str) -> None:
-        await _rejected(engine, "flag", filter=[f"regexp_like(word, 'a', {flags})"])
+        await _rejected(engine, "flag", filter=[f"regexp_like(lib.word, 'a', {flags})"])
 
     async def test_null_input_yields_null(self, engine: SlayerQueryEngine) -> None:
         values = lib_values(await engine.execute(lib_query("regexp_replace(lib.word, 'a', 'b')", filter=["lib.id = 5"])))
@@ -255,7 +255,7 @@ class TestBracesInStringLiterals:
     @pytest.mark.parametrize(("literal", "text"), [("{1, 2, 3}", "{1, 2, 3}"), ("{}", "{}"), ("{3}", "{3}")])
     async def test_digit_and_comma_braces_are_text(self, engine: SlayerQueryEngine, variables, literal: str,
                                                    text: str) -> None:
-        resp = await engine.execute(lib_query(f"'{literal}' || code", filter=["lib.id = 7"], variables=variables))
+        resp = await engine.execute(lib_query(f"'{literal}' || lib.code", filter=["lib.id = 7"], variables=variables))
         assert lib_values(resp) == {7: f"{text}a1"}
 
     async def test_name_shaped_braces_in_a_pattern_hint_escaping(self, engine: SlayerQueryEngine) -> None:

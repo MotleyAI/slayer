@@ -48,7 +48,7 @@ class TestFullyAttachedAccepted:
             parsed = parse_expr(f)
             assert isinstance(parsed, AggCall)
             assert _source_is_reaggregation(parsed.source)
-        row_level = parse_expr("sum(amount > 45)")
+        row_level = parse_expr("sum(sales.amount > 45)")
         assert isinstance(row_level, AggCall)
         assert not _source_is_reaggregation(row_level.source)
 
@@ -77,7 +77,7 @@ class TestRejections:
         row-grain aggregation and parses (DEV-1859). A nested transform in a
         source now parses too (DEV-1832); only a row-level leaf under it is
         rejected, at plan time — see test_dev1832_transform_source."""
-        parsed = parse_expr("sum(amount * avg(amount, partition_by=city))")
+        parsed = parse_expr("sum(sales.amount * avg(sales.amount, partition_by=sales.city))")
         assert isinstance(parsed, AggCall)
         assert parsed.agg == "sum"
 
@@ -89,7 +89,7 @@ class TestRejections:
         query = sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"wavg({INNER_CR}, weight=id)", alias="w")])
+                metric=f"wavg({INNER_CR}, weight=sales.id)", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -171,7 +171,7 @@ class TestFirstLastDispatchUnchanged:
 
     def test_last_over_plain_column_is_aggregation(self):
         """The non-aggregated first argument still routes to the aggregation."""
-        key = _bound("last(amount)")
+        key = _bound("last(sales.amount)")
         assert isinstance(key, AggregateKey)
         assert key.agg == "last"
 

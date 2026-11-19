@@ -220,7 +220,7 @@ class TestPlanShape:
     producer (mirror of the association-arm plan pin)."""
 
     @pytest.mark.parametrize("mode, dims", [
-        ("broadcast", ["status"]), (None, ["customers.tier"]),
+        ("broadcast", ["orders.status"]), (None, ["customers.tier"]),
         ("error", ["customers.tier"]), ("associate", ["customers.tier"]),
     ])
     def test_plain_attach_nests_an_orders_rooted_producer(self, mode, dims):
@@ -400,9 +400,9 @@ class TestFailClosedEveryMode:
         assert_cells(status_vals(resp), local_wavg_status_assoc_by_status())
 
     @pytest.mark.parametrize("mode, dims", [
-        (None, ["status"]), (None, ["customers.tier"]),
-        ("associate", ["customers.tier"]), ("associate", ["status"]),
-        ("error", ["customers.tier"]), ("error", ["status"]),
+        (None, ["orders.status"]), (None, ["customers.tier"]),
+        ("associate", ["customers.tier"]), ("associate", ["orders.status"]),
+        ("error", ["customers.tier"]), ("error", ["orders.status"]),
     ])
     async def test_undetermined_parameter_refused_in_every_mode(self, orders_engine, mode, dims):
         """Scenario: Undetermined attached parameter stays rejected (D2b) — the plain
@@ -425,7 +425,7 @@ class TestArgumentMessagePrecedence:
     Argument violation is reported ahead of a source violation (D5)."""
 
     @pytest.mark.parametrize("mode, dims", [
-        ("broadcast", ["status"]), ("error", ["status"]), ("associate", None),
+        ("broadcast", ["orders.status"]), ("error", ["orders.status"]), ("associate", None),
     ])
     async def test_host_ranking_key_names_column_root_and_hop(self, orders_engine, mode, dims):
         kw = {} if dims is None else {"dimensions": dims}

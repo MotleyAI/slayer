@@ -217,7 +217,7 @@ class TestReaggregationOperandParameter:
         resp = await reagg_engine.execute(sales_q(
             dimensions=["sales.region", "sales.product"],
             metrics=[QueryMetric(
-                metric=f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT}, partition_by=region)",
+                metric=f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT}, partition_by=sales.region)",
                 alias="w")]))
         by = rows_by(resp, "sales.region", "sales.product")
         for key, row in by.items():
@@ -234,12 +234,12 @@ class TestReaggregationOperandParameter:
         kw = await reagg_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"wavg({INNER_CR}, weight=count(id, partition_by=[city, region]))",
+                metric=f"wavg({INNER_CR}, weight=count(sales.id, partition_by=[sales.city, sales.region]))",
                 alias="w")]))
         pos = await reagg_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"wavg({INNER_CR}, count(id, partition_by=[city, region]))",
+                metric=f"wavg({INNER_CR}, count(sales.id, partition_by=[sales.city, sales.region]))",
                 alias="w")]))
         kw_v, pos_v = _region_vals(kw, "w"), _region_vals(pos, "w")
         assert set(kw_v) == set(pos_v)

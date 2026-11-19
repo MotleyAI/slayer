@@ -978,8 +978,8 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
 @pytest.mark.parametrize(
     "scenario",
     [
-        "ratio_using_derived",
-        "ratio_using_base",
+        "A.ratio_using_derived",
+        "A.ratio_using_base",
     ],
 )
 async def test_generated_sql_parses(tmp_path, scenario) -> None:
@@ -1882,7 +1882,7 @@ async def test_dev1410_local_bare_ref_inside_case_coalesce_nullif_cast(tmp_path)
             ),
         ],
     )
-    for col in ("case_use", "coalesce_use", "nullif_use", "cast_use"):
+    for col in ("A.case_use", "A.coalesce_use", "A.nullif_use", "A.cast_use"):
         query = SlayerQuery(population="A", dimensions=[QueryDimension(field=col)])
         sql = await _gen_sql(engine, query, model_a)
         norm = _norm(sql)

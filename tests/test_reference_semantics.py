@@ -325,21 +325,21 @@ class TestDslModeAcceptance:
     def test_query_filter_accepts_aggregation(self) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["sum(revenue) > 100"],
+            filter=["sum(orders.revenue) > 100"],
         )
         assert q.filter == ["sum(revenue) > 100"]
 
     def test_query_filter_accepts_transform_predicate(self) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["change(sum(revenue)) > 0"],
+            filter=["change(sum(orders.revenue)) > 0"],
         )
         assert q.filter == ["change(sum(revenue)) > 0"]
 
     def test_query_filter_accepts_nested_transform(self) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["last(change(sum(revenue))) < 0"],
+            filter=["last(change(sum(orders.revenue))) < 0"],
         )
         assert q.filter == ["last(change(sum(revenue))) < 0"]
 
@@ -353,7 +353,7 @@ class TestDslModeAcceptance:
     def test_query_filter_accepts_variable_placeholder(self) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["status = '{status_val}'"],
+            filter=["orders.status = '{status_val}'"],
             variables={"status_val": "active"},
         )
         assert q.filter == ["status = '{status_val}'"]
@@ -480,7 +480,7 @@ class TestStrictResolution:
             data_source="test",
             fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
-        for typo in ("made_up_sum", "typo_count_distinct", "foo_avg"):
+        for typo in ("m.made_up_sum", "m.typo_count_distinct", "m.foo_avg"):
             query = SlayerQuery(
                 population="m",
                 dimensions=["m.id"],

@@ -152,7 +152,7 @@ class TestFilterPosition:
         q = SlayerQuery(
             population="orders",
             metrics=["my_agg(orders.price)"],
-            filter=["my_agg(price) > 0"],
+            filter=["my_agg(orders.price) > 0"],
         )
         assert q.filter
 
@@ -182,7 +182,7 @@ class TestOrderPosition:
     async def test_order_serialization_round_trip(self) -> None:
         q1 = _q(
             metrics=["sum(orders.revenue)"],
-            dimensions=["status"],
+            dimensions=["orders.status"],
             order=[OrderItem(field="sum(orders.revenue)", direction="desc")],
         )
         q2 = SlayerQuery.model_validate(q1.model_dump())
@@ -328,7 +328,7 @@ _CASE_FUNC = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN
 
 def _band_query(expr: str, **kw) -> SlayerQuery:
     kw.setdefault("population", "orders")
-    kw.setdefault("dimensions", ["region", {"field": expr, "alias": "band"}])
+    kw.setdefault("dimensions", ["orders.region", {"field": expr, "alias": "band"}])
     kw.setdefault("metrics", [QueryMetric(metric="sum(orders.amount)", alias="t")])
     return SlayerQuery(**kw)
 

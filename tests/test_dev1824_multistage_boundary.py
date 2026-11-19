@@ -33,7 +33,7 @@ async def exec_engine(request):
 def _stages(**stage2_kwargs) -> list:
     stage1 = q(
         name="banded",
-        dimensions=["region", {"field": BAND35, "alias": "band"}],
+        dimensions=["orders.region", {"field": BAND35, "alias": "band"}],
         metrics=[QueryMetric(metric="sum(orders.amount)", alias="bt")],
     )
     stage2 = SlayerQuery(population="banded", extensions=[DatasetExtension(dataset="banded")], **stage2_kwargs)
@@ -57,7 +57,7 @@ class TestDownstreamStageConsumesRegroupedDimension:
 
     async def test_filter_on_band_in_downstream_stage(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
-            dimensions=["region"],
+            dimensions=["banded.region"],
             filter=["banded.band == 1"],
             metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         ))

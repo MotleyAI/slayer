@@ -106,14 +106,14 @@ def _approx(d: dict) -> dict:
 class TestReaggregationInDimensionAndElsewhere:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["sales.region", RLEVEL], metrics=[TOT], filter=[f"{R} < sum(amount)"]))
+            dimensions=["sales.region", RLEVEL], metrics=[TOT], filter=[f"{R} < sum(sales.amount)"]))
         got = {(r["sales.region"], r["rlevel"]): r["tot"] for r in resp.data}
         assert got == _approx({("East", "hi"): 180.0, ("Gap", "lo"): 20.0,
                                ("North", "lo"): 90.0, ("South", "hi"): 140.0})
 
     async def test_measure_typed_filter_keeping_nothing(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["sales.region", RLEVEL], metrics=[TOT], filter=[f"{R} > sum(amount)"]))
+            dimensions=["sales.region", RLEVEL], metrics=[TOT], filter=[f"{R} > sum(sales.amount)"]))
         assert resp.data == []
 
     async def test_order_target(self, exec_engine):
@@ -218,7 +218,7 @@ class TestCrossModelReaggregationInDimension:
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name", CL],
             metrics=[QueryMetric(metric="sum(corders.amount)", alias="tot")],
-            filter=[f"{CHAIN_R} < sum(amount)"]))
+            filter=[f"{CHAIN_R} < sum(corders.amount)"]))
         got = [(r["customers.regions.name"], r["cl"], r["tot"])
                for r in resp.data]
         assert got == [("North", "lo", pytest.approx(70.0))]

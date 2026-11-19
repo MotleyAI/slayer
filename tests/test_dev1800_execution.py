@@ -151,7 +151,7 @@ class TestTransformPlusHiddenAggregate:
             QueryMetric(metric="sum(orders.amount)", alias="o"),
         ]))
         got = by_status_month(await _orders(dev1750_engine, dimensions=["orders.status"], metrics=[
-            QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c"),
+            QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c"),
         ]))
         assert set(got) == set(comps)
         for k, cr in comps.items():
@@ -167,7 +167,7 @@ class TestConditionalOverTransform:
     async def test_iif_picks_by_sign_of_change(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"iif(change({CM}) > 0, {CM}, sum(amount))", alias="v")],
+            metrics=[QueryMetric(metric=f"iif(change({CM}) > 0, {CM}, sum(orders.amount))", alias="v")],
         )))
         # change=[None,50,-120]; picks cm where change>0 else amount:sum.
         expected = {
@@ -191,7 +191,7 @@ class TestAttributableComposite:
     async def test_change_spend_plus_amount(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c")],
+            metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c")],
         )))
         expected = {
             m: (None if CHANGE_SPEND_BY_SIGNUP[m] is None
@@ -207,11 +207,11 @@ class TestAttributableComposite:
         count and every other column identical (semantics Law 7)."""
         alone = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c")],
+            metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c")],
         )))
         both = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c"),
+            metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c"),
                       QueryMetric(metric="sum(orders.amount)", alias="a")],
         )))
         assert set(both) == set(alone)
@@ -250,8 +250,8 @@ class TestInnerVaryingAlongTimeAxis:
     async def test_mixed_grain_change_pct_of_ratio(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"{CM} / sum(amount)", alias="r"),
-                      QueryMetric(metric=f"change_pct({CM} / sum(amount))", alias="cp")],
+            metrics=[QueryMetric(metric=f"{CM} / sum(orders.amount)", alias="r"),
+                      QueryMetric(metric=f"change_pct({CM} / sum(orders.amount))", alias="cp")],
         )))
         for m in RATIO_BY_SIGNUP:
             _approx_or_none(got[m]["r"], RATIO_BY_SIGNUP[m])
@@ -297,7 +297,7 @@ class TestCompositeInFilterAndOrder:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-            filter=[f"change({CM}) + sum(amount) > 0"],
+            filter=[f"change({CM}) + sum(orders.amount) > 0"],
         )))
         # composite = [None, 150, -113] → only 2024-02 survives.
         assert set(got) == {"2024-02"}
@@ -307,7 +307,7 @@ class TestCompositeInFilterAndOrder:
         resp = await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-            order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}],  # pyright: ignore[reportArgumentType] — expression order targets enter via the shorthand coercion
+            order=[{"field": f"change({CM}) + sum(orders.amount)", "direction": "desc"}],  # pyright: ignore[reportArgumentType] — expression order targets enter via the shorthand coercion
         ))
         signup_col = next(k for k in resp.data[0] if k.endswith("signup_at"))
         months = [month_key(r[signup_col]) for r in resp.data]

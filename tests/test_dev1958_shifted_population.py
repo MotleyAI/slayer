@@ -21,7 +21,7 @@ from tests._dev1832_fixtures import (
     orders_q,
 )
 
-SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
+SHARE = "sum(orders.amount) / sum(orders.amount, partition_by=[orders.ordered_at])"
 EVENT_VALUE = "customers.regions.region_events.value"
 JAN, FEB, MAR, APR = "2024-01", "2024-02", "2024-03", "2024-04"
 
@@ -82,7 +82,7 @@ class TestPopulationRestriction:
             metrics=[QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="t")], **kw))
         _assert_cells(_cells(resp, f"orders.{EVENT_VALUE}"), ASSOC_DIM_SHIFT)
         plain = await exec_engine.execute(orders_q(
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")], **kw))
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")], **kw))
         assert len(resp.data) == len(plain.data)
 
 
@@ -100,7 +100,7 @@ class TestCrossModelPartitionKey:
         query = orders_q(
             dimensions=["orders.status"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric=f"time_shift(sum(amount) / sum(amount, partition_by=[{EVENT_VALUE}]), -1)",
+                metric=f"time_shift(sum(orders.amount) / sum(orders.amount, partition_by=[{EVENT_VALUE}]), -1)",
                 alias="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)

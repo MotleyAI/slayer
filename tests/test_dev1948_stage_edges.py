@@ -214,7 +214,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _q(name, source, **kw) -> SlayerQuery:
-    kw.setdefault("dimensions", ["status"] if source == "orders" else [])
+    kw.setdefault("dimensions", ["orders.status"] if source == "orders" else [])
     kw.setdefault("metrics", [{"metric": "sum(orders.amount)", "alias": "amt"}]
                   if source == "orders" else [{"metric": "sum(b.amt)", "alias": "total"}])
     return SlayerQuery(name=name, population=source, **kw)

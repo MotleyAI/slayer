@@ -256,7 +256,7 @@ class TestRowLevelExpressionPartitions:
     ])
     async def test_aggregate_carrying_controls(self, exec_engine, then, expected):
         resp = await exec_engine.execute(_acr(
-            dimensions=["sales.region", _dim(f"iif(city == 'Alpha', {then}, 0)", "ip")]))
+            dimensions=["sales.region", _dim(f"iif(sales.city == 'Alpha', {then}, 0)", "ip")]))
         _assert_cells(
             _cells(resp, ["sales.region", "ip"], "acr", norm=[str, _num]),
             expected)
@@ -299,7 +299,7 @@ class TestAttachedParameterGrain:
         resp = await variant_engine.execute(chain_q(
             dimensions=[_dim("customers.region_id * 10", "rid10")],
             metrics=[QueryMetric(
-                metric=f"wsum(customers.region_id, weight=sum(amount, partition_by={grain}))",
+                metric=f"wsum(customers.region_id, weight=sum(corders.amount, partition_by={grain}))",
                 alias="w")]))
         _assert_cells(
             _cells(resp, ["rid10"], "w", norm=[int]), RID10_WSUM)
@@ -520,7 +520,7 @@ class TestDerivedColumnSpelling:
     async def test_derived_parameter_executes(self, variant_engine):
         resp = await variant_engine.execute(sales_q(
             dimensions=["sales.region"],
-            metrics=[QueryMetric(metric=f"weighted_avg({INNER_CR}, weight=city_len)",
+            metrics=[QueryMetric(metric=f"weighted_avg({INNER_CR}, weight=sales.city_len)",
                                    alias="w")]))
         _assert_cells(
             _cells(resp, ["sales.region"], "w"),
@@ -536,7 +536,7 @@ class TestDerivedColumnSpelling:
         query = sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"weighted_avg({INNER_CR}, weight=prod_flag)", alias="w")])
+                metric=f"weighted_avg({INNER_CR}, weight=sales.prod_flag)", alias="w")])
         with pytest.raises(ParameterGrainError):
             await variant_engine.execute(query)
 
@@ -659,8 +659,8 @@ DISPLAY_CASES: List[Tuple[ValueKey, List[str]]] = [
     (_lit("Alpha"), ["'Alpha'"]),
     (_sum([CITY, REGION]), ["sum", "amount", "partition_by", "city", "region"]),
     (TransformKey(op="rank", input=_sum([CITY])), ["rank", "sum", "amount"]),
-    (_eq(CITY, _lit("Alpha")), ["sales.city == 'Alpha'"]),
-    (ScalarCallKey(name="upper", args=(CITY,)), ["upper(sales.city)"]),
+    (_eq(CITY, _lit("Alpha")), ["city == 'Alpha'"]),
+    (ScalarCallKey(name="upper", args=(CITY,)), ["upper(city)"]),
     (TimePointCmpKey(op=">=", operand=FieldKey(leaf="ordered_at"), point="last month"),
      ["ordered_at >= 'last month'"]),
     (InKey(field=CITY, values=(_lit("Alpha"), _lit("Beta"))),

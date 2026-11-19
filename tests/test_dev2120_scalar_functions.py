@@ -31,7 +31,7 @@ async def engine(request):
 
 
 async def _value(engine: SlayerQueryEngine, expr: str, *, row: int = 1):
-    return lib_values(await engine.execute(lib_query(expr, filter=[f"id = {row}"])))[row]
+    return lib_values(await engine.execute(lib_query(expr, filter=[f"lib.id = {row}"])))[row]
 
 
 async def _rejected(engine: SlayerQueryEngine, expr: str, *needles: str) -> str:

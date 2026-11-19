@@ -32,7 +32,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"field": "ordered_at", "granularity": "month"}]
+_MONTH = [{"field": "orders.ordered_at", "granularity": "month"}]
 
 
 def _q(**kw) -> SlayerQuery:

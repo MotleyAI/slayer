@@ -60,7 +60,7 @@ class TestExtraction:
         )
         assert _found(md) == [(3, [
             {"name": "s", "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.store_id"]},
-            {"population": "s", "metrics": ["max(_count)"]},
+            {"population": "s", "metrics": ["max(s._count)"]},
         ])]
 
     def test_multiline_slayer_query(self) -> None:
@@ -108,7 +108,7 @@ class TestExtraction:
         )
         assert _found(md) == [
             (3, COUNT),
-            (7, [{"name": "s", **COUNT}, {"population": "s", "metrics": ["max(_count)"]}]),
+            (7, [{"name": "s", **COUNT}, {"population": "s", "metrics": ["max(s._count)"]}]),
         ]
 
     def test_mcp_query_call(self) -> None:
@@ -149,7 +149,7 @@ class TestExtraction:
         query = {
             "population": {"name": "m", "data_source": "jaffle_shop", "sql": "SELECT 1 WHERE {? x IN ({stores}) ?}"},
             "metrics": ["count(orders.*)"],
-            "filter": ["order_total >= {floor}"],
+            "filter": ["orders.order_total >= {floor}"],
         }
         md = _md("```text", f"query = {json.dumps(query)}", "```")
         assert _found(md) == [(2, query)]

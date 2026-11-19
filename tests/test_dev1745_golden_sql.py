@@ -200,7 +200,7 @@ def _cases() -> dict:
         "host/same_named_column_and_model": _q(
             dimensions=dim_status,
             metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
-            filter=["status == 'x'"],
+            filter=["orders.status == 'x'"],
         ),
         # --- derived expansion ---
         "expand/derived_of_derived": _q(

@@ -324,7 +324,7 @@ async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
 async def test_windowed_corr_other_across_fanning_hop_fails_closed(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     query = SlayerQuery(
-        population="customers", time_dimensions=F.month_td("signup_at"),
+        population="customers", time_dimensions=F.month_td("customers.signup_at"),
         metrics=[_m("corr(customers.spend, other=orders.amount, window='1y')", "m")],
     )
     with pytest.raises(ValueError, match="unproven relationship hop"):
@@ -334,7 +334,7 @@ async def test_windowed_corr_other_across_fanning_hop_fails_closed(exec_backend:
 async def test_windowed_last_ranking_across_fanning_hop_fails_closed(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     query = SlayerQuery(
-        population="customers", time_dimensions=F.month_td("signup_at"),
+        population="customers", time_dimensions=F.month_td("customers.signup_at"),
         metrics=[_m("last(customers.spend, orders.created_at, window='1y')", "m")],
     )
     with pytest.raises(ValueError, match="unproven relationship hop"):

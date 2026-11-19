@@ -49,8 +49,8 @@ async def test_every_position_at_once(engine: SlayerQueryEngine) -> None:
         engine,
         _orders(dimensions=["orders.status"], time_dimensions=["date_trunc('month', orders.created_at)"],
                 metrics=["sum(orders.amount)"], filter=["orders.amount > 5"], order=[{"field": "orders.status"}]),
-        _orders(dimensions=["status"], time_dimensions=["date_trunc('month', created_at)"],
-                metrics=["sum(amount)"], filter=["amount > 5"], order=[{"field": "status"}]),
+        _orders(dimensions=["orders.status"], time_dimensions=["date_trunc('month', orders.created_at)"],
+                metrics=["sum(orders.amount)"], filter=["orders.amount > 5"], order=[{"field": "orders.status"}]),
     )
     assert resp.columns == ["orders.status", "orders.created_at", "orders.amount_sum"]
 
@@ -130,7 +130,7 @@ async def test_two_anchors_of_one_column_are_two_keys(engine: SlayerQueryEngine,
 
 
 async def test_a_dataset_anchor_reads_its_only_to_one_path(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(dimensions=["customers.name"], metrics=["count(*)"]))
+    resp = await engine.execute(_orders(dimensions=["customers.name"], metrics=["count(orders.*)"]))
     assert canonical_rows(resp) == [("ann", "2"), ("bob", "2")]
 
 
@@ -141,7 +141,7 @@ async def test_an_inner_hop_named_like_the_root_is_still_a_revisit(engine: Slaye
 
 
 async def test_a_longer_name_is_no_root_qualifier(engine: SlayerQueryEngine) -> None:
-    body = _orders(metrics=["count(*)"], filter=["reorders.status = 'paid'"])
+    body = _orders(metrics=["count(orders.*)"], filter=["reorders.status = 'paid'"])
     with pytest.raises(Exception, match="reorders"):
         await engine.execute(body)
 
@@ -150,14 +150,14 @@ async def test_a_longer_name_is_no_root_qualifier(engine: SlayerQueryEngine) -> 
 # Auto-names keep the written text
 # --------------------------------------------------------------------------- #
 async def test_computed_dimension_auto_name_keeps_its_text(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(dimensions=[{"field": "orders.amount * 2"}], metrics=["count(*)"]))
+    resp = await engine.execute(_orders(dimensions=[{"field": "orders.amount * 2"}], metrics=["count(orders.*)"]))
     assert resp.columns == ["orders.amount_2", "orders._count"]
 
 
 async def test_expression_time_dimension_auto_name_keeps_its_text(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(_orders(
         time_dimensions=[{"field": "coalesce(orders.shipped_at, orders.created_at)", "granularity": "month"}],
-        metrics=["count(*)"],
+        metrics=["count(orders.*)"],
     ))
     assert resp.columns == ["orders.coalesce_shipped_at_created_at", "orders._count"]
 
@@ -239,9 +239,9 @@ async def test_downstream_keys_of_a_qualified_dimension(engine: SlayerQueryEngin
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_the_root_wins_over_an_edge_named_like_it(backend: str) -> None:
     async with orders_engine(backend, edge_name="orders") as eng:
-        own = await eng.execute(_orders(dimensions=["orders.status"], metrics=["count(*)"]))
+        own = await eng.execute(_orders(dimensions=["orders.status"], metrics=["count(orders.*)"]))
         assert canonical_rows(own) == [("open", "1"), ("paid", "3")]
-        joined = await eng.execute(_orders(dimensions=["orders.orders.name"], metrics=["count(*)"]))
+        joined = await eng.execute(_orders(dimensions=["orders.orders.name"], metrics=["count(orders.*)"]))
         assert canonical_rows(joined) == [("ann", "2"), ("bob", "2")]
 
 
@@ -251,7 +251,7 @@ async def test_a_column_sql_root_qualifier_keeps_an_edge_named_like_the_root(bac
         model = orders_dataset(edge_name="orders")
         extra = DatasetField(name="cust_name", datatype=DataType.STRING, sql="orders.orders.name")
         await eng.storage.save_dataset(model.model_copy(update={"fields": [*model.fields, extra]}), _validate=False)
-        resp = await eng.execute(_orders(dimensions=["cust_name"], metrics=["count(*)"]))
+        resp = await eng.execute(_orders(dimensions=["orders.cust_name"], metrics=["count(orders.*)"]))
         assert canonical_rows(resp) == [("ann", "2"), ("bob", "2")]
 
 
@@ -329,8 +329,8 @@ def test_spacing_variants_collapse_at_construction() -> None:
 async def test_a_root_qualified_duplicate_runs_once(engine: SlayerQueryEngine) -> None:
     await assert_same(
         engine,
-        _orders(time_dimensions=["date_trunc('month', created_at)", "date_trunc('month', orders.created_at)"], metrics=["count(*)"]),
-        _orders(time_dimensions=["date_trunc('month', created_at)"], metrics=["count(*)"]),
+        _orders(time_dimensions=["date_trunc('month', orders.created_at)", "date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"]),
+        _orders(time_dimensions=["date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"]),
     )
 
 

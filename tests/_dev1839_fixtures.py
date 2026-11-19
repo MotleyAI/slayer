@@ -66,10 +66,10 @@ dev1839_models = dev1824_models
 # --------------------------------------------------------------------------- #
 # Dimension expressions under test.
 # --------------------------------------------------------------------------- #
-MIXED_RANK = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
-KEYLESS_RANK = "rank(sum(amount, partition_by=region) / sum(amount, partition_by=[]), direction='desc')"
+MIXED_RANK = "rank(sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), direction='desc')"
+KEYLESS_RANK = "rank(sum(orders.amount, partition_by=orders.region) / sum(orders.amount, partition_by=[]), direction='desc')"
 SUBSET_RANK = (
-    "rank(sum(amount, partition_by=[region, city]) - sum(amount, partition_by=region), direction='desc')"
+    "rank(sum(orders.amount, partition_by=[orders.region, orders.city]) - sum(orders.amount, partition_by=orders.region), direction='desc')"
 )
 NESTED_RANK = (
     "rank(cumsum(sum(amount, partition_by=[region, ordered_at])) - "
@@ -80,11 +80,11 @@ EXPLICIT_PART_RANK = (
     "partition_by=region, direction='desc')"
 )
 SAMEGRAIN_RANK = (
-    "rank(sum(amount, partition_by=region) + sum(ok_amount, partition_by=region), direction='desc')"
+    "rank(sum(orders.amount, partition_by=orders.region) + sum(orders.ok_amount, partition_by=orders.region), direction='desc')"
 )
-MEASURE_DIFF = "sum(amount, partition_by=region) - sum(amount, partition_by=city)"
+MEASURE_DIFF = "sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city)"
 SAMEGRAIN_DIFF = (
-    "sum(amount, partition_by=region) - sum(ok_amount, partition_by=region)"
+    "sum(orders.amount, partition_by=orders.region) - sum(orders.ok_amount, partition_by=orders.region)"
 )
 
 # --------------------------------------------------------------------------- #

@@ -71,7 +71,7 @@ class TestFilteredTwinsStayDistinct:
     async def test_filtered_and_unfiltered_inside_one_formula(self, engine: SlayerQueryEngine, agg: str,
                                                               expected: int) -> None:
         resp = await engine.execute(q(metrics=[
-            m(f"{agg}(amount) FILTER (WHERE status = 'open') - {agg}(amount)", "d"),
+            m(f"{agg}(orders.amount) FILTER (WHERE orders.status = 'open') - {agg}(orders.amount)", "d"),
         ]))
         assert _row(resp) == {"d": expected}, resp.sql
 

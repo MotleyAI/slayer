@@ -27,7 +27,7 @@ class TestExampleQueryStaleWarning:
         # then remove the referenced column so the query is now stale.
         attached = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         seed = await storage.save_memory(
             learning="paid revenue",

@@ -42,10 +42,10 @@ def _cases() -> dict:
         "cp/date_range": orders_query(
             expression=_STREAK, date_range=["2025-02-01", "2025-06-30"]),
         "cp/over_change": orders_query(
-            expression="consecutive_periods(change(sum(amount)) > 0)"),
-        "cp/over_lag": orders_query(expression="consecutive_periods(lag(sum(amount)) > 100)"),
+            expression="consecutive_periods(change(sum(orders.amount)) > 0)"),
+        "cp/over_lag": orders_query(expression="consecutive_periods(lag(sum(orders.amount)) > 100)"),
         "cp/under_lag": orders_query(expression=f"lag({_STREAK})"),
-        "ts/hour": orders_query(expression="time_shift(sum(amount), -1)", granularity="hour"),
+        "ts/hour": orders_query(expression="time_shift(sum(orders.amount), -1)", granularity="hour"),
     }
 
 

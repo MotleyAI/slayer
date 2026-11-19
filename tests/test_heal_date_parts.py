@@ -183,7 +183,7 @@ class TestAmbiguousWeekdays:
     async def test_function_names_both_conventions(self, engine: SlayerQueryEngine, name: str) -> None:
         message = await rejection(engine, {
             "population": "orders",
-            "dimensions": [{"field": f"{name}(created_at)", "alias": "d"}], "metrics": ["count(orders.*)"],
+            "dimensions": [{"field": f"{name}(orders.created_at)", "alias": "d"}], "metrics": ["count(orders.*)"],
         })
         for remedy in BOTH_CONVENTIONS:
             assert remedy in message
@@ -259,7 +259,7 @@ class TestExecutedEquivalence:
     async def test_date_trunc_dimension_keeps_bucket_meaning(self, engine: SlayerQueryEngine, bucket: str) -> None:
         await assert_equivalent(
             engine,
-            {"population": "orders", "dimensions": [f"date_trunc('{bucket}', created_at)"], "metrics": ["count(orders.*)"]},
+            {"population": "orders", "dimensions": [f"date_trunc('{bucket}', orders.created_at)"], "metrics": ["count(orders.*)"]},
             {"population": "orders", "time_dimensions": [{"field": "orders.created_at", "granularity": bucket}],
              "metrics": ["count(orders.*)"]},
         )

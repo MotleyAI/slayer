@@ -39,12 +39,12 @@ from tests._dev1832_fixtures import (
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_X = "sum(amount, partition_by=[region, ordered_at])"
-_Y = "max(amount, partition_by=[region, ordered_at])"
-REAGG_STANDALONE = f"min({_X}, partition_by=region)"
-HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"
-REAGG_MAX_STANDALONE = f"max({_Y}, partition_by=region)"
-HANDWRITTEN_MAX = f"sum(amount * max({_Y}, partition_by=region))"
+_X = "sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+_Y = "max(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+REAGG_STANDALONE = f"min({_X}, partition_by=monthly.region)"
+HANDWRITTEN_MIN = f"sum(monthly.amount * min({_X}, partition_by=monthly.region))"
+REAGG_MAX_STANDALONE = f"max({_Y}, partition_by=monthly.region)"
+HANDWRITTEN_MAX = f"sum(monthly.amount * max({_Y}, partition_by=monthly.region))"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

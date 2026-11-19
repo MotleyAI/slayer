@@ -45,14 +45,14 @@ class TestQueryMeasureNamedAfterTransform:
 
     async def test_filter_reference(self, engine: SlayerQueryEngine) -> None:
         await assert_renamed_twin(
-            engine, monthly("change", filter=["change > 0"]), monthly("chg", filter=["chg > 0"]),
+            engine, monthly("change", filter=["orders.change > 0"]), monthly("chg", filter=["orders.chg > 0"]),
         )
 
     async def test_order_reference(self, engine: SlayerQueryEngine) -> None:
         await assert_renamed_twin(
             engine,
-            monthly("change", order=[{"field": "change", "direction": "desc"}, {"field": "orders.created_at"}]),
-            monthly("chg", order=[{"field": "chg", "direction": "desc"}, {"field": "orders.created_at"}]),
+            monthly("change", order=[{"field": "orders.change", "direction": "desc"}, {"field": "orders.created_at"}]),
+            monthly("chg", order=[{"field": "orders.chg", "direction": "desc"}, {"field": "orders.created_at"}]),
             ordered=True,
         )
 
@@ -68,7 +68,7 @@ class TestQueryMeasureNamedAfterTransform:
     @pytest.mark.parametrize("name", ["cumsum", "change", "change_pct", "time_shift", "first", "last", "lag", "lead",
                                       "consecutive_periods", "rank", "percent_rank", "dense_rank", "ntile"])
     def test_every_transform_name_accepted(self, name: str) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)", "alias": name}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": name}]})
         assert [m.alias for m in query.metrics or []] == [name]
 
     def test_refinement_measure_accepted(self) -> None:

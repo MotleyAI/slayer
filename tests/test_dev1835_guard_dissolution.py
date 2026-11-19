@@ -60,7 +60,7 @@ def _assert_map(got: dict, expected: dict) -> None:
             assert float(got[key]) == pytest.approx(value), f"{key}"
 
 
-async def _run_x(engine, dialect, *, metrics, filters=None, dims=("region",)):
+async def _run_x(engine, dialect, *, metrics, filters=None, dims=("orders.region",)):
     query = q(
         dimensions=list(dims), time_dimensions=month_td(),
         metrics=metrics, **({"filter": filters} if filters else {}),
@@ -236,7 +236,7 @@ class TestChangeOverAttached:
     async def test_change_over_partitioned(self, exec_backend, op, expected) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            QueryMetric(metric=f"{op}(sum(amount, partition_by=region))", alias="x"),
+            QueryMetric(metric=f"{op}(sum(orders.amount, partition_by=orders.region))", alias="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),

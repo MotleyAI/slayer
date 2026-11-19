@@ -520,7 +520,7 @@ class TestExpressionPartitionAttribution:
         )
         col = await _classify(
             _q(
-                dimensions=[case.format(agg="sum(amount, partition_by=region)"), "orders.region"],
+                dimensions=[case.format(agg="sum(orders.amount, partition_by=orders.region)"), "orders.region"],
                 metrics=["count(customers.id)"],
             )
         )

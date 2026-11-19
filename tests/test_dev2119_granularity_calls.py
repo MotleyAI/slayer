@@ -29,7 +29,7 @@ class TestExpressionArgument:
         assert _ids(resp) == {4, 5, 6}
 
     async def test_compared_with_another_granularity_call(self, engine) -> None:
-        resp = await engine.execute(q(dimensions=["orders.id"], filter=[f"date_trunc('month', {EFF}) = date_trunc('month', created_at)"]))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=[f"date_trunc('month', {EFF}) = date_trunc('month', orders.created_at)"]))
         assert _ids(resp) == {1, 3}
 
     async def test_in_a_computed_dimension_over_a_cast(self, engine) -> None:
@@ -57,7 +57,7 @@ class TestNonTemporalArgument:
         assert "upper(status)" in str(ei.value)
 
     async def test_as_a_dimension_is_a_time_dimension_type_error(self, engine) -> None:
-        query = q(dimensions=["date_trunc('month', upper(status))"], metrics=[m("count(orders.*)")])
+        query = q(dimensions=["date_trunc('month', upper(orders.status))"], metrics=[m("count(orders.*)")])
         with pytest.raises(TimeDimensionFieldError) as ei:
             await engine.execute(query, dry_run=True)
         assert "STRING" in str(ei.value).upper()

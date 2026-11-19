@@ -31,8 +31,8 @@ def _wrap(name: str, floor: int) -> SlayerDataset:
 async def test_conflicting_contexts_of_an_extension_variable_fail_closed() -> None:
     models = [orders_dataset(), customers_dataset(), _over_rev(query_variables={"floor": 0}),
               _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
-    s1 = query(name="s1", population="wrap_a", dimensions=["wrap_a.customer_id"], metrics=[m("sum(r)", "a")])
-    s2 = query(name="s2", population="wrap_b", dimensions=["wrap_b.customer_id"], metrics=[m("sum(r)", "b")])
+    s1 = query(name="s1", population="wrap_a", dimensions=["wrap_a.customer_id"], metrics=[m("sum(wrap_a.r)", "a")])
+    s2 = query(name="s2", population="wrap_b", dimensions=["wrap_b.customer_id"], metrics=[m("sum(wrap_b.r)", "b")])
     root = query(population="s1", extensions=[{"dataset": "s1", "relationships": [
         {"to": "s2", "from_columns": ["customer_id"], "to_columns": ["customer_id"]}]}],
         dimensions=["s1.customer_id", "s1.a", "s2.b"])
@@ -52,7 +52,7 @@ async def test_inspection_reports_an_extension_variable_as_required() -> None:
 ], ids=["measure"])
 def test_a_joined_models_extension_reads_what_its_definitions_read(extension: dict) -> None:
     home = DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])
-    query = q(population="orders", dimensions=["status"], extensions=[extension])
+    query = q(population="orders", dimensions=["orders.status"], extensions=[extension])
     reads = datasets_read_by(query, datasets=[orders(), customers(home), regions()], data_source=DS)
     assert (DS, "regions") in reads
 
@@ -121,7 +121,7 @@ def test_a_short_form_reference_reads_the_models_on_its_route() -> None:
 
 
 def test_a_product_read_reads_the_unrelated_model() -> None:
-    query = q(population="orders", dimensions=["status"], metrics=[{"metric": "count(countries.id)", "alias": "n"}])
+    query = q(population="orders", dimensions=["orders.status"], metrics=[{"metric": "count(countries.id)", "alias": "n"}])
     reads = datasets_read_by(query, datasets=[orders(), customers(), regions(), countries()], data_source=DS)
     assert (DS, "countries") in reads
 
@@ -130,7 +130,7 @@ def test_a_rootless_sibling_stage_extension_reads_through_its_joins() -> None:
     home = DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])
     backed = SlayerDataset(name="backed", data_source="", source_queries=[
         q(name="s", dimensions=["orders.customer_id"]),
-        q(population="s", dimensions=["customer_id", "customers.regions.name"],
+        q(population="s", dimensions=["s.customer_id", "customers.regions.name"],
           extensions=[ext("s", relationships=[_TO_CUSTOMERS])])])
     assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 

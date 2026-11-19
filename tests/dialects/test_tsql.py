@@ -185,7 +185,7 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
 # sit on the statement and pagination is TOP / OFFSET … FETCH.
 
-_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "orders.created_at", "direction": "desc"}]
 _FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 

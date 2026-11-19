@@ -13,7 +13,7 @@ from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import refine_engine
 from tests._usage_reporting_helpers import SENT, assert_no_sentinel
 
-_FILTERED = {"population": "orders", "metrics": ["count(orders.*)"], "filters": [f"region = '{SENT}'"]}
+_FILTERED = {"population": "orders", "metrics": ["count(orders.*)"], "filters": [f"orders.region = '{SENT}'"]}
 _MISSING = {"population": f"{SENT}_model", "metrics": ["count(zqxjsentinel_model.*)"]}
 
 

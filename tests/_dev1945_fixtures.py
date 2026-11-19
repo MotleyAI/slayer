@@ -172,7 +172,7 @@ def orders_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "created_at") -> List[TimeDimension]:
+def month_td(column: str = "orders.created_at") -> List[TimeDimension]:
     return [TimeDimension(
         field=column, granularity=TimeGranularity.MONTH,
     )]

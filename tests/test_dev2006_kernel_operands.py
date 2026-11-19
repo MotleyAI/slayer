@@ -269,7 +269,7 @@ class TestConsumerPositions:
     async def test_transform_input(self, exec_engine):
         resp = await exec_engine.execute(snap_q(
             dimensions=["account_snapshots.customer_id"], time_dimensions=month_td(),
-            metrics=[m(f"cumsum(sum(last(balance, {PB_MONTH})))")],
+            metrics=[m(f"cumsum(sum(last(account_snapshots.balance, {PB_MONTH})))")],
         ))
         _approx(by_customer_month(resp), CUMSUM_LAST_BY_CUSTOMER_MONTH)
 
@@ -284,20 +284,20 @@ class TestConsumerPositions:
 
     async def test_aggregation_parameter(self, exec_engine):
         resp = await exec_engine.execute(snap_q(metrics=[m(
-            f"weighted_avg(balance, weight=sum({LAST}, partition_by=[customer_id]))"
+            f"weighted_avg(account_snapshots.balance, weight=sum({LAST}, partition_by=[account_snapshots.customer_id]))"
         )]))
         assert num(resp.data[0]["v"]) == pytest.approx(WEIGHTED_AVG_GLOBAL)
 
     async def test_explicit_outer_partition(self, exec_engine):
         resp = await exec_engine.execute(snap_q(
             dimensions=["account_snapshots.customer_id"], time_dimensions=month_td(),
-            metrics=[m(f"sum({LAST}, partition_by=[customer_id])")],
+            metrics=[m(f"sum({LAST}, partition_by=[account_snapshots.customer_id])")],
         ))
         expected = {(c, mo): v for c, v in LAST_BY_CUSTOMER.items() for mo in (JAN, FEB)}
         _approx(by_customer_month(resp), expected)
 
     async def test_nested_reaggregation(self, exec_engine):
-        resp = await exec_engine.execute(snap_q(metrics=[m(f"max(sum({LAST}, partition_by=[customer_id]))")]))
+        resp = await exec_engine.execute(snap_q(metrics=[m(f"max(sum({LAST}, partition_by=[account_snapshots.customer_id]))")]))
         assert num(resp.data[0]["v"]) == pytest.approx(LAST_BY_CUSTOMER[100])
 
 
@@ -403,7 +403,7 @@ class TestPlanStructure:
         _by_customer_q(f"sum({LAST} + max(balance, {PB}))"),
         snap_q(dimensions=["account_snapshots.customer_id"], time_dimensions=month_td(), metrics=[m(TWO_WINDOWS)]),
         snap_q(dimensions=["account_snapshots.customer_id"], time_dimensions=month_td(),
-               metrics=[m(f"cumsum(sum(last(balance, {PB_MONTH})))")]),
+               metrics=[m(f"cumsum(sum(last(account_snapshots.balance, {PB_MONTH})))")]),
     ])
     async def test_emitted_sql_is_scope_closed(self, query) -> None:
         assert_scope_closed(await _sql(query), dialect="duckdb")

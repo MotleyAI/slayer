@@ -119,11 +119,11 @@ _COMBINED_CONSUMER_CASES = [
     # Already-clean today (no computed dimension): the aggregate is consumed only
     # as a measure, or only in a filter — a combined position, so it stays rejected.
     pytest.param(
-        ["status"], [QueryMetric(metric=CM_AGG, alias="rt")],
+        ["orders.status"], [QueryMetric(metric=CM_AGG, alias="rt")],
         None, None, "customers.tier", id="measure_only-cross_model",
     ),
     pytest.param(
-        ["status"], [QueryMetric(metric="sum(orders.amount)", alias="m")],
+        ["orders.status"], [QueryMetric(metric="sum(orders.amount)", alias="m")],
         None, [f"{CM_AGG} > 100"], "customers.tier", id="filter_only-cross_model",
     ),
 ]
@@ -249,7 +249,7 @@ async def test_keyless_order_by_dimension_name_cross_model_row_routes(
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
         metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-        order=[{"field": "sband", "direction": "asc"}],
+        order=[{"field": "orders.sband", "direction": "asc"}],
     )
     resp = await engine.execute(query)
     rows = [(r["sband"], r["m"]) for r in resp.data]
@@ -281,7 +281,7 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
         metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-        order=[{"field": "cband", "direction": "asc"}],
+        order=[{"field": "orders.cband", "direction": "asc"}],
     ))
     rows = [(r["cband"], r["m"]) for r in resp.data]
     assert rows == [("hi", pytest.approx(107.0)), ("lo", pytest.approx(10.0))]

@@ -21,7 +21,7 @@ from slayer.core.query import SlayerQuery
 from tests._dev1747_fixtures import dev1747_datasets
 from tests._engine_helpers import _engine_generate
 
-_MONTH = [{"field": "created_at", "granularity": "month"}]
+_MONTH = [{"field": "orders.created_at", "granularity": "month"}]
 
 
 def _generate(metrics: list[dict], dialect: str = "postgres") -> str:

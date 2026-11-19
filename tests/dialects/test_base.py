@@ -47,7 +47,7 @@ from tests._dev1965_fixtures import (
 
 def test_default_build_date_trunc_month() -> None:
     d = SqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
+    col = sqlglot.parse_one("orders.created_at", dialect="postgres")
     out = d.build_date_trunc(col, TimeGranularity.MONTH)
     sql = out.sql(dialect=d.sqlglot_name)
     assert "DATE_TRUNC" in sql.upper()
@@ -79,7 +79,7 @@ def test_default_build_date_trunc_idempotent_on_already_cast() -> None:
 
 
 def _date_add(count: int, unit: TimeGranularity) -> Expression:
-    col = exp.column("created_at")
+    col = exp.column("orders.created_at")
     return SqlDialect().build_date_add(
         expr=col, count=exp.Literal.number(count), unit=unit, operand=DataType.DATETIME,
     )
@@ -264,7 +264,7 @@ def test_oracle_overrides_log10_and_log2_to_false() -> None:
 # Outer wrap over a transform chain (postgres): the chain's WITH sits on the
 # statement; the public projection reads the ``_outer`` derived table.
 
-_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "orders.created_at", "direction": "desc"}]
 
 
 async def test_chain_outer_wrap_basic_shape() -> None:

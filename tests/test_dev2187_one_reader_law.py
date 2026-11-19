@@ -106,8 +106,8 @@ async def test_a_quoted_identifier_names_its_column(engine: SlayerQueryEngine, q
 
 
 async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
-    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', \"created_at\")"], metrics=["count(orders.*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], metrics=["count(orders.*)"]))
+    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', orders.\"created_at\")"], metrics=["count(orders.*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"]))
     assert quoted.columns == bare.columns
     assert canonical_rows(quoted) == canonical_rows(bare)
 
@@ -387,7 +387,7 @@ def test_functional_time_dimension_pin(entry: str, field: str) -> None:
 
 
 def test_a_datasource_granularity_time_dimension_pin() -> None:
-    query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": ["date_trunc('fiscal_year', created_at)"]})
+    query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": ["date_trunc('fiscal_year', orders.created_at)"]})
     assert [(td.field, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "fiscal_year")]
 
 
@@ -404,9 +404,9 @@ def test_a_non_granularity_call_stays_a_dimension() -> None:
 
 
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:
-    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', iif(note = 'a)b', created_at, created_at))"],
+    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', iif(orders.note = 'a)b', orders.created_at, orders.created_at))"],
                                           metrics=["count(orders.*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], metrics=["count(orders.*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"]))
     assert sorted(tuple(map(str, r.values())) for r in quoted.data) == sorted(
         tuple(map(str, r.values())) for r in bare.data)
 

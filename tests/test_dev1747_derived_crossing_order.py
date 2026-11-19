@@ -73,7 +73,7 @@ async def _execute(query: SlayerQuery):
         return await engine.execute(query)
 
 
-def _grouped(direction: str, column: str = "cust_region") -> SlayerQuery:
+def _grouped(direction: str, column: str = "orders.cust_region") -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="orders.status")],
@@ -82,7 +82,7 @@ def _grouped(direction: str, column: str = "cust_region") -> SlayerQuery:
     )
 
 
-def _ungrouped(direction: str, column: str = "cust_region") -> SlayerQuery:
+def _ungrouped(direction: str, column: str = "orders.cust_region") -> SlayerQuery:
     """Raw rows — ``distinct_dimension_values=False`` means no GROUP BY, so the
     row IS the grain and a bare reference to the sort key is legal."""
     return SlayerQuery(

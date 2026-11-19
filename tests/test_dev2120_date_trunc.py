@@ -31,7 +31,7 @@ def _explicit(unit: str, **kw: Any) -> SlayerQuery:
 class TestParse:
     @pytest.mark.parametrize("unit", ["second", "minute", "hour", "day", "week", "week_sunday", "month", "quarter", "year"])
     def test_is_the_explicit_time_dimension(self, unit: str) -> None:
-        trunc = _q(dimensions=[f"date_trunc('{unit}', ts)"])
+        trunc = _q(dimensions=[f"date_trunc('{unit}', lib.ts)"])
         assert not trunc.dimensions
         assert trunc.time_dimensions == _explicit(unit).time_dimensions
 
@@ -84,7 +84,7 @@ class TestPositions:
         assert {k: int(v) for k, v in values.items()} == {1: 4, 2: 30}
 
     async def test_same_sql_as_the_explicit_time_dimension(self) -> None:
-        trunc = await emit_lib(_q(dimensions=["date_trunc('quarter', ts)"]), dialect="postgres")
+        trunc = await emit_lib(_q(dimensions=["date_trunc('quarter', lib.ts)"]), dialect="postgres")
         explicit = await emit_lib(_explicit("quarter"), dialect="postgres")
         assert trunc == explicit
 

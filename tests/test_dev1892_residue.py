@@ -63,7 +63,7 @@ class TestOperandGrainResidue:
 
     async def test_column_reference_parameter(self):
         query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
-            metric=f"wavg({INNER_CR}, weight=id)", alias="w")])
+            metric=f"wavg({INNER_CR}, weight=sales.id)", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         assert_grain_residue(ei.value, param="weight")
@@ -79,7 +79,7 @@ class TestOperandGrainResidue:
 
     async def test_aggregate_grained_outside_operand(self):
         query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
-            metric=f"weighted_avg({INNER_CR}, weight=sum(amount, partition_by=product))",
+            metric=f"weighted_avg({INNER_CR}, weight=sum(sales.amount, partition_by=sales.product))",
             alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
@@ -147,6 +147,6 @@ class TestRestSurfaceResidue:
         """A re-aggregation column-parameter residue is a client error (400)."""
         client = TestClient(create_app(storage=sales_storage))
         body = {"population": "sales", "dimensions": ["sales.region"],
-                "metrics": [{"metric": f"wavg({INNER_CR}, weight=id)", "alias": "w"}]}
+                "metrics": [{"metric": f"wavg({INNER_CR}, weight=sales.id)", "alias": "w"}]}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text

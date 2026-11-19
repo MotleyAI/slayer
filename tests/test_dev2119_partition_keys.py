@@ -62,7 +62,7 @@ class TestRankFamily:
 class TestTimeDimensionSource:
     async def test_key_equal_to_expression_source_is_its_bucket(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["orders.region"], time_dimensions=[td(EFF)],
-                                      metrics=[m(f"sum(amount, partition_by={EFF})")]))
+                                      metrics=[m(f"sum(orders.amount, partition_by={EFF})")]))
         assert by_bucket(resp, column(resp, EFF_NAME), "v", by=["orders.region"]) == {
             ("EU", "2025-01"): 10.0, ("EU", "2025-02"): 50.0, ("EU", "2025-04"): 50.0,
             ("US", "2025-02"): 50.0, ("US", "2025-03"): 100.0,
@@ -70,7 +70,7 @@ class TestTimeDimensionSource:
 
     async def test_source_at_several_granularities_is_ambiguous(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=["orders.region"], time_dimensions=[td(EFF), td(EFF, "year")],
-                  metrics=[m(f"sum(amount, partition_by={EFF})")])
+                  metrics=[m(f"sum(orders.amount, partition_by={EFF})")])
         with pytest.raises(PartitionKeyError, match="ambiguous"):
             await engine.execute(query, dry_run=True)
 
@@ -91,7 +91,7 @@ class TestAttributability:
 
 class TestAggregateBearingKey:
     async def test_inline_key_rejected_with_computed_dimension_remedy(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=["orders.region"], metrics=[m(f"sum(amount, partition_by={BAND})")])
+        query = q(dimensions=["orders.region"], metrics=[m(f"sum(orders.amount, partition_by={BAND})")])
         with pytest.raises(PartitionKeyError) as ei:
             await engine.execute(query, dry_run=True)
         msg = str(ei.value)
@@ -101,7 +101,7 @@ class TestAggregateBearingKey:
 
     async def test_key_equal_to_computed_dimension_executes_as_it(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["orders.region", {"field": BAND, "alias": "band"}],
-                                      metrics=[m(f"sum(amount, partition_by={BAND})")]))
+                                      metrics=[m(f"sum(orders.amount, partition_by={BAND})")]))
         assert _dims(resp, "orders.region", "band") == BAND_TOTALS, resp.sql
 
 

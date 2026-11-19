@@ -141,7 +141,7 @@ class TestNonMemberRejected:
 
     async def test_aggregation_parameter(self, engine):
         query = sales_q(dimensions=CRP, metrics=[
-            QueryMetric(metric=f"weighted_avg(amount, weight={NONMEMBER})", alias="w")])
+            QueryMetric(metric=f"weighted_avg(sales.amount, weight={NONMEMBER})", alias="w")])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")

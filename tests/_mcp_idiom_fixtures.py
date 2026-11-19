@@ -53,20 +53,20 @@ from tests._engine_helpers import seeded_exec_engine
 # --------------------------------------------------------------------------- #
 # Documented example texts — each must appear verbatim in its owning description
 # --------------------------------------------------------------------------- #
-SHARE_OF_GROUP = "sum(amount) / sum(amount, partition_by=customers.regions.name)"
-SHARE_OF_TOTAL = "sum(amount) / sum(amount, partition_by=[])"
+SHARE_OF_GROUP = "sum(orders.amount) / sum(orders.amount, partition_by=customers.regions.name)"
+SHARE_OF_TOTAL = "sum(orders.amount) / sum(orders.amount, partition_by=[])"
 TRAILING_WINDOW = "count_distinct(customer_id, window='90d')"
 NESTED = (
     "avg(sum(amount, partition_by=[customers.regions.name, customers.id]), "
     "partition_by=[customers.regions.name])"
 )
-SPEND_BAND = "iif(sum(amount, partition_by=customers.id) > 150, 'high', 'low')"
-CHANGE = "change(sum(amount))"
-CHANGE_PCT = "change_pct(sum(amount))"
-TIME_SHIFT = "time_shift(sum(amount), -1)"
-CUMSUM = "cumsum(sum(amount))"
+SPEND_BAND = "iif(sum(orders.amount, partition_by=customers.id) > 150, 'high', 'low')"
+CHANGE = "change(sum(orders.amount))"
+CHANGE_PCT = "change_pct(sum(orders.amount))"
+TIME_SHIFT = "time_shift(sum(orders.amount), -1)"
+CUMSUM = "cumsum(sum(orders.amount))"
 CROSS_DATASET = "sum(customers.credit)"
-RANK_FILTER = "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1"
+RANK_FILTER = "rank(sum(orders.amount), partition_by=customers.regions.name, direction='desc') <= 1"
 ANTI_JOIN = "orders.id is null"
 ORDER_UNDISPLAYED = '{"field": "sum(amount)", "direction": "desc"}'
 POPULATION_COUNT = "count(customers.orders.id)"
@@ -76,7 +76,7 @@ SPINE_TIME_DIMENSION = '{"field": "time_spine.timestamp", "granularity": "month"
 SPINE_MEASURE = "sum(orders.amount)"
 SECOND_CHILD = "sum(returns.amount)"
 AGG_FILTER = "count(*) FILTER (WHERE status = 'paid')"
-IN_LIST_VARIABLE = "status in ({statuses})"
+IN_LIST_VARIABLE = "orders.status in ({statuses})"
 CROSS_DATASET_RATIO = "sum(orders.amount) / count(*)"
 #: Guidance marker for an aggregate over a dataset no relationship path reaches; owned by ``metrics``.
 UNRELATED_DATASET = "no relationship path reaches"

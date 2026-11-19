@@ -54,7 +54,7 @@ _HOST_ROOTED_QUERY = SlayerQuery.model_validate({
     "population": "orders",
     "dimensions": [QueryDimension(field="orders.status")],
     "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
-    "order": [OrderItem(field="cust_region", direction="asc")],
+    "order": [OrderItem(field="orders.cust_region", direction="asc")],
 })
 
 

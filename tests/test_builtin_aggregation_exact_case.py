@@ -38,7 +38,7 @@ class TestContainers:
     async def test_a_stored_measure(self) -> None:
         doc = t_doc(aggregations=[_hijacker("sum")], metrics=[{"name": "total", "formula": "SUM(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [metric("total")]})
+            resp = await engine.execute({"population": "t", "metrics": [metric("t.total")]})
         assert float(value(resp)) == SUM_A
 
     async def test_a_saved_query(self) -> None:

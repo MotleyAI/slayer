@@ -11,8 +11,8 @@ from slayer.core.errors import PartitionKeyError
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._query_heal_fixtures import BACKENDS, assert_equivalent, heal_engine
 
-MONTH = {"field": "created_at", "granularity": "month"}
-YEAR = {"field": "created_at", "granularity": "year"}
+MONTH = {"field": "orders.created_at", "granularity": "month"}
+YEAR = {"field": "orders.created_at", "granularity": "year"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -35,8 +35,8 @@ class TestProjectedTimeDimension:
             return {
                 "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
                 "metrics": [
-                    {"metric": f"sum(amount, partition_by=[{key}])", "alias": "month_total"},
-                    {"metric": f"rank(sum(amount), partition_by=[{key}], direction='desc')", "alias": "r"},
+                    {"metric": f"sum(orders.amount, partition_by=[{key}])", "alias": "month_total"},
+                    {"metric": f"rank(sum(orders.amount), partition_by=[{key}], direction='desc')", "alias": "r"},
                 ],
             }
 
@@ -46,7 +46,7 @@ class TestProjectedTimeDimension:
         def query(key: str) -> dict[str, Any]:
             return {
                 "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
-                "metrics": [{"metric": f"sum(amount, partition_by={key})", "alias": "month_total"}],
+                "metrics": [{"metric": f"sum(orders.amount, partition_by={key})", "alias": "month_total"}],
             }
 
         await assert_equivalent(engine, query("date_trunc('month', created_at)"), query("created_at"))
@@ -55,7 +55,7 @@ class TestProjectedTimeDimension:
         def query(key: str) -> dict[str, Any]:
             return {
                 "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
-                "metrics": ["sum(orders.amount)"], "filter": [f"sum(amount, partition_by=[{key}]) > 50"],
+                "metrics": ["sum(orders.amount)"], "filter": [f"sum(orders.amount, partition_by=[{key}]) > 50"],
             }
 
         await assert_equivalent(engine, query("date_trunc('month', created_at)"), query("created_at"))

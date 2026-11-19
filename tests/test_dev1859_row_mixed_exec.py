@@ -276,10 +276,10 @@ class TestNullConstituent:
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[
-                QueryMetric(metric=f"sum(quantity * {INNER_UP_CITY})",
+                QueryMetric(metric=f"sum(sales.quantity * {INNER_UP_CITY})",
                              alias="bare"),
                 QueryMetric(
-                    metric=f"sum(coalesce({INNER_UP_CITY}, 0) * quantity)",
+                    metric=f"sum(coalesce({INNER_UP_CITY}, 0) * sales.quantity)",
                     alias="cz"),
             ]))
         bare = _region_vals(resp, "bare")
@@ -312,7 +312,7 @@ class TestCountFamily:
         NULL city constituent, so its count is 0, not a dropped row."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region"],
-            metrics=[QueryMetric(metric=f"count(quantity * {INNER_UP_CITY})",
+            metrics=[QueryMetric(metric=f"count(sales.quantity * {INNER_UP_CITY})",
                                    alias="n")]))
         vals = _region_vals(resp, "n")
         for region, expected in COUNT_CITY_MIXED_BY_REGION.items():
@@ -322,7 +322,7 @@ class TestCountFamily:
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"count_distinct(quantity * {INNER_UP_PRODUCT})",
+                metric=f"count_distinct(sales.quantity * {INNER_UP_PRODUCT})",
                 alias="nd")]))
         vals = _region_vals(resp, "nd")
         for region, expected in DISTINCT_MIXED_BY_REGION.items():
@@ -400,7 +400,7 @@ class TestOuterModifiers:
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"wavg(quantity * {INNER_UP_PRODUCT}, weight=quantity)",
+                metric=f"wavg(sales.quantity * {INNER_UP_PRODUCT}, weight=sales.quantity)",
                 alias="w")]))
         vals = _region_vals(resp, "w")
         for region, expected in WAVG_MIXED_BY_REGION.items():
@@ -410,7 +410,7 @@ class TestOuterModifiers:
         """Scenario: Custom and multi-input aggregations — dsum is SUM."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region"],
-            metrics=[QueryMetric(metric=f"dsum(quantity * {INNER_UP_PRODUCT})",
+            metrics=[QueryMetric(metric=f"dsum(sales.quantity * {INNER_UP_PRODUCT})",
                                    alias="ds")]))
         vals = _region_vals(resp, "ds")
         for region, expected in MIXED_SUM_BY_REGION.items():
@@ -422,7 +422,7 @@ class TestOuterModifiers:
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"corr(quantity * {INNER_UP_PRODUCT}, other=quantity)",
+                metric=f"corr(sales.quantity * {INNER_UP_PRODUCT}, other=sales.quantity)",
                 alias="c")]))
         vals = _region_vals(resp, "c")
         for region, expected in CORR_MIXED_BY_REGION.items():

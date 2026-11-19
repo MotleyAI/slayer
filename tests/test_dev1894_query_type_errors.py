@@ -88,7 +88,7 @@ def _time_axis() -> Tuple[SlayerQuery, List[SlayerDataset]]:
 
 
 def _no_time_dimension() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return orders_q(dimensions=["region"], metrics=[_m("sum(orders.amount, window='90d')", "w")]), f1739.dev1739_datasets()
+    return orders_q(dimensions=["orders.region"], metrics=[_m("sum(orders.amount, window='90d')", "w")]), f1739.dev1739_datasets()
 
 
 def _bad_window() -> Tuple[SlayerQuery, List[SlayerDataset]]:
@@ -100,7 +100,7 @@ def _bad_window() -> Tuple[SlayerQuery, List[SlayerDataset]]:
 
 
 def _rank_partition() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return orders_q(dimensions=["region"], metrics=[_m("rank(sum(orders.amount), partition_by=orders.city, direction='desc')", "r")]), f1739.dev1739_datasets()
+    return orders_q(dimensions=["orders.region"], metrics=[_m("rank(sum(orders.amount), partition_by=orders.city, direction='desc')", "r")]), f1739.dev1739_datasets()
 
 
 #: (id, case, class, location, has suggestion)
@@ -110,7 +110,7 @@ FAMILY_CASES = [
     ("window-duration", _bad_window, WindowDurationError, None, True),
     ("rank-partition-key", _rank_partition, PartitionKeyError, "transform 'rank'", True),
     ("aggregate-partition-key",
-     lambda: (orders_q(dimensions=["region"], metrics=[_m("sum(orders.amount, partition_by=orders.city)", "p")]), f1739.dev1739_datasets()),
+     lambda: (orders_q(dimensions=["orders.region"], metrics=[_m("sum(orders.amount, partition_by=orders.city)", "p")]), f1739.dev1739_datasets()),
      PartitionKeyError, "metric 'p'", True),
     ("unsafe-join-input",
      lambda: (f1945.orders_q(metrics=[f1945.metric("last(orders.amount, orders.li_ts)")]), f1945.dev1945_datasets(orders_default="created_at")),
@@ -137,7 +137,7 @@ FAMILY_CASES = [
      ParameterGrainError, "metric 'w'", True),
     ("reaggregation",
      lambda: (orders_q(
-         dimensions=["region"], time_dimensions=f1739.month_td(),
+         dimensions=["orders.region"], time_dimensions=f1739.month_td(),
          metrics=[_m("sum(sum(orders.amount, partition_by=[orders.region, orders.city]), window='90d')", "w")],
      ), f1739.dev1739_datasets()),
      ReaggregationError, "metric 'w'", True),

@@ -65,26 +65,26 @@ async def _rejected(engine: SlayerQueryEngine, expr: str, *, any_of: tuple[str, 
 
 class TestSpellings:
     @pytest.mark.parametrize(("spelling", "canonical"), [
-        ("payload ->> 'a'", "json_value(lib.payload, '$.a')"),
-        ("lib.payload -> 'a' -> 0 ->> 'b'", "json_value(payload, '$.a[0].b')"),
-        ("payload ->> '$.a.b'", "json_value(lib.payload, '$.a.b')"),
-        ("payload ->> 'unit price'", "json_value(payload, '$.\"unit price\"')"),
-        ("json_extract(payload, '$.a.b')", "json_value(lib.payload, '$.a.b')"),
-        ("json_extract_scalar(payload, '$.a.b')", "json_value(lib.payload, '$.a.b')"),
-        ("json_extract_path_text(payload, 'a', 'b')", "json_value(lib.payload, '$.a.b')"),
-        ("jsonb_extract_path_text(payload, 'a', 'b')", "json_value(lib.payload, '$.a.b')"),
-        ("JSON_VALUE(payload, '$.a')", "json_value(lib.payload, '$.a')"),
-        ("json_value(lib.payload, '$.a' RETURNING INT)", "TRY_CAST(json_value(payload, '$.a') AS INT)"),
-        ("json_value(payload, '$.a' returning double)", "TRY_CAST(json_value(payload, '$.a') AS DOUBLE)"),
+        ("lib.payload ->> 'a'", "json_value(lib.payload, '$.a')"),
+        ("lib.payload -> 'a' -> 0 ->> 'b'", "json_value(lib.payload, '$.a[0].b')"),
+        ("lib.payload ->> '$.a.b'", "json_value(lib.payload, '$.a.b')"),
+        ("lib.payload ->> 'unit price'", "json_value(lib.payload, '$.\"unit price\"')"),
+        ("json_extract(lib.payload, '$.a.b')", "json_value(lib.payload, '$.a.b')"),
+        ("json_extract_scalar(lib.payload, '$.a.b')", "json_value(lib.payload, '$.a.b')"),
+        ("json_extract_path_text(lib.payload, 'a', 'b')", "json_value(lib.payload, '$.a.b')"),
+        ("jsonb_extract_path_text(lib.payload, 'a', 'b')", "json_value(lib.payload, '$.a.b')"),
+        ("JSON_VALUE(lib.payload, '$.a')", "json_value(lib.payload, '$.a')"),
+        ("json_value(lib.payload, '$.a' RETURNING INT)", "TRY_CAST(json_value(lib.payload, '$.a') AS INT)"),
+        ("json_value(lib.payload, '$.a' returning double)", "TRY_CAST(json_value(lib.payload, '$.a') AS DOUBLE)"),
     ])
     def test_collapses_to_json_value(self, spelling: str, canonical: str) -> None:
         same(spelling, canonical)
 
     @pytest.mark.parametrize(("text", "explicit"), [
-        ("payload ->> 'n' || 'x'", "(payload ->> 'n') || 'x'"),
-        ("payload ->> 'a' = 'x'", "(payload ->> 'a') = 'x'"),
-        ("payload ->> 'a' LIKE 'x%'", "(payload ->> 'a') LIKE 'x%'"),
-        ("'x' || payload ->> 'a'", "('x' || payload) ->> 'a'"),
+        ("lib.payload ->> 'n' || 'x'", "(lib.payload ->> 'n') || 'x'"),
+        ("lib.payload ->> 'a' = 'x'", "(lib.payload ->> 'a') = 'x'"),
+        ("lib.payload ->> 'a' LIKE 'x%'", "(lib.payload ->> 'a') LIKE 'x%'"),
+        ("'x' || lib.payload ->> 'a'", "('x' || lib.payload) ->> 'a'"),
     ])
     def test_arrows_bind_at_the_concat_level(self, text: str, explicit: str) -> None:
         same(text, explicit)
@@ -113,7 +113,7 @@ class TestReturningIsTryCast:
     def test_returning_binds_to_a_try_cast_key(self) -> None:
         model = lib_dataset()
         bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
-        key = bind_expr(parse_expr("json_value(payload, '$.qty' RETURNING INT)"), scope=DatasetScope(population=model),
+        key = bind_expr(parse_expr("json_value(lib.payload, '$.qty' RETURNING INT)"), scope=DatasetScope(population=model),
                         bundle=bundle, allow_metrics=True).value_key
         assert isinstance(key, CastKey), key
         assert key.try_ is True
@@ -137,7 +137,7 @@ class TestPathSubset:
     ])
     async def test_unsupported_path_named(self, engine: SlayerQueryEngine, path: str, names: tuple[str, ...]) -> None:
         quoted = path.replace("'", "''")
-        await _rejected(engine, f"json_value(payload, '{quoted}')", any_of=names)
+        await _rejected(engine, f"json_value(lib.payload, '{quoted}')", any_of=names)
 
     @pytest.mark.parametrize("key", ["a\nb", "a\tb", "a\x00b", "a\x7fb"])
     def test_control_character_key_rejected(self, key: str) -> None:
@@ -295,7 +295,7 @@ class TestIngestionKeepsJsonDbType:
         inspector = MagicMock()
         inspector.get_columns.return_value = [{"name": "id", "type": sa.Integer()},
                                               {"name": "payload", "type": sa.types.NullType()}]
-        with patch.object(clickhouse_dialect, "fetch", return_value=[("id", "Int32"), ("payload", "JSON")]):
+        with patch.object(clickhouse_dialect, "fetch", return_value=[("id", "Int32"), ("lib.payload", "JSON")]):
             cols = get_dialect("clickhouse").reflect_columns(
                 connection=None, inspector=inspector, table="docs", schema="db", catalog=None)
         assert [(c.name, c.db_type) for c in cols] == [("id", None), ("payload", "JSON")]

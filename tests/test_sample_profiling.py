@@ -31,8 +31,8 @@ from slayer.storage.sqlite_conn import transaction
 from typing import Any
 
 DS = "ds"
-BAD_SQL = "no_such_fn(status)"
-BAD_NUM_SQL = "no_such_fn(amount)"
+BAD_SQL = "no_such_fn(orders.status)"
+BAD_NUM_SQL = "no_such_fn(orders.amount)"
 TTL = 3600.0
 
 ROWS = [
@@ -310,7 +310,7 @@ async def test_forced_refresh_skips_non_table_backed_models(env, monkeypatch: py
     )
     query_backed = SlayerDataset(
         name="by_status", data_source=DS,
-        source_queries=[SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])],
+        source_queries=[SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.status")])],
         fields=[DatasetField(name="status", datatype=DataType.STRING)],
     )
     log = _record(engine=engine, monkeypatch=monkeypatch)

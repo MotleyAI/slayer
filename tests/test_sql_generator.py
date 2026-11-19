@@ -6020,7 +6020,7 @@ class TestDev1501BroadTriggerAndGuards:
                 "population": "orders",
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
-                "order": [OrderItem.model_validate({"field": "customer_id", "direction": "asc"})],
+                "order": [OrderItem.model_validate({"field": "orders.customer_id", "direction": "asc"})],
             })
             resp = await engine.execute(query, dry_run=True)
             sql = resp.sql
@@ -9792,7 +9792,7 @@ class TestBigQueryAliasMangling:
                 ),
                 SlayerQuery(
                     population="stg",
-                    dimensions=[QueryDimension(field="status")],
+                    dimensions=[QueryDimension(field="stg.status")],
                     metrics=[QueryMetric(metric="sum(__slayer_qb__qb_stage__stg.revenue_sum)")],
                 ),
             ],
@@ -10252,7 +10252,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"metric": f"sum(revenue, window='{bad}')", "alias": "rev_w"}],
+            "metrics": [{"metric": f"sum(orders.revenue, window='{bad}')", "alias": "rev_w"}],
         })
         with pytest.raises(ValueError, match=r"Use syntax like '1y2m3w5d6h7min8s'"):
             await _engine_generate(query=query, dataset=orders_dataset)

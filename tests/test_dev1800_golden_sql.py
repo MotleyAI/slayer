@@ -30,7 +30,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"field": "ordered_at", "granularity": "month"}]
+_MONTH = [{"field": "orders.ordered_at", "granularity": "month"}]
 CM = "sum(customers.spend)"
 
 
@@ -46,28 +46,28 @@ def _cases() -> dict:
         # Failing composite class — measure position (recorded as raises today).
         "fc/change_plus_sum": _orders(
             to_many_handling="broadcast",
-            metrics=[{"metric": f"change({CM}) + sum(amount)", "alias": "c"}]),
+            metrics=[{"metric": f"change({CM}) + sum(orders.amount)", "alias": "c"}]),
         "fc/change_plus_count": _orders(
             to_many_handling="broadcast",
-            metrics=[{"metric": f"change({CM}) + count(*)", "alias": "c"}]),
+            metrics=[{"metric": f"change({CM}) + count(orders.*)", "alias": "c"}]),
         "fc/change_plus_max": _orders(
             to_many_handling="broadcast",
-            metrics=[{"metric": f"change({CM}) + max(amount)", "alias": "c"}]),
+            metrics=[{"metric": f"change({CM}) + max(orders.amount)", "alias": "c"}]),
         "fc/time_shift_plus_sum": _orders(
             to_many_handling="broadcast",
-            metrics=[{"metric": f"time_shift({CM}, -1) + sum(amount)", "alias": "c"}]),
+            metrics=[{"metric": f"time_shift({CM}, -1) + sum(orders.amount)", "alias": "c"}]),
         "fc/cumsum_plus_sum": _orders(
             to_many_handling="broadcast",
-            metrics=[{"metric": f"cumsum({CM}) + sum(amount)", "alias": "c"}]),
+            metrics=[{"metric": f"cumsum({CM}) + sum(orders.amount)", "alias": "c"}]),
         "fc/change_wscaled_plus_sum": _orders(
             metrics=[{"metric": "change(wscaled_sum(orders.amount)) + sum(orders.amount)", "alias": "c"}]),
         "fc/iif_over_change": _orders(
             to_many_handling="broadcast",
-            metrics=[{"metric": f"iif(change({CM}) > 0, {CM}, sum(amount))", "alias": "c"}]),
+            metrics=[{"metric": f"iif(change({CM}) > 0, {CM}, sum(orders.amount))", "alias": "c"}]),
         "fc/change_plus_sum_by_status": _orders(
             to_many_handling="broadcast",
             dimensions=["orders.status"],
-            metrics=[{"metric": f"change({CM}) + sum(amount)", "alias": "c"}]),
+            metrics=[{"metric": f"change({CM}) + sum(orders.amount)", "alias": "c"}]),
         # The issue's named single-transform shapes (already render).
         "named/change_wscaled": _orders(
             metrics=[{"metric": "change(wscaled_sum(orders.amount))", "alias": "d"}]),
@@ -83,13 +83,13 @@ def _cases() -> dict:
         "pos/filter_composite": _orders(
             to_many_handling="broadcast",
             dimensions=["orders.status"],
-            filter=[f"change({CM}) + sum(amount) > 0"],
+            filter=[f"change({CM}) + sum(orders.amount) > 0"],
             metrics=[{"metric": "sum(orders.amount)", "alias": "a"}]),
         "pos/order_composite": _orders(
             to_many_handling="broadcast",
             dimensions=["orders.status"],
             metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
-            order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}]),
+            order=[{"field": f"change({CM}) + sum(orders.amount)", "direction": "desc"}]),
         # Filter placement by mask typing: row mask (base WHERE) vs measure mask
         # (HAVING) — the already-legal placements the stage rule must preserve.
         "pos/row_mask": _orders(

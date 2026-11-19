@@ -74,7 +74,7 @@ class TestFolding:
         query = q(metrics=[m('sum(orders."Amount")')])
         with pytest.raises(UnknownReferenceError):
             await engine.execute(query)
-        assert num(single(await engine.execute(q(metrics=[m('sum("amount")')])))) == 160.0
+        assert num(single(await engine.execute(q(metrics=[m('sum(orders."amount")')])))) == 160.0
 
     @pytest.mark.parametrize("dimension", ['"customers".REGION', 'CUSTOMERS."region"'])
     async def test_quoting_per_segment(self, engine: SlayerQueryEngine, dimension: str) -> None:
@@ -250,7 +250,7 @@ class TestSaveCollisions:
     @pytest.mark.parametrize("source_queries", [
         [{"name": "Monthly", "population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]},
          {"name": "monthly", "population": "Monthly", "metrics": [{"metric": "sum(Monthly.n)", "alias": "t"}]},
-         {"population": "monthly", "metrics": [{"metric": "sum(t)", "alias": "u"}]}],
+         {"population": "monthly", "metrics": [{"metric": "sum(monthly.t)", "alias": "u"}]}],
         [{"population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "Total"},
                                                  {"metric": "count(orders.*)", "alias": "total"}]}],
     ], ids=["stage-names", "result-names"])

@@ -22,7 +22,7 @@ from tests._dev1832_fixtures import (
     monthly_q,
 )
 
-SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
+SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.ordered_at])"
 N, S, W = "North", "South", "West"
 JAN, FEB, MAR = "2024-01", "2024-02", "2024-03"
 #: Every (region, month) cell of the unfiltered query / the Feb–Mar date range.
@@ -55,7 +55,7 @@ async def exec_engine(request):
 def _filtered_datasets() -> list:
     """``monthly`` with the model-level filter ``amount > 5`` (drops South Jan and West Feb)."""
     models = dev1832_datasets()
-    next(m for m in models if m.name == "monthly").filters.append("amount > 5")
+    next(m for m in models if m.name == "monthly").filters.append("monthly.amount > 5")
     return models
 
 
@@ -72,7 +72,7 @@ def _dr_td() -> list:
 
 
 def _q(expression: str, *, date_range: bool = False, **kw):
-    kw.setdefault("dimensions", ["region"])
+    kw.setdefault("dimensions", ["monthly.region"])
     return monthly_q(time_dimensions=_dr_td() if date_range else month_td(),
                      metrics=[QueryMetric(metric=expression, alias="t")], **kw)
 
@@ -116,7 +116,7 @@ class TestPartitionedLeafKeepsItsGrain:
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=HALF_MONTH_TOTAL)
 
     async def test_all_time_grained_leaves_shift_at_the_operand_grain(self, exec_engine) -> None:
-        p = "sum(amount, partition_by=[ordered_at])"
+        p = "sum(monthly.amount, partition_by=[monthly.ordered_at])"
         resp = await exec_engine.execute(_q(f"time_shift({p} + {p}, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=DOUBLE_MONTH_TOTAL)
 

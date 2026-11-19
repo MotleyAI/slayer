@@ -11,9 +11,9 @@ import pytest
 from tests._dev1847_fixtures import SPEND_BAND_EXPR, _SALES_ROWS_WIDE
 from slayer.core.query import QueryMetric
 
-UREG = {"field": "upper(region)", "alias": "ureg"}
+UREG = {"field": "upper(sales.region)", "alias": "ureg"}
 BAND = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
-AMOUNT = QueryMetric(metric="sum(amount)", alias="a")
+AMOUNT = QueryMetric(metric="sum(sales.amount)", alias="a")
 
 
 def cell_totals(key: Callable[[tuple], Tuple]) -> Dict[Tuple, Optional[float]]:

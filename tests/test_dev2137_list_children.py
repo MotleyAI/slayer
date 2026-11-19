@@ -122,14 +122,14 @@ class TestElementDimension:
         assert _per(resp, "skills.value") == {"go": 3, "sql": 2}
 
     async def test_default_association_of_a_parent_measure(self, engine) -> None:
-        q = query(dimensions=["contractors.skills.value"], metrics=[metric("count(*)", "n")])
+        q = query(dimensions=["contractors.skills.value"], metrics=[metric("count(contractors.*)", "n")])
         with pytest.warns(UserWarning):
             resp = await engine.execute(q)
         assert _per(resp, "skills.value") == {"go": 2, "sql": 2}
         assert associated_warnings(resp)
 
     async def test_broadcast_of_a_parent_measure(self, engine) -> None:
-        q = query(dimensions=["contractors.skills.value"], metrics=[metric("count(*)", "n")], to_many_handling="broadcast")
+        q = query(dimensions=["contractors.skills.value"], metrics=[metric("count(contractors.*)", "n")], to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             resp = await engine.execute(q)
         assert _per(resp, "skills.value") == {"go": 5, "sql": 5}
@@ -138,7 +138,7 @@ class TestElementDimension:
 
 class TestKeylessAssociation:
     async def test_contractors_per_skill(self, keyless) -> None:
-        q = query(dimensions=["contractors.skills.value"], metrics=[metric("count(*)", "n")], to_many_handling="associate")
+        q = query(dimensions=["contractors.skills.value"], metrics=[metric("count(contractors.*)", "n")], to_many_handling="associate")
         with pytest.warns(UserWarning):
             resp = await keyless.execute(q)
         assert _per(resp, "skills.value") == {"go": 2, "sql": 2}
@@ -146,7 +146,7 @@ class TestKeylessAssociation:
 
     async def test_identical_parent_rows_stay_distinct(self, keyless) -> None:
         q = SlayerQuery.model_validate({
-            "population": "twins", "dimensions": ["twins.skills.value"], "metrics": [metric("count(*)", "n")],
+            "population": "twins", "dimensions": ["twins.skills.value"], "metrics": [metric("count(twins.*)", "n")],
             "to_many_handling": "associate"})
         with pytest.warns(UserWarning):
             resp = await keyless.execute(q)
@@ -280,7 +280,7 @@ class TestNameCollisions:
 # Emission inside the parent's own rows
 # --------------------------------------------------------------------------- #
 EMITTED = {
-    "element-filter": query(metrics=[metric("count(*)", "n")], filter=["contractors.skills.value = 'go'"]),
+    "element-filter": query(metrics=[metric("count(contractors.*)", "n")], filter=["contractors.skills.value = 'go'"]),
     "element-dimension": query(dimensions=["contractors.skills.value"], metrics=[metric("count(contractors.skills.*)", "n")]),
 }
 

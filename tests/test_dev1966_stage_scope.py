@@ -57,7 +57,7 @@ def _b_over(dim: str, source, **kw) -> SlayerQuery:
 
 
 def _root_over_b(flat_dim: str) -> SlayerQuery:
-    return query(population="b", dimensions=[flat_dim], metrics=[m("sum(amt)", "total")])
+    return query(population="b", dimensions=[flat_dim], metrics=[m("sum(b.amt)", "total")])
 
 
 class TestStoredDefinitionsNeverSeeStages:
@@ -102,7 +102,7 @@ class TestQueryBackedPrivateStageNames:
 
     async def test_consumer_name_reaches_the_model_not_a_private_stage(self, engine: SlayerQueryEngine) -> None:
         s = query(name="s", population="qb_shadow", dimensions=["qb_shadow.customers__tier"],
-                  metrics=[m("sum(amt)", "t")])
+                  metrics=[m("sum(qb_shadow.amt)", "t")])
         root = query(
             population="customers",
             extensions=[{"dataset": "customers", "relationships": [
@@ -118,7 +118,7 @@ class TestQueryBackedPrivateStageNames:
     async def test_private_stage_is_unreachable_from_the_consumer(self, engine) -> None:
         s = query(name="s", population="cust_rev", dimensions=["cust_rev.customer_id"],
                   metrics=[m("sum(cust_rev.rev)", "r")])
-        stages = [s, query(population="x", metrics=[m("sum(amt)", "t")])]
+        stages = [s, query(population="x", metrics=[m("sum(x.amt)", "t")])]
         with pytest.raises(ValueError, match=r"'x'") as exc:
             await engine.execute(stages)
         assert INTERNAL not in str(exc.value)
@@ -140,7 +140,7 @@ class TestUserSpelling:
         b = query(name="b", population="orders", dimensions=["orders.status"],
                   metrics=[m("sum(orders.amount)", "amt"), m("sum(customers.spend)", "cs")],
                   to_many_handling="broadcast")
-        stages = [b, query(population="b", dimensions=["b.status"], metrics=[m("sum(amt)", "t")],
+        stages = [b, query(population="b", dimensions=["b.status"], metrics=[m("sum(b.amt)", "t")],
                            to_many_handling="broadcast")]
         with pytest.warns(UserWarning):
             resp = await engine.execute(stages)
@@ -149,7 +149,7 @@ class TestUserSpelling:
     async def test_stage_binding_error_names_the_user_stage(self, engine48) -> None:
         stages = [f48.stage_x(), query(name="c", population="x", dimensions=["x.nope"],
                                        metrics=[m("sum(x.total_spend)", "a")]),
-                  query(population="c", metrics=[m("sum(a)", "t")])]
+                  query(population="c", metrics=[m("sum(c.a)", "t")])]
         with pytest.raises(ValueError) as exc:
             await engine48.execute(stages)
         assert "stage 'x'" in str(exc.value)

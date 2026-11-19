@@ -108,7 +108,7 @@ async def test_consecutive_periods_over_date_column(
     assert [got[d[:width]] for d in dates] == [1, 2, 1, 2]
 
 
-@pytest.mark.parametrize("dim", ["d", "d_expr", "ts"])  # DATE, DATETIME and TIMESTAMP buckets
+@pytest.mark.parametrize("dim", ["ev.d", "ev.d_expr", "ev.ts"])  # DATE, DATETIME and TIMESTAMP buckets
 @pytest.mark.parametrize("formula,comparison", [
     ("consecutive_periods(sum(ev.v) > 0)",
      "CAST(`_cp_prev_ev___x` AS DATETIME) = DATETIME_ADD(CAST(`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH)"),

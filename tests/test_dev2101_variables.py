@@ -11,7 +11,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.query import QueryDimension
 from tests._dev2101_fixtures import EXEC_BACKENDS, by_key, ids, m, make_exec_engine, num, q, single
 
-MONTH = {"field": "created_at", "granularity": "month"}
+MONTH = {"field": "orders.created_at", "granularity": "month"}
 
 
 @pytest.fixture(params=EXEC_BACKENDS)

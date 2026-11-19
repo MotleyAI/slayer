@@ -218,7 +218,7 @@ COERCION_CASES = [
     LibCase(case_id="coerce|saved-measure", name="try_cast", mentions="number",
             build=lambda: _lib(metrics=["lib.txt_total"]), datasets=_with_saved_metric),
     LibCase(case_id="coerce|order-by", name="try_cast", mentions="number",
-            build=lambda: _lib(dimensions=["id"], order=[{"field": "lib.num_txt * 2"}])),
+            build=lambda: _lib(dimensions=["lib.id"], order=[{"field": "lib.num_txt * 2"}])),
     LibCase(case_id="coerce|stage", name="try_cast", mentions="number", build=_stages),
 ]
 CASES = [*FUNCTION_CASES, *SPELLING_CASES, *COERCION_CASES]
@@ -452,15 +452,15 @@ class ListCase(BaseModel):
 
 LIST_CASES = [
     ListCase(case_id="contains", mentions="contains",
-             build=lambda: _contractors(dimensions=["id"], filter=["contains(contractors.skills, 'go')"])),
+             build=lambda: _contractors(dimensions=["contractors.id"], filter=["contains(contractors.skills, 'go')"])),
     ListCase(case_id="contains_any-literal", mentions="contains_any",
-             build=lambda: _contractors(dimensions=["id"], filter=["contains_any(contractors.skills, ['go', 'sql'])"])),
+             build=lambda: _contractors(dimensions=["contractors.id"], filter=["contains_any(contractors.skills, ['go', 'sql'])"])),
     ListCase(case_id="contains_all-list-column", mentions="contains_all",
-             build=lambda: _contractors(dimensions=["id"], filter=["contains_all(contractors.skills, contractors.required)"])),
+             build=lambda: _contractors(dimensions=["contractors.id"], filter=["contains_all(contractors.skills, contractors.required)"])),
     ListCase(case_id="length", mentions="length",
-             build=lambda: _contractors(dimensions=["id", {"field": "length(contractors.skills)", "alias": "v"}])),
+             build=lambda: _contractors(dimensions=["contractors.id", {"field": "length(contractors.skills)", "alias": "v"}])),
     ListCase(case_id="array-literal", mentions="length",
-             build=lambda: _contractors(dimensions=["id", {"field": "length(['go', 'sql'])", "alias": "v"}])),
+             build=lambda: _contractors(dimensions=["contractors.id", {"field": "length(['go', 'sql'])", "alias": "v"}])),
     ListCase(case_id="element-access", mentions="skills", build=lambda: _contractors(dimensions=["contractors.skills.value"])),
     ListCase(case_id="list-child", mentions="skills",
              build=lambda: _contractors(metrics=[{"metric": "count(contractors.skills.*)", "alias": "n"}])),

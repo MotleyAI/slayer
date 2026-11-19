@@ -49,7 +49,7 @@ async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None)
 
 
 _SHAPES = [
-    pytest.param(["region"], "sum(orders.amount)", 60, None, id="plain-local"),
+    pytest.param(["orders.region"], "sum(orders.amount)", 60, None, id="plain-local"),
     pytest.param(["customers.tier"], "sum(customers.spend)", 175, None, id="cross-model"),
     pytest.param(
         ["customers.regions.name", "customers.tier"],
@@ -57,7 +57,7 @@ _SHAPES = [
         id="cross-model-partitioned",
     ),
     pytest.param(
-        ["region"], "sum(orders.amount, window='90d', partition_by=orders.region)", 40, month_td(),
+        ["orders.region"], "sum(orders.amount, window='90d', partition_by=orders.region)", 40, month_td(),
         id="windowed",
     ),
 ]

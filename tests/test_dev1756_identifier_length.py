@@ -932,7 +932,7 @@ class TestVirtualModelShorts:
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": [QueryDimension(field=short)],
-            "metrics": [{"metric": "sum(totalAmount_sum)"}],
+            "metrics": [{"metric": "sum(stage1.totalAmount_sum)"}],
         })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         assert resp.sql is not None

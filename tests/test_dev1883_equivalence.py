@@ -19,7 +19,7 @@ async def exec_engine(tmp_path):
 def _functional() -> SlayerQuery:
     return fx.q(
         population="orders",
-        dimensions=["date_trunc('month', created_at)"],
+        dimensions=["date_trunc('month', orders.created_at)"],
         metrics=[{"metric": "sum(orders.amount)"}],
     )
 
@@ -51,7 +51,7 @@ class TestEquivalence:
     async def test_string_time_dimensions_entry_sql_identical(self, engine) -> None:
         string_form = fx.q(
             population="orders",
-            time_dimensions=["date_trunc('month', created_at)"],
+            time_dimensions=["date_trunc('month', orders.created_at)"],
             metrics=[{"metric": "sum(orders.amount)"}],
         )
         functional = await engine.execute(string_form, dry_run=True)
@@ -65,7 +65,7 @@ class TestEquivalence:
         TD present, generates identical SQL from the functional form."""
         functional = await engine.execute(fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)", "date_trunc('year', customers.created_at)"],
+            dimensions=["date_trunc('month', orders.created_at)", "date_trunc('year', customers.created_at)"],
             main_time_dimension="orders.created_at",
             metrics=[{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
         ), dry_run=True)
@@ -83,7 +83,7 @@ class TestEquivalence:
     async def test_whole_periods_only_identical(self, engine) -> None:
         functional = await engine.execute(fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)"],
+            dimensions=["date_trunc('month', orders.created_at)"],
             metrics=[{"metric": "sum(orders.amount)"}],
             whole_periods_only=True,
         ), dry_run=True)

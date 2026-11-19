@@ -52,7 +52,7 @@ def _cm_count(sql: str, dialect: str) -> int:
 
 def _band_wm_query(*windows: str, filters=None):
     measures = [M] + [
-        QueryMetric(metric=f"sum(amount, window='{w}')", alias=f"w{w[:-1]}")
+        QueryMetric(metric=f"sum(orders.amount, window='{w}')", alias=f"w{w[:-1]}")
         for w in windows
     ]
     kw = {"filter": filters} if filters else {}

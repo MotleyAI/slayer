@@ -101,7 +101,7 @@ def q(**kw):
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "ordered_at"):
+def month_td(column: str = "orders.ordered_at"):
     return [TimeDimension(
         field=column, granularity=TimeGranularity.MONTH,
     )]

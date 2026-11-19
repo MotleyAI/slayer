@@ -174,7 +174,7 @@ class TestExpressionGrammarScenarios:
         assert num(single(await engine.execute(q(metrics=[m(formula)])))) == pytest.approx(expected)
 
     async def test_power_over_an_aggregate(self, engine: SlayerQueryEngine) -> None:
-        assert num(single(await engine.execute(q(metrics=[m("sum(amount) ** 2")])))) == pytest.approx(10000.0)
+        assert num(single(await engine.execute(q(metrics=[m("sum(orders.amount) ** 2")])))) == pytest.approx(10000.0)
 
     async def test_not_binds_looser_than_comparison(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["orders.id"], filter=["NOT orders.amount > 15 AND orders.status = 'paid'"]))
@@ -206,7 +206,7 @@ class TestExpressionGrammarScenarios:
         assert sql_form.sql == calls.sql
 
     async def test_quoted_column_name(self, engine: SlayerQueryEngine) -> None:
-        assert num(single(await engine.execute(q(metrics=[m('sum("order total")')])))) == 1000.0
+        assert num(single(await engine.execute(q(metrics=[m('sum(orders."order total")')])))) == 1000.0
 
     async def test_quoted_segment_in_dotted_path(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=['customers."Region"'], metrics=[m("count(orders.*)")]))
@@ -232,7 +232,7 @@ class TestExpressionGrammarScenarios:
         assert py.sql == sql.sql
 
     async def test_comparison_inside_scalar_call(self, engine: SlayerQueryEngine) -> None:
-        assert num(single(await engine.execute(q(metrics=[m("sum(iif(status = 'paid', amount, 0))")])))) == 70.0
+        assert num(single(await engine.execute(q(metrics=[m("sum(iif(orders.status = 'paid', orders.amount, 0))")])))) == 70.0
 
 
 class TestEmission:

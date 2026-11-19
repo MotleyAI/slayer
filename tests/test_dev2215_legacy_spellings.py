@@ -168,7 +168,7 @@ async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) 
     assert stage.filter == ["status = 'paid' and region IS NOT NULL"]
 
 
-PAID_SPELLINGS = "sum(iif(status == 'paid' AND region is not None, amount, 0))"
+PAID_SPELLINGS = "sum(iif(orders.status == 'paid' AND orders.region is not None, orders.amount, 0))"
 
 
 def spelling_payloads(notes: list[Any]) -> list[Any]:

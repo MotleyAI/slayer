@@ -21,7 +21,7 @@ def _q(expression: str, dimensions: list[str]) -> SlayerQuery:
 
 
 def _cases() -> dict[str, SlayerQuery]:
-    region, region_city = ["region"], ["region", "city"]
+    region, region_city = ["sales.region"], ["sales.region", "sales.city"]
     return {
         "rank/asc": _q("rank(sum(sales.amount), direction='asc')", region),
         "rank/desc": _q("rank(sum(sales.amount), direction='desc')", region),

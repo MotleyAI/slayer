@@ -128,7 +128,7 @@ class TestStages:
 
 
 def _td(date_range) -> dict:
-    return {"field": "ts", "granularity": "month", "date_range": date_range}
+    return {"field": "ev.ts", "granularity": "month", "date_range": date_range}
 
 
 class TestConstruction:

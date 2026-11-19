@@ -142,7 +142,7 @@ class TestBindDispatch:
         assert key.op == formula.split("(")[0]
 
     @pytest.mark.parametrize("formula, ranking", [
-        ("last(sales.revenue)", None), ("last(sales.revenue, sales.ordered_at)", "ordered_at"),
+        ("last(sales.revenue)", None), ("last(sales.revenue, sales.ordered_at)", "sales.ordered_at"),
     ])
     def test_row_operand_binds_to_ranked_aggregate(self, formula, ranking):
         key = _metric_key(formula)

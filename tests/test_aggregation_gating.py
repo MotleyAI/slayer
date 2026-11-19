@@ -234,7 +234,7 @@ class TestStatAggregationEligibility:
         sql = await _generate_sql(
             orders=numeric_orders,
             customers=_customers_dataset(),
-            metrics=[{"metric": f"{agg}(amount)", "alias": "result"}],
+            metrics=[{"metric": f"{agg}(orders.amount)", "alias": "result"}],
         )
         # Pin the function-call shape: family name immediately followed by
         # the qualified value column. The earlier "( in sql" check passed
@@ -260,7 +260,7 @@ class TestStatAggregationEligibility:
             orders=numeric_orders,
             customers=_customers_dataset(),
             metrics=[
-                {"metric": f"{agg}(amount, other=quantity)", "alias": "result"}
+                {"metric": f"{agg}(orders.amount, other=orders.quantity)", "alias": "result"}
             ],
         )
         # Both legs must be qualified and appear in the function call's
@@ -279,7 +279,7 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                metrics=[{"metric": f"{agg}(status)", "alias": "result"}],
+                metrics=[{"metric": f"{agg}(orders.status)", "alias": "result"}],
             )
 
     @pytest.mark.parametrize(
@@ -295,7 +295,7 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                metrics=[{"metric": f"{agg}(id)", "alias": "result"}],
+                metrics=[{"metric": f"{agg}(orders.id)", "alias": "result"}],
             )
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
@@ -313,7 +313,7 @@ class TestStatAggregationEligibility:
                 orders=numeric_orders,
                 customers=customers,
                 metrics=[
-                    {"metric": f"{agg}(status, other=quantity)", "alias": "result"}
+                    {"metric": f"{agg}(orders.status, other=orders.quantity)", "alias": "result"}
                 ],
             )
 
@@ -327,7 +327,7 @@ class TestStatAggregationEligibility:
                 orders=numeric_orders,
                 customers=customers,
                 metrics=[
-                    {"metric": f"{agg}(id, other=quantity)", "alias": "result"}
+                    {"metric": f"{agg}(orders.id, other=orders.quantity)", "alias": "result"}
                 ],
             )
 
@@ -343,7 +343,7 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                metrics=[{"metric": f"{agg}(amount)", "alias": "result"}],
+                metrics=[{"metric": f"{agg}(orders.amount)", "alias": "result"}],
             )
 
 
@@ -528,7 +528,7 @@ class TestDev1576UnknownVsDisallowed:
             "population": "orders",
             "dimensions": ["orders.status"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
-            "filter": [f"{raw}(amount) > 5"],
+            "filter": [f"{raw}(orders.amount) > 5"],
         })
         sql = await _engine_generate(
             query=query, dataset=_orders_with_status(),
@@ -617,7 +617,7 @@ class TestDev1576UnknownNamePrecedence:
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
-    @pytest.mark.parametrize("column", ["rating", "id", "status"])
+    @pytest.mark.parametrize("column", ["orders.rating", "orders.id", "orders.status"])
     async def test_unknown_name_beats_pk_whitelist_and_type_gates(
         self, column: str,
     ) -> None:

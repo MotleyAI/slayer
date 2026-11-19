@@ -314,7 +314,7 @@ class TestRegexExpressionDimensionEndToEnd:
         engine = await self._seed_engine(tmp_path)
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
+            dimensions=[QueryDimension(field=f"CASE WHEN orders.status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
                                           alias="rx")],
             metrics=[QueryMetric(metric="count(orders.*)")],
         )

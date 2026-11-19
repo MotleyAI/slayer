@@ -139,7 +139,7 @@ class TestIngestDanglingRefCleanup:
         # drop the column to make the query stale.
         attached = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         await storage.save_memory(
             learning="x",

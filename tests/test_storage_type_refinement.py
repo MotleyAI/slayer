@@ -242,7 +242,7 @@ class TestRefineDictWithLiveSchema:
         d = {
             "name": "rollup",
             "data_source": "live",
-            "source_queries": [{"population": "items", "metrics": [{"metric": "sum(qty)"}]}],
+            "source_queries": [{"population": "items", "metrics": [{"metric": "sum(items.qty)"}]}],
             "fields": [
                 {"name": "qty_sum", "sql": "qty_sum", "datatype": "Float"},
             ],

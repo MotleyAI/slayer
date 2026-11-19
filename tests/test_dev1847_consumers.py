@@ -89,7 +89,7 @@ class TestExplicitOuterGrain:
         warning."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region", "sales.product"],
-            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="region")]))
+            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="sales.region")]))
         by = rows_by(resp, "sales.region", "sales.product")
         for region in ("North", "South"):
             for product in ("P", "Q"):

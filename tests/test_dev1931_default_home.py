@@ -113,7 +113,7 @@ class TestDefinitionDefaultExecution:
         # Independent oracle (a plain cross-model expression sum, works today):
         # spend broadcast onto each order + the order's own amount.
         oracle = await self._value(
-            engine=engine, expression="sum(customers.spend * (customers.spend + amount))")
+            engine=engine, expression="sum(customers.spend * (customers.spend + orders.amount))")
         assert oracle == pytest.approx(WSUM_MIXED_VALUE)
         default = await self._value(engine=engine, expression="wsum_mixed(customers.spend)")
         assert default == pytest.approx(oracle)

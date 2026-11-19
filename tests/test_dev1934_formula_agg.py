@@ -213,7 +213,7 @@ class TestPlaceholderRecognition:
     async def test_quoted_value_placeholder_is_rejected(self) -> None:
         lbl = Aggregation(name="lbl", expression="MAX(CASE WHEN {value} > 0 THEN '{value}' END)")
         with pytest.raises(SqlTemplateError, match=r"\{value\}"):
-            await _sql("lbl(price)", aggs=(lbl,))
+            await _sql("lbl(orders.price)", aggs=(lbl,))
 
     async def test_whitespace_inside_braces(self) -> None:
         spaced = Aggregation(name="s1", expression="SUM({ value })")
@@ -241,7 +241,7 @@ class TestPlaceholderRecognition:
     async def test_formula_less_builtin_string_kwarg_registers_its_join(
         self, declared: Aggregation,
     ) -> None:
-        sql = await _joined_sql(agg=declared, expression="corr(price, other='customers.weight')")
+        sql = await _joined_sql(agg=declared, expression="corr(orders.price, other='customers.weight')")
         assert "CORR(orders.price, customers.weight)" in sql
         assert "JOIN customers" in sql
 
@@ -520,7 +520,7 @@ class TestArgumentNamesCheckedFirst:
 
     async def test_non_parameter_name_binds_as_a_comparison(self) -> None:
         message = await _fails_as_its_comparison_twin(
-            expression="scaled(price, bogus=missing.path)", twin="scaled(orders.price, (orders.bogus=orders.missing.path))", aggs=(_SCALED,))
+            expression="scaled(orders.price, bogus=missing.path)", twin="scaled(orders.price, (orders.bogus=orders.missing.path))", aggs=(_SCALED,))
         assert "does not accept argument 'bogus'" not in message
 
     async def test_accepted_name_still_resolves_its_value(self) -> None:

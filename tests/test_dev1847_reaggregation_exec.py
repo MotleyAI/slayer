@@ -222,7 +222,7 @@ class TestNullEmptyKeyless:
         """Scenario: Keyless inner aggregate — avg(sum(amount, partition_by=[]))
         executes as the global total with the degenerate warning, no error."""
         resp = await exec_engine.execute(sales_q(
-            metrics=[reagg("avg", "sum(amount, partition_by=[])", name="g")]))
+            metrics=[reagg("avg", "sum(sales.amount, partition_by=[])", name="g")]))
         assert float(resp.data[0]["g"]) == pytest.approx(KEYLESS_GRAND_TOTAL)
         assert degenerate_warnings(resp)
 

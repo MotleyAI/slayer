@@ -30,11 +30,11 @@ from tests._dev1919_fixtures import (
 # Region spend totals (distinct customers): North 280, South 195, NULL-region 40;
 # the orphan order's NULL name meets the NULL cell. rank desc: North 1, South 2, NULL 3.
 _REGION_SPEND = "sum(customers.spend, partition_by=customers.regions.name)"
-SOURCE = f"sum(amount * {_REGION_SPEND})"
-KWARG = f"weighted_avg(amount, weight={_REGION_SPEND})"
-TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SPEND}, direction='desc'))"
+SOURCE = f"sum(orders.amount * {_REGION_SPEND})"
+KWARG = f"weighted_avg(orders.amount, weight={_REGION_SPEND})"
+TRANSFORM = f"weighted_avg(orders.amount, weight=rank({_REGION_SPEND}, direction='desc'))"
 #: host column masked to North customers: its own closure crosses to regions.
-NORTH_OUTER = f"sum(north_amount * {_REGION_SPEND})"
+NORTH_OUTER = f"sum(orders.north_amount * {_REGION_SPEND})"
 NORTH_INNER = "weighted_avg(orders.amount, weight=sum(orders.north_amount, partition_by=orders.channel))"
 
 CASES = [

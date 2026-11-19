@@ -39,7 +39,7 @@ def _bundle46() -> ResolvedSourceBundle:
 def _q46(**kw) -> SlayerQuery:
     kw.setdefault("population", "sales")
     kw.setdefault("time_dimensions",
-                  [{"field": "ordered_at", "granularity": "month"}])
+                  [{"field": "orders.ordered_at", "granularity": "month"}])
     return SlayerQuery(**kw)
 
 

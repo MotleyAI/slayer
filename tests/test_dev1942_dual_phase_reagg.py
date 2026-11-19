@@ -48,9 +48,9 @@ from slayer.engine.query_engine import SlayerResponse
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_X = "sum(amount, partition_by=[region, ordered_at])"
-REAGG_STANDALONE = f"min({_X}, partition_by=region)"      # combined phase
-HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"  # row phase
+_X = "sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+REAGG_STANDALONE = f"min({_X}, partition_by=monthly.region)"      # combined phase
+HANDWRITTEN_MIN = f"sum(monthly.amount * min({_X}, partition_by=monthly.region))"  # row phase
 
 # The dual-phase re-aggregation, per (region, month): the standalone min broadcast onto
 # every month cell, and the mixed per-cell amount × region-min summed.

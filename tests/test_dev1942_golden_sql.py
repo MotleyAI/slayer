@@ -25,9 +25,9 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 _MONTH_TD = [TimeDimension(field="monthly.ordered_at",
                            granularity=TimeGranularity.MONTH)]
-_X = "sum(amount, partition_by=[region, ordered_at])"
-_STANDALONE = f"min({_X}, partition_by=region)"
-_MIXED = f"sum(amount * min({_X}, partition_by=region))"
+_X = "sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+_STANDALONE = f"min({_X}, partition_by=monthly.region)"
+_MIXED = f"sum(monthly.amount * min({_X}, partition_by=monthly.region))"
 _POP_MIXED = "sum(customers.spend * avg(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier))"
 _POP_AVG = "avg(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier)"
 _OK = "orders.status = 'ok'"

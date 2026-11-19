@@ -45,7 +45,7 @@ BACKENDS = ["sqlite", "duckdb"]
 TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "trino", "snowflake", "bigquery"]
 NOW = datetime(2026, 9, 29, 12, 0, 0)
 
-EFF = "coalesce(shipped_at, created_at)"
+EFF = "coalesce(orders.shipped_at, orders.created_at)"
 EFF_NAME = "coalesce_shipped_at_created_at"
 
 # --------------------------------------------------------------------------- #
@@ -210,9 +210,9 @@ def monthly_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="monthly", data_source="test",
         source_queries=[SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["refunded_at"],
+            "population": "orders", "dimensions": ["orders.refunded_at"],
             "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })],
     )
 

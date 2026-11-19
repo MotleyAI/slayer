@@ -225,7 +225,7 @@ class TestTypedAtConstruction:
             QueryRequest(population=model)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
 
     def test_rest_body_model_types_the_spec_and_feeds_the_query(self) -> None:
-        req = QueryRequest.model_validate({"population": "orders", "extensions": [EXTENSION], "metrics": ["sum(amount)"]})
+        req = QueryRequest.model_validate({"population": "orders", "extensions": [EXTENSION], "metrics": ["sum(orders.amount)"]})
         assert isinstance((req.extensions or [])[0], DatasetExtension)
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert (q.population, q.extensions) == (req.population, req.extensions)
@@ -318,7 +318,7 @@ class TestTimeDimensionColumnAlias:
     def test_column_key_validates_and_dumps_as_dimension(self) -> None:
         q = _query(
             population="orders",
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
         )
         assert q.time_dimensions
         assert q.time_dimensions[0].field == "created_at"

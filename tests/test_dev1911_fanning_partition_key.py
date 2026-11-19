@@ -199,7 +199,7 @@ class TestEveryPosition:
     async def test_windowed_position(self, fan_engine, mode):
         await _assert_fails_naming_hop(fan_engine, orders_q(
             dimensions=["orders.bad_amt"],
-            time_dimensions=["date_trunc('month', ordered_at)"],
+            time_dimensions=["date_trunc('month', orders.ordered_at)"],
             metrics=[QueryMetric(
                 metric="sum(orders.amount, window='90d', partition_by=orders.bad_amt)", alias="w")],
             to_many_handling=mode))

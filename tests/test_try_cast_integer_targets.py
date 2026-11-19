@@ -44,7 +44,7 @@ class TestIntegerRule:
         resp = await engine.execute(q(metrics=[m(f"max(TRY_CAST(CAST('{bound}' AS BIGINT) AS BIGINT))")]))
         assert _value(single(resp), target="BIGINT") == int(bound), resp.sql
 
-    @pytest.mark.parametrize(("source", "expected"), [("2.0", 2), ("CAST(quantity AS INT) * 2.0", 8), ("quantity", 4)])
+    @pytest.mark.parametrize(("source", "expected"), [("2.0", 2), ("CAST(orders.quantity AS INT) * 2.0", 8), ("orders.quantity", 4)])
     async def test_number_that_is_not_integer_text(self, engine: SlayerQueryEngine, source: str, expected: int) -> None:
         resp = await engine.execute(q(metrics=[m(f"max(TRY_CAST({source} AS INT))")]))
         assert _value(single(resp), target="INT") == expected, resp.sql
@@ -62,7 +62,7 @@ class TestJsonSource:
 class TestBooleanSource:
     @pytest.mark.parametrize("target", ["INT", "SMALLINT", "DOUBLE"])
     async def test_reads_as_one_or_zero(self, engine: SlayerQueryEngine, target: str) -> None:
-        resp = await engine.execute(q(dimensions=["orders.id", {"field": f"TRY_CAST(amount > 15 AS {target})", "alias": "x"}]))
+        resp = await engine.execute(q(dimensions=["orders.id", {"field": f"TRY_CAST(orders.amount > 15 AS {target})", "alias": "x"}]))
         got = {int(k): _value(v, target=target) for k, v in by_key(resp, "id", "x").items()}
         assert got == {1: 0, 2: 1, 3: 1, 4: 1, 5: None}, resp.sql
 
@@ -101,7 +101,7 @@ class TestUnsignedTarget:
 
 
 class TestEmission:
-    @pytest.mark.parametrize("source", ["code", "CAST(1.5 AS DOUBLE)", "price / 2"])
+    @pytest.mark.parametrize("source", ["orders.code", "CAST(1.5 AS DOUBLE)", "orders.price / 2"])
     @pytest.mark.parametrize("target", ["INT", "SMALLINT", "BIGINT", "INTEGER"])
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_integer_targets_emit_everywhere(self, dialect: str, target: str, source: str) -> None:
@@ -113,7 +113,7 @@ class TestEmission:
         ("duckdb", "HUGEINT"),
     ])
     async def test_wide_target_of_a_number_casts_to_the_target(self, dialect: str, target: str) -> None:
-        sql = await emit(q(dimensions=["orders.id", {"field": f"TRY_CAST(price / 2 AS {target})", "alias": "x"}]),
+        sql = await emit(q(dimensions=["orders.id", {"field": f"TRY_CAST(orders.price / 2 AS {target})", "alias": "x"}]),
                          dialect=dialect)
         assert "AS BIGINT" not in sql.upper(), sql
         assert "AS SIGNED" not in sql.upper(), sql

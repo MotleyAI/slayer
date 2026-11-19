@@ -192,7 +192,7 @@ class TestTimePositions:
     ], ids=["plain", "time-ordered", "ranked"])
     async def test_equal_to_a_column_holding_the_per_row_values(self, engine, measures: list) -> None:
         by_expr = await engine.execute(q(time_dimensions=[td(EFF)], metrics=measures))
-        by_col = await engine.execute(q(time_dimensions=[td("eff")], metrics=measures))
+        by_col = await engine.execute(q(time_dimensions=[td("orders.eff")], metrics=measures))
         assert _rows(by_expr, key=KEY) == _rows(by_col, key="orders.eff")
 
 
@@ -255,7 +255,7 @@ class TestNamesAndKeys:
 
     async def test_named_expression_key_and_main_time_dimension(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            time_dimensions=[td("created_at"), td(EFF, alias="effective_at")], main_time_dimension="effective_at",
+            time_dimensions=[td("orders.created_at"), td(EFF, alias="effective_at")], main_time_dimension="effective_at",
             metrics=[m("cumsum(count(orders.*))")],
         ))
         assert set(resp.columns) == {"orders.created_at", "effective_at", "v"}
@@ -267,7 +267,7 @@ class TestNamesAndKeys:
         }
 
     async def test_named_column_time_dimension(self, engine: SlayerQueryEngine) -> None:
-        named = await engine.execute(_count(time_dimensions=[td("created_at", alias="m")]))
+        named = await engine.execute(_count(time_dimensions=[td("orders.created_at", alias="m")]))
         assert named.columns == ["m", "v"]
         assert by_bucket(named, "m", "v") == CREATED_MONTH_COUNT
 
@@ -299,13 +299,13 @@ class TestNamesAndKeys:
     async def test_equivalent_spellings_with_agreeing_metadata_dedupe_at_binding(self, engine: SlayerQueryEngine, extra: dict) -> None:
         once = await engine.execute(_count(time_dimensions=[td(EFF, **extra)]))
         twice = await engine.execute(_count(time_dimensions=[td(EFF, **extra),
-                                                             td("COALESCE(shipped_at,created_at)", **extra)]))
+                                                             td("COALESCE(orders.shipped_at,orders.created_at)", **extra)]))
         assert twice.columns == once.columns
         assert sorted(map(str, twice.data)) == sorted(map(str, once.data))
 
     async def test_main_time_dimension_by_expression_name(self, engine) -> None:
         resp = await engine.execute(q(
-            dimensions=["date_trunc('month', created_at)"], time_dimensions=[td(EFF, alias="effective_at")],
+            dimensions=["date_trunc('month', orders.created_at)"], time_dimensions=[td(EFF, alias="effective_at")],
             main_time_dimension="effective_at", metrics=[m("cumsum(count(orders.*))")],
         ))
         got = {(bucket(r["orders.created_at"]), bucket(r["effective_at"])): num(r["v"])

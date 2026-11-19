@@ -27,7 +27,7 @@ from tests._query_heal_fixtures import (
     table,
 )
 
-DISTINCT_ONLY = "count(distinct x)"
+DISTINCT_ONLY = "count(distinct orders.x)"
 SLAYER_3 = "3.0"
 
 
@@ -60,7 +60,7 @@ class TestUnknownFunction:
 
     def test_construction_time_custom_filter_deferred(self) -> None:
         query = SlayerQuery.model_validate(
-            {"population": "orders", "metrics": ["count(*)"], "filter": ["my_agg(amount) > 0"]})
+            {"population": "orders", "metrics": ["count(orders.*)"], "filter": ["my_agg(orders.amount) > 0"]})
         assert query.filter == ["my_agg(amount) > 0"]
 
 

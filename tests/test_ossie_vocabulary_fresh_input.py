@@ -99,7 +99,7 @@ DATASET_FORMS: dict[str, tuple[dict[str, Any], str, str, Check]] = {
                      lambda d: d.relationships[0].to == "customers"),
 }
 
-QUERY: dict[str, Any] = {"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"]}
+QUERY: dict[str, Any] = {"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"]}
 REL = {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}
 
 #: id -> (pre-2.0 query input, old token, new token, check on the converted query)

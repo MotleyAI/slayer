@@ -69,7 +69,7 @@ class TestDefaultRankingKey:
     async def test_temporal_computed_dimension_ranks_each_cell(self, engine: SlayerQueryEngine) -> None:
         """Spec scenario: each (EFF, month) cell holds one order, so it carries that order's amount."""
         resp = await engine.execute(q(
-            dimensions=["orders.id", {"field": EFF, "alias": "e"}], time_dimensions=[td("created_at")],
+            dimensions=["orders.id", {"field": EFF, "alias": "e"}], time_dimensions=[td("orders.created_at")],
             metrics=[m("last(orders.amount)")],
         ))
         assert by_dims(resp, ["orders.id"]) == {(i,): float(10 * i) for i in range(1, 7)}
@@ -121,7 +121,7 @@ class TestExpressionRankingKey:
         assert "orders" in str(ei.value)
 
     async def test_distinct_ranking_keys_stay_separate_producers(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=["orders.region"], metrics=[m(f"last(amount, {EFF})"), m("last(orders.amount, orders.created_at)", "c")])
+        query = q(dimensions=["orders.region"], metrics=[m(f"last(orders.amount, {EFF})"), m("last(orders.amount, orders.created_at)", "c")])
         assert (await _sql(engine, query)).upper().count("ROW_NUMBER") == 2
         resp = await engine.execute(query)
         assert _by_region(resp) == {"EU": 50.0, "US": 60.0}
@@ -129,7 +129,7 @@ class TestExpressionRankingKey:
 
     async def test_equal_ranking_keys_share_one_producer(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=["orders.region"], metrics=[
-            m(f"last(amount, {EFF})"), m("last(orders.amount, COALESCE(orders.shipped_at,orders.created_at))", "c"),
+            m(f"last(orders.amount, {EFF})"), m("last(orders.amount, COALESCE(orders.shipped_at,orders.created_at))", "c"),
         ])
         assert (await _sql(engine, query)).upper().count("ROW_NUMBER") == 1
         resp = await engine.execute(query)

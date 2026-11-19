@@ -122,7 +122,7 @@ class TestTemporalAxisContainment:
     async def test_single_grain_missing_time_axis_fails_cleanly(
         self, transform: str,
     ) -> None:
-        band = transform.format("sum(amount, partition_by=[region, city])")
+        band = transform.format("sum(orders.amount, partition_by=[orders.region, orders.city])")
         query = q(
             dimensions=["orders.region", "orders.city", {"field": band, "alias": "cs"}],
             time_dimensions=month_td(),

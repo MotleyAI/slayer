@@ -20,7 +20,7 @@ LAST = QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="l
 
 
 def _saved(**kw) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(amount)"], **kw})
+    return SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(orders.amount)"], **kw})
 
 
 def _refined(base: SlayerQuery, **refinement) -> SlayerQuery:

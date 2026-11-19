@@ -208,7 +208,7 @@ class TestModelsReadBy:
     async def test_sibling_stage_chain_reads_the_first_source(self, datasets: dict[str, SlayerDataset]) -> None:
         chained = SlayerDataset(name="chained", source_queries=[
             SlayerQuery.model_validate({"name": "s1", "population": "hr", "metrics": [{"metric": "sum(hr.salary)", "alias": "t"}]}),
-            SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "sum(t)"}]}),
+            SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "sum(s1.t)"}]}),
         ])
         reads = self.reads(chained, datasets)
         assert "hr" in reads

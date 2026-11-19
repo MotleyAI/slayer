@@ -123,7 +123,7 @@ async def test_alias_heals_to_count_distinct_approx_and_emits_native() -> None:
     for alias in ("approx_count_distinct", "countdistinctapprox"):
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric=f"{alias}(customer_id)")],
+            metrics=[QueryMetric(metric=f"{alias}(orders.customer_id)")],
         )
         sql = (await _generate("duckdb", query, _dataset())).lower()
         assert "approx_count_distinct(" in sql, alias

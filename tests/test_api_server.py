@@ -326,7 +326,7 @@ class TestQuery:
         coercion and the docs / example READMEs) must pass FastAPI validation
         and lift to ``{"formula": ...}`` / ``{"name": ...}`` downstream."""
         req = QueryRequest.model_validate(
-            {"population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["status"]}
+            {"population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.status"]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None

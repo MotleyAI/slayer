@@ -36,7 +36,7 @@ def _casts(sql: str, *, dialect: str) -> list[exp.Cast]:
 
 
 class TestCastExecution:
-    @pytest.mark.parametrize("spelling", ["CAST(amount AS DECIMAL(10,2))", "amount::decimal(10,2)"])
+    @pytest.mark.parametrize("spelling", ["CAST(orders.amount AS DECIMAL(10,2))", "orders.amount::decimal(10,2)"])
     async def test_parameterised_cast_in_measure(self, engine: SlayerQueryEngine, spelling: str) -> None:
         assert num(single(await engine.execute(q(metrics=[m(f"sum({spelling})")])))) == pytest.approx(100.0)
 
@@ -203,7 +203,7 @@ class TestTryCastEmission:
     @pytest.mark.parametrize("target", ["INT", "DOUBLE", "DATE", "TIMESTAMP", "BOOLEAN", "DECIMAL(10,2)"])
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_every_target_emits(self, dialect: str, target: str) -> None:
-        await emit(q(dimensions=["orders.id", {"field": f"TRY_CAST(code AS {target})", "alias": "x"}]), dialect=dialect)
+        await emit(q(dimensions=["orders.id", {"field": f"TRY_CAST(orders.code AS {target})", "alias": "x"}]), dialect=dialect)
 
 
 def _patch_profile(monkeypatch: pytest.MonkeyPatch, *, version: tuple[int, int] | None = None, fail: bool = False) -> list[int]:

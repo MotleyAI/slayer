@@ -37,9 +37,9 @@ from tests._dev1953_fixtures import (
     rank_within,
 )
 
-RANK_UREG = "rank(sum(amount), partition_by=ureg, direction='desc')"
+RANK_UREG = "rank(sum(sales.amount), partition_by=ureg, direction='desc')"
 RANK_BAND = "rank(sum(sales.amount), partition_by=spend_band, direction='desc')"
-PARAM_BAND = "rank(sum(amount, partition_by=[spend_band, city]), partition_by=spend_band, direction='desc')"
+PARAM_BAND = "rank(sum(sales.amount, partition_by=[spend_band, sales.city]), partition_by=spend_band, direction='desc')"
 PARAM_UREG = ("weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), "
               "partition_by=ureg, direction='desc'))")
 DIM_R = {"field": "rank(sum(sales.amount, partition_by=[sales.city, ureg]), partition_by=ureg, direction='desc')",
@@ -152,7 +152,7 @@ class TestOracleSelfCheck:
 class TestBindingSymmetry:
     def test_alias_resolves_identically(self):
         amap = _alias(name="ureg", expr="upper(sales.region)")
-        agg = _bind(expression="sum(amount, partition_by=ureg)", alias_map=amap)
+        agg = _bind(expression="sum(sales.amount, partition_by=ureg)", alias_map=amap)
         rank = _bind(expression=RANK_UREG, alias_map=amap)
         assert isinstance(rank, TransformKey)
         assert isinstance(agg, AggregateKey)
@@ -174,8 +174,8 @@ class TestBindingSymmetry:
         assert rank.partition_keys == Grain.of([amap["spend_band"]])
 
     @pytest.mark.parametrize(argnames="formula", argvalues=[
-        "rank(sum(amount), partition_by=sum(amount), direction='desc')",
-        "sum(amount, partition_by=sum(amount))",
+        "rank(sum(sales.amount), partition_by=sum(sales.amount), direction='desc')",
+        "sum(sales.amount, partition_by=sum(sales.amount))",
     ])
     def test_aggregate_element_names_the_computed_dimension_remedy(self, formula):
         amap = _alias(name="ureg", expr="upper(sales.region)")
@@ -183,13 +183,13 @@ class TestBindingSymmetry:
             _bind(expression=formula, alias_map=amap)
 
     @pytest.mark.parametrize(argnames="formula", argvalues=[
-        "sum(amount, partition_by=upper(region))",
-        "rank(sum(amount), partition_by=[city, upper(region)], direction='desc')",
+        "sum(sales.amount, partition_by=upper(sales.region))",
+        "rank(sum(sales.amount), partition_by=[sales.city, upper(sales.region)], direction='desc')",
     ])
     def test_expression_element_equal_to_an_alias_binds_to_it(self, formula):
         amap = _alias(name="ureg", expr="upper(sales.region)")
         expression = _bind(expression=formula, alias_map=amap)
-        named = _bind(expression=formula.replace("upper(region)", "ureg"), alias_map=amap)
+        named = _bind(expression=formula.replace("upper(sales.region)", "ureg"), alias_map=amap)
         assert isinstance(expression, (AggregateKey, TransformKey))
         assert isinstance(named, (AggregateKey, TransformKey))
         assert expression.partition_keys == named.partition_keys
@@ -269,6 +269,6 @@ class TestAttachCarryingKey:
         resp = await engine.execute(sales_q(
             dimensions=[BAND],
             metrics=[QueryMetric(
-                metric=f"weighted_avg(amount, weight={PARAM_BAND})", alias="w")]))
+                metric=f"weighted_avg(sales.amount, weight={PARAM_BAND})", alias="w")]))
         approx_map(got={r["spend_band"]: r["w"] for r in resp.data},
                    want=_param_by_band())

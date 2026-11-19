@@ -86,7 +86,7 @@ class TestDeferredShapeGuards:
         # tests/test_dev1824_partitioned_execution.py); cross-model stays deferred.
         q = _q(
             dimensions=["orders.region", "orders.city"],
-            metrics=[QueryMetric(metric=f"{agg}(amount, partition_by=region)")],
+            metrics=[QueryMetric(metric=f"{agg}(orders.amount, partition_by=orders.region)")],
         )
         assert "__regroup__" not in await gen(q)
 

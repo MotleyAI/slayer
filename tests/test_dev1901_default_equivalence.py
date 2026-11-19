@@ -145,7 +145,7 @@ class TestDefaultInFilterAndOrder:
     async def test_filter_position(self, engine, agg: str) -> None:
         threshold = (WCS_BY_STATUS["ok"] + WCS_BY_STATUS["new"]) / 2
         query = orders_q(dimensions=["orders.status"], metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
-                         filter=[f"{agg}(amount) > {threshold}"])
+                         filter=[f"{agg}(orders.amount) > {threshold}"])
         resp = await engine.execute(query)
         assert {r["orders.status"]: float(r["s"]) for r in resp.data} \
             == {"ok": AMOUNT_BY_STATUS["ok"]}
@@ -156,7 +156,7 @@ class TestDefaultInFilterAndOrder:
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_order_key(self, engine, agg: str) -> None:
         query = orders_q(dimensions=["orders.status"], metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
-                         order=[{"field": f"{agg}(amount)", "direction": "asc"}])
+                         order=[{"field": f"{agg}(orders.amount)", "direction": "asc"}])
         resp = await engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == sorted(
             WCS_BY_STATUS, key=WCS_BY_STATUS.__getitem__)

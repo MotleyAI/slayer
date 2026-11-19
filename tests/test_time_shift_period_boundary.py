@@ -52,7 +52,7 @@ def _monthly(engine: SlayerQueryEngine, shift: str) -> dict[str, float | None]:
     resp = engine.execute_sync(query={
         "population": "orders",
         "metrics": ["sum(orders.cost)",
-                     {"metric": f"time_shift(sum(cost), -1, '{shift}')", "alias": "prev"}],
+                     {"metric": f"time_shift(sum(orders.cost), -1, '{shift}')", "alias": "prev"}],
         "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
         "order": [{"field": "orders.created_at", "direction": "asc"}],
     })

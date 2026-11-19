@@ -169,7 +169,7 @@ class TestFacade:
 class TestBrokenDependentsProbe:
     def test_filter_dependant_probes_with_a_functional_row_count(self) -> None:
         probe = _probe(_Dependent(dataset="orders", kind="filter", name="f"))
-        assert probe == {"population": "orders", "metrics": ["count(*)"]}
+        assert probe == {"population": "orders", "metrics": ["count(orders.*)"]}
 
 
 class TestMemoryTokens:
@@ -194,8 +194,8 @@ class TestMemoryTokens:
     async def test_query_entities(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         query = SlayerQuery.model_validate({
-            "population": "orders", "filter": ["max(price) > 1"],
-            "metrics": ["sum(amount) / count(*)", "count(customers.*)", "sum(customers.regions.population)"],
+            "population": "orders", "filter": ["max(orders.price) > 1"],
+            "metrics": ["sum(orders.amount) / count(orders.*)", "count(customers.*)", "sum(customers.regions.population)"],
         })
         resolved = await extract_entities_from_query(query, storage=storage)
         assert resolved.canonical_forms == [

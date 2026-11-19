@@ -205,7 +205,7 @@ class TestResolveMainTimeDimension:
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_local, td_joined],
-            main_time_dimension="signed_up_at",
+            main_time_dimension="orders.signed_up_at",
         )
         resolved = _resolve_main_time_dimension(query=q, dataset=model)
         # Local full-name "signed_up_at" matches td_local exactly; the
@@ -224,7 +224,7 @@ class TestResolveMainTimeDimension:
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td],
-            main_time_dimension="something_else",
+            main_time_dimension="orders.something_else",
         )
         resolved = _resolve_main_time_dimension(query=q, dataset=model)
         assert resolved is td
@@ -274,7 +274,7 @@ class TestResolveMainTimeDimension:
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_a, td_b],
-            main_time_dimension="not_a_td",
+            main_time_dimension="orders.not_a_td",
         )
         with pytest.raises(UnknownReferenceError):
             _resolve_main_time_dimension(query=q, dataset=model)

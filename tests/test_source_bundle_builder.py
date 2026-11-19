@@ -296,10 +296,10 @@ class TestMultiStage:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
-        root = SlayerQuery(population="stage1", dimensions=["status"])
+        root = SlayerQuery(population="stage1", dimensions=["stage1.status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
@@ -314,10 +314,10 @@ class TestMultiStage:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
-        root = SlayerQuery(population="stage1", dimensions=["status"])
+        root = SlayerQuery(population="stage1", dimensions=["stage1.status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
@@ -331,10 +331,10 @@ class TestMultiStage:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "dimensions": ["status"],
+            "dimensions": ["orders.status"],
             "metrics": [{"metric": "sum(customers.revenue)"}],
         })
-        root = SlayerQuery(population="stage1", dimensions=["status"])
+        root = SlayerQuery(population="stage1", dimensions=["stage1.status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
@@ -355,9 +355,9 @@ class TestMultiStage:
                 dataset="bare",
                 relationships=[DatasetRelationship(to="audit", from_columns=["audit_id"], to_columns=["id"])],
             )],
-            dimensions=["status"],
+            dimensions=["bare.status"],
         )
-        root = SlayerQuery(population="orders", dimensions=["status"])
+        root = SlayerQuery(population="orders", dimensions=["orders.status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"aux": sibling}
         )
@@ -407,14 +407,14 @@ class TestStorageReadEconomy:
         stage_a = SlayerQuery.model_validate({
             "name": "stage_a",
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
         })
         stage_b = SlayerQuery.model_validate({
             "name": "stage_b",
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
-        root = SlayerQuery.model_validate({"population": "stage_a", "metrics": [{"metric": "count(*)"}]})
+        root = SlayerQuery.model_validate({"population": "stage_a", "metrics": [{"metric": "count(stage_a.*)"}]})
         await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage,
             named_queries={"stage_a": stage_a, "stage_b": stage_b},

@@ -39,7 +39,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"field": "created_at", "granularity": "month"}]
+_MONTH = [{"field": "orders.created_at", "granularity": "month"}]
 
 
 def _q(**kw) -> SlayerQuery:
@@ -201,7 +201,7 @@ def _cases() -> dict:
         # --- filters and ordering that TARGET the ranked measure ---
         "route/having_on_ranked": _q(
             dimensions=["orders.status"], metrics=last,
-            filter=[f"last(amount) > {BIG_AMOUNT_THRESHOLD}"],
+            filter=[f"last(orders.amount) > {BIG_AMOUNT_THRESHOLD}"],
         ),
         "route/order_by_projected_ranked": _q(
             dimensions=["orders.status"], metrics=last,

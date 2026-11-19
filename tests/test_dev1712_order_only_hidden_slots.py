@@ -336,7 +336,7 @@ class TestJoinedRowColumnResolved:
                 order=[OrderItem(field=column, direction="desc")],
             )
 
-        derived_sql = await _sql(engine, _q("cust_region"))
+        derived_sql = await _sql(engine, _q("orders.cust_region"))
         bare_sql = await _sql(engine, _q("customers.region"))
 
         assert ("customers", "region") in _outer_order_by_columns(derived_sql), (

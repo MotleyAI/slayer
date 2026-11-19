@@ -68,7 +68,7 @@ class TestValues:
         await check_filtered_custom_aggregations(engine)
 
     async def test_placeholder_only_formula_equals_the_restricted_query(self, engine: SlayerQueryEngine) -> None:
-        filtered = await engine.execute(q(metrics=[m(f"wsum(price) FILTER (WHERE {PAID})")]))
+        filtered = await engine.execute(q(metrics=[m(f"wsum(orders.price) FILTER (WHERE {PAID})")]))
         restricted = await engine.execute(q(metrics=[m("wsum(orders.price)")], filter=[PAID]))
         assert num(single(filtered)) == pytest.approx(18.0)
         assert num(single(filtered)) == pytest.approx(num(single(restricted)))
@@ -83,7 +83,7 @@ class TestValues:
 class TestComposition:
     async def test_with_partition_by(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["orders.region", "orders.city"], metrics=[
-            m(f"rows(amount, partition_by=region) FILTER (WHERE {PAID})"),
+            m(f"rows(orders.amount, partition_by=orders.region) FILTER (WHERE {PAID})"),
         ]))
         got = {(r["orders.region"], r["orders.city"]): num(r["v"]) for r in resp.data}
         assert got == {("EU", "Paris"): 2, ("EU", "Berlin"): 2, ("US", "NYC"): 1, ("US", "LA"): 1, (None, "Rome"): None}
@@ -125,17 +125,17 @@ class TestWindow:
 
     async def test_bucket_without_passing_rows_reads_its_frame(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(time_dimensions=MONTH, metrics=[
-            m(f"rows(amount, window='2m') FILTER (WHERE {PAID})"),
+            m(f"rows(orders.amount, window='2m') FILTER (WHERE {PAID})"),
         ]))
         assert _by_month(resp) == {"2024-01": 2, "2024-02": 3, "2024-03": 1}
 
     async def test_date_range_bounds_buckets_not_the_frame(self, engine: SlayerQueryEngine) -> None:
         td = [{**MONTH[0], "date_range": ["2024-02-01", "2024-03-31"]}]
         custom = await engine.execute(q(time_dimensions=td, metrics=[
-            m(f"rows(amount, window='2m') FILTER (WHERE {PAID})"),
+            m(f"rows(orders.amount, window='2m') FILTER (WHERE {PAID})"),
         ]))
         builtin = await engine.execute(q(time_dimensions=td, metrics=[
-            m(f"count(*, window='2m') FILTER (WHERE {PAID})"),
+            m(f"count(orders.*, window='2m') FILTER (WHERE {PAID})"),
         ]))
         assert _by_month(custom) == _by_month(builtin) == {"2024-02": 3, "2024-03": 1}
 
@@ -153,7 +153,7 @@ class TestWindow:
         self, engine: SlayerQueryEngine, condition: str, expected: dict,
     ) -> None:
         resp = await engine.execute(q(time_dimensions=MONTH, metrics=[
-            m(f"rows(amount, window='2m') FILTER (WHERE {condition})"),
+            m(f"rows(orders.amount, window='2m') FILTER (WHERE {condition})"),
         ]))
         assert _by_month(resp) == expected
 
@@ -167,8 +167,8 @@ class TestWindow:
     async def test_condition_equal_to_a_query_frame_bound(self, engine: SlayerQueryEngine) -> None:
         bound = "orders.created_at >= '2024-02-01'"
         resp = await engine.execute(q(time_dimensions=MONTH, filter=[bound], metrics=[
-            m(f"rows(amount, window='2m') FILTER (WHERE {bound} AND {PAID})"),
-            m(f"rows(amount, window='2m') FILTER (WHERE {bound})", "b"),
+            m(f"rows(orders.amount, window='2m') FILTER (WHERE {bound} AND {PAID})"),
+            m(f"rows(orders.amount, window='2m') FILTER (WHERE {bound})", "b"),
         ]))
         assert _by_month(resp) == {"2024-02": 1, "2024-03": 1}
         assert {str(r["orders.created_at"])[:7]: num(r["b"]) for r in resp.data} == {"2024-02": 2, "2024-03": 3}
@@ -187,12 +187,12 @@ class TestWindow:
 class TestPositions:
     async def test_saved_measure_equals_the_inline_form(self, engine: SlayerQueryEngine) -> None:
         for dims in ([], ["region"]):
-            saved = await engine.execute(q(dimensions=dims, metrics=[m("paid_rows")]))
+            saved = await engine.execute(q(dimensions=dims, metrics=[m("orders.paid_rows")]))
             inline = await engine.execute(q(dimensions=dims, metrics=[m(ROWS_PAID)]))
             assert saved.data == inline.data
 
     async def test_inside_arithmetic(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m(f"{ROWS_PAID} / count(*)")]))
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m(f"{ROWS_PAID} / count(orders.*)")]))
         assert _by_region(resp) == {"EU": 1, "US": 0.5, None: None}
 
     async def test_measure_typed_filter(self, engine: SlayerQueryEngine) -> None:
@@ -222,7 +222,7 @@ def _aggregates(pq: PlannedQuery, agg: str) -> list[AggregateKey]:
 class TestProducerIsolation:
     async def test_same_condition(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["orders.region"], metrics=[
-            m(ROWS_PAID, "r"), m(f"per_order(amount) FILTER (WHERE {PAID})", "p"),
+            m(ROWS_PAID, "r"), m(f"per_order(orders.amount) FILTER (WHERE {PAID})", "p"),
         ]))
         assert _by_region(resp, "r") == {"EU": 2, "US": 1, None: None}
         assert _by_region(resp, "p") == pytest.approx({"EU": 15, "US": 40, None: None})
@@ -289,7 +289,7 @@ async def override_engine(request):
 class TestBuiltinNamedOverride:
     async def test_values(self, override_engine: SlayerQueryEngine) -> None:
         resp = await override_engine.execute(q(dimensions=["orders.region"], metrics=[
-            m(f"count(amount) FILTER (WHERE {PAID})", "c"), m(f"sum(amount) FILTER (WHERE {PAID})", "s"),
+            m(f"count(orders.amount) FILTER (WHERE {PAID})", "c"), m(f"sum(orders.amount) FILTER (WHERE {PAID})", "s"),
         ]))
         assert _by_region(resp, "c") == {"EU": 2, "US": 1, None: None}
         assert _by_region(resp, "s") == {"EU": 30, "US": 40, None: None}
@@ -298,7 +298,7 @@ class TestBuiltinNamedOverride:
         orders, *rest = _override_datasets()
         bundle = ResolvedSourceBundle(dialect="sqlite", population=orders, referenced_datasets=rest)
         planned = plan.plan_query(query=q(dimensions=["orders.region"], metrics=[
-            m(f"count(amount) FILTER (WHERE {PAID})", "c"), m(f"sum(amount) FILTER (WHERE {PAID})", "s"),
+            m(f"count(orders.amount) FILTER (WHERE {PAID})", "c"), m(f"sum(orders.amount) FILTER (WHERE {PAID})", "s"),
         ]), bundle=bundle)
         producers = [a.producer_plan for a in _attaches(planned)]
         assert any(_aggregates(p, "count") for p in producers)
@@ -315,7 +315,7 @@ class TestTyping:
     async def test_custom_rejected_like_builtin(self, engine: SlayerQueryEngine, condition: str) -> None:
         errors = []
         for agg in ("sum", "rows"):
-            query = q(metrics=[m(f"{agg}(amount) FILTER (WHERE {condition})")])
+            query = q(metrics=[m(f"{agg}(orders.amount) FILTER (WHERE {condition})")])
             with pytest.raises(Exception) as info:  # noqa: B017  # NOSONAR(S5958) — parity: type and message asserted equal below
                 await engine.execute(query)
             errors.append(info.value)

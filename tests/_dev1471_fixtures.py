@@ -85,8 +85,8 @@ MONTHLY_ROWS = [
 # Inner stage: monthly revenue over ``orders.created_at`` (shared stage-axis fixture).
 MONTHLY_INNER = SlayerQuery.model_validate({
     "name": "s1", "population": "orders",
-    "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-    "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+    "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+    "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 })
 
 

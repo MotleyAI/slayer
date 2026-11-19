@@ -195,7 +195,7 @@ class TestStored:
 
     def test_a_stored_query_backed_dataset_warns_once(self) -> None:
         doc = current({"name": "by_status", "data_source": DS, "x_owner": "team",
-                       "source_queries": [{"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"]}]})
+                       "source_queries": [{"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"]}]})
         with recorded() as caught:
             dataset = SlayerDataset.model_validate(doc)
         assert len(dataset.source_queries or []) == 1

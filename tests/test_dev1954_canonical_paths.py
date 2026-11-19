@@ -407,7 +407,7 @@ class TestDefinitionDefaultSpelledByModelName:
         default = orders_q(dimensions=["customers.hr.rname"],
                            metrics=[{"metric": "wpop(orders.amount)", "alias": "w"}])
         explicit = orders_q(dimensions=["customers.hr.rname"], metrics=[
-            {"metric": "wpop(amount, weight=customers.hr.pop)", "alias": "w"}])
+            {"metric": "wpop(orders.amount, weight=customers.hr.pop)", "alias": "w"}])
         resp = await engine.execute(default)
         assert by_key(resp, RNAME, "w") == WPOP_BY_RNAME
         assert not broadcast_warnings(resp)

@@ -39,7 +39,7 @@ def by_region(resp, key: str) -> dict:
     return {r["orders.region"]: r[key] for r in resp.data}
 
 
-MONTH_TD = {"field": "ordered_at", "granularity": "month"}
+MONTH_TD = {"field": "orders.ordered_at", "granularity": "month"}
 
 
 class TestQuerySurfaces:

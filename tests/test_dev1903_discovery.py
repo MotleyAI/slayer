@@ -390,7 +390,7 @@ class TestTransformOverReaggregationDimension:
         query = monthly_q(
             dimensions=["monthly.region", {"field": f"cumsum({REAGG_STANDALONE})", "alias": "rr"}],
             time_dimensions=monthly_month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s")],
             filter=["rr > 10"])
         with pytest.raises(TimeAxisError, match="cumsum"):
             await exec_engine.execute(query)

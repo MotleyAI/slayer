@@ -345,7 +345,7 @@ def _monthly_stage(*, metrics=None, date_range=JAN_MAR, **extra) -> SlayerQuery:
 
 def _over_monthly(**extra) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "population": "monthly", "metrics": [m("sum(o)", "t"), m("count(*)", "c")], **extra,
+        "population": "monthly", "metrics": [m("sum(monthly.o)", "t"), m("count(monthly.*)", "c")], **extra,
     })
 
 
@@ -386,7 +386,7 @@ class TestSpineStages:
         assert "lower bound" in str(exc.value).lower()
 
     @pytest.mark.parametrize(("measure", "extra"), [
-        (m("count(*)", "o"), {"population": "time_spine"}),
+        (m("count(time_spine.*)", "o"), {"population": "time_spine"}),
         (m("min(time_spine.timestamp)", "o"), {}),
     ], ids=["count-star", "min-timestamp"])
     async def test_aggregation_over_the_spine_inside_a_stage(self, engine, measure, extra) -> None:

@@ -51,7 +51,7 @@ def _assert_cells_equal(actual: dict, expected: dict) -> None:
 # --------------------------------------------------------------------------- #
 # The reported query: saved aov + cumsum(aov)
 # --------------------------------------------------------------------------- #
-_SPELLINGS = {"saved": ("aov", "cumsum(orders.aov)"), "inline": (AOV, f"cumsum({AOV})")}
+_SPELLINGS = {"saved": ("orders.aov", "cumsum(orders.aov)"), "inline": (AOV, f"cumsum({AOV})")}
 _TIME_FILTERS = {
     "date_range": {"time_dimensions": month_td(date_range=DATE_RANGE)},
     "date_filter": {"filter": [DATE_FILTER]},
@@ -85,7 +85,7 @@ _CONSUMERS = {
     "change_pct": "change_pct(({r}))",
     "consecutive_periods": "consecutive_periods(({r}) > 15)",
     "rank": "rank(({r}), direction='desc')",
-    "transform_over_ratio": "cumsum(sum(amount)) / ({r})",
+    "transform_over_ratio": "cumsum(sum(orders.amount)) / ({r})",
     "transform_plus_ratio": "cumsum(({r})) + ({r})",
     "transform_of_larger": "cumsum(({r}) * 2)",
 }

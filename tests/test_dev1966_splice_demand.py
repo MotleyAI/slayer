@@ -43,12 +43,12 @@ def _joined(dataset: SlayerDataset, *targets: "tuple[str, List[List[str]]]") -> 
 
 
 STATUS_REV = _qb("status_rev", query(
-    population="orders", dimensions=["orders.status"], metrics=[m("sum(amount)", "rev")]))
+    population="orders", dimensions=["orders.status"], metrics=[m("sum(orders.amount)", "rev")]))
 READS_STATUS_REV = _qb("reads_status_rev", query(
     population="orders", dimensions=["orders.status", "status_rev.rev"],
-    metrics=[m("sum(amount)", "a")]))
+    metrics=[m("sum(orders.amount)", "a")]))
 BROKEN = _qb("broken_qb", query(
-    population="orders", dimensions=["nope"], metrics=[m("sum(amount)", "a")]))
+    population="orders", dimensions=["orders.nope"], metrics=[m("sum(orders.amount)", "a")]))
 BAD_SELF = _qb("bad_self", query(
     population="orders", dimensions=["orders.status"], metrics=[m("sum(orders.nope)", "a")]))
 
@@ -94,7 +94,7 @@ class TestReachIsNotReading:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
                 resp = await e.execute(query(population="customers",
-                                             metrics=[m("sum(spend)", "t")]))
+                                             metrics=[m("sum(customers.spend)", "t")]))
         assert resp.data == [{"customers.t": 430.0}]
         assert resp.warnings == []
 
@@ -103,7 +103,7 @@ class TestStoredJoinReads:
     async def test_a_non_root_stage(self, dialect) -> None:
         s = query(name="s", population="clients", dimensions=["clients.tier"],
                   metrics=[m("sum(cust_rev.rev)", "r")])
-        root = query(population="s", dimensions=["s.tier"], metrics=[m("sum(r)", "t")])
+        root = query(population="s", dimensions=["s.tier"], metrics=[m("sum(s.r)", "t")])
         async with dev1966_engine(dialect) as e:
             resp = await e.execute([s, root])
         assert resp.columns == ["s.tier", "t"]
@@ -167,7 +167,7 @@ def _floored() -> SlayerDataset:
 
 
 FLOORED_REV = _qb("floored_rev", query(
-    population="floored", dimensions=["floored.customer_id"], metrics=[m("sum(amount)", "rev")]))
+    population="floored", dimensions=["floored.customer_id"], metrics=[m("sum(floored.amount)", "rev")]))
 
 
 def _wrap(name: str, floor: int) -> SlayerDataset:
@@ -187,7 +187,7 @@ class TestModeAVariables:
         assert floored.data == [{"t": 115.0}]
 
     async def test_a_user_stage_source_sql_takes_its_variables(self, dialect) -> None:
-        s = query(name="s", population="floored", metrics=[m("sum(amount)", "a")],
+        s = query(name="s", population="floored", metrics=[m("sum(floored.amount)", "a")],
                   variables={"floor": 30})
         async with dev1966_engine(dialect, datasets=[orders_dataset(), _floored()]) as e:
             resp = await e.execute([s, query(population="s", metrics=[m("sum(s.a)", "t")])])
@@ -196,8 +196,8 @@ class TestModeAVariables:
     async def test_conflicting_mode_a_contexts_fail_closed(self) -> None:
         models = [orders_dataset(), customers_dataset(), _floored(), FLOORED_REV,
                   _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
-        s1 = query(name="s1", population="wrap_a", dimensions=["wrap_a.customer_id"], metrics=[m("sum(r)", "a")])
-        s2 = query(name="s2", population="wrap_b", dimensions=["wrap_b.customer_id"], metrics=[m("sum(r)", "b")])
+        s1 = query(name="s1", population="wrap_a", dimensions=["wrap_a.customer_id"], metrics=[m("sum(wrap_a.r)", "a")])
+        s2 = query(name="s2", population="wrap_b", dimensions=["wrap_b.customer_id"], metrics=[m("sum(wrap_b.r)", "b")])
         root = query(population="s1", extensions=[{"dataset": "s1", "relationships": [
             {"to": "s2", "from_columns": ["customer_id"], "to_columns": ["customer_id"]}]}],
             dimensions=["s1.customer_id", "s1.a", "s2.b"])
@@ -206,8 +206,8 @@ class TestModeAVariables:
                 await e.execute([s1, s2, root])
 
 
-CYC_A = _qb("cyc_a", query(population="cyc_b", metrics=[m("sum(amount)", "amount")]))
-CYC_B = _qb("cyc_b", query(population="cyc_a", metrics=[m("sum(amount)", "amount")]))
+CYC_A = _qb("cyc_a", query(population="cyc_b", metrics=[m("sum(cyc_b.amount)", "amount")]))
+CYC_B = _qb("cyc_b", query(population="cyc_a", metrics=[m("sum(cyc_a.amount)", "amount")]))
 
 
 class TestCyclesThroughStoredJoins:

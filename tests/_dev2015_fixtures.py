@@ -182,8 +182,8 @@ def monthly_dataset() -> SlayerDataset:
         name="monthly", data_source="test",
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
-            "time_dimensions": [{"field": "order_date", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [{"field": "orders.order_date", "granularity": "month"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })],
     )
 

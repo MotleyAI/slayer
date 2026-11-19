@@ -28,7 +28,7 @@ class TestIntervalLiterals:
     @pytest.mark.parametrize("literal", ["INTERVAL '7 days'", "INTERVAL '7' DAY", "INTERVAL 7 DAY",
                                          "interval '7 day'", "INTERVAL '7' days"])
     async def test_literal_equals_date_add(self, literal: str) -> None:
-        await _same_sql(f"order_date + {literal} > CURRENT_DATE", "date_add(orders.order_date, 7, 'day') > current_date()")
+        await _same_sql(f"orders.order_date + {literal} > CURRENT_DATE", "date_add(orders.order_date, 7, 'day') > current_date()")
 
     async def test_subtraction(self) -> None:
         await _same_sql("orders.created_at - INTERVAL '2 hours' < now()", "date_add(orders.created_at, -2, 'hour') < now()")
@@ -46,7 +46,7 @@ class TestIntervalLiterals:
     ])
     async def test_units(self, literal: str, unit: str) -> None:
         n = literal.split("'")[1].split()[0] if "'" in literal else literal.split()[1]
-        await _same_sql(f"created_at + {literal} < now()", f"date_add(created_at, {n}, '{unit}') < now()")
+        await _same_sql(f"orders.created_at + {literal} < now()", f"date_add(orders.created_at, {n}, '{unit}') < now()")
 
     async def test_executes(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.order_date + INTERVAL '7 days' > DATE '2024-03-01'"]))
@@ -74,7 +74,7 @@ class TestIntervalLiterals:
 
     @pytest.mark.parametrize("literal", ["INTERVAL 'x days'", "INTERVAL '1.5 days'", "INTERVAL '7 fortnights'"])
     async def test_bad_count_or_unit(self, engine: SlayerQueryEngine, literal: str) -> None:
-        query = q(dimensions=["orders.id"], filter=[f"order_date + {literal} > order_date"])
+        query = q(dimensions=["orders.id"], filter=[f"orders.order_date + {literal} > orders.order_date"])
         with pytest.raises(ValueError):
             await engine.execute(query)
 
@@ -126,12 +126,12 @@ def data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 class TestClockKeywords:
     @pytest.mark.parametrize(("keyword", "call"), [("CURRENT_DATE", "current_date()"), ("CURRENT_TIMESTAMP", "now()")])
     async def test_keyword_equals_call(self, keyword: str, call: str) -> None:
-        await _same_sql(f"created_at >= {keyword}", f"created_at >= {call}")
+        await _same_sql(f"orders.created_at >= {keyword}", f"orders.created_at >= {call}")
 
     @pytest.mark.parametrize("keyword", ["CURRENT_DATE", "current_timestamp"])
     async def test_keyword_bypasses_the_result_cache(self, data_calls: list[str], keyword: str) -> None:
         async for eng in engine_for("sqlite"):
-            query = q(dimensions=["orders.id"], filter=[f"created_at <= {keyword}"])
+            query = q(dimensions=["orders.id"], filter=[f"orders.created_at <= {keyword}"])
             await eng.execute(query, cache=True)
             await eng.execute(query, cache=True)
             assert len([s for s in data_calls if "slayer_rk_" not in s]) == 2

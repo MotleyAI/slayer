@@ -166,7 +166,7 @@ class TestSameModelExpressions:
         resp = await exec_backend.execute(orders_q(
             dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount - orders.cost)", alias="m")],
-            filter=["sum(amount - cost) > 45"]))
+            filter=["sum(orders.amount - orders.cost) > 45"]))
         kept = _cells(resp, "status", "m")
         assert set(kept) <= set(base)  # HAVING prunes rows, never invents them
         assert all(v > 45 for v in kept.values())
@@ -220,7 +220,7 @@ class TestCrossModelExpressions:
         base = await _val(exec_backend, "sum(orders.amount)")
         resp = await exec_backend.execute(orders_q(
             dimensions=["orders.status"], metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            filter=["sum(amount - customers.discount) > 45"]))
+            filter=["sum(orders.amount - customers.discount) > 45"]))
         kept = _cells(resp, "status", "m")
         for cell, v in kept.items():
             assert v == pytest.approx(base[cell])  # surviving values unchanged

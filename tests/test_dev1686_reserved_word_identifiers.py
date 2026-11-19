@@ -348,7 +348,7 @@ class TestReservedStringReparsePaths:
             "population": "grant",
             "dimensions": ["grant.namespace"],
             "metrics": ["count(grant.*)"],
-            "order": [OrderItem.model_validate({"field": "namespace"})],
+            "order": [OrderItem.model_validate({"field": "grant.namespace"})],
         })
         sql = await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()])
         _assert_parses(sql)

@@ -137,7 +137,7 @@ class TestShiftedCtePositionalArgRegistration:
         q = _q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
             QueryMetric(
-                metric=f"time_shift({agg}(amount, customers.signup_at), -1)",
+                metric=f"time_shift({agg}(orders.amount, customers.signup_at), -1)",
                 alias="prev",
             ),
         ])

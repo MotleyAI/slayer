@@ -28,7 +28,7 @@ EXAMPLE_DIR = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_impor
 
 Run = Callable[[dict[str, Any]], Awaitable[list[dict[str, Any]]]]
 
-_MONTH = [{"field": "ordered_on", "granularity": "month"}]
+_MONTH = [{"field": "orders.ordered_on", "granularity": "month"}]
 
 
 @contextlib.asynccontextmanager

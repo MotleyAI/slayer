@@ -100,7 +100,7 @@ class TestColumnAggregates:
 class TestExpressionSources:
     @pytest.mark.parametrize("agg", ["sum", "avg", "count"])
     async def test_comparison(self, engine, agg: str) -> None:
-        resp = await engine.execute(orders_q(metrics=[m(f"{agg}(amount > 15)")]))
+        resp = await engine.execute(orders_q(metrics=[m(f"{agg}(orders.amount > 15)")]))
         value = single(resp)
         assert not isinstance(value, bool)
         assert _num(value) == pytest.approx(GT15_TOTALS[agg])

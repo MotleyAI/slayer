@@ -12,7 +12,7 @@ import pytest
 from slayer.core.query import QueryDimension, SlayerQuery
 from tests._dev1920_fixtures import FISCAL_QUARTER, StoreFactory, make_store, run  # noqa: F401 — fixture
 
-MONTH = {"field": "created_at", "granularity": "month"}
+MONTH = {"field": "orders.created_at", "granularity": "month"}
 
 #: (unnamed measure, its result key).
 MEASURE_KEYS = [
@@ -60,11 +60,11 @@ QUERY_KEYS = [
                   "dimensions": ["case when sum(orders.amount, partition_by=orders.customer_id) > 50 then 'high' else 'other' end"]},
                  ["orders.iif_amount_sum_partition_by_002eb04b_gh_other", "orders.amount_sum"],
                  id="hashed-dimension"),
-    pytest.param({"metrics": ["sum(orders.amount)"], "dimensions": ["date_trunc('month', created_at)"]},
+    pytest.param({"metrics": ["sum(orders.amount)"], "dimensions": ["date_trunc('month', orders.created_at)"]},
                  ["orders.created_at", "orders.amount_sum"], id="date-trunc-dimension"),
-    pytest.param({"metrics": ["sum(orders.amount)"], "time_dimensions": ["date_trunc('month', created_at)"]},
+    pytest.param({"metrics": ["sum(orders.amount)"], "time_dimensions": ["date_trunc('month', orders.created_at)"]},
                  ["orders.created_at", "orders.amount_sum"], id="date-trunc-time-dimension"),
-    pytest.param({"metrics": ["sum(orders.amount)"], "dimensions": ["date_trunc('fiscal_quarter', created_at)"]},
+    pytest.param({"metrics": ["sum(orders.amount)"], "dimensions": ["date_trunc('fiscal_quarter', orders.created_at)"]},
                  ["orders.created_at", "orders.amount_sum"], id="custom-granularity-dimension"),
 ]
 

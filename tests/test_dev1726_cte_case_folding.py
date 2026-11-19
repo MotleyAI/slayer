@@ -334,8 +334,8 @@ def _case_only_result_names_query() -> SlayerQuery:
             )
         ],
         metrics=[
-            QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="Foo"),
-            QueryMetric(metric="time_shift(max(revenue), -2, 'month')", alias="foo"),
+            QueryMetric(metric="time_shift(sum(orders.revenue), -1, 'month')", alias="Foo"),
+            QueryMetric(metric="time_shift(max(orders.revenue), -2, 'month')", alias="foo"),
         ],
     )
 
@@ -433,10 +433,10 @@ class TestE2eCaseFoldingAllDialects:
             ],
             metrics=[
                 QueryMetric(
-                    metric="consecutive_periods(sum(revenue) > 0)", alias="Foo",
+                    metric="consecutive_periods(sum(orders.revenue) > 0)", alias="Foo",
                 ),
                 QueryMetric(
-                    metric="consecutive_periods(sum(revenue) > 100)", alias="foo",
+                    metric="consecutive_periods(sum(orders.revenue) > 100)", alias="foo",
                 ),
             ],
         )

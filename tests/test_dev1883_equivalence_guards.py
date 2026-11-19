@@ -46,7 +46,7 @@ class TestMainTimeDimensionAmbiguity:
     async def test_two_same_column_buckets_raise_via_execute(self, engine) -> None:
         q = fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
+            dimensions=["date_trunc('month', orders.created_at)", "date_trunc('year', orders.created_at)"],
             main_time_dimension="orders.created_at",
             metrics=[{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
         )

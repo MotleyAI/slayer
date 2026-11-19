@@ -97,7 +97,7 @@ class TestPlaceholders:
         assert variable_names(text) == names
 
     def test_query_does_not_require_a_commented_placeholder(self) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "filter": ["status = 'paid' -- r = {region}"]})
+        query = SlayerQuery.model_validate({"population": "orders", "filter": ["orders.status = 'paid' -- r = {region}"]})
         assert extract_placeholder_names(query) == set()
 
     def test_placeholder_outside_the_comment_still_binds(self) -> None:

@@ -205,7 +205,7 @@ async def test_a_stage_extension_reaches_the_stored_model_beside_a_root_of_anoth
 @pytest.mark.parametrize("data_source", [DS, ""], ids=["own-datasource", "no-datasource"])
 def test_a_stage_source_written_in_another_case_is_read(data_source: str) -> None:
     backed = SlayerDataset(name="backed", data_source=data_source, source_queries=[
-        q(population="customers", dimensions=["name", "region_label"])])
+        q(population="customers", dimensions=["customers.name", "customers.region_label"])])
     label = DatasetField(name="region_label", sql="regions.name", datatype=DataType.STRING)
     models = [m.model_copy(update={"fields": [*m.fields, label]}) if m.name == "Customers" else m
               for m in respelled_dataset(_datasets(), name="customers", spelling="Customers")]
@@ -222,14 +222,14 @@ def _root_source_and_base(
 
 
 def test_a_sibling_written_in_another_case_is_followed() -> None:
-    stages = [q(name="Base", population="customers", dimensions=["name"]), q(population="base", dimensions=["name"])]
+    stages = [q(name="Base", population="customers", dimensions=["customers.name"]), q(population="base", dimensions=["base.name"])]
     models = respelled_dataset(_datasets(), name="customers", spelling="Customers")
     assert _root_source_and_base(stages, models, data_source=None) == ("Base", "Customers")
 
 
 def test_a_sibling_shadows_a_stored_model_whatever_the_case() -> None:
     stages = [q(name="Customers", population="orders", dimensions=["orders.customer_id"]),
-              q(population="CUSTOMERS", dimensions=["customer_id"])]
+              q(population="CUSTOMERS", dimensions=["CUSTOMERS.customer_id"])]
     assert _root_source_and_base(stages, _datasets(), data_source=DS) == ("Customers", "orders")
 
 

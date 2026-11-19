@@ -269,7 +269,7 @@ async def test_example_query_hit_compact_preserves_query(
 ) -> None:
     sample = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(amount_paid)")],
+        metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -293,7 +293,7 @@ async def test_example_query_hit_verbose_preserves_query(
 ) -> None:
     sample = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(amount_paid)")],
+        metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,

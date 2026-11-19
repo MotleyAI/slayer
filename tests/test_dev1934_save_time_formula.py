@@ -363,7 +363,7 @@ class TestMcp:
     async def test_create_model_aggregations_with_query_rejected(self, mcp) -> None:
         server, _engine, _store = mcp
         out = await _call(server=server, name="create_dataset", arguments={
-            "name": "qb", "query": {"population": "orders", "metrics": ["count(*)"]},
+            "name": "qb", "query": {"population": "orders", "metrics": ["count(orders.*)"]},
             "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
         assert "Error" in out

@@ -389,7 +389,7 @@ _W_BY_BAND_REGION = {("hi", "East"): 60.0, ("hi", "North"): 60.0, ("hi", "South"
 class TestOffGrainConstituentNests:
     @pytest.mark.parametrize(("dimensions", "expected"), [
         pytest.param([BAND], _W_BY_BAND, id="band"),
-        pytest.param([BAND, "region"], _W_BY_BAND_REGION, id="band-region"),
+        pytest.param([BAND, "sales.region"], _W_BY_BAND_REGION, id="band-region"),
     ])
     async def test_executes_at_the_band_grain(self, exec_engine, dimensions, expected):
         """Grained at ``spend_band`` alone (the nested aggregate is opaque): a constant

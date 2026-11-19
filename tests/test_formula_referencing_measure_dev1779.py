@@ -179,11 +179,11 @@ async def _dry_sql(tmp_path, metrics: list[str], **query_kw: Any) -> str:
 
 # (id, label, reproduces_bug, both_refs_selected)
 _ORDERINGS = [
-    ("formula_first", ["habit_score", "order_count", "unique_customers"], True, True),
-    ("formula_middle", ["order_count", "habit_score", "unique_customers"], True, True),
-    ("formula_last", ["order_count", "unique_customers", "total_revenue", "habit_score"], False, True),
-    ("one_ref_selected", ["order_count", "habit_score"], False, False),
-    ("no_ref_selected", ["habit_score"], False, False),
+    ("formula_first", ["orders.habit_score", "orders.order_count", "orders.unique_customers"], True, True),
+    ("formula_middle", ["orders.order_count", "orders.habit_score", "orders.unique_customers"], True, True),
+    ("formula_last", ["orders.order_count", "orders.unique_customers", "orders.total_revenue", "orders.habit_score"], False, True),
+    ("one_ref_selected", ["orders.order_count", "orders.habit_score"], False, False),
+    ("no_ref_selected", ["orders.habit_score"], False, False),
 ]
 
 

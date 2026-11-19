@@ -22,7 +22,7 @@ def _month_query(order_column: str, direction: str = "desc") -> SlayerQuery:
 class TestOrderByProjectedBucket:
     async def test_functional_order_matches_column_name_order(self, exec_engine) -> None:
         by_functional = await exec_engine.execute(_month_query("date_trunc('month', orders.created_at)"))
-        by_column = await exec_engine.execute(_month_query("created_at"))
+        by_column = await exec_engine.execute(_month_query("orders.created_at"))
         assert by_functional.data == by_column.data
         assert [r["orders.created_at"] for r in by_functional.data] == [
             "2025-03-01", "2024-02-01", "2024-01-01",

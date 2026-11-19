@@ -59,10 +59,10 @@ NAME_KEY = FieldKey(leaf="name")
 ACCOUNT_KEY = FieldKey(path=("account_snapshots",), leaf="account_id")
 MONTH_KEY = TimeTruncKey(
     source=FieldKey(path=("account_snapshots",), leaf="snapshot_date"), granularity=TimeGranularity.MONTH)
-BY_NAME_MONTH = ("name", "snapshot_date")
-BY_NAME_ACCOUNT = ("name", "account_id")
+BY_NAME_MONTH = ("customers.name", "snapshot_date")
+BY_NAME_ACCOUNT = ("customers.name", "account_id")
 SUM_MAX_Q_BY_OUTER_ACCOUNT = f"sum({MAX_Q}, partition_by=[{ACCOUNT}])"
-EXPLICIT_UNDETERMINED = f"sum({MAX_Q}, partition_by=[name, account_snapshots.snapshot_date])"
+EXPLICIT_UNDETERMINED = f"sum({MAX_Q}, partition_by=[customers.name, account_snapshots.snapshot_date])"
 SALES_EXPLICIT_UNDETERMINED = "avg(sum(sales.amount, partition_by=sales.city), partition_by=[sales.region])"
 CY_NULL_MONTH = {("Cy", None): None}
 
@@ -123,7 +123,7 @@ class TestJoinedTimeBucket:
         rooted = await engine.execute(query(
             population="account_snapshots", dimensions=["customers.name"],
             time_dimensions=[{"field": "account_snapshots.snapshot_date", "granularity": "month"}],
-            metrics=[m(f"sum({inner}(balance, partition_by=[account_id, customer_id, snapshot_date]))")]))
+            metrics=[m(f"sum({inner}(account_snapshots.balance, partition_by=[account_snapshots.account_id, account_snapshots.customer_id, account_snapshots.snapshot_date]))")]))
         resp = await engine.execute(_by_month(f"sum({inner}(account_snapshots.balance, {P}))"))
         got = cells(resp, keys=BY_NAME_MONTH)
         want = cells(rooted, keys=BY_NAME_MONTH)
@@ -161,7 +161,7 @@ class TestPlainToManyColumn:
         bare = await engine.execute(_by_account())
         got = cells(resp, keys=BY_NAME_ACCOUNT)
         approx_cells(got, SUM_MAX_Q_BY_ACCOUNT)
-        n, a = col(bare.columns, "name"), col(bare.columns, "account_id")
+        n, a = col(bare.columns, "customers.name"), col(bare.columns, "account_id")
         assert set(got) == {(r[n], r[a]) for r in bare.data}
 
 
@@ -238,7 +238,7 @@ class TestPositions:
             dimensions=["customers.name"], time_dimensions=[MONTH_TD],
             metrics=[m("sum(account_snapshots.balance)", "b")],
             order=[{"field": f"sum(max(account_snapshots.balance, {P}))", "direction": "desc"}]))
-        n, t = col(resp.columns, "name"), col(resp.columns, "snapshot_date")
+        n, t = col(resp.columns, "customers.name"), col(resp.columns, "snapshot_date")
         order = [(r[n], str(r[t])[:7]) for r in resp.data]
         assert order == [("Bob", "2024-02"), ("Bob", "2024-01"), ("Ann", "2024-01"),
                          ("Ann", "2024-02"), ("Dee", "2024-02"), ("Dee", "2024-01"), ("Cy", "None")]
@@ -266,7 +266,7 @@ class TestOtherConsumerShapes:
         middle = (f"sum(sum(account_snapshots.balance, {P}), "
                   f"partition_by=[{ACCOUNT}, id])")
         resp = await engine.execute(query(dimensions=["customers.name"], metrics=[m(f"max({middle})")]))
-        approx_cells(cells(resp, keys=("name",)),
+        approx_cells(cells(resp, keys=("customers.name",)),
                      {(k,): x for k, x in DEPTH3_MAX_ACCOUNT_TOTAL_BY_NAME.items()})
         _clean(resp)
 
@@ -274,7 +274,7 @@ class TestOtherConsumerShapes:
         size = {"field": f"CASE WHEN {SUM_MAX_Q_BY_OUTER_ACCOUNT} > 100 "
                               f"THEN 'big' ELSE 'small' END", "alias": "size"}
         resp = await engine.execute(query(dimensions=["customers.name", ACCOUNT, size]))
-        n, a, s = (col(resp.columns, k) for k in ("name", "account_id", "size"))
+        n, a, s = (col(resp.columns, k) for k in ("customers.name", "account_id", "size"))
         got = {(r[n], r[a]): r[s] for r in resp.data}
         assert got == {("Ann", 10): "big", ("Ann", 11): "small", ("Bob", 20): "big",
                        ("Dee", 30): "small", ("Dee", 31): "small", ("Cy", None): "small"}
@@ -289,14 +289,14 @@ class TestOtherConsumerShapes:
     async def test_aggregate_parameter(self, engine):
         resp = await engine.execute(query(dimensions=["customers.name"], metrics=[m(
             f"weighted_avg(account_snapshots.balance, weight={SUM_MAX_Q_BY_OUTER_ACCOUNT})")]))
-        approx_cells(cells(resp, keys=("name",)),
+        approx_cells(cells(resp, keys=("customers.name",)),
                      {**{(k,): x for k, x in WAVG_BY_ACCOUNT_MAX.items()}, ("Cy",): None})
         _clean(resp)
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_fanning_constituent_key_still_errors(self, engine, mode):
         q = query(dimensions=["customers.name"], to_many_handling=mode,
-                  metrics=[m(f"sum(count(name, partition_by=[id, {ACCOUNT}]))")])
+                  metrics=[m(f"sum(count(customers.name, partition_by=[customers.id, {ACCOUNT}]))")])
         with pytest.raises(PartitionKeyError, match="account_snapshots.account_id") as ei:
             await engine.execute(q)
         assert "__regroup__" not in str(ei.value)
@@ -307,7 +307,7 @@ class TestExpressionAndKeylessGrain:
         resp = await engine.execute(query(
             dimensions=["customers.name", {"field": BAND_EXPR, "alias": "band"}],
             metrics=[m(f"sum({MAX_Q})")]))
-        approx_cells(cells(resp, keys=("name", "band")), {**SUM_MAX_Q_BY_BAND, ("Cy", "lo"): None})
+        approx_cells(cells(resp, keys=("customers.name", "band")), {**SUM_MAX_Q_BY_BAND, ("Cy", "lo"): None})
         _clean(resp)
 
     async def test_keyless(self, engine):

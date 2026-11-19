@@ -397,10 +397,10 @@ def seed_server(cursor: Any, *, dialect: str) -> None:
 async def check_server_forms(engine: SlayerQueryEngine) -> None:
     """Every SQL-form predicate as a filter, and the forms the spec pins on every Tier-1 dialect."""
     for pred, expected in PREDICATES:
-        resp = await engine.execute(q(dimensions=["id"], filter=[pred]))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=[pred]))
         assert ids(resp) == expected, (pred, resp.sql)
     for expr, values in VALUES:
-        resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "x"}]))
+        resp = await engine.execute(q(dimensions=["orders.id", {"field": expr, "alias": "x"}]))
         got = {int(k): (v if v is None or isinstance(v, str) else float(v)) for k, v in by_key(resp, "id", "x").items()}
         want = {k: (v if v is None or isinstance(v, str) else float(v)) for k, v in values.items()}
         assert got == want, (expr, resp.sql)
@@ -409,7 +409,7 @@ async def check_server_forms(engine: SlayerQueryEngine) -> None:
 
 async def check_try_cast(engine: SlayerQueryEngine, *, nulls_invalid: bool = True) -> None:
     """``TRY_CAST(code AS INT)``: 12 / NULL / NULL / 7 / NULL; ``nulls_invalid=False`` expects the database's error."""
-    query = q(dimensions=["id", {"field": "TRY_CAST(orders.code AS INT)", "alias": "x"}])
+    query = q(dimensions=["orders.id", {"field": "TRY_CAST(orders.code AS INT)", "alias": "x"}])
     if not nulls_invalid:
         sql = (await engine.execute(query, dry_run=True)).sql or ""
         assert "PG_INPUT_IS_VALID" not in sql.upper(), sql
@@ -427,8 +427,8 @@ async def check_filtered_aggregations(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(q(metrics=[m("weighted_avg(orders.price, weight=orders.quantity) FILTER (WHERE orders.status = 'paid')")]))
     assert num(single(resp)) == pytest.approx(3.6), resp.sql
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": "balances", "dimensions": ["customer_id"],
-        "metrics": [{"metric": "last(balance, updated_at) FILTER (WHERE status = 'active')", "alias": "v"}],
+        "population": "balances", "dimensions": ["balances.customer_id"],
+        "metrics": [{"metric": "last(balances.balance, balances.updated_at) FILTER (WHERE balances.status = 'active')", "alias": "v"}],
     }))
     assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 150.0, 2: 80.0}
 
@@ -448,6 +448,6 @@ async def check_filtered_custom_aggregations(engine: SlayerQueryEngine) -> None:
         got = {k: num(v) for k, v in by_key(resp, "region").items()}
         assert got == pytest.approx(by_region), (formula, resp.sql)
         assert num(single(await engine.execute(q(metrics=[measure])))) == pytest.approx(total), formula
-    resp = await engine.execute(q(dimensions=["orders.region"], metrics=["paid_rows"]))
+    resp = await engine.execute(q(dimensions=["orders.region"], metrics=["orders.paid_rows"]))
     assert {k: num(v) for k, v in by_key(resp, "region", "paid_rows").items()} == {"EU": 2, "US": 1, None: None}
-    assert num(single(await engine.execute(q(metrics=["paid_rows"])), "paid_rows")) == 3
+    assert num(single(await engine.execute(q(metrics=["orders.paid_rows"])), "paid_rows")) == 3

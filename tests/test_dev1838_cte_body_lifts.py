@@ -177,7 +177,7 @@ class TestNonFinalStage:
 
     @staticmethod
     def _banded_stages(**stage2_kwargs) -> list:
-        stage1 = q(name="banded", dimensions=["region", BAND],
+        stage1 = q(name="banded", dimensions=["orders.region", BAND],
                    metrics=[QueryMetric(metric="sum(orders.amount)", alias="bt")])
         stage2 = SlayerQuery(population="banded",
                              extensions=[DatasetExtension(dataset="banded")],
@@ -207,7 +207,7 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = [
-            q(name="s1", dimensions=["region"],
+            q(name="s1", dimensions=["orders.region"],
               metrics=[QueryMetric(metric="sum(orders.amount)", alias="m"),
                         QueryMetric(metric="sum(orders.amount, partition_by=[])",
                                      alias="gt")]),
@@ -229,7 +229,7 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = [
-            q(name="s1", dimensions=["region", BAND],
+            q(name="s1", dimensions=["orders.region", BAND],
               time_dimensions=month_td(),
               metrics=[QueryMetric(metric="sum(orders.amount)", alias="m"),
                         QueryMetric(metric="sum(orders.amount, window='1y')",

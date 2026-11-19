@@ -133,7 +133,7 @@ class TestEveryContainer:
     async def test_a_stored_measure(self) -> None:
         doc = t_doc(aggregations=[_REVERSE], metrics=[{"name": "rev", "formula": "reverse(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
-            got = await _both(engine.execute(_query("rev")))
+            got = await _both(engine.execute(_query("t.rev")))
         assert got == (_SHADOW, _SHADOW)
 
     async def test_a_saved_query(self) -> None:
@@ -155,7 +155,7 @@ class TestEverySpelling:
     @pytest.mark.parametrize("spelling", sorted(SCALAR_SPELLINGS))
     async def test_a_parser_spelling(self, spelling: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[agg(spelling)])]) as engine:
-            got = await _both(engine.execute(_query(f"{spelling}(a)")))
+            got = await _both(engine.execute(_query(f"{spelling}(t.a)")))
         assert got == ([("t", spelling, spelling)],) * 2
 
     @pytest.mark.parametrize(("formula", "written"), [("REVERSE(t.a)", "REVERSE"), ("t.reverse(a)", "reverse")])

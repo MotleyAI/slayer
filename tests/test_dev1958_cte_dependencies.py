@@ -28,9 +28,9 @@ from tests._dev1832_fixtures import (
 from tests._engine_helpers import _extract_cte_body
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
-SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
-REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
-DEGENERATE_SHARE = "sum(amount) / max(sum(amount, partition_by=[region]), partition_by=region)"
+SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.ordered_at])"
+REGION_SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.region])"
+DEGENERATE_SHARE = "sum(monthly.amount) / max(sum(monthly.amount, partition_by=[monthly.region]), partition_by=monthly.region)"
 
 
 def _q(expression: str, *, date_range: bool = False):

@@ -152,7 +152,7 @@ class TestDirectionValues:
     @pytest.mark.parametrize("spelling", ["ASC", "Ascending", " ascending "])
     async def test_synonyms_execute(self, engine, spelling):
         resp = await engine.execute(sales_q(
-            dimensions=["sales.region"], metrics=[_m(f"rank(sum(amount), direction='{spelling}')")]))
+            dimensions=["sales.region"], metrics=[_m(f"rank(sum(sales.amount), direction='{spelling}')")]))
         assert _by_region(resp) == RANK_ASC
 
     async def test_non_numeric_inner(self, engine):
@@ -223,8 +223,8 @@ class TestBinding:
         ("asc", "asc"), ("Ascending", "asc"), (" ASCENDING", "asc"),
     ])
     def test_synonyms_normalise(self, spelling, canonical):
-        got = _bind(f"rank(sum(amount), direction='{spelling}')")
-        want = _bind(f"rank(sum(amount), direction='{canonical}')")
+        got = _bind(f"rank(sum(sales.amount), direction='{spelling}')")
+        want = _bind(f"rank(sum(sales.amount), direction='{canonical}')")
         assert isinstance(got, TransformKey)
         assert got == want
         assert ("direction", canonical) in got.kwargs
@@ -312,30 +312,30 @@ class TestDirectionErrors:
         assert "direction" in msg, msg
 
     @pytest.mark.parametrize("formula", [
-        "lag(sum(amount), periods=region)",
-        "time_shift(sum(amount), granularity='month')",
-        "ntile(sum(amount))",
-        "ntile(sum(amount), n=0)",
-        "ntile(sum(amount), n=region)",
+        "lag(sum(sales.amount), periods=region)",
+        "time_shift(sum(sales.amount), granularity='month')",
+        "ntile(sum(sales.amount))",
+        "ntile(sum(sales.amount), n=0)",
+        "ntile(sum(sales.amount), n=region)",
     ])
     def test_other_transform_argument_errors_are_typed(self, formula):
         with pytest.raises(core_errors.TransformArgumentError):
             _bind(formula)
 
     @pytest.mark.parametrize(("formula", "twin"), [
-        ("rank(sum(amount), foo=1, direction='desc')", "rank(sum(amount), (foo=1), direction='desc')"),
-        ("percent_rank(sum(amount), foo=1)", "percent_rank(sum(amount), (foo=1))"),
-        ("consecutive_periods(sum(amount) > 0, foo=1)", "consecutive_periods(sum(amount) > 0, (foo=1))"),
-        ("rank(sum(amount), foo=1)", "rank(sum(amount), (foo=1))"),
-        ("dense_rank(sum(amount), foo=1)", "dense_rank(sum(amount), (foo=1))"),
-        ("percent_rank(sum(amount), foo=1)", "percent_rank(sum(amount), (foo=1))"),
+        ("rank(sum(sales.amount), foo=1, direction='desc')", "rank(sum(sales.amount), (foo=1), direction='desc')"),
+        ("percent_rank(sum(sales.amount), foo=1)", "percent_rank(sum(sales.amount), (foo=1))"),
+        ("consecutive_periods(sum(sales.amount) > 0, foo=1)", "consecutive_periods(sum(sales.amount) > 0, (foo=1))"),
+        ("rank(sum(sales.amount), foo=1)", "rank(sum(sales.amount), (foo=1))"),
+        ("dense_rank(sum(sales.amount), foo=1)", "dense_rank(sum(sales.amount), (foo=1))"),
+        ("percent_rank(sum(sales.amount), foo=1)", "percent_rank(sum(sales.amount), (foo=1))"),
     ])
     def test_non_parameter_name_is_a_positional_comparison(self, formula, twin):
         msg = _fails_like_its_comparison_twin(expression=formula, twin=twin)
         assert "keyword argument 'foo'" not in msg, msg
 
     def test_non_parameter_name_outside_rank_family_lists_no_rank_keywords(self):
-        msg = _fails_like_its_comparison_twin(expression="lag(sum(amount), foo=1)", twin="lag(sum(amount), (foo=1))")
+        msg = _fails_like_its_comparison_twin(expression="lag(sum(sales.amount), foo=1)", twin="lag(sum(sales.amount), (foo=1))")
         assert "partition_by" not in msg, msg
         assert "direction" not in msg, msg
 
@@ -344,9 +344,9 @@ class TestImporterParity:
     @pytest.mark.parametrize("formula", [
         "rank(sum(sales.amount))",
         "dense_rank(sum(sales.amount), partition_by=sales.region)",
-        "rank(sum(amount), direction='sideways')",
-        "ntile(sum(amount), n=4, direction='asc')",
-        "percent_rank(sum(amount), direction='desc')",
+        "rank(sum(sales.amount), direction='sideways')",
+        "ntile(sum(sales.amount), n=4, direction='asc')",
+        "percent_rank(sum(sales.amount), direction='desc')",
     ])
     def test_parse_is_pure_syntax_and_the_binder_judges(self, formula):
         assert isinstance(parse_expr(formula), TransformCall)
@@ -355,7 +355,7 @@ class TestImporterParity:
 
     @pytest.mark.parametrize(("formula", "want"), [
         ("rank(sum(sales.amount), direction='Ascending')", "asc"),
-        ("dense_rank(sum(amount), partition_by=region, direction='DESC')", "desc"),
+        ("dense_rank(sum(sales.amount), partition_by=sales.region, direction='DESC')", "desc"),
     ])
     def test_accepts_and_normalises(self, formula, want):
         assert dict(_bind(formula).kwargs)["direction"] == want  # type: ignore[union-attr]

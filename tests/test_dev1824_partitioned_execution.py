@@ -407,7 +407,7 @@ class TestCoexistenceAcrossFamilies:
 
     async def test_partitioned_plus_windowed(self, exec_engine) -> None:
         await self._assert_solo_equality(
-            exec_engine, dims=["region", "city"], tds=month_td(),
+            exec_engine, dims=["orders.region", "orders.city"], tds=month_td(),
             metrics=[
                 ("sum(orders.amount, partition_by=orders.region)", "rt"),
                 ("sum(orders.amount, window='1y')", "w"),
@@ -416,7 +416,7 @@ class TestCoexistenceAcrossFamilies:
 
     async def test_partitioned_plus_last(self, exec_engine) -> None:
         await self._assert_solo_equality(
-            exec_engine, dims=["region", "city"], tds=None,
+            exec_engine, dims=["orders.region", "orders.city"], tds=None,
             metrics=[
                 ("sum(orders.amount, partition_by=orders.region)", "rt"),
                 ("last(orders.amount)", "l"),
@@ -425,7 +425,7 @@ class TestCoexistenceAcrossFamilies:
 
     async def test_partitioned_plus_cross_model(self, exec_engine) -> None:
         await self._assert_solo_equality(
-            exec_engine, dims=["region", "city"], tds=None,
+            exec_engine, dims=["orders.region", "orders.city"], tds=None,
             metrics=[
                 ("sum(orders.amount, partition_by=orders.region)", "rt"),
                 ("sum(customers.spend)", "cm"),
@@ -434,7 +434,7 @@ class TestCoexistenceAcrossFamilies:
 
     async def test_partitioned_plus_transform(self, exec_engine) -> None:
         await self._assert_solo_equality(
-            exec_engine, dims=["region", "city"], tds=month_td(),
+            exec_engine, dims=["orders.region", "orders.city"], tds=month_td(),
             metrics=[
                 ("sum(orders.amount, partition_by=orders.region)", "rt"),
                 ("cumsum(sum(orders.amount))", "c"),
@@ -444,9 +444,9 @@ class TestCoexistenceAcrossFamilies:
 
 class TestCardinalityNeutral:
     @pytest.mark.parametrize("dims,tds", [
-        (["region", "city"], None),
-        (["region", {"field": BAND35, "alias": "band"}], None),
-        (["region", "city"], "month"),
+        (["orders.region", "orders.city"], None),
+        (["orders.region", {"field": BAND35, "alias": "band"}], None),
+        (["orders.region", "orders.city"], "month"),
     ])
     async def test_adding_partitioned_measure_is_neutral(
         self, exec_engine: SlayerQueryEngine, dims, tds,

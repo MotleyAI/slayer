@@ -2517,7 +2517,7 @@ class TestInspectModelRequiredVariables:
             source_queries=[SlayerQuery(
                 population="upstream",
                 metrics=[{"metric": "sum(upstream.amount)"}],
-                filter=["amount > {x}"],
+                filter=["upstream.amount > {x}"],
                 variables={"x": 1},
                 dry_run=True,
             )],

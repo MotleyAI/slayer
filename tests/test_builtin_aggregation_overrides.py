@@ -40,7 +40,7 @@ class TestOtherClassificationSites:
     async def test_a_ranked_name_needs_no_ranking_column(self, name: str, formula: str, expected: float) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[agg(name, formula)])]) as engine:
             resp = await engine.execute({"population": "t", "metrics": [
-                metric(f"{name}(a)")]})
+                metric(f"{name}(t.a)")]})
         assert float(resp.data[0]["v"]) == expected
 
     @pytest.mark.parametrize(("formula", "factor"), [("percentile(t.a, 2)", 2), ("percentile(t.a, 3)", 3)])

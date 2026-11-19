@@ -46,7 +46,7 @@ def storage(request: pytest.FixtureRequest) -> Iterator[StorageBackend]:
 def sample_query() -> SlayerQuery:
     return SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)")],
+        metrics=[QueryMetric(metric="count(orders.*)")],
     )
 
 

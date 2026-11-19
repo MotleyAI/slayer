@@ -41,13 +41,13 @@ EXTENSION: dict[str, Any] = {
     "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}],
 }
 TWO_STAGES: list[dict[str, Any]] = [
-    {"name": "per_customer", "population": "orders", "dimensions": ["customer_id", "buyer.name"],
-     "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-     "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}, "aov"],
-     "filter": ["amount > 5"], "order": [{"field": "total", "direction": "desc"}],
+    {"name": "per_customer", "population": "orders", "dimensions": ["orders.customer_id", "buyer.name"],
+     "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+     "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}, "orders.aov"],
+     "filter": ["orders.amount > 5"], "order": [{"field": "total", "direction": "desc"}],
      "extensions": [EXTENSION]},
-    {"population": "per_customer", "metrics": [{"metric": "avg(total)", "alias": "avg_total"}],
-     "filter": ["total > 0"], "order": [{"field": "avg_total"}]},
+    {"population": "per_customer", "metrics": [{"metric": "avg(per_customer.total)", "alias": "avg_total"}],
+     "filter": ["per_customer.total > 0"], "order": [{"field": "avg_total"}]},
 ]
 
 

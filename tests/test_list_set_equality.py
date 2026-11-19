@@ -542,7 +542,7 @@ class TestRefusals:
 
     @pytest.mark.parametrize("agg", ["min", "max", "sum", "avg", "median", "count_distinct_approx", "collect"])
     async def test_other_aggregations(self, duck: SlayerQueryEngine, agg: str) -> None:
-        body = query(metrics=[metric(f"{agg}(skills)", "n")])
+        body = query(metrics=[metric(f"{agg}(contractors.skills)", "n")])
         with pytest.raises(SlayerError) as info:
             await duck.execute(body)
         assert _names_the_list_type(str(info.value)), str(info.value)
@@ -695,7 +695,7 @@ class TestStages:
         s1 = {"name": "s1", "population": "contractors", "dimensions": ["contractors.team", "contractors.skills"],
               "metrics": [metric("count(contractors.*)", "n")]}
         s2 = {"name": "s2", "population": "s1", "dimensions": ["s1.skills"], "metrics": [metric("sum(s1.n)", "t")]}
-        s3 = {"population": "s2", "metrics": [metric("count_distinct(skills)", "d"), metric("sum(s2.t)", "total")]}
+        s3 = {"population": "s2", "metrics": [metric("count_distinct(s2.skills)", "d"), metric("sum(s2.t)", "total")]}
         resp = await engine.execute([s1, s2, s3])
         row = resp.data[0]
         assert (num(cell(row, "d")), num(cell(row, "total"))) == (4, 7)
@@ -964,7 +964,7 @@ SITES: dict[str, SlayerQuery] = {
     "compare": query(metrics=[metric("count(contractors.*)", "n")], filter=["contractors.skills = ['go', 'sql']"]),
     "compare-columns": query(metrics=[metric("count(contractors.*)", "n")], filter=["contractors.skills = contractors.required"]),
     "in": query(metrics=[metric("count(contractors.*)", "n")], filter=["contractors.skills IN (['go'], ['sql'])"]),
-    "count_distinct": query(metrics=[metric("count_distinct(skills)", "n")]),
+    "count_distinct": query(metrics=[metric("count_distinct(contractors.skills)", "n")]),
     "partition": query(dimensions=["contractors.id", "contractors.skills"], metrics=[metric("count(contractors.*, partition_by=contractors.skills)", "n")]),
     "join-back": query(dimensions=["contractors.skills"], metrics=[metric("count(assignments.id)", "n")]),
     "association": query(dimensions=["contractors.skills", "assignments.id"], metrics=[metric("sum(contractors.rate)", "n")],

@@ -43,7 +43,7 @@ from tests._dev1994_fixtures import (
 )
 from slayer.engine.query_engine import SlayerResponse
 
-MONTH_TD = [{"field": "signup_date", "granularity": "month"}]
+MONTH_TD = [{"field": "customers.signup_date", "granularity": "month"}]
 COUNT_OVERRIDE = Aggregation(name="count", expression="COUNT({value})")
 COUNT_DECLARED = Aggregation(name="count")
 

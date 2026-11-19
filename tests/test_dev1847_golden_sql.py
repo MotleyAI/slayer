@@ -38,12 +38,12 @@ def _cases() -> dict:
                                  "alias": "acc"}]}},
         "reagg/explicit_grain": {
             "kw": {"dimensions": ["sales.region", "sales.product"],
-                   "metrics": [{"metric": f"avg({INNER_CR}, partition_by=region)",
+                   "metrics": [{"metric": f"avg({INNER_CR}, partition_by=sales.region)",
                                  "alias": "acr"}]}},
         "reagg/depth3": {
             "kw": {"dimensions": ["sales.product"],
                    "metrics": [{"metric":
-                                 f"max(avg({INNER_CRP}, partition_by=[region, product]))",
+                                 f"max(avg({INNER_CRP}, partition_by=[sales.region, sales.product]))",
                                  "alias": "d3"}]}},
     }
 

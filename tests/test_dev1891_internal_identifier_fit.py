@@ -212,8 +212,8 @@ class TestNestedAttachEmission:
         qb = SlayerDataset(name="qb", source_queries=[NESTED], data_source=DS)
         query = SlayerQuery(
             population="qb",
-            dimensions=[QueryDimension(field="band")],
-            metrics=[QueryMetric(metric="sum(s)", alias="t")],
+            dimensions=[QueryDimension(field="qb.band")],
+            metrics=[QueryMetric(metric="sum(qb.s)", alias="t")],
         )
         sql = await _dry_sql([*dev1824_models(), qb], query)
         over = [n for n in _identifiers(sql, "postgres") if _nbytes(n) > PG_LIMIT]

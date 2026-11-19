@@ -135,7 +135,7 @@ class TestStringArgumentIsModeB:
         self, engine: SlayerQueryEngine, executed: list[str], text: str, marker: str,
     ) -> None:
         literal = "'" + text.replace("'", "''") + "'"
-        query = _q(f"wsum(amount, w={literal})")
+        query = _q(f"wsum(orders.amount, w={literal})")
         with pytest.raises(UnanalyzableAggregationParameterError) as exc:
             await engine.execute(query)
         message = str(exc.value)
@@ -175,7 +175,7 @@ class TestQuotedPlaceholder:
     async def test_a_mode_b_string_literal_cannot_escape_the_literal(self, dialect: str) -> None:
         orders = _datasets(_LABEL)[1]
         sql = await _engine_generate(
-            query=SlayerQuery(population="orders", metrics=[QueryMetric(metric=f"lbl(amount, n={_MODE_B_LITERAL})",
+            query=SlayerQuery(population="orders", metrics=[QueryMetric(metric=f"lbl(orders.amount, n={_MODE_B_LITERAL})",
                                                                             alias="m")]),
             dataset=orders, dialect=dialect, extra_datasets=[_datasets()[0]],
         )

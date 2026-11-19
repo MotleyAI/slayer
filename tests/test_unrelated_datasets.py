@@ -99,8 +99,8 @@ class TestResolution:
 
     async def test_query_local_stage_is_an_unrelated_dataset(self, engine) -> None:
         resp = await engine.execute(stages(
-            {"name": "c", "population": "customers", "metrics": [m("count(*)", "nc")]},
-            {"name": "e", "population": "events", "metrics": [m("count(*)", "ne")]},
+            {"name": "c", "population": "customers", "metrics": [m("count(customers.*)", "nc")]},
+            {"name": "e", "population": "events", "metrics": [m("count(events.*)", "ne")]},
             {"population": "c", "dimensions": ["c.nc"], "metrics": [m("max(e.ne)", "ne")]},
         ))
         assert only_row(resp, "nc", "ne") == (3.0, 5.0)
@@ -236,7 +236,7 @@ class TestStoredDefinitionsRefuse:
             use, named = query(metrics=[m("sum(customers.ev_amount)", "x")]), "ev_amount"
         else:
             model = customers_dataset(filters=["events.amount > 1"])
-            use, named = query(metrics=[m("count(*)", "x")]), "events.amount > 1"
+            use, named = query(metrics=[m("count(customers.*)", "x")]), "events.amount > 1"
         with pytest.raises(SlayerError) as saved:
             await engine.save_dataset(model)
         await engine.storage.save_dataset(model, _validate=False)
@@ -323,7 +323,7 @@ class TestAggregates:
 
     async def test_spine_attributes_through_the_unrelated_axis(self, engine) -> None:
         resp = await engine.execute(_spine_query())
-        got = {(value(r, "city"), str(value(r, "timestamp"))[:7]): value(r, "n_events") for r in resp.data}
+        got = {(value(r, "customers.city"), str(value(r, "timestamp"))[:7]): value(r, "n_events") for r in resp.data}
         per_month = {"2024-01": 2.0, "2024-02": 2.0, "2024-03": 1.0}
         assert got == {(city, month): n for city in "AB" for month, n in per_month.items()}
 
@@ -342,7 +342,7 @@ class TestAggregates:
 
     async def test_transform_over_the_unrelated_aggregate(self, engine) -> None:
         resp = await engine.execute(_spine_query(metrics=[m("cumsum(count(events.id))", "running")]))
-        got = {(value(r, "city"), str(value(r, "timestamp"))[:7]): value(r, "running") for r in resp.data}
+        got = {(value(r, "customers.city"), str(value(r, "timestamp"))[:7]): value(r, "running") for r in resp.data}
         per_month = {"2024-01": 2.0, "2024-02": 4.0, "2024-03": 5.0}
         assert got == {(city, month): n for city in "AB" for month, n in per_month.items()}
 
@@ -395,15 +395,15 @@ class TestRowLevelRefusal:
         ({"dimensions": ["customers.city", "events.kind"], "metrics": [], "distinct_dimension_values": False}, "events.kind"),
     ], ids=["time_dimension", "computed_dimension", "order_key", "raw_rows"])
     async def test_other_row_level_positions(self, engine, fields: dict[str, Any], reference: str) -> None:
-        q = query(**{"metrics": [m("count(*)", "n")], **fields})
+        q = query(**{"metrics": [m("count(customers.*)", "n")], **fields})
         with pytest.raises(UnrelatedDatasetError) as exc:
             await engine.execute(q)
         _assert_row_level_refusal(exc, reference=reference)
 
     async def test_one_row_stage_field_names_the_max_remedy(self, engine) -> None:
         q = stages(
-            {"name": "e", "population": "events", "metrics": [m("count(*)", "ne")]},
-            {"population": "customers", "dimensions": ["customers.city", "e.ne"], "metrics": [m("count(*)", "n")]},
+            {"name": "e", "population": "events", "metrics": [m("count(events.*)", "ne")]},
+            {"population": "customers", "dimensions": ["customers.city", "e.ne"], "metrics": [m("count(customers.*)", "n")]},
         )
         with pytest.raises(UnrelatedDatasetError) as exc:
             await engine.execute(q)

@@ -812,7 +812,7 @@ class TestFilteringAndOrderingOnARankedMeasure:
         rows = await _rows(
             engine, dimensions=["orders.status"],
             metrics=[{"metric": "last(orders.amount)", "alias": "l"}],
-            filter=[f"last(amount) > {BIG_AMOUNT_THRESHOLD + 10}"],
+            filter=[f"last(orders.amount) > {BIG_AMOUNT_THRESHOLD + 10}"],
         )
         assert by_group(rows, key="orders.status", value="l") == {
             None: NULL_STATUS_LAST,

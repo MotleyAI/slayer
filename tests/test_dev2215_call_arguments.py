@@ -14,7 +14,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2215_fixtures import BACKENDS, dev2215_engine, m, num, orders_dataset, q, single
 
-TD = [{"field": "created_at", "granularity": "month"}]
+TD = [{"field": "orders.created_at", "granularity": "month"}]
 
 
 @pytest.fixture(params=BACKENDS)

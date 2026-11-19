@@ -13,7 +13,7 @@ def _dims(dimensions):
     return SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": dimensions,
-        "metrics": [{"metric": "sum(amount)"}],
+        "metrics": [{"metric": "sum(orders.amount)"}],
     }).dimensions
 
 

@@ -119,7 +119,7 @@ def _ext_column(column: dict[str, Any], *, source_name: str = "orders") -> dict[
     return {
         "population": "orders",
         "extensions": [{"source_name": source_name, "columns": [column]}],
-        "metrics": [{"metric": "count(*)"}],
+        "metrics": [{"metric": "count(orders.*)"}],
     }
 
 
@@ -158,7 +158,7 @@ class TestEachRouteIsRefused:
     ])
     def test_the_suggested_replacement_keeps_the_columns_meaning(self, column: dict, replacement: str) -> None:
         with pytest.raises(ValidationError) as exc:
-            SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"],
+            SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"],
                                         "extensions": [{"source_name": "orders", "columns": [column]}]})
         assert replacement in str(exc.value)
 

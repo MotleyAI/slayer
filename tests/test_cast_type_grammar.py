@@ -89,7 +89,7 @@ class TestTypeGrammar:
         assert "type" in msg.lower(), msg
 
     def test_chained_casts_with_array_and_words(self) -> None:
-        outer = parse_expr("code::INT[]::TEXT")
+        outer = parse_expr("orders.code::INT[]::TEXT")
         assert isinstance(outer, Cast)
         assert isinstance(outer.source, Cast)
 
@@ -125,14 +125,14 @@ class TestLosslessRendering:
         (d, t) for d in TIER1 if d not in ("sqlite", "duckdb", "clickhouse") for t in ("HUGEINT", "INT128", "INT256")
     ] + [("duckdb", "INT256")])
     async def test_wide_integer_refused_where_the_database_lacks_it(self, dialect: str, type_text: str) -> None:
-        await _refused(f"CAST(amount AS {type_text})", dialect=dialect, needle=type_text)
+        await _refused(f"CAST(orders.amount AS {type_text})", dialect=dialect, needle=type_text)
 
     @pytest.mark.parametrize(("dialect", "type_text"), [
         ("duckdb", "HUGEINT"), ("duckdb", "INT128"), ("clickhouse", "Int128"), ("clickhouse", "Int256"),
         ("sqlite", "INT128"), ("sqlite", "INT256"),
     ])
     async def test_wide_integer_accepted_where_the_database_has_it(self, dialect: str, type_text: str) -> None:
-        await emit(_dim(f"CAST(amount AS {type_text})"), dialect=dialect)
+        await emit(_dim(f"CAST(orders.amount AS {type_text})"), dialect=dialect)
 
     @pytest.mark.parametrize("dialect", ["postgres", "trino"])
     async def test_zoned_time_accepted(self, dialect: str) -> None:
@@ -153,19 +153,19 @@ class TestLosslessRendering:
     ])
     async def test_aliases_stay_accepted(self, type_text: str, dialects: list[str]) -> None:
         for dialect in dialects:
-            await emit(_dim(f"CAST(code AS {type_text})"), dialect=dialect)
+            await emit(_dim(f"CAST(orders.code AS {type_text})"), dialect=dialect)
 
     @pytest.mark.parametrize("type_text", [
         "INT", "INTEGER", "BIGINT", "TEXT", "DOUBLE", "DOUBLE PRECISION", "DECIMAL(10,2)", "DATE", "TIMESTAMP",
     ])
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_common_types_stay_accepted_everywhere(self, dialect: str, type_text: str) -> None:
-        await emit(_dim(f"CAST(code AS {type_text})"), dialect=dialect)
+        await emit(_dim(f"CAST(orders.code AS {type_text})"), dialect=dialect)
 
 
 class TestArrayCasts:
     @pytest.mark.parametrize(("dialect", "text"), [
-        ("postgres", "CAST(orders.code AS INT[])"), ("duckdb", "code::INT[]"), ("clickhouse", "CAST(orders.code AS INT[])"),
+        ("postgres", "CAST(orders.code AS INT[])"), ("duckdb", "orders.code::INT[]"), ("clickhouse", "CAST(orders.code AS INT[])"),
         ("bigquery", "CAST(orders.code AS INT[])"), ("trino", "CAST(orders.code AS INT[])"),
     ])
     async def test_rendered_as_the_database_array_cast(self, dialect: str, text: str) -> None:
@@ -197,16 +197,16 @@ class TestArrayCasts:
 
 class TestArrayTyping:
     @pytest.mark.parametrize(("text", "element"), [
-        ("CAST(orders.code AS INT[])", DataType.INTEGER), ("code::BIGINT[]", DataType.INTEGER), ("CAST(code AS TEXT[])", DataType.STRING),
-        ("CAST(code AS DOUBLE PRECISION[])", DataType.FLOAT), ("CAST(code AS DATE[])", DataType.DATE),
-        ("CAST(code AS UUID[])", DataType.OPAQUE),
+        ("CAST(orders.code AS INT[])", DataType.INTEGER), ("orders.code::BIGINT[]", DataType.INTEGER), ("CAST(orders.code AS TEXT[])", DataType.STRING),
+        ("CAST(orders.code AS DOUBLE PRECISION[])", DataType.FLOAT), ("CAST(orders.code AS DATE[])", DataType.DATE),
+        ("CAST(orders.code AS UUID[])", DataType.OPAQUE),
     ])
     def test_array_cast_is_a_list_of_its_element_type(self, text: str, element: DataType) -> None:
         assert _planned_type(text, dialect="postgres") is DataType.ARRAY
         assert _element_type(text, dialect="postgres") is element
 
     def test_contains_binds_as_a_list_call(self) -> None:
-        key = _bind("contains(CAST(code AS INT[]), 3)", dialect="postgres")
+        key = _bind("contains(CAST(orders.code AS INT[]), 3)", dialect="postgres")
         assert isinstance(key, ScalarCallKey)
         assert is_list_call(key, field_type=lambda _k: None)
 

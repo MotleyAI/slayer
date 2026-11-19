@@ -262,7 +262,7 @@ class TestUsageFeatures:
     @pytest.mark.parametrize("source_name", ["orders", "customers"], ids=["root", "joined"])
     def test_extensions_count_as_inline_sources_with_their_measures(self, source_name: str) -> None:
         found = query_features({
-            "population": "orders", "metrics": ["count(*)"],
+            "population": "orders", "metrics": ["count(orders.*)"],
             "extensions": [{"dataset": source_name, "metrics": [{"name": "m2", "expression": "max(round(credit))"}]}],
         })
         assert "inline_source" in found.flags
@@ -270,4 +270,4 @@ class TestUsageFeatures:
         assert Counter(found.aggregations) == Counter(["count", "max"])
 
     def test_a_plain_query_is_not_an_inline_source(self) -> None:
-        assert "inline_source" not in query_features({"population": "orders", "metrics": ["count(*)"]}).flags
+        assert "inline_source" not in query_features({"population": "orders", "metrics": ["count(orders.*)"]}).flags

@@ -61,7 +61,7 @@ def _q(**kw) -> SlayerQuery:
 
 def _rows(resp, *cols) -> list:
     """Every result row as a tuple — a list, so a repeated row stays visible."""
-    return sorted((tuple(r[f"orders.{c}"] for c in cols) for r in resp.data), key=repr)
+    return sorted((tuple(r[c] for c in cols) for r in resp.data), key=repr)
 
 
 # --------------------------------------------------------------------------- #
@@ -71,32 +71,32 @@ class TestPartitionKeyFilter:
     @pytest.mark.parametrize("flt", ["orders.customer_id is not null", "orders.customer_id + 0 > 0"])
     async def test_filter_on_partition_key_keeps_band_grain(self, exec_engine, flt) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 50)], metrics=[REVENUE], filter=[flt],
+            dimensions=[_band("orders.customer_id", 50)], metrics=[REVENUE], filter=[flt],
         ))
         assert _rows(resp, "band", "revenue") == [("high", 160.0), ("other", 50.0)]
 
     async def test_restricting_filter_keeps_band_grain(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 50)], metrics=[REVENUE],
+            dimensions=[_band("orders.customer_id", 50)], metrics=[REVENUE],
             filter=["orders.customer_id = 1 or orders.customer_id = 2"],
         ))
         assert _rows(resp, "band", "revenue") == [("high", 160.0)]
 
     async def test_single_band_is_one_row(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 10)], metrics=[REVENUE],
+            dimensions=[_band("orders.customer_id", 10)], metrics=[REVENUE],
             filter=["orders.customer_id is not null"],
         ))
         assert _rows(resp, "band", "revenue") == [("high", 210.0)]
 
     async def test_measure_partitioned_by_band_under_partition_key_filter(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["orders.region", _band("customer_id", 50)],
+            dimensions=["orders.region", _band("orders.customer_id", 50)],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s"),
                       QueryMetric(metric="sum(orders.amount, partition_by=band)", alias="bt")],
             filter=["orders.customer_id is not null"],
         ))
-        assert _rows(resp, "region", "band", "s", "bt") == [
+        assert _rows(resp, "orders.region", "band", "s", "bt") == [
             ("North", "high", 100.0, 160.0),
             ("South", "other", 50.0, 50.0),
             (None, "high", 60.0, 160.0),
@@ -109,7 +109,7 @@ class TestGrainConsumersUnderPartitionKeyFilter:
 
     async def test_ranked_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 50)],
+            dimensions=[_band("orders.customer_id", 50)],
             metrics=[QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="v")],
             filter=["orders.customer_id is not null"],
         ))
@@ -130,7 +130,7 @@ class TestGrainConsumersUnderPartitionKeyFilter:
     ])
     async def test_time_ordered_measure(self, exec_engine, formula, extra_filters, expected) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 50)], time_dimensions=month_td(),
+            dimensions=[_band("orders.customer_id", 50)], time_dimensions=month_td(),
             metrics=[QueryMetric(metric=formula, alias="v")],
             filter=["orders.customer_id is not null", *extra_filters],
         ))
@@ -156,7 +156,7 @@ class TestJoinedPartitionKeyFilter:
 # Shape B — an order key beside a first/last measure.
 # --------------------------------------------------------------------------- #
 class TestOrderKeyBesideRankedMeasure:
-    @pytest.mark.parametrize("order_col", ["city", "customers.regions.name"])
+    @pytest.mark.parametrize("order_col", ["orders.city", "customers.regions.name"])
     @pytest.mark.parametrize("formula,expected", [
         ("last(orders.amount, orders.ordered_at)", 60.0),
         ("first(orders.amount, orders.ordered_at)", 10.0),
@@ -177,7 +177,7 @@ class TestOrderKeyBesideRankedMeasure:
             metrics=[QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="v")],
             order=[{"field": "orders.city", "direction": "desc"}],
         ))
-        assert _rows(resp, "region", "v") == [("North", 30.0), ("South", 25.0), (None, 60.0)]
+        assert _rows(resp, "orders.region", "v") == [("North", 30.0), ("South", 25.0), (None, 60.0)]
 
 
 # --------------------------------------------------------------------------- #
@@ -186,11 +186,11 @@ class TestOrderKeyBesideRankedMeasure:
 class TestProducerGrainCoverage:
     async def test_measure_partitioned_by_computed_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["orders.region", _band("customer_id", 50)],
+            dimensions=["orders.region", _band("orders.customer_id", 50)],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s"),
                       QueryMetric(metric="sum(orders.amount, partition_by=band)", alias="bt")],
         ))
-        assert _rows(resp, "region", "band", "s", "bt") == [
+        assert _rows(resp, "orders.region", "band", "s", "bt") == [
             ("North", "high", 100.0, 160.0),
             ("South", "other", 50.0, 50.0),
             (None, "high", 60.0, 160.0),
@@ -217,7 +217,7 @@ def _slot_id_by_alias(pq: PlannedQuery, alias: str) -> str:
 class TestPlannedGrain:
     def test_grain_is_dimension_positions_in_order(self) -> None:
         pq = _plan(
-            dimensions=["orders.region", {"field": "orders.region", "alias": "r2"}, _band("customer_id", 50)],
+            dimensions=["orders.region", {"field": "orders.region", "alias": "r2"}, _band("orders.customer_id", 50)],
             time_dimensions=month_td(), metrics=[REVENUE],
         )
         assert pq.grain == [
@@ -237,7 +237,7 @@ class TestPlannedGrain:
 
     def test_partition_key_filter_column_is_not_a_base_column(self) -> None:
         pq = _plan(
-            dimensions=[_band("customer_id", 50)], metrics=[REVENUE],
+            dimensions=[_band("orders.customer_id", 50)], metrics=[REVENUE],
             filter=["orders.customer_id is not null"],
         )
         assert pq.grain == [_slot_id_by_alias(pq, "band")]
@@ -363,7 +363,7 @@ class TestRenderTimeInvariant:
             generate_from_planned(planned_query=bad, bundle=bundle, dialect="duckdb")
 
     def test_model_copy_bypass_in_a_producer_is_refused_at_render(self) -> None:
-        pq = _plan(dimensions=[_band("customer_id", 50)], metrics=[REVENUE])
+        pq = _plan(dimensions=[_band("orders.customer_id", 50)], metrics=[REVENUE])
         [attach] = pq.regroup_attach_plans
         producer = attach.producer_plan
         bad_producer = producer.model_copy(

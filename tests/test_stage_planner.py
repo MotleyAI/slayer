@@ -236,12 +236,12 @@ class TestTopoSort:
         s2 = SlayerQuery.model_validate({
             "name": "dup",
             "population": "orders",
-            "metrics": [{"metric": "max(amount)"}],
+            "metrics": [{"metric": "max(orders.amount)"}],
             "dimensions": ["orders.status"],
         })
         root = SlayerQuery(
             population="dup",
-            dimensions=["status"],
+            dimensions=["dup.status"],
         )
         bundle = _bundle()
         with pytest.raises(ValueError, match="[Dd]uplicate stage"):

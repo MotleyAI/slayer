@@ -53,7 +53,7 @@ def _sql(*, dataset, metrics, referenced_datasets=(), **query_kwargs):
     ],
 )
 def test_inferred_integer_aggregate_preserves_native_range(integer_orders: SlayerDataset, sql_type, amount, aggregation, expected):
-    sql, planned = _sql(dataset=integer_orders, metrics=[f"{aggregation}(amount)"])
+    sql, planned = _sql(dataset=integer_orders, metrics=[f"{aggregation}(orders.amount)"])
     # first/last desugar onto the regroup primitive: their public
     # slot is ROW-phase; the other aggregations keep an AGGREGATE-phase slot.
     slot = next(

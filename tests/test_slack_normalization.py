@@ -73,7 +73,7 @@ class TestFunctionalSpellingFirstClass:
         assert slack == []
 
     def test_count_star_not_rewritten(self):
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
         result = normalize_query(q)
         assert result.query is not None
         assert result.query.metrics
@@ -83,7 +83,7 @@ class TestFunctionalSpellingFirstClass:
     def test_filter_not_rewritten(self):
         q = SlayerQuery(
             population="orders",
-            filter=["sum(revenue) > 100"],
+            filter=["sum(orders.revenue) > 100"],
         )
         result = normalize_query(q)
         assert result.query.filter[0] == "sum(revenue) > 100"
@@ -121,7 +121,7 @@ class TestMisplacedMeasure:
         m = _orders().model_copy(update={
             "metrics": [DatasetMetric(name="aov", expression="avg(revenue)")],
         })
-        q = SlayerQuery(population="orders", metrics=[{"metric": "aov"}])
+        q = SlayerQuery(population="orders", metrics=[{"metric": "orders.aov"}])
         result = normalize_query(q, dataset=m)
         assert result.query is not None
         assert result.query.metrics
@@ -131,7 +131,7 @@ class TestMisplacedMeasure:
     def test_unknown_bare_token_left_alone(self):
         # Not a column and not a measure — the resolver will error later,
         # but normalization does not preemptively rewrite.
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "noseucha"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "orders.noseucha"}]})
         result = normalize_query(q, dataset=_orders())
         assert result.query is not None
         assert result.query.metrics
@@ -166,7 +166,7 @@ class TestMisplacedMeasure:
         # measures — never reclassified as dimensions.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(orders.revenue)"}, {"metric": "count(*)"}],
+            "metrics": [{"metric": "sum(orders.revenue)"}, {"metric": "count(orders.*)"}],
         })
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 2
@@ -176,7 +176,7 @@ class TestMisplacedMeasure:
     # DEV-1484 backfill from TestAutoMoveDimensions.test_arithmetic_kept
     def test_arithmetic_formula_kept(self):
         # An arithmetic-over-aggregates formula stays a measure.
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(revenue) / count(*)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.revenue) / count(orders.*)"}]})
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 1
         assert not any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
@@ -228,7 +228,7 @@ class TestMisplacedMeasure:
         })
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "customer_id"}, {"metric": "sum(orders.revenue)"}],
+            "metrics": [{"metric": "orders.customer_id"}, {"metric": "sum(orders.revenue)"}],
             "dimensions": ["orders.status"],
         })
         result = normalize_query(q, dataset=m)

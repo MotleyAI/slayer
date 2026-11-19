@@ -98,7 +98,7 @@ class TestPositiveResolutionThroughBinder:
 
     async def test_transform_input_expanded(self) -> None:
         model = _dataset([_REV])
-        td = [{"field": "created_at", "granularity": "month"}]
+        td = [{"field": "orders.created_at", "granularity": "month"}]
         assert await _gen(model, "cumsum(rev)", time_dimensions=td) == await _gen(
             _dataset([]), "cumsum(sum(amount))", time_dimensions=td)
 
@@ -130,7 +130,7 @@ class TestCycleAndDepthThroughBinder:
     async def test_direct_self_cycle(self) -> None:
         model = _dataset([DatasetMetric(name="aov", expression="aov + 1")])
         with pytest.raises((MetricCycleError, ValueError)) as ei:
-            await _gen(model, "aov")
+            await _gen(model, "orders.aov")
         assert "aov" in str(ei.value)
 
     async def test_cycle_names_the_chain(self) -> None:
@@ -139,7 +139,7 @@ class TestCycleAndDepthThroughBinder:
             DatasetMetric(name="b", expression="a"),
         ])
         with pytest.raises((MetricCycleError, ValueError)) as ei:
-            await _gen(model, "a")
+            await _gen(model, "orders.a")
         message = str(ei.value).lower()
         assert "a" in message
         assert "b" in message
@@ -152,7 +152,7 @@ class TestCycleAndDepthThroughBinder:
         model = _dataset(measures)
         with mock.patch.dict(os.environ, {"SLAYER_METRIC_EXPANSION_DEPTH": "2"}):
             with pytest.raises(MetricRecursionLimitError) as ei:
-                await _gen(model, "m1")
+                await _gen(model, "orders.m1")
             assert ei.value.limit == 2
 
     async def test_within_depth_resolves(self) -> None:
@@ -188,7 +188,7 @@ class TestStageSchemaScope:
     def test_dotted_ref_in_stage_schema_is_rejected(self) -> None:
         stage = StageSchema(
             relation_name="s",
-            fields=[StageField(name="aov", sql_alias="aov", datatype=DataType.FLOAT)],
+            fields=[StageField(name="aov", sql_alias="orders.aov", datatype=DataType.FLOAT)],
         )
         parsed = parse_expr("customers.aov")
         bundle = ResolvedSourceBundle(dialect="duckdb")

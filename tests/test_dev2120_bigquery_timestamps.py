@@ -133,7 +133,7 @@ class TestZonedColumnReadsNaive:
     async def test_ranked_pick_reads_naive(self, agg: str) -> None:
         query = SlayerQuery.model_validate({
             "population": "lib",
-            "metrics": [{"metric": f"{agg}(ts)", "alias": "agg_v"}],
+            "metrics": [{"metric": f"{agg}(lib.ts)", "alias": "agg_v"}],
             "time_dimensions": [{"field": "lib.ts", "granularity": "month"}],
         })
         sql = " ".join((await _engine_generate(query=query, dataset=_zoned_lib(), dialect="bigquery")).upper().split())

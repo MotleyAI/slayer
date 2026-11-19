@@ -20,7 +20,7 @@ WRONG_SHAPES = [
     "date_trunc('month')",
     "date_trunc('month', a, b)",
     "date_trunc('month', *)",
-    "date_trunc(status, created_at)",
+    "date_trunc(orders.status, orders.created_at)",
     "date_trunc('month', created_at, granularity=2)",
 ]
 
@@ -51,7 +51,7 @@ class TestWrongShapeGranularityCalls:
 
 class TestNonTemporalArgument:
     async def test_fails_at_binding_as_a_time_dimension(self, exec_engine) -> None:
-        query = _q(["date_trunc('month', upper(status))"])  # accepted at construction
+        query = _q(["date_trunc('month', upper(orders.status))"])  # accepted at construction
         with pytest.raises(errors.TimeDimensionFieldError, match="String"):
             await exec_engine.execute(query, dry_run=True)
 
@@ -89,7 +89,7 @@ class TestNonRegression:
 
     async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(
-            _q(["status", "sum(orders.amount, partition_by=orders.status) > 20"])
+            _q(["orders.status", "sum(orders.amount, partition_by=orders.status) > 20"])
         )
         assert "orders._count" in resp.columns
         assert len(resp.data) == 2
@@ -110,7 +110,7 @@ class TestNonRegression:
             population="orders",
             dimensions=["orders.status"],
             metrics=[{"metric": "count(orders.*)"}],
-            filter=[f"date_trunc('month', created_at) >= '{bound}'"],
+            filter=[f"date_trunc('month', orders.created_at) >= '{bound}'"],
         )
         resp = await exec_engine.execute(query)
         assert {r["orders.status"]: r["orders._count"] for r in resp.data} == expected

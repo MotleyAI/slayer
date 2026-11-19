@@ -95,7 +95,7 @@ class TestStageFlattenCollision:
                 # flat column; both flatten downstream to ``customers__region``.
                 SlayerQuery(
                     name="inner", population="hostm",
-                    dimensions=["customers.region", "customers__region"],
+                    dimensions=["customers.region", "hostm.customers__region"],
                 ),
                 SlayerQuery(population="inner"),
             ],
@@ -177,7 +177,7 @@ class TestQueryBackedFlattenMessage:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
                 population="hostm",
-                dimensions=["customers.region", "customers__region"],
+                dimensions=["customers.region", "hostm.customers__region"],
             )
             with pytest.raises(Exception, match=r"(?i)flatten|collision"):
                 await engine.create_dataset_from_query(
@@ -205,7 +205,7 @@ class TestQueryBackedFlattenMessage:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
                 population="hostm",
-                dimensions=["customers.region", "customers__region"],
+                dimensions=["customers.region", "hostm.customers__region"],
             )
             with pytest.raises(Exception, match=r"(?i)flatten|collision") as ei:
                 await engine.create_dataset_from_query(

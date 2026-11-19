@@ -127,7 +127,7 @@ def q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "created_at") -> List[TimeDimension]:
+def month_td(column: str = "orders.created_at") -> List[TimeDimension]:
     return [TimeDimension(
         field=column,
         granularity=TimeGranularity.MONTH,
@@ -275,7 +275,7 @@ def rows_by(resp, *keys) -> dict:
 
 def by_month(resp: SlayerResponse, value_key: str) -> dict:
     """``{month: value}`` for a single windowed measure grouped by the time bucket."""
-    time_key = next(k for k in resp.columns if k.endswith("created_at")
+    time_key = next(k for k in resp.columns if k.endswith("orders.created_at")
                     or k.endswith("signup_at"))
     return {month_key(r[time_key]): r[value_key] for r in resp.data}
 

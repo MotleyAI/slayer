@@ -23,7 +23,7 @@ async def engine():
         yield e
 
 
-async def _collected(engine, expression: str, *, by_key: str = "team", **body: Any) -> dict[Any, Any]:
+async def _collected(engine, expression: str, *, by_key: str = "contractors.team", **body: Any) -> dict[Any, Any]:
     resp = await engine.execute(query(dimensions=[by_key], metrics=[metric(expression, "c")], **body))
     return {k: as_list(v) for k, v in by(resp, by_key, "c").items()}
 
@@ -41,7 +41,7 @@ class TestValues:
         assert as_list(resp.data[0]["c"]) == []
 
     async def test_a_cell_without_rows_is_empty(self, engine) -> None:
-        got = await _collected(engine, "collect(contractors.skills.value)", by_key="name")
+        got = await _collected(engine, "collect(contractors.skills.value)", by_key="contractors.name")
         assert got == {"Ann": ["go", "sql"], "Bob": ["sql"], "Cid": [], "Dee": [], "Eve": ["go"]}
 
     async def test_integers_sorted_numerically(self, engine) -> None:
@@ -161,6 +161,6 @@ class TestJoinBackOfAPrimaryKey:
         assert not [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)], sql
 
     async def test_join_back_without_a_row_is_empty(self, engine) -> None:
-        got = await _collected(engine, "collect(assignments.id)", by_key="name")
+        got = await _collected(engine, "collect(assignments.id)", by_key="contractors.name")
         assert {k: [int(x) for x in v] for k, v in got.items()} == {
             "Ann": [1, 2], "Bob": [3], "Cid": [4], "Dee": [], "Eve": [5]}

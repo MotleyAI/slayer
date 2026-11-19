@@ -318,7 +318,7 @@ def matrix_cases() -> list[DateCase]:
 def matrix_query(case: DateCase) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "dt",
-        "dimensions": ["id", {"field": case.expr, "alias": "v"}],
+        "dimensions": ["dt.id", {"field": case.expr, "alias": "v"}],
     })
 
 

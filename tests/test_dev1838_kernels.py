@@ -338,7 +338,7 @@ class TestKernelIdentity:
             planned = _plan(q(
                 dimensions=["orders.region"], time_dimensions=month_td(),
                 metrics=[QueryMetric(
-                    metric=f"sum(amount, window='{window}')", alias="w")],
+                    metric=f"sum(orders.amount, window='{window}')", alias="w")],
             ))
             (attach,) = _combined_attaches(planned)
             return attach

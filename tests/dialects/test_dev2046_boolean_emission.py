@@ -24,7 +24,7 @@ INT_TYPES = frozenset(exp.DataType.INTEGER_TYPES) - {exp.DataType.Type.BIT}
 BOOLEAN_TYPES = frozenset({exp.DataType.Type.BOOLEAN, exp.DataType.Type.BIT})
 FLOAT_TYPES = frozenset({exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE})
 LOWERED = (exp.Sum, exp.Avg, exp.Min, exp.Max)
-BOOLEAN_SOURCES = ["flag", "big_order", "coalesce(flag, false)", "orders.amount > 15"]
+BOOLEAN_SOURCES = ["orders.flag", "orders.big_order", "coalesce(orders.flag, false)", "orders.amount > 15"]
 
 
 def _bool_type(dialect: str):
@@ -90,7 +90,7 @@ class TestLoweringOnEveryDialect:
 class TestAvgIsFractional:
     """T-SQL's AVG over integers truncates: there, and only there, its input is read as a float."""
 
-    @pytest.mark.parametrize("source", ["flag", "amount", "orders.amount > 15", "amount - customer_id", "sum(orders.amount)"])
+    @pytest.mark.parametrize("source", ["orders.flag", "orders.amount", "orders.amount > 15", "orders.amount - orders.customer_id", "sum(orders.amount)"])
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_float_input_only_where_avg_truncates(self, dialect: str, source: str) -> None:
         tree = await _statement(dialect, f"avg({source})", dimensions=["orders.region"])
@@ -253,7 +253,7 @@ class TestSqlServerPredicateValues:
 
     @pytest.mark.parametrize("agg", ["sum", "count"])
     async def test_predicate_aggregation_input(self, agg: str) -> None:
-        tree = await _statement("tsql", f"{agg}(amount > 15)", dimensions=["orders.region"])
+        tree = await _statement("tsql", f"{agg}(orders.amount > 15)", dimensions=["orders.region"])
         node = _nodes(tree, exp.Sum if agg == "sum" else exp.Count)[0]
         inner = node.this.this if agg == "sum" and _int_cast(node.this) else node.this
         assert _is_bit_value(inner), node.sql(dialect="tsql")

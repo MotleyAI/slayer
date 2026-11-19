@@ -157,7 +157,7 @@ class TestInertBraces:
     def test_quoted_identifier_or_comment_is_inert(self, formula: str) -> None:
         template = sql_template(text=formula, dialect="postgres")
         assert template.placeholder_names == frozenset({"value"})
-        rendered = template.render({"value": exp.column("amount")}).sql(dialect="postgres", comments=True)
+        rendered = template.render({"value": exp.column("orders.amount")}).sql(dialect="postgres", comments=True)
         assert "{n}" in rendered
         agg = _agg(formula, n="2")
         with pytest.raises(ValueError, match="'n' is never referenced"):
@@ -208,7 +208,7 @@ class TestQuotedBindingValue:
     async def test_string_kwarg_stays_inside_the_literal(self, dialect: str) -> None:
         # The kwarg is the Mode-B spelling of a string literal valued a'b\c.
         kwarg = _mode_b_string(_TRICKY)
-        sql = await _dry(f"lbl(amount, n={_mode_b_string(kwarg)})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
+        sql = await _dry(f"lbl(orders.amount, n={_mode_b_string(kwarg)})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
         assert isinstance(lit, exp.Literal)
         assert lit.is_string
@@ -272,7 +272,7 @@ class TestTypedLiteral:
     async def test_interval_value_cannot_hold_a_quote_or_backslash(self, dialect: str, value: str, formula: str) -> None:
         kwarg = _mode_b_string(value)
         agg = _agg(formula, name="days", n="2")
-        formula_text = f"days(amount, n={_mode_b_string(kwarg)})"
+        formula_text = f"days(orders.amount, n={_mode_b_string(kwarg)})"
         with pytest.raises(SqlTemplateError) as ei:
             await _dry(formula_text, agg=agg, dialect=dialect)
         _names_placeholder(err=ei.value, name="n", expression=formula)
@@ -281,8 +281,8 @@ class TestTypedLiteral:
 class TestNonLiteralBindingRejected:
     @pytest.mark.parametrize(("formula", "name", "defaults"), [
         pytest.param("MAX(CASE WHEN {value} > 0 THEN '{value}' END)", "value", {}, id="value"),
-        pytest.param("MAX(CASE WHEN {value} > 0 THEN '{w}' END)", "w", {"w": "amount"}, id="column-default"),
-        pytest.param("MAX(CASE WHEN {value} > 0 THEN '{w}' END)", "w", {"w": "amount + 1"}, id="expression-default"),
+        pytest.param("MAX(CASE WHEN {value} > 0 THEN '{w}' END)", "w", {"w": "orders.amount"}, id="column-default"),
+        pytest.param("MAX(CASE WHEN {value} > 0 THEN '{w}' END)", "w", {"w": "orders.amount + 1"}, id="expression-default"),
     ])
     async def test_rejected_at_save(self, formula: str, name: str, defaults: dict[str, str]) -> None:
         model = _orders(_agg(formula, **defaults))

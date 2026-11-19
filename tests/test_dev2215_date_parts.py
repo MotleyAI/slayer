@@ -65,7 +65,7 @@ class TestExtraction:
 
     @pytest.mark.parametrize("part", EXTRACTIONS)
     async def test_extraction_equals_its_date_part_twin(self, engine: SlayerQueryEngine, part: str) -> None:
-        alias = await engine.execute(q(dimensions=["orders.id", {"field": f"{part}(created_at)", "alias": "x"}]))
+        alias = await engine.execute(q(dimensions=["orders.id", {"field": f"{part}(orders.created_at)", "alias": "x"}]))
         twin = await engine.execute(q(dimensions=["orders.id", {"field": f"date_part('{part}', created_at)", "alias": "x"}]))
         assert alias.columns == twin.columns
         assert alias.sql == twin.sql
@@ -74,7 +74,7 @@ class TestExtraction:
 
     @pytest.mark.parametrize("part", EXTRACTIONS)
     async def test_unnamed_extraction_shares_the_twin_key(self, engine: SlayerQueryEngine, part: str) -> None:
-        alias = await engine.execute(q(dimensions=[f"{part}(created_at)"], metrics=COUNT))
+        alias = await engine.execute(q(dimensions=[f"{part}(orders.created_at)"], metrics=COUNT))
         twin = await engine.execute(q(dimensions=[f"date_part('{part}', created_at)"], metrics=COUNT))
         assert alias.columns == twin.columns
         assert alias.sql == twin.sql
@@ -101,7 +101,7 @@ class TestExtraction:
             engine, "date_part('week', created_at) = 1") == {3}
 
     async def test_week_call_and_week_bucket(self, engine: SlayerQueryEngine) -> None:
-        bucket = await engine.execute(q(dimensions=["date_trunc('week', created_at)"], metrics=COUNT))
+        bucket = await engine.execute(q(dimensions=["date_trunc('week', orders.created_at)"], metrics=COUNT))
         assert "orders.created_at" in bucket.columns
         assert "2024-12-30" in {day(r["orders.created_at"]) for r in bucket.data}
         number = await engine.execute(q(dimensions=[{"field": "week(orders.created_at)", "alias": "w"}], metrics=COUNT))
@@ -124,14 +124,14 @@ class TestDateTrunc:
             "2024-03-01", "2024-04-01", "2024-12-01", "2025-03-01", "2025-06-01"}
 
     async def test_unknown_unit(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=["date_trunc('fortnight', created_at)"], metrics=COUNT)
+        query = q(dimensions=["date_trunc('fortnight', orders.created_at)"], metrics=COUNT)
         with pytest.raises(UnknownGranularityError):
             await engine.execute(query)
 
     async def test_sunday_weeks_and_custom_units(self, engine: SlayerQueryEngine) -> None:
-        sunday = await engine.execute(q(dimensions=["date_trunc('week_sunday', created_at)"], metrics=COUNT))
+        sunday = await engine.execute(q(dimensions=["date_trunc('week_sunday', orders.created_at)"], metrics=COUNT))
         assert "2024-12-29" in {day(r["orders.created_at"]) for r in sunday.data}
-        fiscal = await engine.execute(q(dimensions=["date_trunc('FISCAL_YEAR', order_date)"], metrics=COUNT))
+        fiscal = await engine.execute(q(dimensions=["date_trunc('FISCAL_YEAR', orders.order_date)"], metrics=COUNT))
         assert {day(r["orders.order_date"]): int(r["n"]) for r in fiscal.data} == {
             "2023-04-01": 1, "2024-04-01": 4, "2025-04-01": 1}
 
@@ -194,7 +194,7 @@ class TestDateShapedLiteral:
 class TestFunctionalTimeDimensions:
     @pytest.mark.parametrize("unit", BUILT_IN_UNITS)
     def test_every_built_in_unit_is_rewritten(self, unit: str) -> None:
-        query = q(dimensions=[f"date_trunc('{unit}', created_at)"])
+        query = q(dimensions=[f"date_trunc('{unit}', orders.created_at)"])
         assert not query.dimensions
         assert _tds(query) == [("created_at", unit)]
 
@@ -203,7 +203,7 @@ class TestFunctionalTimeDimensions:
 
     @pytest.mark.parametrize("part", EXTRACTIONS)
     def test_extraction_dimension_is_not_rewritten(self, part: str) -> None:
-        query = q(dimensions=[f"{part}(created_at)"], metrics=COUNT)
+        query = q(dimensions=[f"{part}(orders.created_at)"], metrics=COUNT)
         assert not query.time_dimensions
         assert len(query.dimensions or []) == 1
 
@@ -213,7 +213,7 @@ class TestFunctionalTimeDimensions:
         assert sorted(Counter(int(v) for r in resp.data for k, v in r.items() if k != "n")) == [3, 4, 6, 12]
 
     async def test_datasource_granularity_unit(self, engine: SlayerQueryEngine) -> None:
-        functional = await engine.execute(q(dimensions=["date_trunc('fiscal_year', created_at)"], metrics=COUNT))
+        functional = await engine.execute(q(dimensions=["date_trunc('fiscal_year', orders.created_at)"], metrics=COUNT))
         explicit = await engine.execute(q(time_dimensions=[{"field": "orders.created_at", "granularity": "fiscal_year"}],
                                           metrics=COUNT))
         assert functional.sql == explicit.sql
@@ -240,7 +240,7 @@ class TestFunctionalTimeDimensions:
             q(time_dimensions=["orders.created_at"])
 
     async def test_unknown_unit_lists_the_datasource_granularities(self, engine: SlayerQueryEngine) -> None:
-        query = q(time_dimensions=["date_trunc('mnth', created_at)"], metrics=COUNT)
+        query = q(time_dimensions=["date_trunc('mnth', orders.created_at)"], metrics=COUNT)
         with pytest.raises(UnknownGranularityError) as err:
             await engine.execute(query)
         assert "fiscal_year" in str(err.value)
@@ -255,7 +255,7 @@ class TestFunctionalTimeDimensions:
             q(dimensions=[entry])
 
     async def test_non_temporal_argument(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=["date_trunc('month', upper(status))"], metrics=COUNT)
+        query = q(dimensions=["date_trunc('month', upper(orders.status))"], metrics=COUNT)
         with pytest.raises(TimeDimensionFieldError, match="String"):
             await engine.execute(query)
 
@@ -272,12 +272,12 @@ class TestFunctionalTimeDimensions:
 
 class TestTimeDimensionKeysAndOrder:
     async def test_two_granularities_of_one_column(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["date_trunc('month', orders.created_at)", "date_trunc('year', created_at)"],
+        resp = await engine.execute(q(dimensions=["date_trunc('month', orders.created_at)", "date_trunc('year', orders.created_at)"],
                                       metrics=COUNT))
         assert {"orders.created_at.month", "orders.created_at.year"} <= set(resp.columns)
 
     async def test_ambiguous_main_time_dimension_names_date_trunc_candidates(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=["date_trunc('month', orders.created_at)", "date_trunc('year', created_at)"],
+        query = q(dimensions=["date_trunc('month', orders.created_at)", "date_trunc('year', orders.created_at)"],
                   main_time_dimension="orders.created_at", metrics=[m("cumsum(count(orders.*))")])
         with pytest.raises(SlayerError) as err:
             await engine.execute(query)
@@ -291,7 +291,7 @@ class TestTimeDimensionKeysAndOrder:
             "2025-06-01", "2025-03-01", "2024-12-01", "2024-04-01", "2024-03-01"]
 
     async def test_order_by_bucket_without_matching_time_dimension(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=["date_trunc('year', created_at)"], metrics=COUNT,
+        query = q(dimensions=["date_trunc('year', orders.created_at)"], metrics=COUNT,
                   order=[{"field": "date_trunc('month', orders.created_at)", "direction": "desc"}])
         with pytest.raises(SlayerError, match="date_trunc"):
             await engine.execute(query)
@@ -327,7 +327,7 @@ class TestDateTruncRowValue:
     async def test_measure_and_computed_dimension(self, engine: SlayerQueryEngine) -> None:
         measure = await engine.execute(q(metrics=[m("count_distinct(date_trunc('month', orders.created_at))")]))
         assert int(single(measure)) == 5
-        dim = await engine.execute(q(dimensions=[{"field": "date_trunc('year', created_at)", "alias": "y"}],
+        dim = await engine.execute(q(dimensions=[{"field": "date_trunc('year', orders.created_at)", "alias": "y"}],
                                      metrics=COUNT))
         assert {day(r["orders.y"]): int(r["n"]) for r in dim.data} == {"2024-01-01": 3, "2025-01-01": 3}
 
@@ -416,7 +416,7 @@ class TestCustomGranularityUnits:
 
     async def test_unit_case_insensitive(self, engine: SlayerQueryEngine) -> None:
         lower = await engine.execute(q(dimensions=["date_trunc('fiscal_year', orders.order_date)"], metrics=[m("sum(orders.amount)")]))
-        mixed = await engine.execute(q(dimensions=["date_trunc('Fiscal_Year', order_date)"], metrics=[m("sum(orders.amount)")]))
+        mixed = await engine.execute(q(dimensions=["date_trunc('Fiscal_Year', orders.order_date)"], metrics=[m("sum(orders.amount)")]))
         assert lower.columns == mixed.columns
         assert sorted_rows(lower) == sorted_rows(mixed)
 
@@ -441,5 +441,5 @@ def test_extraction_calls_count_as_date_part(body: dict[str, Any]) -> None:
 
 def test_date_trunc_is_not_counted() -> None:
     found = query_features({"population": "orders", "metrics": ["count(orders.*)"],
-                            "filter": ["date_trunc('month', ordered_at) = '2024-01-01'"]})
+                            "filter": ["date_trunc('month', orders.ordered_at) = '2024-01-01'"]})
     assert found.functions == []

@@ -128,7 +128,7 @@ class TestCalendarStreak:
 class TestNesting:
     async def test_predicate_over_change(self, exec_engine) -> None:
         got = await _by_month(exec_engine, orders_query(
-            expression="consecutive_periods(change(sum(amount)) > 0)"))
+            expression="consecutive_periods(change(sum(orders.amount)) > 0)"))
         assert got == dict(zip(C1_MONTHS, [0, 1, 0, 0, 0, 1, 0, 0, 0]))
 
     async def test_change_over_streak(self, exec_engine) -> None:
@@ -141,7 +141,7 @@ class TestNesting:
 
     async def test_streak_over_lag_is_calendar_based(self, exec_engine) -> None:
         got = await _by_month(exec_engine, orders_query(
-            expression="consecutive_periods(lag(sum(amount)) > 100)"))
+            expression="consecutive_periods(lag(sum(orders.amount)) > 100)"))
         assert got == dict(zip(C1_MONTHS, [0, 1, 2, 1, 2, 3, 4, 1, 2]))
 
 

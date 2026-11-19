@@ -179,9 +179,9 @@ class TestExecutedValues:
 
     async def test_owner_at_root_self_name_pin(self, engine):
         for agg in ("wself", "wself_expr"):
-            explicit = await _value(engine, f"{agg}(amount, weight=cost)")
+            explicit = await _value(engine, f"{agg}(orders.amount, weight=orders.cost)")
             assert explicit == pytest.approx(SELF)
-            default = await _value(engine, f"{agg}(amount)")
+            default = await _value(engine, f"{agg}(orders.amount)")
             assert default == pytest.approx(explicit)
 
 
@@ -247,7 +247,7 @@ class TestKernelExpressionDefaults:
         assert months == WINDOW_EXPR
 
     async def test_second_order_root_frame_expression_default_pin(self, engine):
-        inner = "sum(amount, partition_by=customers.regions.id)"
+        inner = "sum(orders.amount, partition_by=customers.regions.id)"
         default = await _value(engine, f"wavg_pop_expr({inner})")
         explicit = await _value(
             engine, f"wavg_pop_expr({inner}, weight=customers.regions.pop)")
