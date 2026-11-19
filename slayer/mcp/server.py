@@ -75,6 +75,7 @@ from slayer.inspect.dataset_render import (  # noqa: F401 — re-exported for ba
 from slayer.inspect.collection_render import (
     render_datasource_list,
     render_datasets_summary,
+    with_relationships_as_read,
 )
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
@@ -685,11 +686,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         # Rendering delegates to the shared renderer (also used by
         # the ``inspect`` dataset collection view) — one code path, no drift.
+        read, inherited_errors = await with_relationships_as_read(matched, engine)
         return render_datasets_summary(
             datasource_name=datasource_name,
-            datasets=matched,
+            datasets=read,
             fmt=fmt,
             compact=compact,
+            inherited_errors=inherited_errors,
         )
 
     @tool()

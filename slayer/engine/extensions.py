@@ -21,15 +21,17 @@ from slayer.core.relationship_walker import OrientedRelationship, resolve_hop, w
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.names import match_name
 from slayer.core.query import DatasetExtension, SlayerQuery, extension_dataset_names
-from slayer.core.scope import DatasetScope, StageSchema
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import drop_root_hop, drop_root_qualifier, text_paths
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population import dimension_routing
 from slayer.ir.source_bundle import (
     InnerRestriction,
     ResolvedSourceBundle,
+    absorb_inherited,
     follow_sibling_chain,
     overlay_metrics,
+    without_inherited,
 )
 
 __all__ = [
@@ -410,15 +412,17 @@ def _reserved_names(datasets: Dict[str, SlayerDataset], bundle: ResolvedSourceBu
 
 
 def apply_query_extensions(
-    *, query: SlayerQuery, scope: "DatasetScope | StageSchema | None", bundle: ResolvedSourceBundle,
-) -> "Tuple[DatasetScope | StageSchema | None, ResolvedSourceBundle]":
+    *, query: SlayerQuery, scope: "DatasetScope | None", bundle: ResolvedSourceBundle,
+) -> "Tuple[DatasetScope | None, ResolvedSourceBundle]":
     """``query``'s extensions applied to the stage's datasets: metrics overlaid, relationships merged into the relationship graph,
     and each INNER join recorded as a population filter."""
     if not query.extensions:
         return scope, bundle
     display = bundle.stage_displays.get(query.name) if query.name else None
     where = display.label if display is not None else None
-    universe = _universe(bundle)
+    # Inherited edges sit out the merge, then yield to what the extensions declared.
+    stripped = {n: without_inherited(m) for n, m in _universe(bundle).items()}
+    universe = {n: m for n, (m, _) in stripped.items()}
 
     def conflict(exc: ValueError) -> None:
         if isinstance(exc, QueryExtensionError):
@@ -434,13 +438,18 @@ def apply_query_extensions(
             *(j.name for m in universe.values() for j in m.relationships if j.name and not j.query_local),
         ],
     )
+    datasets = absorb_inherited({
+        n: m.model_copy(update={"relationships": [*m.relationships, *stripped[n][1]]}) if n in stripped and stripped[n][1]
+        else m
+        for n, m in datasets.items()
+    })
     source = datasets[bundle.population.name] if bundle.population is not None else None
     bundle = bundle.model_copy(update={
         "population": source,
         "referenced_datasets": [datasets.get(m.name, m) for m in bundle.referenced_datasets],
         "inner_restrictions": (*bundle.inner_restrictions, *restrictions),
     })
-    return _extended_scope(scope, query=query, datasets=datasets, source=source), bundle
+    return _extended_scope(scope, datasets=datasets), bundle
 
 
 def _universe(bundle: ResolvedSourceBundle) -> Dict[str, SlayerDataset]:
@@ -452,18 +461,7 @@ def _universe(bundle: ResolvedSourceBundle) -> Dict[str, SlayerDataset]:
     return out
 
 
-def _extended_scope(
-    scope: "DatasetScope | StageSchema | None", *, query: SlayerQuery, datasets: Dict[str, SlayerDataset],
-    source: Optional[SlayerDataset],
-) -> "DatasetScope | StageSchema | None":
-    if isinstance(scope, DatasetScope) and scope.population is not None:
+def _extended_scope(scope: "DatasetScope | None", *, datasets: Dict[str, SlayerDataset]) -> "DatasetScope | None":
+    if scope is not None and scope.population is not None:
         return DatasetScope(population=datasets.get(scope.population.name, scope.population))
-    if isinstance(scope, StageSchema) and source is not None and _touches(query, source.name):
-        return DatasetScope(population=source)
     return scope
-
-
-def _touches(query: SlayerQuery, name: str) -> bool:
-    """Whether ``query`` extends dataset ``name`` or relates to it."""
-    return extension_of(query, name) is not None or any(
-        j.to == name for e in query.extensions or [] for j in e.relationships or [])
