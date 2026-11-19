@@ -335,6 +335,6 @@ def resolve_scope(
     query: SlayerQuery,
     bundle: "ResolvedSourceBundle",
     stage_schemas: Optional[Dict[str, "StageSchema"]],
-):
+) -> DatasetScope:
     """The scope a query binds against: the bundle's population, a sibling stage's dataset included."""
     return DatasetScope(population=bundle.population)

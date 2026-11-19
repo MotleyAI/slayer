@@ -34,9 +34,9 @@ from slayer.core.keys import (
     temporal_type,
     value_type,
 )
-from slayer.core.relationship_walker import LIST_ELEMENT_FIELD, dataset_field, dataset_field_element, dataset_field_type
+from slayer.core.relationship_walker import dataset_field, dataset_field_element, dataset_field_type
 from slayer.core.models import SlayerDataset
-from slayer.core.scope import DatasetScope, StageSchema
+from slayer.core.scope import DatasetScope
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.sql.dialects.reflection import is_exact_numeric_db_type
 from slayer.engine.response_meta import _infer_aggregated_format
@@ -54,7 +54,6 @@ __all__ = [
     "metric_key_preserves_native_type",
     "metric_key_type",
     "scope_field_type",
-    "stage_metric_type",
 ]
 
 
@@ -121,38 +120,13 @@ def _dataset_types(*, dataset: SlayerDataset, bundle: Optional[ResolvedSourceBun
     )
 
 
-def _stage_element(schema: StageSchema, key: ValueKey) -> Optional[DataType]:
-    """The element type for ``L.value`` over a stage's list field ``L``."""
-    if not (isinstance(key, FieldKey) and len(key.path) == 1 and key.leaf == LIST_ELEMENT_FIELD):
-        return None
-    col = schema.get(key.path[0])
-    return (col.element_type or DataType.OPAQUE) if col is not None and col.datatype is DataType.ARRAY else None
-
-
-def stage_field_type(schema: StageSchema) -> FieldTypeFn:
-    """Types of a stage's flat fields and of its lists' elements."""
-    def field_type(key: ValueKey) -> Optional[DataType]:
-        col = schema.get(key.leaf) if isinstance(key, FieldKey) and not key.path else None
-        return col.datatype if col is not None else _stage_element(schema, key)
-    return field_type
-
-
-def stage_field_element(schema: StageSchema) -> FieldElementFn:
-    def field_element(key: ValueKey) -> Optional[DataType]:
-        col = schema.get(key.leaf) if isinstance(key, FieldKey) and not key.path else None
-        return col.element_type if col is not None else None
-    return field_element
-
-
-def scope_field_element(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> FieldElementFn:
-    if isinstance(scope, StageSchema):
-        return stage_field_element(scope)
+def scope_field_element(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> FieldElementFn:
     if scope.population is None:
         return lambda _key: None
     return dataset_field_element(dataset=scope.population, datasets_by_name=bundle.datasets_by_name)
 
 
-def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Optional[DataType]:
+def key_element_type(key: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Optional[DataType]:
     """The element type of a list-valued ``key`` (``UNKNOWN`` when it cannot be told); ``None`` for a scalar."""
     field_type = scope_field_type(scope=scope, bundle=bundle)
     if not list_valued(key, field_type=field_type):
@@ -163,9 +137,7 @@ def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle
     return element or DataType.OPAQUE
 
 
-def scope_field_type(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> FieldTypeFn:
-    if isinstance(scope, StageSchema):
-        return stage_field_type(scope)
+def scope_field_type(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> FieldTypeFn:
     if scope.population is None:
         return lambda _key: None
     return dataset_field_type(dataset=scope.population, datasets_by_name=bundle.datasets_by_name)
@@ -177,11 +149,10 @@ def bundle_dialect(bundle: ResolvedSourceBundle) -> SqlDialect:
     return own if own.sqlglot_name == bundle.dialect else get_dialect(bundle.dialect)
 
 
-def scope_zoned_timestamp(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Callable[[object], bool]:
-    """Whether a dataset field leaf holds a zoned instant on the bundle's dialect (a stage field already
-    reads naive)."""
+def scope_zoned_timestamp(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Callable[[object], bool]:
+    """Whether a dataset field leaf holds a zoned instant on the bundle's dialect."""
     dialect = bundle_dialect(bundle)
-    if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.population is None:
+    if not dialect.zoned_timestamp_db_types or scope.population is None:
         return lambda _key: False
     dataset, datasets_by_name = scope.population, bundle.datasets_by_name
     return lambda key: dialect.is_zoned_db_type(
@@ -200,22 +171,6 @@ def _typed_by_value(key: ValueKey) -> bool:
     """A bare field or a value-returning conditional, typed by its ``value_type``."""
     return isinstance(key, (FieldKey, FieldSqlKey)) or (
         isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS)
-
-
-def stage_metric_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataType]:
-    """``type`` for a metric over a stage's flat fields."""
-    field_type = stage_field_type(schema)
-    if list_valued(key, field_type=field_type):
-        return DataType.ARRAY
-    if _typed_by_value(key):
-        return value_type(key, field_type=field_type)
-    date_type = date_scalar_type(key, field_type=field_type)
-    if date_type is not None or not isinstance(key, AggregateKey):
-        return date_type
-    return aggregation_result_type(
-        metric_name="*" if isinstance(key.source, StarKey) else None, aggregation=key.agg,
-        source_type=aggregation_source_type(key.source, field_type=field_type),
-    )[0]
 
 
 def metric_key_type(

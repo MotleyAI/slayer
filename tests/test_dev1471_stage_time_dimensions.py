@@ -9,7 +9,6 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import (
-    IllegalScopeReferenceError,
     TimeDimensionFieldError,
     UnknownReferenceError,
     UnresolvableDimensionRelationshipError,
@@ -17,11 +16,11 @@ from slayer.core.errors import (
 from slayer.core.keys import FieldKey, TimeTruncKey
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
-from slayer.core.scope import StageField, StageSchema
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_time_dimension
 from slayer.engine.elaborate_env import check_time_dimension_field
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1471_fixtures import (
     BACKENDS,
@@ -59,12 +58,14 @@ _GRAIN = [
 ]
 
 
-def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect="postgres", population=orders_dataset(), referenced_datasets=[])
+def _bundle(stage: DatasetScope) -> ResolvedSourceBundle:
+    return ResolvedSourceBundle(dialect="postgres", population=stage.population, referenced_datasets=[])
 
 
-def _stage(*columns: StageField) -> StageSchema:
-    return StageSchema(relation_name="s1", fields=list(columns))
+def _stage(*columns: StageField) -> DatasetScope:
+    """The dataset scope a later stage binds stage ``s1`` through."""
+    schema = StageSchema(relation_name="s1", fields=list(columns))
+    return DatasetScope(population=dataset_from_stage_schema(name="s1", schema=schema, data_source="ds"))
 
 
 async def _dryrun_engine(datasets: list[SlayerDataset]) -> SlayerQueryEngine:
@@ -77,7 +78,7 @@ async def _dryrun_engine(datasets: list[SlayerDataset]) -> SlayerQueryEngine:
 
 
 # ---------------------------------------------------------------------------
-# Binder level — a stage TimeDimension resolves against the StageSchema.
+# Binder level — a stage TimeDimension resolves against the stage's dataset.
 # ---------------------------------------------------------------------------
 class TestStageBinder:
     def test_bucketed_stage_column_binds_with_facts(self) -> None:
@@ -86,7 +87,7 @@ class TestStageBinder:
             datatype=DataType.DATETIME, granularity=TG.MONTH,
         ))
         td = TimeDimension(field="created_at", granularity=TG.YEAR)
-        bound = bind_time_dimension(td, scope=stage, bundle=_bundle())
+        bound = bind_time_dimension(td, scope=stage, bundle=_bundle(stage))
         assert isinstance(bound.bound.value_key, TimeTruncKey)
         assert bound.bound.value_key.source == FieldKey(path=(), leaf="created_at")
         assert bound.bound.value_key.granularity == "year"
@@ -98,22 +99,23 @@ class TestStageBinder:
             name="created_at", sql_alias="created_at", datatype=DataType.DATETIME,
         ))
         td = TimeDimension(field="created_at", granularity=TG.DAY)
-        bound = bind_time_dimension(td, scope=stage, bundle=_bundle())
+        bound = bind_time_dimension(td, scope=stage, bundle=_bundle(stage))
         assert bound.bucketed_leaves == ()
         assert bound.field_type == DataType.DATETIME
 
     def test_unknown_stage_column_raises_unknown_reference(self) -> None:
         stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.DATETIME))
         td = TimeDimension(field="not_a_column", granularity=TG.MONTH)
-        bundle = _bundle()
+        bundle = _bundle(stage)
         with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's columns
             bind_time_dimension(td, scope=stage, bundle=bundle)
 
     def test_dotted_name_on_stage_raises_illegal_scope(self) -> None:
+        # Fails as from a stored root: no relationship to ``customers``.
         stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.DATETIME))
         td = TimeDimension(field="customers.created_at", granularity=TG.MONTH)
-        bundle = _bundle()
-        with pytest.raises(IllegalScopeReferenceError):
+        bundle = _bundle(stage)
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             bind_time_dimension(td, scope=stage, bundle=bundle)
 
 

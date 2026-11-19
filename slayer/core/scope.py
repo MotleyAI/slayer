@@ -1,13 +1,7 @@
 """Typed scope and stage-schema for the new pipeline.
 
-Two scope kinds, never confused (P5):
-
-- ``DatasetScope``: relationships exist; dotted refs walk the relationship graph rooted at
-  ``population``. ``__`` in a Mode-B ref is an error unless it exact-
-  matches a field literally named that way (legacy persisted query-backed
-  fields).
-- ``StageSchema``: flat namespace; dots are not relationship syntax;
-  ``__``-bearing identifiers are flat names.
+``DatasetScope`` is the one binding scope: dotted refs walk the relationship graph
+rooted at ``population``; a stage is read through the dataset its ``StageSchema`` defines.
 
 ``StageField`` is the typed projection element (P6): explicit ``name``
 (downstream bind name), ``sql_alias`` (emitted SQL identifier),
@@ -126,12 +120,7 @@ class StageDisplay(BaseModel):
 
 
 class StageSchema(BaseModel):
-    """The typed projection of one query stage (P6).
-
-    Downstream stages bind against this as a flat namespace (P5). They
-    never re-walk the upstream relationship graph through a StageSchema — the
-    only legal refs are entries in ``fields`` and a list field's
-    elements (``L.value`` / ``L.*``).
+    """The typed projection of one query stage (P6); later stages bind against the dataset it defines.
 
     ``relation_name`` is the stage's internal identity: its CTE name.
     ``display`` is its user-facing spelling (``None`` → ``relation_name``).
@@ -215,16 +204,12 @@ class DatasetScope(BaseModel):
     population: Optional[SlayerDataset] = None
 
 
-def root_spelling(scope) -> Optional[str]:
-    """The name a reference writes for the scope's root: a dataset's spelling, a stage's display name."""
-    if isinstance(scope, DatasetScope) and scope.population is not None:
-        return scope.population.spelling
-    if isinstance(scope, StageSchema):
-        return scope.display_name
-    return None
+def root_spelling(scope: DatasetScope) -> Optional[str]:
+    """The name a reference writes for the scope's root: its dataset's spelling."""
+    return scope.population.spelling if scope.population is not None else None
 
 
-def host_dataset_name(scope) -> str:
+def host_dataset_name(scope: DatasetScope) -> str:
     """The host relation's display name for alias-collision reporting."""
     return root_spelling(scope) or "(stage)"
 

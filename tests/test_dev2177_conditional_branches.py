@@ -18,7 +18,7 @@ from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import scope_field_type
 from slayer.engine.plan import plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from tests._dev2177_fixtures import (
     MONTH,
     assert_branch_mismatch,
@@ -253,13 +253,15 @@ class TestValueType:
     def test_joined_branch_type(self, expression: str, joined: DataType | None) -> None:
         assert self._value_type(expression) is joined
 
+    # An untyped stage field reads as FLOAT until DEV-2373 types every stage field.
     @pytest.mark.parametrize(("expression", "joined"), [
-        ("coalesce(u, n)", DataType.INTEGER), ("iif(n > 1, u, 'x')", DataType.STRING), ("greatest(u, n)", DataType.INTEGER),
+        ("coalesce(u, n)", DataType.FLOAT), ("iif(n > 1, u, 'x')", None), ("greatest(u, n)", DataType.FLOAT),
     ])
-    def test_untyped_stage_column_is_absorbed(self, expression: str, joined: DataType) -> None:
+    def test_untyped_stage_column_is_absorbed(self, expression: str, joined: DataType | None) -> None:
         schema = StageSchema(relation_name="s1", fields=[
             StageField(name="u", sql_alias="u"), StageField(name="n", sql_alias="n", datatype=DataType.INTEGER),
         ])
         bundle = ResolvedSourceBundle(dialect="postgres")
-        key = bind_expr(parse_expr(expression), scope=schema, bundle=bundle).value_key
-        assert value_type(key, field_type=scope_field_type(scope=schema, bundle=bundle)) is joined
+        scope = DatasetScope(population=dataset_from_stage_schema(name="s1", schema=schema, data_source="test"))
+        key = bind_expr(parse_expr(expression), scope=scope, bundle=bundle).value_key
+        assert value_type(key, field_type=scope_field_type(scope=scope, bundle=bundle)) is joined

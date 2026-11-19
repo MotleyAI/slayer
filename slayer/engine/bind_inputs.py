@@ -118,7 +118,6 @@ from slayer.engine.key_metadata import (
     metric_key_type,
     scope_field_type,
     scope_zoned_timestamp,
-    stage_metric_type,
 )
 from slayer.core.syntax import (
     AggCall,
@@ -206,10 +205,10 @@ def _expr_has_metric_ref(
 
 
 def _reject_metric_refs_for_raw_rows(
-    *, query: SlayerQuery, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    *, query: SlayerQuery, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
     """Raw-rows mode (``distinct_dimension_values=False``): reject any metric reference in filters/order."""
-    src = scope.population if isinstance(scope, DatasetScope) else None
+    src = scope.population
     metric_names: FrozenSet[str] = frozenset(
         m.name for m in (src.metrics if src is not None else []) if m.name
     )
@@ -333,10 +332,10 @@ def _map_bound_keys(
 
 
 def _bind_inner_restriction(
-    restriction: InnerRestriction, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    restriction: InnerRestriction, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
     """``restriction`` bound exactly as its filter written in the query; a product read never reaches it."""
-    host = scope.population if isinstance(scope, DatasetScope) else None
+    host = scope.population
     if host is not None and host.unrelated_datasets:
         host = host.with_unrelated(frozenset())
         scope, bundle = DatasetScope(population=host), bundle.model_copy(update={"population": host})
@@ -363,7 +362,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: Optional[DatasetScope | StageSchema] = None,
+    scope: Optional[DatasetScope] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
 ) -> PreboundQuery:
     """Parse and bind every text surface of a ``SlayerQuery`` (the only door into the parser); returns fully-normalized keys. Dataset filters excluded (scope-owned)."""
@@ -669,11 +668,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             field_type=field_type,
         )
 
-    # Attach the active TD as time_key on every time-needing TransformKey the binder
-    # left at None — the stage's own bucket is the axis on a StageSchema.
+    # Attach the active TD as time_key on every time-needing TransformKey the binder left at None.
     active_td_key: Optional[TimeTruncKey] = None
-    _active_dataset = scope.population if isinstance(scope, DatasetScope) else None
-    active_td = _resolve_main_time_dimension(query=query, dataset=_active_dataset, root=root_spelling(scope))
+    active_td = _resolve_main_time_dimension(query=query, dataset=scope.population, root=root_spelling(scope))
     if active_td is not None:
         atd_key = bind_time_dimension(
             td=active_td, scope=scope, bundle=bundle,
@@ -854,9 +851,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
 
 def _format_description_for_dimension(
-    *, scope: DatasetScope | StageSchema, full_name: str,
+    *, scope: DatasetScope, full_name: str,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
-    if not isinstance(scope, DatasetScope) or scope.population is None:
+    if scope.population is None:
         return None, None
     if "." in full_name:
         return None, None
@@ -867,9 +864,9 @@ def _format_description_for_dimension(
 
 
 def _format_description_for_metric_expression(
-    *, scope: DatasetScope | StageSchema, bound, bundle: ResolvedSourceBundle,
+    *, scope: DatasetScope, bound, bundle: ResolvedSourceBundle,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
-    if not isinstance(scope, DatasetScope) or scope.population is None:
+    if scope.population is None:
         return None, None
     return metric_key_format_description(
         dataset=scope.population, key=bound.value_key, bundle=bundle,
@@ -882,12 +879,12 @@ def _rekeyed(dm: DeclaredMetric, key: ValueKey) -> DeclaredMetric:
     return dm.model_copy(update={"bound": dm.bound.model_copy(update={"value_key": key}), "is_dimension": True})
 
 
-def _list_typing(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> ListTyping:
+def _list_typing(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ListTyping:
     """The list rules' view of ``scope``: field and element types, element access, the database's list support."""
     def element_access(key: object) -> bool:
         path = tuple(getattr(key, "path", ()) or ())
-        if not path or not isinstance(scope, DatasetScope) or scope.population is None:
-            return bool(path) and isinstance(scope, StageSchema)
+        if not path or scope.population is None:
+            return False
         try:
             chain = follow(root=scope.population, path=path, datasets_by_name=bundle.datasets_by_name)
         except AmbiguousRelationshipPathError:
@@ -903,17 +900,15 @@ def _list_typing(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBun
 
 
 def _type_for_metric_expression(
-    *, scope: DatasetScope | StageSchema, bound, bundle: ResolvedSourceBundle,
+    *, scope: DatasetScope, bound, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    if isinstance(scope, StageSchema):
-        return stage_metric_type(bound.value_key, schema=scope)
     if scope.population is None:
         return None
     return metric_key_type(dataset=scope.population, key=bound.value_key, bundle=bundle)
 
 
 def _retyped_after_coercion(
-    declared_metrics: List[DeclaredMetric], *, n_grain: int, scope: DatasetScope | StageSchema,
+    declared_metrics: List[DeclaredMetric], *, n_grain: int, scope: DatasetScope,
     bundle: ResolvedSourceBundle,
 ) -> List[DeclaredMetric]:
     """Inferred computed-dimension and metric types re-derived from their coerced keys."""
@@ -940,13 +935,10 @@ def _joined_field_type(
 
 def _type_for_dimension(
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     full_name: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    if isinstance(scope, StageSchema):
-        col = scope.get(full_name)
-        return col.datatype if col is not None else None
     if scope.population is None:
         return None
     if "." in full_name:
@@ -955,18 +947,6 @@ def _type_for_dimension(
         )
     col = scope.population.get_field(full_name)
     return col.datatype if col is not None else None
-
-
-def _opaque_dim_type(
-    *,
-    scope: DatasetScope | StageSchema,
-    full_name: str,
-    bundle: ResolvedSourceBundle,
-) -> Optional[DataType]:
-    if isinstance(scope, StageSchema):
-        col = scope.get(full_name)
-        return col.datatype if col is not None else None
-    return _type_for_dimension(scope=scope, full_name=full_name, bundle=bundle)
 
 
 def _walk_dotted(
@@ -1014,7 +994,7 @@ def _route_short_form_saved_metric(
 
 def _resolve_saved_metric_ref(
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     expression: str,
 ) -> Optional[Tuple[SlayerDataset, "DatasetMetric", str]]:
@@ -1022,7 +1002,7 @@ def _resolve_saved_metric_ref(
     bare/dotted saved-metric reference (binder resolution order, short-form
     auto-routing included), else None. ``canonical_ref`` is the canonical dotted
     path when routed or respelled, else the expression text unchanged."""
-    if not isinstance(scope, DatasetScope) or scope.population is None:
+    if scope.population is None:
         return None
     host = scope.population
     try:
@@ -1071,7 +1051,7 @@ def _locate_dotted_saved_metric(
 
 def _saved_dataset_metric_type(
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     expression: str,
 ) -> Optional[DataType]:
@@ -1081,7 +1061,7 @@ def _saved_dataset_metric_type(
 
 def _saved_metric_public_name(
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     expression: str,
 ) -> Optional[str]:
@@ -1096,10 +1076,10 @@ def _will_group_by(query: SlayerQuery) -> bool:
 
 
 def _reject_computed_dim_name_collision(
-    *, name: str, query: SlayerQuery, scope: DatasetScope | StageSchema,
+    *, name: str, query: SlayerQuery, scope: DatasetScope,
 ) -> None:
     dataset_collision = None
-    if isinstance(scope, DatasetScope) and scope.population is not None:
+    if scope.population is not None:
         dataset = scope.population
         if dataset.get_field(name) is not None or dataset.get_metric(name) is not None:
             dataset_collision = dataset.name
@@ -1116,7 +1096,7 @@ def _declared_computed_dimension(
     d: QueryDimension,
     *,
     query: SlayerQuery,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, ValueKey]] = None,
 ) -> DeclaredMetric:
@@ -1150,7 +1130,7 @@ def _declared_computed_dimension(
 def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential projection passes (dimensions incl. computed, time dimensions, metrics) building one ordered declared list; each pass is one contract and the order (dims → tds → metrics) is the public projection order the function pins.
     *,
     query: SlayerQuery,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
 ) -> List[DeclaredMetric]:
     declared: List[DeclaredMetric] = []
@@ -1198,7 +1178,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             # Opaque-grouping rule lives in the checker; invoked here to preserve the per-dimension firing point.
             check_opaque_grouping_dim(
                 full_name=canonical,
-                dim_type=_opaque_dim_type(scope=scope, full_name=canonical, bundle=bundle),
+                dim_type=_type_for_dimension(scope=scope, full_name=canonical, bundle=bundle),
                 will_group_by=_will_group_by(query),
             )
             flat_name = _flatten_dotted(canonical)
@@ -1318,7 +1298,6 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 # A declared Decimal is exact: it keeps the source's native decimal values.
                 preserve_native_type=(
                     explicit_type in (None, DataType.DECIMAL)
-                    and isinstance(scope, DatasetScope)
                     and scope.population is not None
                     and metric_key_preserves_native_type(
                         dataset=scope.population, key=bound.value_key,
@@ -1401,7 +1380,7 @@ def _check_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) 
 
 
 def _dedupe_equivalent_time_dimensions(
-    query: SlayerQuery, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    query: SlayerQuery, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> SlayerQuery:
     """Spellings of one time dimension (one bucket, name, date range and label) project once."""
     tds = query.time_dimensions or []
@@ -1434,7 +1413,7 @@ def _check_dimension_call(entry: str, *, bundle: ResolvedSourceBundle) -> None:
 def _build_date_range_filter(
     *,
     td: TimeDimension,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
     """A TimeDimension's ``date_range`` as one row-phase filter on its untruncated value: a single
@@ -1577,7 +1556,7 @@ def _assert_equivalent_tds_agree(
 
 def _projected_bucket_td(
     *, expr: str, granularity: Granularity, buckets: List[Tuple[TimeDimension, ValueKey]],
-    scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> Optional[TimeDimension]:
     """The projected time dimension bucketing ``expr`` at ``granularity``: its text, else its bound identity."""
     by_text = next((td for td, key in buckets if td.field == expr and _bucket_granularity(key) == granularity), None)
@@ -1608,11 +1587,11 @@ def _time_dimension_aliases(bound_tds: List[Tuple[TimeDimension, BoundExpr, str]
     return {name: key for name, key in named if counts[name] == 1}
 
 
-def _host_is_spine(scope: DatasetScope | StageSchema) -> bool:
-    return isinstance(scope, DatasetScope) and scope.population is not None and is_spine(scope.population)
+def _host_is_spine(scope: DatasetScope) -> bool:
+    return scope.population is not None and is_spine(scope.population)
 
 
-def _text_reads_spine(text: str, *, scope: DatasetScope | StageSchema) -> bool:
+def _text_reads_spine(text: str, *, scope: DatasetScope) -> bool:
     """Whether Mode-B ``text`` reads the spine: by a dotted path, or bare from a spine root."""
     return any(
         path[0] == TIME_SPINE_DATASET if len(path) > 1 else _host_is_spine(scope)
@@ -1620,7 +1599,7 @@ def _text_reads_spine(text: str, *, scope: DatasetScope | StageSchema) -> bool:
     )
 
 
-def _reads_spine(source: ValueKey, *, scope: DatasetScope | StageSchema) -> bool:
+def _reads_spine(source: ValueKey, *, scope: DatasetScope) -> bool:
     """Whether ``source`` reads ``time_spine.timestamp``."""
     host_is_spine = _host_is_spine(scope)
     return any(
@@ -1631,7 +1610,7 @@ def _reads_spine(source: ValueKey, *, scope: DatasetScope | StageSchema) -> bool
 
 
 def _check_time_dimension(
-    *, td: TimeDimension, btd: BoundTimeDimension, scope: DatasetScope | StageSchema,
+    *, td: TimeDimension, btd: BoundTimeDimension, scope: DatasetScope,
     bundle: ResolvedSourceBundle, granularity: Granularity,
 ) -> DataType:
     """The checker's time-dimension rules (P9): row-level and homed (an expression), temporal, re-bucketing; its checked type."""
@@ -1642,7 +1621,7 @@ def _check_time_dimension(
             offender=td.field if _reads_spine(source, scope=scope) else None, remedy=bucket_remedy(source),
         )
         check_time_dimension_row_level(name=td.field, source=source)
-        if isinstance(scope, DatasetScope) and scope.population is not None:
+        if scope.population is not None:
             check_time_dimension_home(
                 name=td.field,
                 crossing=row_expression_crossing(source=source, host_dataset=scope.population, bundle=bundle),

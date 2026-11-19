@@ -8,7 +8,7 @@ builder and THE checker live in ``elaborate_env``.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from slayer.core.relationship_walker import unobserved
 from slayer.core.keys import ValueKey, split_top_level_and
@@ -43,7 +43,7 @@ def elaborate_query(
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: Optional[Union[DatasetScope, StageSchema]] = None,
+    scope: Optional[DatasetScope] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     prebound: Optional[PreboundQuery] = None,
 ) -> ElaboratedStage:
@@ -59,13 +59,12 @@ def elaborate_query(
             query=query, bundle=bundle, scope=scope,
             stage_schemas=stage_schemas,
         )
-    if isinstance(scope, DatasetScope) and scope.population is not None:
+    if scope.population is not None:
         datasets = bundle.datasets_by_name
         with unobserved():
             for dataset in datasets_read_closure(query, host=scope.population, datasets=list(datasets.values())):
                 check_dataset_filters(dataset=dataset, reachable=datasets)
-    sides = ProductSides(host=scope.population, bundle=bundle) if isinstance(scope, DatasetScope) and (
-        scope.population is not None) else None
+    sides = ProductSides(host=scope.population, bundle=bundle) if scope.population is not None else None
     crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
     prebound, filter_typings = type_and_split_filters(
         prebound,
@@ -114,7 +113,7 @@ def elaborate_synthesized(
     prebound: PreboundQuery,
     *,
     bundle: ResolvedSourceBundle,
-    scope: Union[DatasetScope, StageSchema],
+    scope: DatasetScope,
     stage_schemas: Dict[str, StageSchema],
     source_dataset: Optional[str] = None,
 ) -> ElaboratedProducer:
@@ -134,11 +133,11 @@ def _environment_fields(
     *,
     filter_typings,
     bundle: ResolvedSourceBundle,
-    scope: Union[DatasetScope, StageSchema],
+    scope: DatasetScope,
     stage_schemas: Dict[str, StageSchema],
 ) -> Dict[str, Any]:
     dim_keys, row_agg_set = position_typing_context(prebound)
-    dataset = scope.population if isinstance(scope, DatasetScope) else None
+    dataset = scope.population
     home_roots = [
         *(dm.bound.value_key for dm in prebound.declared_metrics),
         *(bf.value_key for bf in prebound.bound_filters),
@@ -157,7 +156,7 @@ def _environment_fields(
     )
     env = build_environment(
         prebound=prebound,
-        home=home_dataset(scope=scope, dataset=dataset),
+        home=home_dataset(dataset=dataset),
         dim_keys=dim_keys,
         row_agg_set=row_agg_set,
         filter_typings=filter_typings,

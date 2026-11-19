@@ -128,6 +128,7 @@ class TestDottedReferences:
 
     @pytest.mark.parametrize("dimension", ["nosuch.region", "per_customer.nosuch.x"])
     async def test_a_route_miss_names_the_stage_by_its_label(self, engine, dimension: str) -> None:
+        stages = [per_customer(), over("per_customer", dimensions=[dimension])]
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
-            await engine.execute([per_customer(), over("per_customer", dimensions=[dimension])])
+            await engine.execute(stages)
         assert ei.value.root_dataset == "per_customer"

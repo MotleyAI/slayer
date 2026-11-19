@@ -12,7 +12,7 @@
 - [x] 2.4 Conflicts (› Declared edges win…): identical applied once, same name wins, differently named same-keys edges stay parallel, parallel distinct edges need names (verify: fail before implementation)
 - [x] 2.5 One scope (› A stage is read as the dataset…, `queries/dotted-dimension-routing`): edge-less stages unchanged for flat names, list elements, stale spellings, root qualifier, re-bucketing, population inference; the dotted-spelling error; routing through an inherited edge (verify: the new-behaviour cases fail before implementation)
 - [x] 2.6 Saved query-backed models (`queries/query-backed-inline`): inheriting like a stage, declared absorbs inherited, inspect listing and its failure cases (cycle, invalid key, required variable) on MCP, REST and CLI (verify: fail before implementation)
-- [ ] 2.7 Existing tests that encode flat stages (the 12 probe failures and any whose values change from unrelated to joined): ask the owner, per file, to align each; never change one without approval (verify: owner's approval recorded)
+- [x] 2.7 Existing tests that encode flat stages (the 12 probe failures and any whose values change from unrelated to joined): ask the owner, per file, to align each; never change one without approval (verify: owner's approval recorded)
 
 ## 3. Ordering and join-graph membership
 
@@ -28,7 +28,7 @@
 ## 5. One binding scope
 
 - [x] 5.1 The planner's stage-population branch and `resolve_scope` always yield a model scope over the stage's dataset (verify: 2.5 passes)
-- [ ] 5.2 Delete the now-dead `StageSchema`-scope branches in `binding`, `bind_inputs`, `elaborate_env`, `extensions`, `key_metadata` and `compile/stages` (verify: `la-typecheck` no new errors; local test scope green)
+- [x] 5.2 Delete the now-dead `StageSchema`-scope branches in `binding`, `bind_inputs`, `elaborate_env`, `extensions`, `key_metadata` and `compile/stages` (verify: `la-typecheck` no new errors; local test scope green)
 
 ## 6. Inspect
 
@@ -37,5 +37,5 @@
 ## 7. Architecture, docs, gates
 
 - [x] 7.1 Apply the approved `architecture/python.engine.arc42.md` P5 and §4 rationale wording verbatim (design decisions 5–6) (verify: `la-arch-check` green)
-- [ ] 7.2 Docs: inherited edges in `docs/concepts/queries.md` (multi-stage) and `docs/concepts/models.md` (query-backed models), the inspect output in `docs/reference/mcp.md`, the stage help memories, and a Part 1 entry in `docs/upgrading/2.0.md` for the unrelated → joined change (verify: every changed page reachable from `zensical.toml` nav)
+- [x] 7.2 Docs: inherited edges in `docs/concepts/queries.md` (multi-stage) and `docs/concepts/models.md` (query-backed models), the inspect output in `docs/reference/mcp.md`, the stage help memories, and a Part 1 entry in `docs/upgrading/2.0.md` for the unrelated → joined change (verify: every changed page reachable from `zensical.toml` nav)
 - [ ] 7.3 Enforcement bundle and lint: `la-arch-check`, LikeC4 validation, `la-typecheck`, `ruff check slayer/ tests/` (verify: all green)

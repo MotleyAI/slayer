@@ -63,7 +63,7 @@ def plan_query(
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: DatasetScope | StageSchema | None = None,
+    scope: DatasetScope | None = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     prebound: Optional[PreboundQuery] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
@@ -95,7 +95,7 @@ def _stage_scope_and_bundle(
     data_source: str,
     stage_dataset: Optional[SlayerDataset],
     placeholders: List[SlayerDataset],
-) -> "Tuple[DatasetScope | StageSchema, ResolvedSourceBundle]":
+) -> "Tuple[DatasetScope, ResolvedSourceBundle]":
     """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic datasets threaded in."""
     scope, sb = _stage_scope_and_bundle_unframed(
         query=query, bundle=bundle, stage_schemas=stage_schemas, data_source=data_source,
@@ -108,9 +108,9 @@ def _stage_scope_and_bundle(
 
 
 def _framed(
-    *, query: SlayerQuery, scope: "DatasetScope | StageSchema | None", bundle: ResolvedSourceBundle,
+    *, query: SlayerQuery, scope: "DatasetScope | None", bundle: ResolvedSourceBundle,
     placeholders: List[SlayerDataset],
-) -> "Tuple[DatasetScope | StageSchema | None, ResolvedSourceBundle]":
+) -> "Tuple[DatasetScope | None, ResolvedSourceBundle]":
     """The frame's population stamped with the unrelated datasets ``query`` names (unspliced
     placeholders included, so a product hop to one is walked); dots need a dataset scope."""
     host = bundle.population
@@ -129,7 +129,7 @@ def _stage_scope_and_bundle_unframed(
     stage_schemas: Dict[str, StageSchema],
     data_source: str,
     stage_dataset: Optional[SlayerDataset],
-) -> "Tuple[DatasetScope | StageSchema, ResolvedSourceBundle]":
+) -> "Tuple[DatasetScope, ResolvedSourceBundle]":
     src = query.population
     # Only the siblings the stage names join its graph; a spliced stored dataset is a dataset, not a sibling.
     reads = stage_sibling_reads(query=query, siblings=set(stage_schemas), displays=bundle.stage_displays)
@@ -283,7 +283,7 @@ class _StagePlanner:
 
     def _universe(
         self, query: SlayerQuery, *, stage_dataset: Optional[SlayerDataset], single: bool,
-    ) -> "Tuple[DatasetScope | StageSchema | None, ResolvedSourceBundle]":
+    ) -> "Tuple[DatasetScope | None, ResolvedSourceBundle]":
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
         if single:
             _, base = apply_query_extensions(query=query, scope=None, bundle=base)
