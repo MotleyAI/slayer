@@ -12,24 +12,25 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders_t",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -38,7 +39,7 @@ def _ds() -> DatasourceConfig:
     return DatasourceConfig(name="ds", type="sqlite", database=":memory:")
 
 
-async def _engine_with_orders(*extra_models: SlayerModel) -> tuple:
+async def _engine_with_orders(*extra_models: SlayerDataset) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a YAMLStorage with `orders` saved + any extras, and an engine.
 
     Returns (engine, tmpdir_handle). Caller must keep the tmpdir alive.
@@ -46,28 +47,28 @@ async def _engine_with_orders(*extra_models: SlayerModel) -> tuple:
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
-    await storage.save_model(_orders_model())
+    await storage.save_dataset(_orders_dataset())
     for m in extra_models:
-        await storage.save_model(m)
+        await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
 
 
-async def _expand_stage_as_model(
+async def _expand_stage_as_dataset(
     *,
     engine: SlayerQueryEngine,
     stage: SlayerQuery,
     name: str,
     data_source: str = "ds",
-) -> SlayerModel:
+) -> SlayerDataset:
     """Expand a single ``SlayerQuery`` stage into its virtual ``sql``-mode
     model via the typed query-backed expansion
     (``engine._expand_query_backed_model``, the DEV-1452 Stage B replacement
     for the legacy join-target renderer).
     """
-    model = SlayerModel(name=name, source_queries=[stage], data_source=data_source)
-    return await engine._expand_query_backed_model(
-        model=model,
+    model = SlayerDataset(name=name, source_queries=[stage], data_source=data_source)
+    return await engine._expand_query_backed_dataset(
+        dataset=model,
         runtime_kwarg=None,
     )
 
@@ -76,7 +77,7 @@ class TestExecuteByName:
     async def test_missing_model_raises(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            with pytest.raises(ValueError, match="Model 'nope' not found"):
+            with pytest.raises(ValueError, match="Dataset 'nope' not found"):
                 await engine.execute("nope")
         finally:
             tmp.cleanup()
@@ -90,12 +91,12 @@ class TestExecuteByName:
             tmp.cleanup()
 
     async def test_query_backed_runs_dry(self) -> None:
-        saved = SlayerModel(
+        saved = SlayerDataset(
             name="rev_by_region",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
                 "dimensions": ["region"],
             })],
         )
@@ -115,9 +116,9 @@ class TestVariablePrecedence:
         engine, tmp = await _engine_with_orders()
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
-                "filters": ["region = '{r}'"],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
+                "filter": ["region = '{r}'"],
                 "variables": {"r": "US"},
             })
             resp = await engine.execute(q, variables={"r": "EU"}, dry_run=True)
@@ -133,9 +134,9 @@ class TestVariablePrecedence:
         engine, tmp = await _engine_with_orders()
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
-                "filters": ["region = '{r}'"],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
+                "filter": ["region = '{r}'"],
             })
             resp = await engine.execute(q, variables={"r": "EU"}, dry_run=True)
             assert resp.sql is not None
@@ -148,27 +149,28 @@ class TestVariablePrecedence:
         engine, tmp = await _engine_with_orders()
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
-                "filters": ["region = '{r}'"],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
+                "filter": ["region = '{r}'"],
                 "variables": {"r": "US"},
             })
             resp = await engine.execute(q, variables={"unrelated": 99}, dry_run=True)
             # 'r' kept its original value because the kwarg didn't override it
             # ('unrelated' is unknown and silently ignored).
+            assert resp.sql is not None
             assert "'US'" in resp.sql
         finally:
             tmp.cleanup()
 
     async def test_run_by_name_with_runtime_kwarg(self) -> None:
         """``execute("M", variables=K)`` threads K into stage filter substitution."""
-        saved = SlayerModel(
+        saved = SlayerDataset(
             name="rev_filtered",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region = '{r}'"],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
+                "filter": ["region = '{r}'"],
             })],
         )
         engine, tmp = await _engine_with_orders(saved)
@@ -181,37 +183,39 @@ class TestVariablePrecedence:
 
     async def test_run_by_name_uses_query_variables_default(self) -> None:
         """When no kwarg, ``model.query_variables`` provides defaults to the stage."""
-        saved = SlayerModel(
+        saved = SlayerDataset(
             name="rev_filtered",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region = '{r}'"],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
+                "filter": ["region = '{r}'"],
             })],
             query_variables={"r": "DEFAULT_R"},
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
             resp = await engine.execute("rev_filtered", dry_run=True)
+            assert resp.sql is not None
             assert "'DEFAULT_R'" in resp.sql
         finally:
             tmp.cleanup()
 
     async def test_run_by_name_kwarg_overrides_query_variables_default(self) -> None:
-        saved = SlayerModel(
+        saved = SlayerDataset(
             name="rev_filtered",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region = '{r}'"],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
+                "filter": ["region = '{r}'"],
             })],
             query_variables={"r": "DEFAULT_R"},
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
             resp = await engine.execute("rev_filtered", variables={"r": "US"}, dry_run=True)
+            assert resp.sql is not None
             assert "'US'" in resp.sql
             assert "DEFAULT_R" not in resp.sql
         finally:
@@ -222,23 +226,23 @@ class TestCreateModelFromQuery:
     async def test_caches_columns(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            saved = await engine.create_model_from_query(
+            saved = await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
                 }),
                 name="rev_by_region",
             )
             # Cache is populated
-            assert len(saved.columns) >= 2  # region + amount_sum
-            col_names = {c.name for c in saved.columns}
+            assert len(saved.fields) >= 2  # region + amount_sum
+            col_names = {c.name for c in saved.fields}
             assert "region" in col_names
             assert "amount_sum" in col_names
             # Reload from storage and confirm cache persisted
-            from_storage = await engine.storage.get_model("rev_by_region")
+            from_storage = await engine.storage.get_dataset("rev_by_region")
             assert from_storage is not None
-            assert [c.name for c in from_storage.columns] == [c.name for c in saved.columns]
+            assert [c.name for c in from_storage.fields] == [c.name for c in saved.fields]
             sql = (await engine.execute("rev_by_region", dry_run=True)).sql
             assert sql is not None
             assert "amount" in sql.lower()
@@ -248,11 +252,11 @@ class TestCreateModelFromQuery:
     async def test_variables_kwarg_populates_query_variables(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            saved = await engine.create_model_from_query(
+            saved = await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "filters": ["region = '{r}'"],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
+                    "filter": ["region = '{r}'"],
                 }),
                 name="rev_filtered",
                 variables={"r": "US"},
@@ -264,18 +268,18 @@ class TestCreateModelFromQuery:
     async def test_save_false_returns_populated_model_without_persisting(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            built = await engine.create_model_from_query(
+            built = await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
                 }),
                 name="not_persisted",
                 save=False,
             )
-            assert built.columns
+            assert built.fields
             # Storage doesn't have it
-            from_storage = await engine.storage.get_model("not_persisted")
+            from_storage = await engine.storage.get_dataset("not_persisted")
             assert from_storage is None
         finally:
             tmp.cleanup()
@@ -285,23 +289,23 @@ class TestCreateModelFromQuery:
         engine, tmp = await _engine_with_orders()
         try:
             query = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["amount > {threshold}"],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
+                "filter": ["amount > {threshold}"],
             })
             with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
-                await engine.create_model_from_query(query=query, name="filtered_no_default")
-            assert await engine.storage.get_model("filtered_no_default") is None
+                await engine.create_dataset_from_query(query=query, name="filtered_no_default")
+            assert await engine.storage.get_dataset("filtered_no_default") is None
         finally:
             tmp.cleanup()
 
     async def test_accepts_dict_query(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            saved = await engine.create_model_from_query(
+            saved = await engine.create_dataset_from_query(
                 query={
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
                 },
                 name="from_dict",
@@ -316,34 +320,34 @@ class TestSaveModelGuards:
     async def test_rejects_user_columns_on_query_backed(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            m = SlayerModel(
+            m = SlayerDataset(
                 name="bad",
                 data_source="ds",
-                source_queries=[SlayerQuery(source_model="orders")],
-                columns=[Column(name="x", sql="x", type=DataType.TEXT)],
+                source_queries=[SlayerQuery(population="orders")],
+                fields=[DatasetField(name="x", sql="x", datatype=DataType.TEXT)],
             )
             with pytest.raises(ValueError, match="auto-generated and must not be supplied"):
-                await engine.save_model(m)
+                await engine.save_dataset(m)
         finally:
             tmp.cleanup()
 
 
-def _wrap_save_counter(storage):
+def _wrap_save_counter(storage: StorageBackend):
     """Spy on ``storage.save_model``. Returns ``(calls, restore)`` where
     ``calls`` is a live list of saved-model names and ``restore()`` undoes
     the wrapping. Used to assert that read paths never write to storage.
     """
     calls: list[str] = []
-    real = storage.save_model
+    real = storage.save_dataset
 
     async def counting(m):
         calls.append(m.name)
         return await real(m)
 
-    storage.save_model = counting  # type: ignore[method-assign]
+    storage.save_dataset = counting  # type: ignore[method-assign]
 
     def restore() -> None:
-        storage.save_model = real  # type: ignore[method-assign]
+        storage.save_dataset = real  # type: ignore[method-assign]
 
     return calls, restore
 
@@ -360,26 +364,26 @@ class TestCacheRefreshOnExecute:
         engine) keeps its empty cache after ``engine.execute`` — read paths
         no longer initialize cache as a side effect.
         """
-        empty = SlayerModel(
+        empty = SlayerDataset(
             name="rev_by_region",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
                 "dimensions": ["region"],
             })],
         )
         engine, tmp = await _engine_with_orders()
         try:
-            await engine.storage.save_model(empty)
-            stored = await engine.storage.get_model("rev_by_region")
+            await engine.storage.save_dataset(empty)
+            stored = await engine.storage.get_dataset("rev_by_region")
             assert stored is not None
-            assert stored.columns == []
+            assert stored.fields == []
 
             await engine.execute("rev_by_region", dry_run=True)
-            refreshed = await engine.storage.get_model("rev_by_region")
+            refreshed = await engine.storage.get_dataset("rev_by_region")
             assert refreshed is not None
-            assert refreshed.columns == []
+            assert refreshed.fields == []
         finally:
             tmp.cleanup()
 
@@ -389,21 +393,21 @@ class TestCacheRefreshOnExecute:
         """
         engine, tmp = await _engine_with_orders()
         try:
-            await engine.create_model_from_query(
+            await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
                 }),
                 name="rev_by_region",
             )
             outer = SlayerQuery.model_validate({
-                "source_model": "rev_by_region",
+                "population": "rev_by_region",
                 "dimensions": [
                     "region",
                     {"expression": "iif(amount_sum > 1000, 1, 0)", "name": "is_high_rev"},
                 ],
-                "measures": [{"formula": "max(amount_sum)"}],
+                "metrics": [{"expression": "max(amount_sum)"}],
             })
             resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
@@ -411,9 +415,9 @@ class TestCacheRefreshOnExecute:
             assert "amount_sum" in resp.sql
 
             # The computed dimension must not bleed into the base model's cache.
-            base = await engine.storage.get_model("rev_by_region")
+            base = await engine.storage.get_dataset("rev_by_region")
             assert base is not None
-            assert not any(c.name == "is_high_rev" for c in base.columns)
+            assert not any(c.name == "is_high_rev" for c in base.fields)
         finally:
             tmp.cleanup()
 
@@ -423,17 +427,17 @@ class TestCacheRefreshOnExecute:
         """
         engine, tmp = await _engine_with_orders()
         try:
-            queries = [
+            queries: list[SlayerQuery | dict] = [
                 SlayerQuery.model_validate({
                     "name": "staged",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
                 }),
                 SlayerQuery.model_validate({
-                    "source_model": "staged",
+                    "population": "staged",
                     "dimensions": ["region", {"expression": "amount_sum * 2", "name": "doubled"}],
-                    "measures": [{"formula": "max(amount_sum)"}],
+                    "metrics": [{"expression": "max(amount_sum)"}],
                 }),
             ]
             resp = await engine.execute(queries, dry_run=True)
@@ -441,7 +445,7 @@ class TestCacheRefreshOnExecute:
             assert "doubled" in resp.sql
 
             # Named-query stage must not have been persisted.
-            assert await engine.storage.get_model("staged") is None
+            assert await engine.storage.get_dataset("staged") is None
         finally:
             tmp.cleanup()
 
@@ -453,10 +457,10 @@ class TestCacheRefreshOnExecute:
         """
         engine, tmp = await _engine_with_orders()
         try:
-            await engine.create_model_from_query(
+            await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
                 }),
                 name="rev_by_region",
@@ -475,9 +479,9 @@ class TestCacheRefreshOnExecute:
             calls, restore = _wrap_save_counter(engine.storage)
             try:
                 await engine.execute(SlayerQuery.model_validate({
-                    "source_model": "rev_by_region",
+                    "population": "rev_by_region",
                     "dimensions": ["region"],
-                    "measures": [{"formula": "max(amount_sum)"}],
+                    "metrics": [{"expression": "max(amount_sum)"}],
                     "variables": {"unused": "X"},
                 }), dry_run=True)
                 assert calls == [], f"outer-variables execute wrote: {calls}"
@@ -485,12 +489,12 @@ class TestCacheRefreshOnExecute:
                 restore()
 
             # Case 3: empty cache (raw storage save bypassing the engine).
-            await engine.storage.save_model(SlayerModel(
+            await engine.storage.save_dataset(SlayerDataset(
                 name="raw_qb",
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
                 })],
             ))
@@ -516,10 +520,10 @@ class TestQueryBackedColumnTypes:
             storage = YAMLStorage(base_dir=tmp.name)
             ds_path = f"{tmp.name}/probe.db"  # file-backed so the table persists across connections
             await storage.save_datasource(DatasourceConfig(name="ds_b", type="sqlite", database=ds_path))
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="t_b", sql_table="orders_t", data_source="ds_b",
-                columns=[
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
                 ],
             ))
             engine = SlayerQueryEngine(storage=storage)
@@ -536,15 +540,15 @@ class TestQueryBackedColumnTypes:
             # the resolved virtual model, so the on-disk record disagrees
             # with the source query's actual datasource (ds_b).
             await storage.save_datasource(DatasourceConfig(name="ds_stale", type="sqlite", database=":memory:"))
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="qb",
                 data_source="ds_stale",  # stale: real source is ds_b
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "t_b",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "t_b",
+                    "metrics": [{"expression": "sum(amount)"}],
                 })],
             ))
-            stored = await storage.get_model("qb")
+            stored = await storage.get_dataset("qb")
             assert stored is not None, (
                 "test setup expects stale data_source on the raw-saved model"
             )
@@ -567,9 +571,9 @@ class TestQueryBackedColumnTypes:
             storage = YAMLStorage(base_dir=tmp.name)
             ds_path = f"{tmp.name}/probe.db"
             await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=ds_path))
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="t", sql_table="orders_t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
             with transaction(ds_path) as conn:
                 conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
@@ -577,19 +581,19 @@ class TestQueryBackedColumnTypes:
 
             # Stored directly: the engine refuses to save an undefaulted variable.
             engine = SlayerQueryEngine(storage=storage)
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="qb_unbound",
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "t",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "filters": ["amount > {threshold}"],
+                    "population": "t",
+                    "metrics": [{"expression": "sum(amount)"}],
+                    "filter": ["amount > {threshold}"],
                 })],
             ))
-            stored = await storage.get_model("qb_unbound")
+            stored = await storage.get_dataset("qb_unbound")
             assert stored is not None
             with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
-                await engine._expand_query_backed_model(model=stored)
+                await engine._expand_query_backed_dataset(dataset=stored)
             assert await engine.get_result_column_types("qb_unbound") == {}
         finally:
             tmp.cleanup()
@@ -605,13 +609,13 @@ class TestRequestVariableHygiene:
     ) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            await engine.save_model(SlayerModel(
+            await engine.save_dataset(SlayerDataset(
                 name="rev_filtered",
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "filters": ["region = '{r}'"],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
+                    "filter": ["region = '{r}'"],
                 })],
                 query_variables={"r": "DEFAULT_R"},
             ))
@@ -622,7 +626,7 @@ class TestRequestVariableHygiene:
             request_sql = (await engine.execute("rev_filtered", variables={"r": "REQUEST_VAL"}, dry_run=True)).sql
             assert "'REQUEST_VAL'" in (request_sql or "")
 
-            after = await engine.storage.get_model("rev_filtered")
+            after = await engine.storage.get_dataset("rev_filtered")
             assert after is not None
             assert after.query_variables == {"r": "DEFAULT_R"}
             assert (await engine.execute("rev_filtered", dry_run=True)).sql == initial_sql
@@ -635,14 +639,14 @@ class TestRequestVariableHygiene:
         """Variables from an enclosing ``SlayerQuery.variables`` must also not persist."""
         engine, tmp = await _engine_with_orders()
         try:
-            await engine.save_model(SlayerModel(
+            await engine.save_dataset(SlayerDataset(
                 name="rev_filtered",
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
-                    "filters": ["region = '{r}'"],
+                    "filter": ["region = '{r}'"],
                 })],
                 query_variables={"r": "DEFAULT_R"},
             ))
@@ -652,13 +656,13 @@ class TestRequestVariableHygiene:
 
             # Outer query supplies r via SlayerQuery.variables (NOT runtime kwarg).
             outer = SlayerQuery.model_validate({
-                "source_model": "rev_filtered",
+                "population": "rev_filtered",
                 "dimensions": ["region"],
-                "measures": [{"formula": "max(amount_sum)"}],
+                "metrics": [{"expression": "max(amount_sum)"}],
                 "variables": {"r": "OUTER_VAL"},
             })
             await engine.execute(outer, dry_run=True)
-            after = await engine.storage.get_model("rev_filtered")
+            after = await engine.storage.get_dataset("rev_filtered")
             assert after is not None
             assert after.query_variables == {"r": "DEFAULT_R"}
             after_sql = (await engine.execute("rev_filtered", dry_run=True)).sql
@@ -680,38 +684,38 @@ class TestRequestVariableHygiene:
             storage = YAMLStorage(base_dir=tmp.name)
             await storage.save_datasource(DatasourceConfig(name="ds_a", type="sqlite", database=":memory:"))
             await storage.save_datasource(DatasourceConfig(name="ds_b", type="sqlite", database=":memory:"))
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="t_a", sql_table="t_a", data_source="ds_a",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="t_b", sql_table="t_b", data_source="ds_b",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
             engine = SlayerQueryEngine(storage=storage)
 
-            await engine.save_model(SlayerModel(
+            await engine.save_dataset(SlayerDataset(
                 name="qb",
                 data_source="ds_a",
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "t_a",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "t_a",
+                    "metrics": [{"expression": "sum(amount)"}],
                 })],
             ))
-            assert (await storage.get_model("qb")).data_source == "ds_a"
+            assert (await storage.get_dataset("qb")).data_source == "ds_a"
 
             # Edit: backing query now resolves through ds_b, but the caller
             # still passes the stale data_source="ds_a". The engine must
             # overwrite from the virtual model.
-            await engine.save_model(SlayerModel(
+            await engine.save_dataset(SlayerDataset(
                 name="qb",
                 data_source="ds_a",  # stale!
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "t_b",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "t_b",
+                    "metrics": [{"expression": "sum(amount)"}],
                 })],
             ))
-            assert (await storage.get_model("qb")).data_source == "ds_b", (
+            assert (await storage.get_dataset("qb")).data_source == "ds_b", (
                 "data_source must be refreshed from the virtual model, not "
                 "preserved from the stale caller-supplied value"
             )
@@ -723,36 +727,36 @@ class TestInlineQueryBackedSourceModel:
     """An inline ``SlayerModel(source_queries=[...])`` as ``source_model`` is rejected at construction."""
 
     def test_inline_slayermodel_with_source_queries_rejected(self) -> None:
-        inline = SlayerModel(
+        inline = SlayerDataset(
             name="inline_qb",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
                 "dimensions": ["region"],
             })],
         )
         with pytest.raises(ValueError, match="(?i)inline"):
             SlayerQuery.model_validate({
-                "source_model": inline,
+                "population": inline,
                 "dimensions": ["region"],
-                "measures": [{"formula": "max(amount_sum)"}],
+                "metrics": [{"expression": "max(amount_sum)"}],
             })
 
     def test_inline_dict_slayermodel_with_source_queries_rejected(self) -> None:
         with pytest.raises(ValueError, match="(?i)inline"):
             SlayerQuery.model_validate({
-                "source_model": {
+                "population": {
                     "name": "inline_qb_dict",
                     "data_source": "ds",
                     "source_queries": [{
-                        "source_model": "orders",
-                        "measures": [{"formula": "sum(amount)"}],
+                        "population": "orders",
+                        "metrics": [{"expression": "sum(amount)"}],
                         "dimensions": ["region"],
                     }],
                 },
                 "dimensions": ["region"],
-                "measures": [{"formula": "max(amount_sum)"}],
+                "metrics": [{"expression": "max(amount_sum)"}],
             })
 
 
@@ -770,33 +774,34 @@ class TestJoinTargetIsQueryBacked:
         engine, tmp = await _engine_with_orders()
         try:
             # Save a query-backed rollup whose stage filter references {threshold}.
-            await engine.save_model(SlayerModel(
+            await engine.save_dataset(SlayerDataset(
                 name="rev_filtered",
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
-                    "filters": ["amount > {threshold}"],
+                    "filter": ["amount > {threshold}"],
                 })],
                 query_variables={"threshold": 0},  # save-time default
             ))
             # Add a join from orders → rev_filtered on region.
-            orders = await engine.storage.get_model("orders")
+            orders = await engine.storage.get_dataset("orders")
+            assert orders is not None
             orders = orders.model_copy(update={
-                "joins": [ModelJoin(
-                    target_model="rev_filtered",
+                "relationships": [DatasetRelationship(
+                    to="rev_filtered",
                     join_pairs=[["region", "region"]],
                 )],
             })
-            await engine.storage.save_model(orders)
+            await engine.storage.save_dataset(orders)
 
             # Outer query passes a runtime value for {threshold}; the join
             # target's rendered SQL must use 999, not the saved 0.
             outer = SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["region", "rev_filtered.amount_sum"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
                 "variables": {"threshold": 999},
             })
             resp = await engine.execute(outer, dry_run=True)
@@ -826,20 +831,20 @@ class TestJoinTargetIsQueryBacked:
         engine, tmp = await _engine_with_orders()
         try:
             alpha, beta = await asyncio.gather(
-                _expand_stage_as_model(
+                _expand_stage_as_dataset(
                     engine=engine,
                     stage=SlayerQuery.model_validate({
-                        "source_model": "orders",
-                        "measures": [{"formula": "sum(amount)"}],
+                        "population": "orders",
+                        "metrics": [{"expression": "sum(amount)"}],
                         "dimensions": ["region"],
                     }),
                     name="alpha",
                 ),
-                _expand_stage_as_model(
+                _expand_stage_as_dataset(
                     engine=engine,
                     stage=SlayerQuery.model_validate({
-                        "source_model": "orders",
-                        "measures": [{"formula": "count(*)"}],
+                        "population": "orders",
+                        "metrics": [{"expression": "count(*)"}],
                         "dimensions": ["status"],
                     }),
                     name="beta",
@@ -859,28 +864,29 @@ class TestJoinTargetIsQueryBacked:
         engine, tmp = await _engine_with_orders()
         try:
             # Create a saved query-backed "rollup" model joinable from orders.
-            await engine.create_model_from_query(
+            await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["region"],
                 }),
                 name="rev_by_region",
             )
             # Add a join from orders → rev_by_region on region.
-            orders = await engine.storage.get_model("orders")
+            orders = await engine.storage.get_dataset("orders")
+            assert orders is not None
             orders = orders.model_copy(update={
-                "joins": [ModelJoin(
-                    target_model="rev_by_region",
+                "relationships": [DatasetRelationship(
+                    to="rev_by_region",
                     join_pairs=[["region", "region"]],
                 )],
             })
-            await engine.storage.save_model(orders)
+            await engine.storage.save_dataset(orders)
 
             outer = SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["region", "rev_by_region.amount_sum"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
             })
             resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
@@ -896,14 +902,14 @@ class TestRunByNamePlanFlags:
     so REST/MCP/CLI run-by-name doesn't silently execute when plan-only was asked.
     """
 
-    async def test_dry_run_kwarg_returns_sql_without_executing(self, monkeypatch) -> None:
+    async def test_dry_run_kwarg_returns_sql_without_executing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Caller passes dry_run=True on a stored stage that has dry_run=False."""
-        saved = SlayerModel(
+        saved = SlayerDataset(
             name="rev_by_region",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
                 "dimensions": ["region"],
             })],
         )
@@ -926,16 +932,16 @@ class TestRunByNamePlanFlags:
         finally:
             tmp.cleanup()
 
-    async def test_explain_kwarg_routes_through_client_explain(self, monkeypatch) -> None:
+    async def test_explain_kwarg_routes_through_client_explain(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Caller passes explain=True; engine should invoke the client's explain
         rather than executing the raw query.
         """
-        saved = SlayerModel(
+        saved = SlayerDataset(
             name="rev_by_region",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
                 "dimensions": ["region"],
             })],
         )
@@ -975,24 +981,24 @@ class TestSiblingStageJoins:
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders_t",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="customers",
             sql_table="customers_t",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
             ],
         ))
         return SlayerQueryEngine(storage=storage), tmp
@@ -1007,22 +1013,22 @@ class TestSiblingStageJoins:
         return [
             SlayerQuery.model_validate({
                 "name": "kpis",
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
                 "dimensions": ["customer_id"],
             }),
             SlayerQuery.model_validate({
                 "name": "tagged",
-                "source_model": "customers",
+                "population": "customers",
                 "extensions": [{
                     "source_name": "customers",
-                    "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+                    "relationships": [{"to": "kpis", "join_pairs": [["id", "customer_id"]]}],
                 }],
                 "dimensions": ["name"],
-                "measures": [{"formula": "sum(kpis.amount_sum)"}],
+                "metrics": [{"expression": "sum(kpis.amount_sum)"}],
             }),
             SlayerQuery.model_validate({
-                "source_model": "tagged",
+                "population": "tagged",
                 "dimensions": ["name"],
             }),
         ]
@@ -1048,29 +1054,29 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "kpis",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["customer_id"],
                 }),
                 SlayerQuery.model_validate({
                     "name": "counts",
-                    "source_model": "orders",
-                    "measures": [{"formula": "count(*)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "count(*)"}],
                     "dimensions": ["customer_id"],
                 }),
                 SlayerQuery.model_validate({
-                    "source_model": "customers",
+                    "population": "customers",
                     "extensions": [{
                         "source_name": "customers",
-                        "joins": [
-                            {"target_model": "kpis",   "join_pairs": [["id", "customer_id"]]},
-                            {"target_model": "counts", "join_pairs": [["id", "customer_id"]]},
+                        "relationships": [
+                            {"to": "kpis",   "join_pairs": [["id", "customer_id"]]},
+                            {"to": "counts", "join_pairs": [["id", "customer_id"]]},
                         ],
                     }],
                     "dimensions": ["name"],
-                    "measures": [
-                        {"formula": "sum(kpis.amount_sum)"},
-                        {"formula": "sum(counts._count)"},
+                    "metrics": [
+                        {"expression": "sum(kpis.amount_sum)"},
+                        {"expression": "sum(counts._count)"},
                     ],
                 }),
             ]
@@ -1097,22 +1103,22 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "a",
-                    "source_model": "customers",
+                    "population": "customers",
                     "extensions": [{
                         "source_name": "customers",
-                        "joins": [{"target_model": "b", "join_pairs": [["id", "customer_id"]]}],
+                        "relationships": [{"to": "b", "join_pairs": [["id", "customer_id"]]}],
                     }],
                     "dimensions": ["name"],
-                    "measures": [{"formula": "sum(b._count)"}],
+                    "metrics": [{"expression": "sum(b._count)"}],
                 }),
                 SlayerQuery.model_validate({
                     "name": "b",
-                    "source_model": "orders",
-                    "measures": [{"formula": "count(*)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "count(*)"}],
                     "dimensions": ["customer_id"],
                 }),
                 SlayerQuery.model_validate({
-                    "source_model": "a",
+                    "population": "a",
                     "dimensions": ["name"],
                 }),
             ]
@@ -1137,24 +1143,24 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "a",
-                    "source_model": "customers",
+                    "population": "customers",
                     "extensions": [{
                         "source_name": "customers",
-                        "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
+                        "relationships": [{"to": "b", "join_pairs": [["id", "id"]]}],
                     }],
                     "dimensions": ["name"],
                 }),
                 SlayerQuery.model_validate({
                     "name": "b",
-                    "source_model": "customers",
+                    "population": "customers",
                     "extensions": [{
                         "source_name": "customers",
-                        "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+                        "relationships": [{"to": "a", "join_pairs": [["id", "id"]]}],
                     }],
                     "dimensions": ["name"],
                 }),
                 SlayerQuery.model_validate({
-                    "source_model": "a",
+                    "population": "a",
                     "dimensions": ["name"],
                 }),
             ]
@@ -1176,17 +1182,17 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "utility",
-                    "source_model": "orders",
-                    "measures": [{"formula": "max(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "max(amount)"}],
                 }),
                 SlayerQuery.model_validate({
                     "name": "kpis",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["customer_id"],
                 }),
                 SlayerQuery.model_validate({
-                    "source_model": "kpis",
+                    "population": "kpis",
                     "dimensions": ["customer_id"],
                 }),
             ]
@@ -1206,13 +1212,13 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "util",
-                    "source_model": "primary",  # references the root by name
+                    "population": "primary",  # references the root by name
                     "dimensions": ["customer_id"],
                 }),
                 SlayerQuery.model_validate({
                     "name": "primary",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": ["customer_id"],
                 }),
             ]
@@ -1237,8 +1243,8 @@ class TestSiblingStageJoins:
         engine, tmp = await self._engine()
         try:
             queries = [
-                SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]}),
-                SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]}),
+                SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]}),
+                SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]}),
             ]
             with pytest.raises(ValueError, match=r"must have a 'name'"):
                 await engine.execute(queries, dry_run=True)
@@ -1252,15 +1258,15 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "a",
-                    "source_model": "customers",
+                    "population": "customers",
                     "extensions": [{
                         "source_name": "customers",
-                        "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+                        "relationships": [{"to": "a", "join_pairs": [["id", "id"]]}],
                     }],
                     "dimensions": ["name"],
                 }),
                 SlayerQuery.model_validate({
-                    "source_model": "a",
+                    "population": "a",
                     "dimensions": ["name"],
                 }),
             ]
@@ -1303,17 +1309,17 @@ class TestMultiStageMeasureRename:
         as ``rev`` on the virtual model, not ``amount_sum``. Stage 2 must be
         able to reference ``rev`` and the cached SQL must reflect the rename.
         """
-        saved = SlayerModel(
+        saved = SlayerDataset(
             name="renamed_metric",
             data_source="ds",
             source_queries=[
                 SlayerQuery.model_validate({
                     "name": "raw",
-                    "source_model": "orders",
+                    "population": "orders",
                     "dimensions": ["region"],
-                    "measures": [{"formula": "sum(amount)", "name": "rev"}],
+                    "metrics": [{"expression": "sum(amount)", "name": "rev"}],
                 }),
-                SlayerQuery.model_validate({"source_model": "raw", "measures": [{"formula": "sum(rev)"}]}),
+                SlayerQuery.model_validate({"population": "raw", "metrics": [{"expression": "sum(rev)"}]}),
             ],
         )
         engine, tmp = await _engine_with_orders()
@@ -1321,10 +1327,10 @@ class TestMultiStageMeasureRename:
             # Save-time dry-run pipes through both stages. With the bug the
             # inner stage wraps `amount_sum` (canonical) and stage 2's
             # `sum(rev)` raises during validation.
-            await engine.save_model(saved)
-            loaded = await engine.storage.get_model("renamed_metric")
+            await engine.save_dataset(saved)
+            loaded = await engine.storage.get_dataset("renamed_metric")
             assert loaded is not None
-            col_names = [c.name for c in loaded.columns]
+            col_names = [c.name for c in loaded.fields]
             # Stage 2's outer measure is `sum(rev)` → cache column `rev_sum`.
             assert "rev_sum" in col_names, (
                 f"expected 'rev_sum' in cached columns, got: {col_names}"
@@ -1349,12 +1355,12 @@ class TestMultiStageMeasureRename:
         engine, tmp = await _engine_with_orders()
         try:
             stage = SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["region"],
-                "measures": [{"formula": "sum(amount)"}],
+                "metrics": [{"expression": "sum(amount)"}],
             })
-            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_default")
-            col_names = [c.name for c in virtual.columns]
+            virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_default")
+            col_names = [c.name for c in virtual.fields]
             assert "amount_sum" in col_names, (
                 f"unnamed measure must keep canonical 'amount_sum', got: {col_names}"
             )
@@ -1368,12 +1374,12 @@ class TestMultiStageMeasureRename:
         engine, tmp = await _engine_with_orders()
         try:
             stage = SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["region"],
-                "measures": [{"formula": "sum(amount)", "name": "amount_sum"}],
+                "metrics": [{"expression": "sum(amount)", "name": "amount_sum"}],
             })
-            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_collide")
-            col_names = [c.name for c in virtual.columns]
+            virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_collide")
+            col_names = [c.name for c in virtual.fields]
             assert col_names.count("amount_sum") == 1, (
                 f"name=canonical must not duplicate the column, got: {col_names}"
             )
@@ -1388,12 +1394,12 @@ class TestMultiStageMeasureRename:
         engine, tmp = await _engine_with_orders()
         try:
             stage = SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["region"],
-                "measures": [{"formula": "sum(amount)", "name": "rev"}],
+                "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             })
-            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_alias")
-            col_names = [c.name for c in virtual.columns]
+            virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_alias")
+            col_names = [c.name for c in virtual.fields]
             assert "rev" in col_names, (
                 f"user-supplied 'name' must surface as a virtual column, got: {col_names}"
             )

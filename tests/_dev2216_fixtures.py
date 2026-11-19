@@ -15,14 +15,14 @@ from typing import Any
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -51,37 +51,38 @@ DUP_COUNT_BY_STATUS = {"completed": 3, "pending": 1}
 FILTERED_SPEND_BY_STATUS = {"completed": 40.0, "pending": 20.0}
 
 
-def customers_model(*, keyed: bool = False) -> SlayerModel:
-    return SlayerModel(
+def customers_dataset(*, keyed: bool = False, unique: bool = False) -> SlayerDataset:
+    """``keyed`` declares ``id`` the primary key; ``unique`` declares it a standalone unique column."""
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=keyed),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=keyed, unique=unique),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
         ],
         aggregations=[
-            Aggregation(name="wsum", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight", sql="spend")]),
         ],
     )
 
 
-def orders_model(*, cardinality: JoinCardinality | None = None) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, cardinality: RelationshipCardinality | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                          cardinality=cardinality)],
     )
 
 
-def ossie_models(*, keyed: bool = False) -> list[SlayerModel]:
-    return [orders_model(), customers_model(keyed=keyed)]
+def ossie_datasets(*, keyed: bool = False, unique: bool = False) -> list[SlayerDataset]:
+    return [orders_dataset(), customers_dataset(keyed=keyed, unique=unique)]
 
 
 def statements(*, duplicate: bool = False) -> list[str]:
@@ -94,7 +95,8 @@ def statements(*, duplicate: bool = False) -> list[str]:
     ]
 
 
-def _seed(dialect: str, stmts: Sequence[str]):
+def seed_with(dialect: str, stmts: Sequence[str]):
+    """A ``seeded_exec_engine`` seed running ``stmts`` on ``dialect``."""
     def seed(db_path: str) -> None:
         if dialect == "duckdb":
             con = pytest.importorskip("duckdb").connect(db_path)
@@ -113,10 +115,10 @@ def _seed(dialect: str, stmts: Sequence[str]):
 @asynccontextmanager
 async def ossie_engine(
     dialect: str, *, request: pytest.FixtureRequest | None = None,
-    models: list[SlayerModel] | None = None, duplicate: bool = False,
+    datasets: list[SlayerDataset] | None = None, duplicate: bool = False,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """An engine over the Ossie data on ``dialect`` (``postgres`` needs ``request`` for ``postgresql_proc``)."""
-    models = models if models is not None else ossie_models()
+    datasets = datasets if datasets is not None else ossie_datasets()
     stmts = statements(duplicate=duplicate)
     if dialect == "postgres":
         assert request is not None
@@ -124,13 +126,13 @@ async def ossie_engine(
         with pg_database(info, statements=stmts, name="test") as ds:
             storage = YAMLStorage(base_dir=str(request.getfixturevalue("tmp_path") / "store"))
             async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-                for model in models:
-                    await storage.save_model(model, _validate=False)
+                for model in datasets:
+                    await storage.save_dataset(model, _validate=False)
                 yield engine
         return
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    async with seeded_exec_engine(dialect=dialect, seed=_seed(dialect, stmts), models=models) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed_with(dialect, stmts), datasets=datasets) as (engine, _):
         yield engine
 
 
@@ -138,8 +140,8 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def measure(formula: str, name: str) -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def metric(expression: str, name: str) -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def cells(resp: SlayerResponse, dim: str, value: str) -> dict:

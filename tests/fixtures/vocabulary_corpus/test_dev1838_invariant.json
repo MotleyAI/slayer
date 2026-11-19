@@ -1,0 +1,17 @@
+{
+ "source": "tests/test_dev1838_invariant.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  }
+ ],
+ "skipped": []
+}

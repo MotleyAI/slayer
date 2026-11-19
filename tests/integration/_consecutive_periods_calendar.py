@@ -7,7 +7,7 @@ DATE column ``d`` and a TIMESTAMP column ``ts``; the streak is 1, 2, 1, 2.
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -48,15 +48,15 @@ def seed_statements(
     ]
 
 
-def streak_model(data_source: str) -> SlayerModel:
-    return SlayerModel(
+def streak_dataset(data_source: str) -> SlayerDataset:
+    return SlayerDataset(
         name="streak_events", sql_table="streak_events", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="series", sql="series", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="d", sql="d", type=DataType.DATE),
-            Column(name="ts", sql="ts", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="series", sql="series", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="d", sql="d", datatype=DataType.DATE),
+            DatasetField(name="ts", sql="ts", datatype=DataType.TIMESTAMP),
         ],
     )
 
@@ -65,10 +65,10 @@ async def assert_calendar_streak(
     engine: SlayerQueryEngine, *, column: str, granularity: str,
 ) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "streak_events",
-        "time_dimensions": [{"dimension": column, "granularity": granularity}],
-        "filters": [f"series = '{granularity}'"],
-        "measures": [{"formula": "consecutive_periods(sum(amount) > 0)", "name": "v"}],
+        "population": "streak_events",
+        "time_dimensions": [{"field": column, "granularity": granularity}],
+        "filter": [f"series = '{granularity}'"],
+        "metrics": [{"expression": "consecutive_periods(sum(amount) > 0)", "name": "v"}],
     }))
     rows = sorted(resp.data, key=lambda r: str(r[f"streak_events.{column}"]))
     assert [int(r["streak_events.v"]) for r in rows] == [1, 2, 1, 2], rows

@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple, cast
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
@@ -27,52 +27,52 @@ ORDERS_ROWS = [
     (5, "c2", "US", "paid", 50.0, "2025-03-09"),
 ]
 
-REVENUE = {"formula": "sum(amount)", "name": "revenue"}
-MONTH_TD = {"dimension": "ordered_at", "granularity": "month"}
+REVENUE = {"expression": "sum(amount)", "name": "revenue"}
+MONTH_TD = {"field": "ordered_at", "granularity": "month"}
 Q1_RANGE = ["2025-01-01", "2025-02-28"]
 
 MONTHLY_REVENUE: Dict[str, Any] = {
-    "source_model": "orders",
+    "population": "orders",
     "time_dimensions": [MONTH_TD],
-    "measures": [REVENUE],
-    "filters": ["status = 'paid'"],
+    "metrics": [REVENUE],
+    "filter": ["status = 'paid'"],
 }
 MONTHLY_REVENUE_Q1: Dict[str, Any] = {
-    "source_model": "orders",
+    "population": "orders",
     "time_dimensions": [{**MONTH_TD, "date_range": Q1_RANGE}],
-    "measures": [REVENUE],
-    "filters": ["status = 'paid'"],
-    "order": [{"column": "revenue", "direction": "desc"}],
+    "metrics": [REVENUE],
+    "filter": ["status = 'paid'"],
+    "order": [{"field": "revenue", "direction": "desc"}],
     "limit": 2,
 }
 AVG_CUSTOMER_REVENUE: List[Dict[str, Any]] = [
     {
-        "name": "per_customer", "source_model": "orders",
-        "dimensions": ["customer_id", "region"], "measures": [REVENUE],
-        "filters": ["status = 'paid'"],
+        "name": "per_customer", "population": "orders",
+        "dimensions": ["customer_id", "region"], "metrics": [REVENUE],
+        "filter": ["status = 'paid'"],
     },
-    {"source_model": "per_customer", "measures": [{"formula": "avg(revenue)", "name": "avg_revenue"}]},
+    {"population": "per_customer", "metrics": [{"expression": "avg(revenue)", "name": "avg_revenue"}]},
 ]
 REVENUE_BY_STATUS: Dict[str, Any] = {
-    "source_model": "orders", "dimensions": ["region"], "measures": [REVENUE],
-    "filters": ["status = '{status}'"],
+    "population": "orders", "dimensions": ["region"], "metrics": [REVENUE],
+    "filter": ["status = '{status}'"],
 }
 
 MONTHLY = {"2025-01": 100.0, "2025-02": 105.0, "2025-03": 50.0}
 BY_REGION_MONTH = {("US", "2025-01"): 100.0, ("EU", "2025-02"): 105.0, ("US", "2025-03"): 50.0}
 
 
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.TEXT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.TEXT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.DATE),
         ],
     )
 
@@ -112,8 +112,8 @@ async def save_saved_queries(engine: SlayerQueryEngine) -> None:
         ("monthly_revenue_q1", MONTHLY_REVENUE_Q1),
         ("avg_customer_revenue", AVG_CUSTOMER_REVENUE),
     ):
-        await engine.create_model_from_query(query=query, name=name, description=DESCRIPTIONS[name])
-    await engine.create_model_from_query(
+        await engine.create_dataset_from_query(query=query, name=name, description=DESCRIPTIONS[name])
+    await engine.create_dataset_from_query(
         query=REVENUE_BY_STATUS, name="revenue_by_status", variables={"status": "paid"},
         description=DESCRIPTIONS["revenue_by_status"],
     )
@@ -122,7 +122,7 @@ async def save_saved_queries(engine: SlayerQueryEngine) -> None:
 async def populate_refine_storage(storage: StorageBackend, *, db_path: str) -> None:
     """Register the seeded SQLite ``db_path``, the ``orders`` model and the saved queries in ``storage``."""
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path))
-    await storage.save_model(orders_model())
+    await storage.save_dataset(orders_dataset())
     engine = SlayerQueryEngine(storage=storage)
     try:
         await save_saved_queries(engine)
@@ -145,7 +145,7 @@ async def refine_engine(dialect: str) -> AsyncGenerator[Tuple[SlayerQueryEngine,
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=[orders_model()]) as (engine, db_path):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=[orders_dataset()]) as (engine, db_path):
         await save_saved_queries(engine)
         yield engine, db_path
 

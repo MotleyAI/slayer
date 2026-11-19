@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 
 
 class ConversionWarning(BaseModel):
@@ -21,7 +21,7 @@ class ConversionWarning(BaseModel):
     construct imports but has a runtime limitation). ``suggestion`` carries the
     documented workaround.
     """
-    model_name: str | None = None
+    dataset_name: str | None = None
     metric_name: str | None = None
     message: str
     category: str = "general"
@@ -50,7 +50,7 @@ class ConversionReport(BaseModel):
             items = by_cat[cat]
             lines.append(f"## {cat} ({len(items)})")
             for e in items:
-                entity = e.metric_name or e.model_name or "general"
+                entity = e.metric_name or e.dataset_name or "general"
                 lines.append(f"  - [{e.severity}] {entity}: {e.message}")
                 if e.suggestion:
                     lines.append(f"      workaround: {e.suggestion}")
@@ -66,8 +66,8 @@ class ConversionReport(BaseModel):
 
 
 class ConversionResult(ConversionReport):
-    """Result of converting a semantic-layer project into SLayer models."""
-    models: list[SlayerModel] = Field(default_factory=list)
+    """Result of converting a semantic-layer project into SLayer datasets."""
+    datasets: list[SlayerDataset] = Field(default_factory=list)
     unconverted_metrics: list[ConversionWarning] = Field(default_factory=list)
 
     @property

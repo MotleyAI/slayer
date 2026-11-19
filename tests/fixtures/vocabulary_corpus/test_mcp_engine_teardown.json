@@ -1,0 +1,34 @@
+{
+ "source": "tests/test_mcp_engine_teardown.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "unclassifiable"
+  }
+ ]
+}

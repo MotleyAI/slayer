@@ -17,11 +17,11 @@ from fastapi.testclient import TestClient
 from mcp.types import TextContent
 
 from slayer.api.server import create_app
-from slayer.cli import _run_recommend_root_model, main
+from slayer.cli import _run_recommend_population, main
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.recommend import RootModelRecommendation
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.recommend import PopulationRecommendation
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -30,32 +30,32 @@ async def _seed(s: YAMLStorage) -> None:
     await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
 
     def col(n, t=DataType.TEXT, pk=False):
-        return Column(name=n, sql=n, type=t, primary_key=pk)
+        return DatasetField(name=n, sql=n, datatype=t, primary_key=pk)
 
-    await s.save_model(SlayerModel(
+    await s.save_dataset(SlayerDataset(
         name="orders", data_source="mydb", sql_table="orders",
-        columns=[
+        fields=[
             col("id", DataType.INT, pk=True), col("status"),
-            Column(name="customer_id", type=DataType.INT, hidden=True),
-            Column(name="product_id", type=DataType.INT, hidden=True),
+            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+            DatasetField(name="product_id", datatype=DataType.INT, hidden=True),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], join_type=JoinType.LEFT),
-            ModelJoin(target_model="products", join_pairs=[["product_id", "id"]], join_type=JoinType.LEFT),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], join_type=JoinType.LEFT),
+            DatasetRelationship(to="products", join_pairs=[["product_id", "id"]], join_type=JoinType.LEFT),
         ],
     ))
-    await s.save_model(SlayerModel(
+    await s.save_dataset(SlayerDataset(
         name="customers", data_source="mydb", sql_table="customers",
-        columns=[col("id", DataType.INT, pk=True), col("name")],
+        fields=[col("id", DataType.INT, pk=True), col("name")],
     ))
-    await s.save_model(SlayerModel(
+    await s.save_dataset(SlayerDataset(
         name="products", data_source="mydb", sql_table="products",
-        columns=[col("id", DataType.INT, pk=True), col("category")],
+        fields=[col("id", DataType.INT, pk=True), col("category")],
     ))
     # Disconnected model for the no-root rendering path.
-    await s.save_model(SlayerModel(
+    await s.save_dataset(SlayerDataset(
         name="tickets", data_source="mydb", sql_table="tickets",
-        columns=[col("id", DataType.INT, pk=True), col("subject")],
+        fields=[col("id", DataType.INT, pk=True), col("subject")],
     ))
 
 
@@ -71,7 +71,7 @@ class TestMcpTool:
     async def test_markdown_names_root(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["customers.name", "products.category"]},
         )
         text = _text(blocks)
@@ -81,28 +81,28 @@ class TestMcpTool:
     async def test_json_format(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "json"},
         )
         payload = json.loads(_text(blocks))
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
         assert payload["reachable"] is True
 
     async def test_no_root_renders_coverage(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["customers.name", "tickets.subject"], "format": "json"},
         )
         payload = json.loads(_text(blocks))
-        assert payload["root_model"] is None
+        assert payload["population"] is None
         assert payload["reachable"] is False
         assert payload["coverage"]
 
     async def test_invalid_format_returns_friendly_error(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "xml"},
         )
         assert "failed" in _text(blocks).lower()
@@ -114,16 +114,16 @@ class TestMcpTool:
             s = YAMLStorage(base_dir=tmpdir)
             for ds in ("a", "b"):
                 await s.save_datasource(DatasourceConfig(name=ds, type="postgres", host="x"))
-                await s.save_model(SlayerModel(
+                await s.save_dataset(SlayerDataset(
                     name="orders", data_source=ds, sql_table="orders",
-                    columns=[
-                        Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                        Column(name="status", sql="status", type=DataType.TEXT),
+                    fields=[
+                        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                        DatasetField(name="status", sql="status", datatype=DataType.TEXT),
                     ],
                 ))
             mcp = create_mcp_server(storage=s)
             blocks, _ = await mcp.call_tool(
-                name="recommend_root_model", arguments={"items": ["orders.status"]},
+                name="recommend_population", arguments={"items": ["orders.status"]},
             )
             # Routed through the shared MCP ambiguity hint (mentions data_source /
             # multiple datasources), not a bare "failed" string.
@@ -136,20 +136,20 @@ class TestRestEndpoint:
     def test_post_ok(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["customers.name", "products.category"]},
         )
         assert resp.status_code == 200
         body = resp.json()
         # only orders determines both columns along to-one paths
         # (customers→products is unreachable to-one), so orders is the root.
-        assert body["root_model"] == "orders"
+        assert body["population"] == "orders"
         assert body["data_source"] == "mydb"
 
     def test_returns_item_paths(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["customers.name", "products.category"]},
         )
         paths = {ip["input_item"]: ip["path"] for ip in resp.json()["item_paths"]}
@@ -162,7 +162,7 @@ class TestRestEndpoint:
     def test_post_unresolvable_item_400(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["orders.no_such_column"], "data_source": "mydb"},
         )
         assert resp.status_code == 400
@@ -171,7 +171,7 @@ class TestRestEndpoint:
         # Bare model reference (no leaf) → ValueError → HTTP 400.
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["customers"], "data_source": "mydb"},
         )
         assert resp.status_code == 400
@@ -185,7 +185,7 @@ class TestCliHandler:
             items=["customers.name", "products.category"],
             data_source=None, format="text",
         )
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
         out = capsys.readouterr().out
         assert "orders" in out
 
@@ -195,41 +195,41 @@ class TestCliHandler:
             storage=storage.base_dir,
             items=["orders.status"], data_source="mydb", format="json",
         )
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
         payload = json.loads(capsys.readouterr().out)
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
 
 
 class TestCliParserWiring:
-    def test_main_registers_subcommand(self, storage, monkeypatch, capsys) -> None:
+    def test_main_registers_subcommand(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         # Exercises the actual `slayer recommend-root-model` argparse wiring.
 
 
         monkeypatch.setattr(sys, "argv", [
-            "slayer", "recommend-root-model",
+            "slayer", "recommend-population",
             "customers.name", "products.category",
             "--storage", storage.base_dir, "--format", "json",
         ])
         main()
         payload = json.loads(capsys.readouterr().out)
         # orders determines both columns to-one.
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
 
 
 class TestSlayerClient:
     def test_local_engine_sync(self, storage) -> None:
 
         client = SlayerClient(storage=storage)
-        rec = client.recommend_root_model_sync(["customers.name", "products.category"])
-        assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "orders"  # to-one determiner of both
+        rec = client.recommend_population_sync(["customers.name", "products.category"])
+        assert isinstance(rec, PopulationRecommendation)
+        assert rec.population == "orders"  # to-one determiner of both
 
     async def test_local_engine_async(self, storage) -> None:
 
         client = SlayerClient(storage=storage)
-        rec = await client.recommend_root_model(["customers.name", "products.category"])
-        assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "orders"  # to-one determiner of both
+        rec = await client.recommend_population(["customers.name", "products.category"])
+        assert isinstance(rec, PopulationRecommendation)
+        assert rec.population == "orders"  # to-one determiner of both
 
 
 UNRELATED_ITEMS = ["customers.name", "count(tickets.id)"]
@@ -262,19 +262,19 @@ class TestUnrelatedFlagSurfaces:
     async def test_mcp_json(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model", arguments={"items": UNRELATED_ITEMS, "format": "json"},
+            name="recommend_population", arguments={"items": UNRELATED_ITEMS, "format": "json"},
         )
         payload = json.loads(_text(blocks))
-        assert payload["root_model"] == "customers"
+        assert payload["population"] == "customers"
         assert _flags(payload) == UNRELATED_FLAGS
 
     async def test_mcp_markdown(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(name="recommend_root_model", arguments={"items": UNRELATED_ITEMS})
+        blocks, _ = await mcp.call_tool(name="recommend_population", arguments={"items": UNRELATED_ITEMS})
         assert _flagged_in_text(_text(blocks))
 
     def test_rest(self, storage) -> None:
-        resp = TestClient(create_app(storage=storage)).post("/recommend-root-model", json={"items": UNRELATED_ITEMS})
+        resp = TestClient(create_app(storage=storage)).post("/recommend-population", json={"items": UNRELATED_ITEMS})
         assert resp.status_code == 200
         assert _flags(resp.json()) == UNRELATED_FLAGS
 
@@ -283,7 +283,7 @@ class TestUnrelatedFlagSurfaces:
         args = argparse.Namespace(
             storage=storage.base_dir, items=UNRELATED_ITEMS, data_source=None, format=fmt,
         )
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
         out = capsys.readouterr().out
         if fmt == "json":
             assert _flags(json.loads(out)) == UNRELATED_FLAGS
@@ -291,7 +291,7 @@ class TestUnrelatedFlagSurfaces:
             assert _flagged_in_text(out)
 
     async def test_client_local(self, storage) -> None:
-        rec = await SlayerClient(storage=storage).recommend_root_model(UNRELATED_ITEMS)
+        rec = await SlayerClient(storage=storage).recommend_population(UNRELATED_ITEMS)
         assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == UNRELATED_FLAGS
 
     async def test_client_remote_parses_the_flag(self) -> None:
@@ -299,7 +299,7 @@ class TestUnrelatedFlagSurfaces:
 
         async def fake_request(method, path, json=None, params=None):  # NOSONAR(S7503) — async required: stub is awaited via client._request
             return {
-                "data_source": "mydb", "root_model": "customers", "reachable": True,
+                "data_source": "mydb", "population": "customers", "reachable": True,
                 "item_paths": [
                     {"input_item": "customers.name", "path": "name", "unrelated": False},
                     {"input_item": "count(tickets.id)", "path": "count(tickets.id)", "unrelated": True},
@@ -308,7 +308,7 @@ class TestUnrelatedFlagSurfaces:
             }
 
         client._request = fake_request  # type: ignore[assignment]
-        rec = await client.recommend_root_model(UNRELATED_ITEMS)
+        rec = await client.recommend_population(UNRELATED_ITEMS)
         assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == UNRELATED_FLAGS
 
 
@@ -321,16 +321,16 @@ class TestRootHintSurfaces:
     async def test_mcp_feasible_hint_honored(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["customers.name"], "root_hint": "orders", "format": "json"},
         )
         payload = json.loads(_text(blocks))
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
 
     async def test_mcp_bad_hint_friendly_error(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "root_hint": "nope"},
         )
         assert "failed" in _text(blocks).lower()
@@ -339,16 +339,16 @@ class TestRootHintSurfaces:
     def test_rest_feasible_hint_honored(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["customers.name"], "root_hint": "orders"},
         )
         assert resp.status_code == 200
-        assert resp.json()["root_model"] == "orders"
+        assert resp.json()["population"] == "orders"
 
     def test_rest_bad_hint_400(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["orders.status"], "data_source": "mydb", "root_hint": "nope"},
         )
         assert resp.status_code == 400
@@ -361,13 +361,13 @@ class TestRootHintSurfaces:
             items=["customers.name"], data_source=None,
             format="json", root_hint="orders",
         )
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
         payload = json.loads(capsys.readouterr().out)
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
 
-    def test_cli_bad_hint_nonzero_exit(self, storage, monkeypatch, capsys) -> None:
+    def test_cli_bad_hint_nonzero_exit(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         monkeypatch.setattr(sys, "argv", [
-            "slayer", "recommend-root-model", "orders.status", "--data-source", "mydb",
+            "slayer", "recommend-population", "orders.status", "--data-source", "mydb",
             "--root-hint", "nope", "--storage", storage.base_dir,
         ])
         with pytest.raises(SystemExit) as exc:
@@ -378,30 +378,30 @@ class TestRootHintSurfaces:
         assert len(captured.err.strip().splitlines()) == 1
         assert "Error" not in captured.out
 
-    def test_cli_parser_accepts_root_hint(self, storage, monkeypatch, capsys) -> None:
+    def test_cli_parser_accepts_root_hint(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
 
 
         monkeypatch.setattr(sys, "argv", [
-            "slayer", "recommend-root-model", "customers.name",
+            "slayer", "recommend-population", "customers.name",
             "--root-hint", "orders", "--storage", storage.base_dir, "--format", "json",
         ])
         main()
         payload = json.loads(capsys.readouterr().out)
-        assert payload["root_model"] == "orders"  # the hint wins
+        assert payload["population"] == "orders"  # the hint wins
 
     # -- SlayerClient (local engine) ------------------------------------
     def test_client_local_feasible_hint_honored(self, storage) -> None:
 
         client = SlayerClient(storage=storage)
-        rec = client.recommend_root_model_sync(["customers.name"], root_hint="orders")
-        assert rec.root_model == "orders"
+        rec = client.recommend_population_sync(["customers.name"], root_hint="orders")
+        assert rec.population == "orders"
 
     async def test_client_local_bad_hint_raises(self, storage) -> None:
 
 
         client = SlayerClient(storage=storage)
         with pytest.raises(ValueError):
-            await client.recommend_root_model(["orders.status"], root_hint="nope")
+            await client.recommend_population(["orders.status"], root_hint="nope")
 
     # -- SlayerClient (remote HTTP) sends root_hint only when set -------
     async def test_client_remote_sends_root_hint_only_when_set(self) -> None:
@@ -412,15 +412,15 @@ class TestRootHintSurfaces:
         async def fake_request(method, path, json=None, params=None):  # NOSONAR(S7503) — async required: stub is awaited via client._request
             captured.append(json or {})
             return {
-                "data_source": "mydb", "root_model": "orders",
+                "data_source": "mydb", "population": "orders",
                 "reachable": True, "item_paths": [], "coverage": [],
                 "message": "", "warnings": [],
             }
 
         client._request = fake_request  # type: ignore[assignment]
 
-        await client.recommend_root_model(["customers.name"], root_hint="orders")
-        await client.recommend_root_model(["customers.name"])
+        await client.recommend_population(["customers.name"], root_hint="orders")
+        await client.recommend_population(["customers.name"])
 
         assert captured[0].get("root_hint") == "orders"
         assert "root_hint" not in captured[1]

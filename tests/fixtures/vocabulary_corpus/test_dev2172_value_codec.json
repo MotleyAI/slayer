@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_dev2172_value_codec.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "vals",
+    "dimensions": [
+     "v"
+    ],
+    "limit": 5
+   },
+   "new": {
+    "population": "vals",
+    "dimensions": [
+     "v"
+    ],
+    "limit": 5
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 223,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 224,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 225,
+   "reason": "not fully literal"
+  }
+ ]
+}

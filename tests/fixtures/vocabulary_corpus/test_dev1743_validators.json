@@ -1,0 +1,62 @@
+{
+ "source": "tests/test_dev1743_validators.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage__two",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "stage__two",
+    "population": "orders"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not a standalone metric: ValidationError"
+  },
+  {
+   "line": 150,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  }
+ ]
+}

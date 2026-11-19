@@ -6,6 +6,7 @@ from slayer.core import errors
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import SlayerQuery
 from tests import _dev1883_fixtures as fx
+from slayer.engine.query_engine import SlayerQueryEngine
 
 GRANULARITIES = [g.value for g in TimeGranularity]
 BUCKET_FORM = "date_trunc('<unit>', expr)"
@@ -31,9 +32,9 @@ async def exec_engine(tmp_path):
 
 def _q(dimensions: list) -> SlayerQuery:
     return fx.q(
-        source_model="orders",
+        population="orders",
         dimensions=dimensions,
-        measures=[{"formula": "count(*)"}],
+        metrics=[{"expression": "count(*)"}],
     )
 
 
@@ -51,7 +52,7 @@ class TestWrongShapeGranularityCalls:
 class TestNonTemporalArgument:
     async def test_fails_at_binding_as_a_time_dimension(self, exec_engine) -> None:
         query = _q(["date_trunc('month', upper(status))"])  # accepted at construction
-        with pytest.raises(errors.TimeDimensionColumnError, match="TEXT"):
+        with pytest.raises(errors.TimeDimensionFieldError, match="TEXT"):
             await exec_engine.execute(query, dry_run=True)
 
 
@@ -81,12 +82,12 @@ class TestUnknownSingleColumnCall:
 
 
 class TestNonRegression:
-    async def test_scalar_computed_dimension_unaffected(self, exec_engine) -> None:
+    async def test_scalar_computed_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_q(["upper(status)"]))
         assert resp.columns == ["orders.upper_status", "orders._count"]
         assert {r["orders.upper_status"] for r in resp.data} == {"OPEN", "PAID"}
 
-    async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine) -> None:
+    async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(
             _q(["status", "sum(amount, partition_by=status) > 20"])
         )
@@ -106,10 +107,10 @@ class TestNonRegression:
         self, exec_engine, bound, expected,
     ) -> None:
         query = fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["status"],
-            measures=[{"formula": "count(*)"}],
-            filters=[f"date_trunc('month', created_at) >= '{bound}'"],
+            metrics=[{"expression": "count(*)"}],
+            filter=[f"date_trunc('month', created_at) >= '{bound}'"],
         )
         resp = await exec_engine.execute(query)
         assert {r["orders.status"]: r["orders._count"] for r in resp.data} == expected
@@ -119,7 +120,7 @@ class TestNonRegression:
     ) -> None:
         """Position parity: a bare ``date_trunc`` measure gets the same treatment as another row-level temporal scalar."""
         async def outcome(formula: str):
-            query = fx.q(source_model="orders", dimensions=["status"], measures=[{"formula": formula, "name": "v"}])
+            query = fx.q(population="orders", dimensions=["status"], metrics=[{"expression": formula, "name": "v"}])
             try:
                 resp = await exec_engine.execute(query)
             except Exception as exc:  # noqa: BLE001 — the raised class is the compared outcome

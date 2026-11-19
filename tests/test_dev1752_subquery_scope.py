@@ -27,9 +27,9 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.sql.column_expansion import collect_root_scope_joined_paths
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import FieldRef, SlayerQuery
+from slayer.sql.field_expansion import collect_root_scope_joined_paths
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
@@ -40,6 +40,7 @@ from tests.test_dev1745_mode_a_door import (
     _scope,
     _sql_of,
 )
+import pytest
 
 
 # The orders/customers/regions ScopeFrame fixtures are shared with the DEV-1745
@@ -172,10 +173,10 @@ class TestJoinDiscoveryRootOnly:
         host = _orders()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[host, _customers(), _regions()],
+            population=host, referenced_datasets=[host, _customers(), _regions()],
         )
         paths = collect_root_scope_joined_paths(
-            parsed=parsed, source_model=host,
+            parsed=parsed, source_dataset=host,
             source_relation=host.name, bundle=bundle,
         )
         assert paths == [], paths
@@ -191,10 +192,10 @@ class TestJoinDiscoveryRootOnly:
         host = _orders()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[host, _customers(), _regions()],
+            population=host, referenced_datasets=[host, _customers(), _regions()],
         )
         paths = collect_root_scope_joined_paths(
-            parsed=parsed, source_model=host,
+            parsed=parsed, source_dataset=host,
             source_relation=host.name, bundle=bundle,
         )
         assert paths == [], paths
@@ -237,22 +238,22 @@ def _seed_sqlite(db_path: str) -> None:
         )
 
 
-async def _engine_with_filter(base_dir: str, db_path: str, *, model_filter: str) -> SlayerQueryEngine:
+async def _engine_with_filter(base_dir: str, db_path: str, *, dataset_filter: str) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=base_dir)
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=db_path),
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
-        filters=[model_filter],
+        filters=[dataset_filter],
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -272,15 +273,15 @@ class TestExecution:
             _seed_sqlite(db)
             engine = await _engine_with_filter(
                 os.path.join(d, "store"), db,
-                model_filter="amount IN (SELECT amount FROM other_tbl)",
+                dataset_filter="amount IN (SELECT amount FROM other_tbl)",
             )
             resp = await engine.execute(
-                SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="id")]),
+                SlayerQuery(population="orders", dimensions=[FieldRef(name="id")]),
             )
             assert _ids(resp) == {1, 3}, resp.data
 
     async def test_correlated_subquery_passes_scope_validation(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A correlated Mode-A subquery references the outer relation — legal
         SQL that DEV-1840's correlation-aware ``assert_scope_closed`` now
@@ -293,13 +294,13 @@ class TestExecution:
             _seed_sqlite(db)
             engine = await _engine_with_filter(
                 os.path.join(d, "store"), db,
-                model_filter=(
+                dataset_filter=(
                     "EXISTS (SELECT 1 FROM line_items "
                     "WHERE line_items.order_id = orders.id)"
                 ),
             )
             query = SlayerQuery(
-                source_model="orders", dimensions=[ColumnRef(name="id")],
+                population="orders", dimensions=[FieldRef(name="id")],
             )
             resp = await engine.execute(query)
             assert _ids(resp) == {1, 3}, resp.data

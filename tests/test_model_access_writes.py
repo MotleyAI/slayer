@@ -9,7 +9,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AccessTagsEditError, HiddenContentConflictError, MemoryNotFoundError, SlayerError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.models import Embedding, EntityKind
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -44,13 +44,13 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFiltered
     return AccessFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
 
-async def save(storage: AccessFilteredStorage, model: SlayerModel, *, saver: str) -> None:
+async def save(storage: AccessFilteredStorage, dataset: SlayerDataset, *, saver: str) -> None:
     if saver == "storage":
-        await storage.save_model(model)
+        await storage.save_dataset(dataset)
         return
     engine = SlayerQueryEngine(storage=storage)
     try:
-        await engine.save_model(model)
+        await engine.save_dataset(dataset)
     finally:
         engine.close()
 
@@ -78,19 +78,19 @@ async def test_save_warns_about_no_model_outside_the_view(store: AccessStore, sa
 
 async def test_save_warns_about_no_hidden_dependent_it_breaks(store: AccessStore) -> None:
     pub_link = await must_get(store.storage, "pub_link")
-    extra = ModelJoin(target_model="pub", name="extra", join_pairs=[["id", "id"]])
-    await store.storage.save_model(pub_link.model_copy(update={"joins": [*pub_link.joins, extra]}), _validate=False)
-    secret = SlayerModel(
+    extra = DatasetRelationship(to="pub", name="extra", join_pairs=[["id", "id"]])
+    await store.storage.save_dataset(pub_link.model_copy(update={"relationships": [*pub_link.relationships, extra]}), _validate=False)
+    secret = SlayerDataset(
         name="secret", sql_table="pub_items", data_source=DS, access_tags=["hr"],
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="lbl", sql="pub_link.extra.label")],
-        joins=[ModelJoin(target_model="pub_link", join_pairs=[["id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="lbl", sql="pub_link.extra.label")],
+        relationships=[DatasetRelationship(to="pub_link", join_pairs=[["id", "id"]])],
     )
-    await store.storage.save_model(secret, _validate=False)
+    await store.storage.save_dataset(secret, _validate=False)
     fin = view(store, "fin")
-    edited = (await must_get(fin, "pub_link")).model_copy(update={"joins": []})
+    edited = (await must_get(fin, "pub_link")).model_copy(update={"relationships": []})
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        await fin.save_model(edited)
+        await fin.save_dataset(edited)
     assert [str(w.message) for w in caught if "secret" in str(w.message)] == []
 
 
@@ -103,9 +103,9 @@ async def test_backend_failure_propagates_unchanged(
 
     fin = view(store, "fin")
     model = await must_get(fin, name)
-    monkeypatch.setattr(store.storage, "save_model", broken_save)
+    monkeypatch.setattr(store.storage, "save_dataset", broken_save)
     with pytest.raises(OSError, match="disk full"):
-        await fin.save_model(model)
+        await fin.save_dataset(model)
 
 
 @pytest.mark.parametrize("saver", SAVERS)
@@ -113,13 +113,13 @@ class TestMergedModelWrites:
     async def test_edit_keeps_pruned_join(self, store: AccessStore, saver: str) -> None:
         fin = view(store, "fin")
         model = await must_get(fin, "fin")
-        assert model.joins == []
-        doubled = Column(name="doubled", type=DataType.DOUBLE, sql="amount * 2")
-        await save(fin, model.model_copy(update={"columns": [*model.columns, doubled]}), saver=saver)
+        assert model.relationships == []
+        doubled = DatasetField(name="doubled", datatype=DataType.DOUBLE, sql="amount * 2")
+        await save(fin, model.model_copy(update={"fields": [*model.fields, doubled]}), saver=saver)
         stored = await must_get(store.storage, "fin")
-        assert stored.get_column("doubled") is not None
-        assert [j.target_model for j in stored.joins] == ["hr"]
-        assert (await must_get(fin, "fin")).joins == []
+        assert stored.get_field("doubled") is not None
+        assert [j.to for j in stored.relationships] == ["hr"]
+        assert (await must_get(fin, "fin")).relationships == []
 
     async def test_edit_keeps_pruned_named_edge(self, store: AccessStore, saver: str) -> None:
         fin = view(store, "fin")
@@ -127,41 +127,41 @@ class TestMergedModelWrites:
         await save(fin, model.model_copy(update={"description": "linked items"}), saver=saver)
         stored = await must_get(store.storage, "pub_link")
         assert stored.description == "linked items"
-        assert [j.name for j in stored.joins] == [PRUNED_EDGE]
+        assert [j.name for j in stored.relationships] == [PRUNED_EDGE]
 
 
-def _new_model_named_hr(_: SlayerModel, __: SlayerModel) -> SlayerModel:
-    return SlayerModel(name="hr", sql_table="pub_items", data_source=DS,
-                       columns=[Column(name="id", type=DataType.INT, primary_key=True)])
+def _new_dataset_named_hr(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
+    return SlayerDataset(name="hr", sql_table="pub_items", data_source=DS,
+                       fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
 
 
-def _edge_named_like_hidden_model(fin: SlayerModel, _: SlayerModel) -> SlayerModel:
-    return fin.model_copy(update={"joins": [ModelJoin(target_model="pub", name="hr", join_pairs=[["staff_id", "id"]])]})
+def _edge_named_like_hidden_dataset(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
+    return fin.model_copy(update={"relationships": [DatasetRelationship(to="pub", name="hr", join_pairs=[["staff_id", "id"]])]})
 
 
-def _new_model_with_edge_named_like_hidden_model(_: SlayerModel, __: SlayerModel) -> SlayerModel:
-    return SlayerModel(name="pub_edge", sql_table="pub_items", data_source=DS,
-                       columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                       joins=[ModelJoin(target_model="pub", name="hr", join_pairs=[["id", "id"]])])
+def _new_dataset_with_edge_named_like_hidden_dataset(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
+    return SlayerDataset(name="pub_edge", sql_table="pub_items", data_source=DS,
+                       fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                       relationships=[DatasetRelationship(to="pub", name="hr", join_pairs=[["id", "id"]])])
 
 
-def _edge_named_like_pruned_edge(_: SlayerModel, pub_link: SlayerModel) -> SlayerModel:
-    return pub_link.model_copy(update={"joins": [ModelJoin(target_model="fin", name=PRUNED_EDGE, join_pairs=[["id", "id"]])]})
+def _edge_named_like_pruned_edge(_: SlayerDataset, pub_link: SlayerDataset) -> SlayerDataset:
+    return pub_link.model_copy(update={"relationships": [DatasetRelationship(to="fin", name=PRUNED_EDGE, join_pairs=[["id", "id"]])]})
 
 
-def _without_key_column(fin: SlayerModel, _: SlayerModel) -> SlayerModel:
-    return fin.model_copy(update={"columns": [c for c in fin.columns if c.name != "staff_id"]})
+def _without_key_column(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
+    return fin.model_copy(update={"fields": [c for c in fin.fields if c.name != "staff_id"]})
 
 
-def _key_column(fin: SlayerModel, **update) -> SlayerModel:
-    columns = [c.model_copy(update=update) if c.name == "staff_id" else c for c in fin.columns]
-    return fin.model_copy(update={"columns": columns})
+def _key_column(fin: SlayerDataset, **update) -> SlayerDataset:
+    columns = [c.model_copy(update=update) if c.name == "staff_id" else c for c in fin.fields]
+    return fin.model_copy(update={"fields": columns})
 
 
-CONFLICTS: dict[str, tuple[Callable[[SlayerModel, SlayerModel], SlayerModel], str | None, str]] = {
-    "hidden-model-name": (_new_model_named_hr, "hr", "hr"),
-    "edge-named-like-hidden-model": (_edge_named_like_hidden_model, "hr", "fin"),
-    "new-model-edge-named-like-hidden-model": (_new_model_with_edge_named_like_hidden_model, "hr", "pub_edge"),
+CONFLICTS: dict[str, tuple[Callable[[SlayerDataset, SlayerDataset], SlayerDataset], str | None, str]] = {
+    "hidden-model-name": (_new_dataset_named_hr, "hr", "hr"),
+    "edge-named-like-hidden-model": (_edge_named_like_hidden_dataset, "hr", "fin"),
+    "new-model-edge-named-like-hidden-model": (_new_dataset_with_edge_named_like_hidden_dataset, "hr", "pub_edge"),
     "edge-named-like-pruned-edge": (_edge_named_like_pruned_edge, None, "pub_link"),
     "removed-key-column": (_without_key_column, None, "fin"),
     "expression-key-column": (lambda fin, _: _key_column(fin, sql="id + 0"), None, "fin"),
@@ -174,46 +174,46 @@ CONFLICTS: dict[str, tuple[Callable[[SlayerModel, SlayerModel], SlayerModel], st
 async def test_conflict_with_hidden_content_is_refused(store: AccessStore, saver: str, case: str) -> None:
     build, own, stored_name = CONFLICTS[case]
     fin = view(store, "fin")
-    before = await store.storage.get_model(stored_name, data_source=DS)
+    before = await store.storage.get_dataset(stored_name, data_source=DS)
     edited = build(await must_get(fin, "fin"), await must_get(fin, "pub_link"))
     with pytest.raises(HiddenContentConflictError) as excinfo:
         await save(fin, edited, saver=saver)
     assert foreign_leaks(str(excinfo.value), own=own) == []
-    assert await store.storage.get_model(stored_name, data_source=DS) == before
+    assert await store.storage.get_dataset(stored_name, data_source=DS) == before
 
 
 @pytest.mark.parametrize("saver", SAVERS)
 async def test_join_to_hidden_model_fails_like_join_to_missing_one(store: AccessStore, saver: str) -> None:
     fin = view(store, "fin")
     pub = await must_get(fin, "pub")
-    before = await store.storage.get_model("pub", data_source=DS)
+    before = await store.storage.get_dataset("pub", data_source=DS)
 
-    def joined_to(target: str) -> SlayerModel:
-        return pub.model_copy(update={"joins": [ModelJoin(target_model=target, join_pairs=[["id", "id"]])]})
+    def joined_to(target: str) -> SlayerDataset:
+        return pub.model_copy(update={"relationships": [DatasetRelationship(to=target, join_pairs=[["id", "id"]])]})
 
     hidden = await outcome(save(fin, joined_to("hr"), saver=saver))
     missing = await outcome(save(fin, joined_to("nosuch"), saver=saver))
     assert hidden[0] != "ok"
     assert hidden[0] != HiddenContentConflictError.__name__
     assert (hidden[0], hidden[1].replace("hr", "X")) == (missing[0], missing[1].replace("nosuch", "X"))
-    assert await store.storage.get_model("pub", data_source=DS) == before
+    assert await store.storage.get_dataset("pub", data_source=DS) == before
 
 
 @pytest.mark.parametrize("saver", SAVERS)
 @pytest.mark.parametrize("unwrapped", [True, False], ids=["unwrapped", "bypass"])
 async def test_editors_still_save_dangling_joins(store: AccessStore, saver: str, unwrapped: bool) -> None:
     pub = await must_get(store.storage, "pub")
-    dangling = pub.model_copy(update={"joins": [ModelJoin(target_model="nosuch", join_pairs=[["id", "id"]])]})
+    dangling = pub.model_copy(update={"relationships": [DatasetRelationship(to="nosuch", join_pairs=[["id", "id"]])]})
     target = store.storage if unwrapped else view(store, bypass=True)
     if saver == "storage":
-        await target.save_model(dangling)
+        await target.save_dataset(dangling)
     else:
         engine = SlayerQueryEngine(storage=target)
         try:
-            await engine.save_model(dangling)
+            await engine.save_dataset(dangling)
         finally:
             engine.close()
-    assert [j.target_model for j in (await must_get(store.storage, "pub")).joins] == ["nosuch"]
+    assert [j.to for j in (await must_get(store.storage, "pub")).relationships] == ["nosuch"]
 
 
 @pytest.mark.parametrize("saver", SAVERS)
@@ -235,17 +235,17 @@ class TestAccessTags:
             await save(fin, conflicting, saver=saver)
 
     async def test_tagged_create_is_refused(self, store: AccessStore, saver: str) -> None:
-        fresh = SlayerModel(name="fresh", sql_table="pub_items", data_source=DS, access_tags=["fin"],
-                            columns=[Column(name="id", type=DataType.INT, primary_key=True)])
+        fresh = SlayerDataset(name="fresh", sql_table="pub_items", data_source=DS, access_tags=["fin"],
+                            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
         fin = view(store, "fin")
         with pytest.raises(AccessTagsEditError):
             await save(fin, fresh, saver=saver)
-        assert await store.storage.get_model("fresh", data_source=DS) is None
+        assert await store.storage.get_dataset("fresh", data_source=DS) is None
 
     async def test_tagged_copy_into_another_datasource_is_refused(self, store: AccessStore, saver: str) -> None:
-        ledger = SlayerModel(name="ledger", sql_table="fin_ledger", data_source=DS, access_tags=["fin"],
-                             columns=[Column(name="id", type=DataType.INT, primary_key=True)])
-        await store.storage.save_model(ledger, _validate=False)
+        ledger = SlayerDataset(name="ledger", sql_table="fin_ledger", data_source=DS, access_tags=["fin"],
+                             fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
+        await store.storage.save_dataset(ledger, _validate=False)
         ds = await store.storage.get_datasource(DS)
         assert ds is not None
         await store.storage.save_datasource(ds.model_copy(update={"name": "acme2"}))
@@ -253,7 +253,7 @@ class TestAccessTags:
         fin = view(store, "fin")
         with pytest.raises(AccessTagsEditError):
             await save(fin, copy, saver=saver)
-        assert await store.storage.get_model("ledger", data_source="acme2") is None
+        assert await store.storage.get_dataset("ledger", data_source="acme2") is None
 
     async def test_bypass_may_retag(self, store: AccessStore, saver: str) -> None:
         everything = view(store, bypass=True)
@@ -264,9 +264,9 @@ class TestAccessTags:
 
 class TestDeletes:
     async def test_deleting_hidden_model_is_a_miss(self, store: AccessStore) -> None:
-        assert await view(store, "fin").delete_model("hr", data_source=DS) is False
-        assert await view(store, "fin").delete_model("hr") is False
-        assert await store.storage.get_model("hr", data_source=DS) is not None
+        assert await view(store, "fin").delete_dataset("hr", data_source=DS) is False
+        assert await view(store, "fin").delete_dataset("hr") is False
+        assert await store.storage.get_dataset("hr", data_source=DS) is not None
 
     async def test_deleting_hidden_memory_is_not_found(self, store: AccessStore) -> None:
         fin = view(store, "fin")
@@ -275,7 +275,7 @@ class TestDeletes:
         assert await store.storage.get_memory_row(HR_ONLY_MEMORY) is not None
 
     async def test_deleting_visible_model_cascades_over_the_full_store(self, store: AccessStore) -> None:
-        assert await view(store, "fin").delete_model("fin", data_source=DS) is True
+        assert await view(store, "fin").delete_dataset("fin", data_source=DS) is True
         mixed = await store.storage.get_memory(MIXED_MEMORY)
         assert mixed.entities == [f"{DS}.hr"]
         assert mixed.query is not None
@@ -320,7 +320,7 @@ class TestMergedMemoryWrites:
 
 
 class TestEmbeddingWrites:
-    def row(self, canonical_id: str, kind: EntityKind = "model") -> Embedding:
+    def row(self, canonical_id: str, kind: EntityKind = "dataset") -> Embedding:
         return Embedding(canonical_id=canonical_id, embedding_model_name=embedding_client.current_model(),
                          entity_kind=kind, content_hash="new", embedding=[0.0, 1.0])
 
@@ -361,20 +361,20 @@ class TestEmbeddingWrites:
 
 class TestMcpEdits:
     async def call(self, storage: AccessFilteredStorage, **arguments) -> str:
-        return await mcp_text(storage, "edit_model", **arguments)
+        return await mcp_text(storage, "edit_dataset", **arguments)
 
     async def test_editing_hidden_model_reads_like_missing(self, store: AccessStore) -> None:
         fin = view(store, "fin")
-        hidden = await self.call(fin, model_name="hr", description="x")
-        missing = await self.call(fin, model_name="nosuch", description="x")
+        hidden = await self.call(fin, dataset_name="hr", description="x")
+        missing = await self.call(fin, dataset_name="nosuch", description="x")
         assert hidden.replace("hr", "X") == missing.replace("nosuch", "X")
         assert (await must_get(store.storage, "hr")).description != "x"
 
     async def test_moving_model_with_pruned_join_is_refused(self, store: AccessStore) -> None:
         await store.storage.save_datasource(DatasourceConfig(name="acme2", type=store.dialect, database=store.db_path))
-        before = await store.storage.get_model("pub_link", data_source=DS)
-        text = await self.call(view(store, "fin"), model_name="pub_link", data_source=DS, new_data_source="acme2")
+        before = await store.storage.get_dataset("pub_link", data_source=DS)
+        text = await self.call(view(store, "fin"), dataset_name="pub_link", data_source=DS, new_data_source="acme2")
         assert "conflict" in text.lower()
         assert foreign_leaks(text) == []
-        assert await store.storage.get_model("pub_link", data_source=DS) == before
-        assert await store.storage.get_model("pub_link", data_source="acme2") is None
+        assert await store.storage.get_dataset("pub_link", data_source=DS) == before
+        assert await store.storage.get_dataset("pub_link", data_source="acme2") is None

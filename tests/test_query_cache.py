@@ -27,9 +27,9 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.engine.cache import (
     CacheConfig,
     NormalizedTable,
@@ -111,16 +111,16 @@ def _seed_orders_single(db_path, *, amount: float) -> None:
         )
 
 
-def _orders_model(ds: str = "ds") -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset(ds: str = "ds") -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source=ds,
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
@@ -135,12 +135,12 @@ async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_su
     await storage.save_datasource(
         DatasourceConfig(name=ds_name, type="sqlite", database=str(db))
     )
-    await storage.save_model(_orders_model(ds_name))
+    await storage.save_dataset(_orders_dataset(ds_name))
     return SlayerQueryEngine(storage=storage, cache_config=cache_config, policy=policy)
 
 
 def _sum_query() -> SlayerQuery:
-    return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])
+    return SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)")])
 
 
 def _mutate(db_path, sql: str) -> None:
@@ -148,7 +148,7 @@ def _mutate(db_path, sql: str) -> None:
         conn.execute(sql)
 
 
-def _install_spy(monkeypatch):
+def _install_spy(monkeypatch: pytest.MonkeyPatch):
     """Record every SQL string sent through ``SlayerSQLClient.execute``."""
     calls: list[str] = []
     orig = SlayerSQLClient.execute
@@ -415,7 +415,7 @@ class TestScanSqlAndValues:
 
 
 class TestBasicCaching:
-    async def test_miss_then_hit_serves_stale_without_reexec(self, tmp_path, monkeypatch):
+    async def test_miss_then_hit_serves_stale_without_reexec(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(tmp_path)
         calls = _install_spy(monkeypatch)
         q = _sum_query()
@@ -474,7 +474,7 @@ class TestBasicCaching:
 
 
 class TestTtlLazyReexec:
-    async def test_ttl_lazy_reexec_on_read(self, tmp_path, monkeypatch):
+    async def test_ttl_lazy_reexec_on_read(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         clk = FakeClock()
         engine = await _build_engine(tmp_path)
         engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clk)
@@ -495,7 +495,7 @@ class TestTtlLazyReexec:
 
 
 class TestRefresh:
-    async def test_baseline_scanned_before_data_query(self, tmp_path, monkeypatch):
+    async def test_baseline_scanned_before_data_query(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(
             tmp_path,
             cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
@@ -588,8 +588,8 @@ class TestRefresh:
         assert old_key in engine._cache._entries
 
         # Edit the stored model: an always-applied filter changes the SQL.
-        edited = _orders_model("ds").model_copy(update={"filters": ["amount > 60"]})
-        await engine.storage.save_model(edited)
+        edited = _orders_dataset("ds").model_copy(update={"filters": ["amount > 60"]})
+        await engine.storage.save_dataset(edited)
         new_sql = (await engine.execute(q, dry_run=True)).sql
         new_key = QueryCache.make_key(new_sql, fp)
         assert new_key != old_key
@@ -657,7 +657,7 @@ class TestRefresh:
         original_key = QueryCache.make_key(original_sql, fp)
 
         # Mutate the caller's query object in place.
-        q.filters = ["amount > 60"]
+        q.filter = ["amount > 60"]
 
         clk.advance(200)  # TTL expired → refresh replays the stored copy
         await engine.refresh()
@@ -699,16 +699,16 @@ class TestRefresh:
 
 
 class TestMultiStageAndByName:
-    async def test_multi_stage_list_caching(self, tmp_path, monkeypatch):
+    async def test_multi_stage_list_caching(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(tmp_path)
         inner = SlayerQuery(
-            source_model="orders",
+            population="orders",
             name="raw",
-            dimensions=[ColumnRef(name="status"), ColumnRef(name="amount")],
+            dimensions=[FieldRef(name="status"), FieldRef(name="amount")],
             distinct_dimension_values=False,
         )
         outer = SlayerQuery(
-            source_model="raw", measures=[ModelMeasure(formula="sum(amount)")]
+            population="raw", metrics=[DatasetMetric(expression="sum(amount)")]
         )
         r1 = await engine.execute([inner, outer], cache=True)
         assert engine.cache_size == 1
@@ -720,13 +720,13 @@ class TestMultiStageAndByName:
         assert _data_queries(calls) == []
         assert r2.data[0]["raw.amount_sum"] == total
 
-    async def test_run_by_name_caching(self, tmp_path, monkeypatch):
+    async def test_run_by_name_caching(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(tmp_path)
-        await engine.create_model_from_query(
+        await engine.create_dataset_from_query(
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount)")],
-                dimensions=[ColumnRef(name="status")],
+                population="orders",
+                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[FieldRef(name="status")],
             ),
             name="orders_by_status",
         )
@@ -742,11 +742,11 @@ class TestMultiStageAndByName:
         clk = FakeClock()
         engine = await _build_engine(tmp_path)
         engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clk)
-        await engine.create_model_from_query(
+        await engine.create_dataset_from_query(
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount)")],
-                dimensions=[ColumnRef(name="status")],
+                population="orders",
+                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[FieldRef(name="status")],
             ),
             name="obs",
         )
@@ -754,15 +754,15 @@ class TestMultiStageAndByName:
         assert engine.cache_size == 1
 
         # Edit the backing source_queries: filter out the 'pending' rows.
-        await engine.save_model(
-            SlayerModel(
+        await engine.save_dataset(
+            SlayerDataset(
                 name="obs",
                 source_queries=[
                     SlayerQuery(
-                        source_model="orders",
-                        measures=[ModelMeasure(formula="sum(amount)")],
-                        dimensions=[ColumnRef(name="status")],
-                        filters=["status != 'pending'"],
+                        population="orders",
+                        metrics=[DatasetMetric(expression="sum(amount)")],
+                        dimensions=[FieldRef(name="status")],
+                        filter=["status != 'pending'"],
                     )
                 ],
             )
@@ -778,21 +778,21 @@ class TestMultiStageAndByName:
 
 
 class TestRefinedByName:
-    REFINE = {"filters": ["status = 'completed'"]}
+    REFINE = {"filter": ["status = 'completed'"]}
 
     async def _engine_with_saved(self, tmp_path) -> SlayerQueryEngine:
         engine = await _build_engine(tmp_path)
-        await engine.create_model_from_query(
+        await engine.create_dataset_from_query(
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount)")],
-                dimensions=[ColumnRef(name="status")],
+                population="orders",
+                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[FieldRef(name="status")],
             ),
             name="obs",
         )
         return engine
 
-    async def test_refined_run_caches_separately(self, tmp_path, monkeypatch):
+    async def test_refined_run_caches_separately(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await self._engine_with_saved(tmp_path)
         plain = await engine.execute("obs", cache=True)
         refined = await engine.execute("obs", refine=self.REFINE, cache=True)
@@ -844,9 +844,9 @@ class TestEvictAndManagement:
         engine = await _build_engine(tmp_path)
         q1 = _sum_query()
         q2 = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(amount)")],
+            dimensions=[FieldRef(name="status")],
         )
         await engine.execute(q1, cache=True)
         await engine.execute(q2, cache=True)
@@ -857,7 +857,7 @@ class TestEvictAndManagement:
         engine.clear_cache()
         assert engine.cache_size == 0
 
-    async def test_evict_never_constructs_a_client(self, tmp_path, monkeypatch):
+    async def test_evict_never_constructs_a_client(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(tmp_path)
 
         class ExplodingClient:
@@ -902,7 +902,7 @@ class TestCacheConfigFrozen:
 
 
 class TestPolicyInteraction:
-    async def test_refresh_key_scan_is_policy_scoped(self, tmp_path, monkeypatch):
+    async def test_refresh_key_scan_is_policy_scoped(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         # With a forced-filter policy the refresh-key
         # baseline scan must be rewritten to the same tenant scope as the data
         # query, so a global MAX/COUNT can't mask a tenant-local change.
@@ -940,8 +940,8 @@ class TestDatasourceResolution:
         await storage.save_datasource(
             DatasourceConfig(name="db_b", type="sqlite", database=str(db_b))
         )
-        await storage.save_model(_orders_model("db_a"))
-        await storage.save_model(_orders_model("db_b"))
+        await storage.save_dataset(_orders_dataset("db_a"))
+        await storage.save_dataset(_orders_dataset("db_b"))
         await storage.set_datasource_priority(["db_a", "db_b"])
 
         clk = FakeClock()
@@ -977,7 +977,7 @@ async def _engine_with_repointed_datasource(tmp_path, *, a_stem, b_stem):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(db_a))
     )
-    await storage.save_model(_orders_model("ds"))
+    await storage.save_dataset(_orders_dataset("ds"))
     engine = SlayerQueryEngine(
         storage=storage,
         cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),

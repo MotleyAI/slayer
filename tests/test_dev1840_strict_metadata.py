@@ -14,18 +14,18 @@ import warnings as _warnings
 import pytest
 
 from slayer.core.errors import (
-    AmbiguousJoinPathError,
+    AmbiguousRelationshipPathError,
     AssociatedGrainWarning,
     BroadcastGrainWarning,
 )
 
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SPEND_APP_BY_TIER,
     SPEND_BASIC_BY_TIER,
-    ambiguity_models,
-    dev1840_models,
+    ambiguity_datasets,
+    dev1840_datasets,
     make_exec_engine,
     q,
     rows_by,
@@ -42,21 +42,21 @@ async def exec_backend(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_weak(request):
     async for engine in make_exec_engine(
-        request, models=dev1840_models(strong_plans=False),
+        request, datasets=dev1840_datasets(strong_plans=False),
     ):
         yield request.param, engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_amb(request):
-    async for engine in make_exec_engine(request, models=ambiguity_models()):
+    async for engine in make_exec_engine(request, datasets=ambiguity_datasets()):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-SM = ModelMeasure(formula="sum(agents.score)", name="sm")
-RV = ModelMeasure(formula="sum(reviews.stars)", name="rv")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+SM = DatasetMetric(expression="sum(agents.score)", name="sm")
+RV = DatasetMetric(expression="sum(reviews.stars)", name="rv")
 
 
 class TestPushedFiltersAreSilent:
@@ -66,8 +66,8 @@ class TestPushedFiltersAreSilent:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             await engine.execute(q(
-                dimensions=["customers.tier"], measures=[M, CM],
-                filters=["channel = 'app'"],
+                dimensions=["customers.tier"], metrics=[M, CM],
+                filter=["channel = 'app'"],
             ))
         hits = [c for c in caught
                 if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
@@ -80,8 +80,8 @@ class TestPushedFiltersAreSilent:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             await engine.execute(q(
-                dimensions=["customers.tier"], measures=[CM],
-                filters=["customers.plans.level = 'basic'"],
+                dimensions=["customers.tier"], metrics=[CM],
+                filter=["customers.plans.level = 'basic'"],
             ))
         hits = [c for c in caught
                 if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
@@ -93,8 +93,8 @@ class TestStrictNarrows:
         """Scenario: strict passes on a pushable filter."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
-            filters=["channel = 'app'"],
+            to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
+            filter=["channel = 'app'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         for tier, spend in SPEND_APP_BY_TIER.items():
@@ -105,8 +105,8 @@ class TestStrictNarrows:
     ):
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
-            to_many_handling="error", dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.plans.level = 'basic'"],
+            to_many_handling="error", dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.plans.level = 'basic'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         for tier, spend in SPEND_BASIC_BY_TIER.items():
@@ -117,8 +117,8 @@ class TestStrictNarrows:
         producer is restricted by a boolean-total semi-join (gold cm = 160)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            to_many_handling="error", dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.tier = 'bronze' OR channel = 'app'"],
+            to_many_handling="error", dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.tier = 'bronze' OR channel = 'app'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
@@ -129,8 +129,8 @@ class TestStrictNarrows:
         """Ambiguous hop errors under strict — same failure as lenient.
         DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
-        query = tq(to_many_handling="error", measures=[SM], filters=["effort > 2"])
-        with pytest.raises(AmbiguousJoinPathError) as ei:
+        query = tq(to_many_handling="error", metrics=[SM], filter=["effort > 2"])
+        with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
         assert "closed_by" in str(ei.value)
@@ -142,8 +142,8 @@ class TestStrictNarrows:
         errors under strict — never dropped. DEV-1853 divergences.md
         class (d)."""
         _, engine = exec_backend_amb
-        query = tq(to_many_handling="error", measures=[RV], filters=["agents.name = 'Ann'"])
-        with pytest.raises(AmbiguousJoinPathError) as ei:
+        query = tq(to_many_handling="error", metrics=[RV], filter=["agents.name = 'Ann'"])
+        with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
         assert "closed_by" in str(ei.value)
@@ -157,8 +157,8 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
-                dimensions=["customers.tier"], measures=[CM],
-                filters=["customers.tier = 'bronze' OR channel = 'app'"],
+                dimensions=["customers.tier"], metrics=[CM],
+                filter=["customers.tier = 'bronze' OR channel = 'app'"],
             ))
         by = rows_by(resp, "orders.customers.tier")
         assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
@@ -170,8 +170,8 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         """DEV-1935: a cross-branch atom is pushed, not dropped-and-warned."""
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["channel = customers.plans.level"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["channel = customers.plans.level"],
         ))
         assert pushed_filter_infos(resp)
 
@@ -179,8 +179,8 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         """Ambiguous hop errors in BOTH modes — the drop+warn handling is
         retired. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
-        query = tq(measures=[SM], filters=["effort > 2"])
-        with pytest.raises(AmbiguousJoinPathError):
+        query = tq(metrics=[SM], filter=["effort > 2"])
+        with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(query)
 
     async def test_ambiguous_filter_hop_errors_in_lenient_mode(
@@ -189,6 +189,6 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         """A filter whose only route crosses the ambiguous pair errors in
         lenient mode too — never dropped. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
-        query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
-        with pytest.raises(AmbiguousJoinPathError):
+        query = tq(metrics=[RV], filter=["agents.name = 'Ann'"])
+        with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(query)

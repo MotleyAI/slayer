@@ -18,7 +18,7 @@ from slayer.ir.prebound import PreboundQuery
 
 def _has_unresolved_time_point(prebound: PreboundQuery) -> bool:
     roots = [
-        *(dm.bound.value_key for dm in prebound.declared_measures),
+        *(dm.bound.value_key for dm in prebound.declared_metrics),
         *(bf.value_key for bf in prebound.bound_filters),
         *(spec.bound.value_key for spec in prebound.order_specs),
     ]

@@ -12,8 +12,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.models import DatasetField, DatasetMetric
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.sql.scope import ScopeFrame
 
 from tests._cross_model_chain import _gen
@@ -64,29 +64,29 @@ def _assert_cte_shape(body: str, *, fragments: Tuple[str, ...], partition: str) 
 
 def _crossing_grain_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="customers_v2.deep_pop")],
-        measures=[ModelMeasure(
-            formula="first(customers_v2.lifetime_value)", name="f",
+        population="orders_x",
+        dimensions=[FieldRef(name="customers_v2.deep_pop")],
+        metrics=[DatasetMetric(
+            expression="first(customers_v2.lifetime_value)", name="f",
         )],
     )
 
 
 def _crossing_value_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[ModelMeasure(formula="first(customers_v2.deep_weight)", name="f")],
+        population="orders_x",
+        dimensions=[FieldRef(name="customers_v2.status")],
+        metrics=[DatasetMetric(expression="first(customers_v2.deep_weight)", name="f")],
     )
 
 
 def _two_distinct_crossing_values_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[
-            ModelMeasure(formula="first(customers_v2.deep_weight)", name="w"),
-            ModelMeasure(formula="first(customers_v2.deep_pop)", name="p"),
+        population="orders_x",
+        dimensions=[FieldRef(name="customers_v2.status")],
+        metrics=[
+            DatasetMetric(expression="first(customers_v2.deep_weight)", name="w"),
+            DatasetMetric(expression="first(customers_v2.deep_pop)", name="p"),
         ],
     )
 
@@ -224,10 +224,10 @@ class TestDedupParity:
     async def test_one_expression_is_materialised_once_per_scope(self) -> None:
         """One per-scope ``ScopeFrame`` table collapses to a single projection what the two old dedup maps materialised twice (grouping a first/last aggregate by the same expression it aggregates)."""
         query = SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="customers_v2.deep_weight")],
-            measures=[ModelMeasure(
-                formula="first(customers_v2.deep_weight)", name="f",
+            population="orders_x",
+            dimensions=[FieldRef(name="customers_v2.deep_weight")],
+            metrics=[DatasetMetric(
+                expression="first(customers_v2.deep_weight)", name="f",
             )],
         )
         sql = await _gen(query, dialect="postgres")
@@ -243,11 +243,11 @@ class TestDedupParity:
     ) -> None:
         """Dedup is per scope: two ``_cm_`` CTEs each materialise their own copy (guards against over-sharing into an alias absent from the consuming CTE)."""
         query = SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="customers_v2.status")],
-            measures=[
-                ModelMeasure(formula="first(customers_v2.deep_weight)", name="a"),
-                ModelMeasure(formula="last(customers_v2.deep_weight)", name="b"),
+            population="orders_x",
+            dimensions=[FieldRef(name="customers_v2.status")],
+            metrics=[
+                DatasetMetric(expression="first(customers_v2.deep_weight)", name="a"),
+                DatasetMetric(expression="last(customers_v2.deep_weight)", name="b"),
             ],
         )
         sql = await _gen(query, dialect="postgres")
@@ -264,18 +264,18 @@ class TestRankedPathUsesTheOneMaterialiser:
     """
 
     _HOST_CROSSING_COLUMN = [
-        Column(
+        DatasetField(
             name="cust_ltv",
             sql="customers_v2.lifetime_value",
-            type=DataType.DOUBLE,
+            datatype=DataType.DOUBLE,
         ),
     ]
 
     def _query(self) -> SlayerQuery:
         return SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="first(cust_ltv)", name="f")],
+            population="orders_x",
+            dimensions=[FieldRef(name="status")],
+            metrics=[DatasetMetric(expression="first(cust_ltv)", name="f")],
         )
 
     async def test_local_first_last_still_materialises_correctly(self) -> None:

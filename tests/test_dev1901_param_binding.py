@@ -12,16 +12,16 @@ from typing import List, Optional
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import (
-    CircularJoinPathError,
+    CircularRelationshipPathError,
     SlayerError,
     UnanalyzableAggregationParameterError,
     UnknownReferenceError,
 )
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, LiteralKey, SqlFragmentKey, walk_value_keys
-from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, SlayerModel
-from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, LiteralKey, SqlFragmentKey, walk_value_keys
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
 from slayer.core.syntax import parse_expr
@@ -29,33 +29,33 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1901_fixtures import (
     BAD_DEFAULTS,
     bundle_of,
-    dev1901_models,
+    dev1901_datasets,
     make_exec_engine,
     orders_q,
-    revisit_models,
-    window_param_models,
+    revisit_datasets,
+    window_param_datasets,
 )
 from tests._dev1954_fixtures import execution_spy
 
-AMOUNT = ColumnKey(path=(), leaf="amount")
-SPEND = ColumnKey(path=("customers",), leaf="spend")
-POP = ColumnKey(path=("customers", "regions"), leaf="pop")
+AMOUNT = FieldKey(path=(), leaf="amount")
+SPEND = FieldKey(path=("customers",), leaf="spend")
+POP = FieldKey(path=("customers", "regions"), leaf="pop")
 
 
-def _key(formula: str, *, models: Optional[List[SlayerModel]] = None,
+def _key(expression: str, *, datasets: Optional[List[SlayerDataset]] = None,
          source: str = "orders") -> AggregateKey:
-    models = models if models is not None else dev1901_models()
-    ordered = sorted(models, key=lambda m: m.name != source)
+    datasets = datasets if datasets is not None else dev1901_datasets()
+    ordered = sorted(datasets, key=lambda m: m.name != source)
     key = bind_expr(
-        parse_expr(formula), scope=ModelScope(source_model=ordered[0]),
-        bundle=bundle_of(ordered), allow_measures=True,
+        parse_expr(expression), scope=DatasetScope(population=ordered[0]),
+        bundle=bundle_of(ordered), allow_metrics=True,
     ).value_key
     assert isinstance(key, AggregateKey), key
     return key
 
 
-def _kw(formula: str, **kw) -> dict:
-    return dict(_key(formula, **kw).kwargs)
+def _kw(expression: str, **kw) -> dict:
+    return dict(_key(expression, **kw).kwargs)
 
 
 def _fragment(value) -> SqlFragmentKey:
@@ -66,14 +66,14 @@ def _fragment(value) -> SqlFragmentKey:
 class TestColumnDefaults:
     def test_bare_default_reads_the_owner_even_when_the_root_shadows_it(self) -> None:
         assert _kw("wshadow(customers.spend)") == {
-            "weight": ColumnKey(path=("customers",), leaf="factor")}
+            "weight": FieldKey(path=("customers",), leaf="factor")}
 
     def test_dotted_default_from_a_root_owner(self) -> None:
         assert _kw("wcs(amount)") == {"weight": SPEND}
 
     def test_derived_default(self) -> None:
         assert _kw("wcd(amount)") == {
-            "weight": ColumnSqlKey(path=(), model="orders", column_name="cust_spend")}
+            "weight": FieldSqlKey(path=(), dataset="orders", field_name="cust_spend")}
 
     def test_cancelled_default(self) -> None:
         assert _kw("wsum_region_pop(customers.regions.countries.gdp)") == {"weight": POP}
@@ -83,19 +83,19 @@ class TestColumnDefaults:
 
     def test_cancel_then_forward(self) -> None:
         assert _kw("wsum_plan_fee(customers.regions.countries.gdp)") == {
-            "weight": ColumnKey(path=("customers", "plans"), leaf="fee")}
+            "weight": FieldKey(path=("customers", "plans"), leaf="fee")}
 
     def test_owner_unreachable_qualifier_anchors_at_the_root(self) -> None:
         assert _kw("wstore(customers.spend)") == {
-            "weight": ColumnKey(path=("stores",), leaf="rent")}
+            "weight": FieldKey(path=("stores",), leaf="rent")}
 
     def test_owner_at_root_consumes_its_own_name(self) -> None:
         assert _kw("wself(amount)") == {
-            "weight": ColumnSqlKey(path=(), model="orders", column_name="cost")}
+            "weight": FieldSqlKey(path=(), dataset="orders", field_name="cost")}
 
     def test_explicit_argument_replaces_the_default(self) -> None:
         assert _kw("wcs(amount, weight=store_no)") == {
-            "weight": ColumnKey(path=(), leaf="store_no")}
+            "weight": FieldKey(path=(), leaf="store_no")}
 
 
 class TestScalarAndExpressionDefaults:
@@ -116,7 +116,7 @@ class TestScalarAndExpressionDefaults:
 
     def test_mixed_frame_expression_default_resolves_per_reference(self) -> None:
         frag = _fragment(_kw("wmix_q(customers.spend)")["weight"])
-        assert set(frag.refs) == {ColumnKey(path=("customers",), leaf="group"), AMOUNT}
+        assert set(frag.refs) == {FieldKey(path=("customers",), leaf="group"), AMOUNT}
 
     def test_zero_reference_expression(self) -> None:
         frag = _fragment(_kw("wzero(amount)")["weight"])
@@ -130,7 +130,7 @@ class TestExplicitStringFragments:
     def test_a_string_column_resolves_in_the_query_frame(self) -> None:
         # The default `factor` reads the owner (customers); the string reads the root.
         assert _kw("wshadow(customers.spend, weight='factor')") == {
-            "weight": ColumnKey(path=(), leaf="factor")}
+            "weight": FieldKey(path=(), leaf="factor")}
 
     def test_a_string_equals_its_unquoted_twin(self) -> None:
         assert _key("wsum(amount, weight='customers.region_id')") \
@@ -142,7 +142,7 @@ class TestExplicitStringFragments:
     def test_a_marker_string_stays_a_string(self) -> None:
         kw = _kw("wshadow(customers.spend, window='90d')")
         assert kw["window"] == "90d"
-        assert kw["weight"] == ColumnKey(path=("customers",), leaf="factor")
+        assert kw["weight"] == FieldKey(path=("customers",), leaf="factor")
 
 
 class TestDefaultEqualsTwin:
@@ -163,7 +163,7 @@ class TestDefaultEqualsTwin:
 
 class TestOwners:
     def test_saved_measure_binds_its_defaults(self) -> None:
-        assert _kw("customers.wsaved") == {"weight": ColumnKey(path=("customers",), leaf="factor")}
+        assert _kw("customers.wsaved") == {"weight": FieldKey(path=("customers",), leaf="factor")}
 
     def test_reaggregation_resolves_on_the_host(self) -> None:
         frag = _fragment(_kw("wcase_pop(sum(amount, partition_by=customers.regions.id))")["weight"])
@@ -178,12 +178,12 @@ class TestOwners:
             _stage_key("wsum(rev)")
 
 
-def _stage_key(formula: str) -> AggregateKey:
-    models = dev1901_models()
-    scope = StageSchema(relation_name="stage1", columns=[StageColumn(
-        name="rev", sql_alias="rev", public_alias="rev", type=DataType.DOUBLE)])
-    key = bind_expr(parse_expr(formula), scope=scope, bundle=ResolvedSourceBundle(
-        dialect="postgres", source_model=None, referenced_models=models)).value_key
+def _stage_key(expression: str) -> AggregateKey:
+    models = dev1901_datasets()
+    scope = StageSchema(relation_name="stage1", fields=[StageField(
+        name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.DOUBLE)])
+    key = bind_expr(parse_expr(expression), scope=scope, bundle=ResolvedSourceBundle(
+        dialect="postgres", population=None, referenced_datasets=models)).value_key
     assert isinstance(key, AggregateKey), key
     return key
 
@@ -253,12 +253,12 @@ class TestUnanalysableText:
         assert _kw("wsum(amount, weight='NULL')") == _kw("wsum(amount, weight=NULL)")
 
     def test_dialect_row_expression_binds(self) -> None:
-        models = dev1901_models()
+        models = dev1901_datasets()
 
         def weight(formula: str):
             key = bind_expr(
-                parse_expr(formula), scope=ModelScope(source_model=models[0]),
-                bundle=bundle_of(models, dialect="mysql"), allow_measures=True,
+                parse_expr(formula), scope=DatasetScope(population=models[0]),
+                bundle=bundle_of(models, dialect="mysql"), allow_metrics=True,
             ).value_key
             assert isinstance(key, AggregateKey)
             return dict(key.kwargs)["weight"]
@@ -269,9 +269,9 @@ class TestUnanalysableText:
     def test_is_a_slayer_error(self) -> None:
         assert issubclass(UnanalyzableAggregationParameterError, SlayerError)
 
-    async def test_no_sql_reaches_the_database(self, engine, monkeypatch) -> None:
+    async def test_no_sql_reaches_the_database(self, engine, monkeypatch: pytest.MonkeyPatch) -> None:
         sent = execution_spy(monkeypatch)
-        query = orders_q(measures=[{"formula": "wbad_agg(amount)", "name": "w"}])
+        query = orders_q(metrics=[{"expression": "wbad_agg(amount)", "name": "w"}])
         with pytest.raises(UnanalyzableAggregationParameterError):
             await engine.execute(query)
         assert sent == []
@@ -296,36 +296,36 @@ class TestOtherBindErrors:
 
     @pytest.mark.parametrize("formula", ["wrev(customers.spend)", "wrev_expr(customers.spend)"])
     def test_edge_name_revisit_is_circular(self, formula: str) -> None:
-        models = revisit_models()
-        with pytest.raises(CircularJoinPathError):
-            _key(formula, models=models)
+        models = revisit_datasets()
+        with pytest.raises(CircularRelationshipPathError):
+            _key(formula, datasets=models)
 
     @pytest.mark.parametrize("placeholder", [True, False])
     def test_window_reserved_for_a_stored_model(self, placeholder: bool) -> None:
-        models = window_param_models(placeholder=placeholder)
+        models = window_param_datasets(placeholder=placeholder)
         with pytest.raises(SlayerError, match="(?s)wwin.*trailing|trailing.*wwin"):
-            _key("wwin(amount)", models=models)
+            _key("wwin(amount)", datasets=models)
 
 
-def _first_token_revisit_models() -> List[SlayerModel]:
+def _first_token_revisit_datasets() -> List[SlayerDataset]:
     """``orders →(primary) customers``; ``customers →(back) orders`` is an edge name,
     so ``wback``'s default ``back.amount`` revisits ``orders`` on its first token."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="customer_id", type=DataType.INT),
-                 Column(name="amount", type=DataType.DOUBLE)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                         name="primary", cardinality=JoinCardinality.MANY_TO_ONE)])
-    customers = SlayerModel(
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="customer_id", datatype=DataType.INT),
+                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                         name="primary", cardinality=RelationshipCardinality.MANY_TO_ONE)])
+    customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="order_ref", type=DataType.INT),
-                 Column(name="spend", type=DataType.DOUBLE),
-                 Column(name="amount", type=DataType.DOUBLE)],
-        joins=[ModelJoin(target_model="orders", join_pairs=[["order_ref", "id"]],
-                         name="back", cardinality=JoinCardinality.MANY_TO_ONE)],
-        aggregations=[Aggregation(name="wback", formula="SUM({value} * {weight})",
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="order_ref", datatype=DataType.INT),
+                 DatasetField(name="spend", datatype=DataType.DOUBLE),
+                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
+        relationships=[DatasetRelationship(to="orders", join_pairs=[["order_ref", "id"]],
+                         name="back", cardinality=RelationshipCardinality.MANY_TO_ONE)],
+        aggregations=[Aggregation(name="wback", expression="SUM({value} * {weight})",
                                   params=[AggregationParam(name="weight", sql="back.amount")])])
     return [orders, customers]
 
@@ -338,9 +338,9 @@ class TestFragmentTextSurvives:
 
 class TestFirstTokenRevisit:
     def test_is_circular_not_a_root_fallback(self) -> None:
-        models = _first_token_revisit_models()
-        with pytest.raises(CircularJoinPathError, match="back"):
-            _key("wback(primary.spend)", models=models)
+        models = _first_token_revisit_datasets()
+        with pytest.raises(CircularRelationshipPathError, match="back"):
+            _key("wback(primary.spend)", datasets=models)
 
 
 class TestUnattributableParameterName:
@@ -349,17 +349,17 @@ class TestUnattributableParameterName:
     @pytest.mark.parametrize("template", [
         "{r0} * 1", "CASE WHEN {r0} > 0 THEN 1 ELSE 0 END"])
     def test_names_the_parameter(self, template: str) -> None:
-        models = dev1901_models()
+        models = dev1901_datasets()
         regions = next(m for m in models if m.name == "regions")
         key = AggregateKey(
-            source=ColumnKey(path=(), leaf="pop"), agg="wsum_cust_spend",
+            source=FieldKey(path=(), leaf="pop"), agg="wsum_cust_spend",
             kwargs=(("weight", SqlFragmentKey(
                 template=template,
-                refs=(ColumnKey(path=("region_events",), leaf="value"),))),))
+                refs=(FieldKey(path=("region_events",), leaf="value"),))),))
         bundle = bundle_of(sorted(models, key=lambda m: m.name != "regions"))
         out = _first_unattributable_arg_leaf(
-            agg=key, target_path=(), root_model=regions,
-            models_by_name=bundle.models_by_name, bundle=bundle,
-            host_model=regions, host_name="regions")
+            agg=key, target_path=(), root_dataset=regions,
+            datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+            host_dataset=regions, host_name="regions")
         assert out, out
         assert out[0][0] == "weight", out

@@ -1,0 +1,384 @@
+{
+ "source": "tests/test_dev1952_derived_revisit.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "ghost",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "ghost",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revisit_spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.revisit_spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revisit_spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(revisit_spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(chain)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(chain)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(filt_revisit)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(filt_revisit)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revisit_lead)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(revisit_lead)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revisit_spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(revisit_spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.regions.customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.regions.customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=status)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=status)",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 193,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 349,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 361,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 372,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 383,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 386,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 387,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 388,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 390,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 393,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 395,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 404,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 407,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 408,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 412,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 415,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 416,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 417,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 419,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 433,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 441,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 451,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 454,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 455,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 457,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 461,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 463,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 483,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 509,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 510,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 579,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 580,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 582,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 583,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 594,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 787,
+   "reason": "not fully literal"
+  }
+ ]
+}

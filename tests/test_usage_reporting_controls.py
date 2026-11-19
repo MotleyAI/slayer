@@ -135,7 +135,7 @@ def test_off_records_writes_prints_and_sends_nothing(
 ) -> None:
     for var, value in env.items():
         monkeypatch.setenv(var, value)
-    result = cli(["models", "--storage", store, "list"])
+    result = cli(["datasets", "--storage", store, "list"])
     assert result.returncode == 0, result.stderr
     assert _NOTICE_URL not in result.stderr
     assert not settings.config_dir().exists()
@@ -145,7 +145,7 @@ def test_off_records_writes_prints_and_sends_nothing(
 
 def test_unwritable_config_dir_is_silent(clean_env, store: str, monkeypatch: pytest.MonkeyPatch) -> None:
     _make_unwritable(clean_env, monkeypatch)
-    result = cli(["models", "--storage", store, "list"])
+    result = cli(["datasets", "--storage", store, "list"])
     assert result.returncode == 0, result.stderr
     assert _NOTICE_URL not in result.stderr
     time.sleep(0.3)
@@ -243,8 +243,8 @@ def _assert_notice(stderr: str) -> None:
 
 def test_notice_once_on_stderr(usage_reporting_env, store: str) -> None:
     write_config(last_sent=None)
-    first = cli(["models", "--storage", store, "list"])
-    second = cli(["models", "--storage", store, "list"])
+    first = cli(["datasets", "--storage", store, "list"])
+    second = cli(["datasets", "--storage", store, "list"])
     _assert_notice(first.stderr)
     assert _NOTICE_URL not in first.stdout
     assert _NOTICE_URL not in second.stderr
@@ -254,8 +254,8 @@ def test_notice_once_on_stderr(usage_reporting_env, store: str) -> None:
 def test_notice_again_after_schema_major_bump(usage_reporting_env, store: str) -> None:
     quiet_config()
     write_config(notice_shown_schema=SCHEMA_VERSION - 1)
-    first = cli(["models", "--storage", store, "list"])
-    second = cli(["models", "--storage", store, "list"])
+    first = cli(["datasets", "--storage", store, "list"])
+    second = cli(["datasets", "--storage", store, "list"])
     _assert_notice(first.stderr)
     assert _NOTICE_URL not in second.stderr
 
@@ -296,24 +296,24 @@ def test_stdio_mcp_stdout_identical_with_usage_reporting_on_and_off(usage_report
 def test_notice_again_for_a_schema_1_record(usage_reporting_env, store: str) -> None:
     quiet_config()
     write_config(notice_shown_schema=1)
-    first = cli(["models", "--storage", store, "list"])
-    second = cli(["models", "--storage", store, "list"])
+    first = cli(["datasets", "--storage", store, "list"])
+    second = cli(["datasets", "--storage", store, "list"])
     _assert_notice(first.stderr)
     assert _NOTICE_URL not in second.stderr
-    assert config().notice_shown_schema == 2
+    assert config().notice_shown_schema == 3
 
 
 def test_no_notice_and_no_lowering_for_a_newer_record(usage_reporting_env, store: str) -> None:
     quiet_config()
-    write_config(notice_shown_schema=3)
-    result = cli(["models", "--storage", store, "list"])
+    write_config(notice_shown_schema=4)
+    result = cli(["datasets", "--storage", store, "list"])
     assert result.returncode == 0, result.stderr
     assert _NOTICE_URL not in result.stderr
-    assert config().notice_shown_schema == 3
+    assert config().notice_shown_schema == 4
 
 
 def test_notice_names_the_new_fields(usage_reporting_env, store: str) -> None:
     write_config(last_sent=None)
-    stderr = cli(["models", "--storage", store, "list"]).stderr
+    stderr = cli(["datasets", "--storage", store, "list"]).stderr
     assert "query outcomes per MCP session" in stderr
     assert "the date of the first successful query" in stderr

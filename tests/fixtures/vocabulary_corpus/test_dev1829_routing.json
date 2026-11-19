@@ -1,0 +1,214 @@
+{
+ "source": "tests/test_dev1829_routing.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "cell"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "cell"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, partition_by=region)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(amount, partition_by=region)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "cell"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "cell"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, partition_by=region)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(amount, partition_by=region)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "cell"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "cell"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / sum(amount, partition_by=region)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(amount) / sum(amount, partition_by=region)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "cell"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "cell"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / sum(amount, partition_by=region)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(amount) / sum(amount, partition_by=region)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "cell"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "cell"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "b"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "cell"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "cell"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, partition_by=region)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(amount, partition_by=region)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "__regroup__0__amount_sum"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "__regroup__0__amount_sum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(total)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(total)",
+    "name": "s"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 198,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 218,
+   "reason": "not fully literal"
+  }
+ ]
+}

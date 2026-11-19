@@ -1,0 +1,212 @@
+{
+ "source": "tests/test_dev1922_source_model_union.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "ad_hoc",
+    "sql_table": "things",
+    "data_source": "ds",
+    "columns": [
+     {
+      "name": "x",
+      "sql": "x",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "ad_hoc",
+    "sql_table": "things",
+    "data_source": "ds",
+    "fields": [
+     {
+      "name": "x",
+      "sql": "x",
+      "datatype": "DOUBLE"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers"
+   },
+   "new": {
+    "population": "customers"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "c",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "c",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "via_join",
+    "source_model": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "joins": [
+       {
+        "target_model": "c",
+        "join_pairs": [
+         [
+          "id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "via_join",
+    "population": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "relationships": [
+       {
+        "to": "c",
+        "join_pairs": [
+         [
+          "id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "via_join"
+   },
+   "new": {
+    "population": "via_join"
+   }
+  },
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "created_at",
+    "granularity": "month"
+   },
+   "new": {
+    "field": "created_at",
+    "granularity": "month"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 32,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 36,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 223,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 275,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 321,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 326,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 336,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 344,
+   "reason": "not a standalone time_dimension: ValidationError"
+  }
+ ]
+}

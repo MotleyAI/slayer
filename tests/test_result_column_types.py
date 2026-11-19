@@ -11,7 +11,7 @@ import pytest
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.database.client import (
@@ -203,13 +203,13 @@ class TestOpaqueAndUnrecognisedTypes:
 async def engine(tmp_path: Path, sqlite_ds: DatasourceConfig) -> AsyncIterator[SlayerQueryEngine]:
     storage = YAMLStorage(base_dir=str(tmp_path / "models"))
     await storage.save_datasource(sqlite_ds)
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="t", sql_table="t", data_source=sqlite_ds.name,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="d", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="d", datatype=DataType.DOUBLE),
+            DatasetField(name="qty", datatype=DataType.INT),
         ],
     ))
     engine = SlayerQueryEngine(storage=storage)

@@ -12,21 +12,21 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from verify_common import (
+from verify_common import (  # ALLOW(import-not-top): sys.path bootstrap for the shared verify_common helper
     run_common_checks,
     check_rollup,
     check_stddev_var,
     check_corr_covar,
-    check_column_types,
+    check_field_types,
     summary,
 )
 
 if __name__ == "__main__":
-    models = run_common_checks()
+    datasets = run_common_checks()
     check_rollup(expect_rollup=True)
 
-    check_column_types(
-        model_name="orders",
+    check_field_types(
+        dataset_name="orders",
         expected_types={
             "id": "INT",
             "customer_id": "INT",
@@ -36,8 +36,8 @@ if __name__ == "__main__":
             "created_at": "TIMESTAMP",
         },
     )
-    check_column_types(
-        model_name="products",
+    check_field_types(
+        dataset_name="products",
         expected_types={
             "id": "INT",
             "name": "TEXT",

@@ -9,13 +9,13 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import DateOperandTypeError, ScalarOperandTypeError
 from slayer.core.keys import value_type
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.core.syntax import parse_expr
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import scope_column_type
+from slayer.engine.key_metadata import scope_field_type
 from slayer.engine.plan import plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -27,7 +27,7 @@ from tests._dev2177_fixtures import (
     m,
     q,
 )
-from tests._mcp_idiom_fixtures import idiom_models, make_idiom_engine
+from tests._mcp_idiom_fixtures import idiom_datasets, make_idiom_engine
 
 TS = "TIMESTAMP '2025-01-01 00:00:00'"
 MIXED = "coalesce(status, amount)"
@@ -53,37 +53,37 @@ COMPATIBLE: dict[str, tuple[str, str, DataType]] = {
 TEXT_AS_NUMBER = {"greatest", "least"}
 
 
-def models_with_unknown(*, data_source: str = "test") -> list[SlayerModel]:
-    orders, *rest = idiom_models(data_source=data_source)
-    orders = orders.model_copy(update={"columns": [
-        *orders.columns, Column(name="opaque", sql="amount * 2", type=DataType.UNKNOWN),
+def datasets_with_unknown(*, data_source: str = "test") -> list[SlayerDataset]:
+    orders, *rest = idiom_datasets(data_source=data_source)
+    orders = orders.model_copy(update={"fields": [
+        *orders.fields, DatasetField(name="opaque", sql="amount * 2", datatype=DataType.UNKNOWN),
     ]})
     return [orders, *rest]
 
 
 def _bundle(dialect: str) -> ResolvedSourceBundle:
-    orders, *rest = models_with_unknown()
-    return ResolvedSourceBundle(dialect=dialect, source_model=orders, referenced_models=rest)
+    orders, *rest = datasets_with_unknown()
+    return ResolvedSourceBundle(dialect=dialect, population=orders, referenced_datasets=rest)
 
 
 def inferred_type(item: dict[str, Any], *, dialect: str) -> DataType | None:
     """The declared type of the one dimension or measure ``x`` in ``item``."""
-    query = SlayerQuery.model_validate({"source_model": "orders", **item})
+    query = SlayerQuery.model_validate({"population": "orders", **item})
     prebound = bind_query_inputs(query=query, bundle=_bundle(dialect))
-    (declared,) = [dm for dm in prebound.declared_measures if dm.public_name == "x"]
-    return declared.type
+    (declared,) = [dm for dm in prebound.declared_metrics if dm.public_name == "x"]
+    return declared.datatype
 
 
 def stage_type(item: dict[str, Any], *, dialect: str) -> DataType | None:
     """The type a later stage's schema reports for ``x``."""
-    first = SlayerQuery.model_validate({"name": "s1", "source_model": "orders", **item})
-    second = SlayerQuery.model_validate({"source_model": "s1", "dimensions": ["x"]})
+    first = SlayerQuery.model_validate({"name": "s1", "population": "orders", **item})
+    second = SlayerQuery.model_validate({"population": "s1", "dimensions": ["x"]})
     planned = plan_stages(queries=[first, second], bundle=_bundle(dialect))
     (column,) = [
         c for p in planned if p.stage_schema is not None and p.stage_schema.relation_name == "s1"
-        for c in p.stage_schema.columns if c.name == "x"
+        for c in p.stage_schema.fields if c.name == "x"
     ]
-    return column.type
+    return column.datatype
 
 
 def as_dimension(expression: str) -> dict[str, Any]:
@@ -97,7 +97,7 @@ def dialect(request) -> str:
 
 @pytest.fixture
 async def engine(dialect: str):
-    async for e in make_idiom_engine(dialect=dialect, models=models_with_unknown()):
+    async for e in make_idiom_engine(dialect=dialect, datasets=datasets_with_unknown()):
         yield e
 
 
@@ -156,7 +156,7 @@ class TestScenarios:
 
     async def test_conditional_inside_an_aggregation(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(
-            engine, q(measures=[m("max(CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END)")]), "TEXT", "INT",
+            engine, q(metrics=[m("max(CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END)")]), "TEXT", "INT",
         )
 
     @pytest.mark.parametrize(("expression", "types", "call"), [
@@ -188,26 +188,26 @@ class TestScenarios:
 
     async def test_inside_a_stage(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(engine, [
-            {"name": "s1", "source_model": "orders",
+            {"name": "s1", "population": "orders",
              "dimensions": [{"expression": "status", "name": "s"}, {"expression": "amount", "name": "n"}]},
-            {"source_model": "s1", "dimensions": [{"expression": "coalesce(s, n)", "name": "x"}]},
+            {"population": "s1", "dimensions": [{"expression": "coalesce(s, n)", "name": "x"}]},
         ], "TEXT", "INT", call=("coalesce",))
 
 
 class TestEveryPosition:
     @pytest.mark.parametrize(("query", "types"), [
         pytest.param(dimension_query(MIXED), ("TEXT", "INT"), id="dimension"),
-        pytest.param(q(measures=[m(f"max({MIXED})")]), ("TEXT", "INT"), id="aggregate-input"),
-        pytest.param(q(measures=[m("coalesce(sum(amount), max(status))")]), ("TEXT", "INT"), id="over-aggregates"),
-        pytest.param(q(time_dimensions=MONTH, measures=[m(f"time_shift(max({MIXED}), -1)")]), ("TEXT", "INT"),
+        pytest.param(q(metrics=[m(f"max({MIXED})")]), ("TEXT", "INT"), id="aggregate-input"),
+        pytest.param(q(metrics=[m("coalesce(sum(amount), max(status))")]), ("TEXT", "INT"), id="over-aggregates"),
+        pytest.param(q(time_dimensions=MONTH, metrics=[m(f"time_shift(max({MIXED}), -1)")]), ("TEXT", "INT"),
                      id="transform"),
-        pytest.param(q(measures=[m(f"count(*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("TEXT", "INT"),
+        pytest.param(q(metrics=[m(f"count(*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("TEXT", "INT"),
                      id="filter-clause"),
-        pytest.param(q(measures=["count(*)"], filters=[f"{MIXED} IS NOT NULL"]), ("TEXT", "INT"), id="row-filter"),
-        pytest.param(q(dimensions=["status"], measures=["count(*)"],
-                       filters=["coalesce(max(status), sum(amount)) IS NOT NULL"]), ("TEXT", "INT"),
+        pytest.param(q(metrics=["count(*)"], filter=[f"{MIXED} IS NOT NULL"]), ("TEXT", "INT"), id="row-filter"),
+        pytest.param(q(dimensions=["status"], metrics=["count(*)"],
+                       filter=["coalesce(max(status), sum(amount)) IS NOT NULL"]), ("TEXT", "INT"),
                      id="post-aggregation-filter"),
-        pytest.param(q(dimensions=["id"], distinct_dimension_values=False, order=[{"column": MIXED}]),
+        pytest.param(q(dimensions=["id"], distinct_dimension_values=False, order=[{"field": MIXED}]),
                      ("TEXT", "INT"), id="order"),
     ])
     async def test_rejected_at_plan_time(self, engine: SlayerQueryEngine, query: SlayerQuery,
@@ -216,8 +216,8 @@ class TestEveryPosition:
 
     async def test_time_dimension_rejected_as_a_date_operand(self, engine: SlayerQueryEngine) -> None:
         # The date-operand check runs first; its error still names both branch types and a cast.
-        query = q(time_dimensions=[{"dimension": "greatest(order_date, amount)", "granularity": "month"}],
-                  measures=["count(*)"])
+        query = q(time_dimensions=[{"field": "greatest(order_date, amount)", "granularity": "month"}],
+                  metrics=["count(*)"])
         with pytest.raises(DateOperandTypeError) as info:
             await engine.execute(query)
         message = str(info.value)
@@ -228,7 +228,7 @@ class TestEveryPosition:
 class TestInferredTypes:
     @pytest.mark.parametrize("dialect_name", ["duckdb", "sqlite", "postgres"])
     def test_coerced_measure_type(self, dialect_name: str) -> None:
-        item = {"measures": [{"formula": "max(greatest(status, amount))", "name": "x"}]}
+        item = {"metrics": [{"expression": "max(greatest(status, amount))", "name": "x"}]}
         assert inferred_type(item, dialect=dialect_name) is DataType.DOUBLE
         assert stage_type(item, dialect=dialect_name) is DataType.DOUBLE
 
@@ -237,9 +237,9 @@ class TestValueType:
     @staticmethod
     def _value_type(expression: str) -> DataType | None:
         bundle = _bundle("postgres")
-        scope = ModelScope(source_model=bundle.source_model)
+        scope = DatasetScope(population=bundle.population)
         key = bind_expr(parse_expr(expression), scope=scope, bundle=bundle).value_key
-        return value_type(key, column_type=scope_column_type(scope=scope, bundle=bundle))
+        return value_type(key, field_type=scope_field_type(scope=scope, bundle=bundle))
 
     @pytest.mark.parametrize(("expression", "joined"), [
         ("coalesce(amount, 0.5)", DataType.DOUBLE),
@@ -257,9 +257,9 @@ class TestValueType:
         ("coalesce(u, n)", DataType.INT), ("iif(n > 1, u, 'x')", DataType.TEXT), ("greatest(u, n)", DataType.INT),
     ])
     def test_untyped_stage_column_is_absorbed(self, expression: str, joined: DataType) -> None:
-        schema = StageSchema(relation_name="s1", columns=[
-            StageColumn(name="u", sql_alias="u"), StageColumn(name="n", sql_alias="n", type=DataType.INT),
+        schema = StageSchema(relation_name="s1", fields=[
+            StageField(name="u", sql_alias="u"), StageField(name="n", sql_alias="n", datatype=DataType.INT),
         ])
         bundle = ResolvedSourceBundle(dialect="postgres")
         key = bind_expr(parse_expr(expression), scope=schema, bundle=bundle).value_key
-        assert value_type(key, column_type=scope_column_type(scope=schema, bundle=bundle)) is joined
+        assert value_type(key, field_type=scope_field_type(scope=schema, bundle=bundle)) is joined

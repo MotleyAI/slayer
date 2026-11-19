@@ -1,0 +1,58 @@
+{
+ "source": "tests/test_demo_cli.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "total_revenue",
+    "formula": "sum(subtotal)"
+   },
+   "new": {
+    "name": "total_revenue",
+    "expression": "sum(subtotal)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 210,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 211,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 213,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 214,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 215,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 216,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 323,
+   "reason": "not fully literal"
+  }
+ ]
+}

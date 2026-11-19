@@ -1,0 +1,76 @@
+{
+ "source": "tests/test_cube_js_e2e_duckdb.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "RrDrivers",
+    "measures": [
+     {
+      "formula": "count"
+     }
+    ],
+    "variables": {
+     "brand": [
+      "Acme"
+     ]
+    }
+   },
+   "new": {
+    "population": "RrDrivers",
+    "metrics": [
+     {
+      "expression": "count"
+     }
+    ],
+    "variables": {
+     "brand": [
+      "Acme"
+     ]
+    }
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 96,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 97,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 105,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 106,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 120,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 121,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 132,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 133,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 143,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 145,
+   "reason": "no positional counterpart"
+  }
+ ]
+}

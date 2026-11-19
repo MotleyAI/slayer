@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_osi_export_extensions.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  }
+ ]
+}

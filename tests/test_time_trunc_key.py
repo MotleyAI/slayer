@@ -29,8 +29,8 @@ from pydantic import ValidationError
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     Phase,
     TimeTruncKey,
     ValueKey,
@@ -39,7 +39,7 @@ from slayer.core.keys import (
 
 class TestTimeTruncKeyConstruction:
     def test_constructs_from_columnkey_and_granularity_string(self) -> None:
-        col = ColumnKey(leaf="ordered_at")
+        col = FieldKey(leaf="ordered_at")
         k = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
         assert k.source == col
         assert k.granularity == "month"
@@ -47,46 +47,46 @@ class TestTimeTruncKeyConstruction:
     def test_accepts_timegranularity_enum_as_string(self) -> None:
         """TimeGranularity is a StrEnum, so its members are valid strings.
         Accept the enum value directly."""
-        col = ColumnKey(leaf="ordered_at")
+        col = FieldKey(leaf="ordered_at")
         k = TimeTruncKey.model_validate(
             {"source": col, "granularity": TimeGranularity.MONTH.value}
         )
         assert k.granularity == "month"
 
     def test_preserves_columnkey_path_for_cross_model(self) -> None:
-        col = ColumnKey(path=("customers",), leaf="signup_at")
+        col = FieldKey(path=("customers",), leaf="signup_at")
         k = TimeTruncKey(source=col, granularity=TimeGranularity.DAY)
-        assert isinstance(k.source, ColumnKey)
+        assert isinstance(k.source, FieldKey)
         assert k.source.path == ("customers",)
         assert k.source.leaf == "signup_at"
 
 
 class TestTimeTruncKeyIdentity:
     def test_same_column_and_granularity_intern_equal(self) -> None:
-        a = TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
-        b = TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        a = TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        b = TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         assert a == b
         assert hash(a) == hash(b)
 
     def test_different_granularities_on_same_column_distinct(self) -> None:
-        col = ColumnKey(leaf="ordered_at")
+        col = FieldKey(leaf="ordered_at")
         a = TimeTruncKey(source=col, granularity=TimeGranularity.DAY)
         b = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
         assert a != b
         assert hash(a) != hash(b)
 
     def test_different_columns_with_same_granularity_distinct(self) -> None:
-        a = TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
-        b = TimeTruncKey(source=ColumnKey(leaf="shipped_at"), granularity=TimeGranularity.MONTH)
+        a = TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        b = TimeTruncKey(source=FieldKey(leaf="shipped_at"), granularity=TimeGranularity.MONTH)
         assert a != b
 
     def test_cross_model_paths_with_same_leaf_distinct(self) -> None:
         a = TimeTruncKey(
-            source=ColumnKey(path=("customers",), leaf="signup_at"),
+            source=FieldKey(path=("customers",), leaf="signup_at"),
             granularity=TimeGranularity.MONTH,
         )
         b = TimeTruncKey(
-            source=ColumnKey(leaf="signup_at"),
+            source=FieldKey(leaf="signup_at"),
             granularity=TimeGranularity.MONTH,
         )
         assert a != b
@@ -95,7 +95,7 @@ class TestTimeTruncKeyIdentity:
         """A bare ColumnKey for `ordered_at` and TimeTruncKey for the
         same column must not collide as ValueKey identities — they end
         up as separate slots in the ValueRegistry."""
-        col = ColumnKey(leaf="ordered_at")
+        col = FieldKey(leaf="ordered_at")
         k_trunc = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
         # Cannot be == across types; that would imply slot collision.
         assert col != k_trunc
@@ -103,21 +103,21 @@ class TestTimeTruncKeyIdentity:
         # equality, so the strict check is __eq__.
 
     def test_usable_as_dict_key(self) -> None:
-        k = TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        k = TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         d = {k: "slot_1"}
-        same = TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        same = TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         assert d[same] == "slot_1"
 
 
 class TestTimeTruncKeyPhase:
     def test_phase_is_row(self) -> None:
-        k = TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        k = TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         assert k.phase == Phase.ROW
 
 
 class TestTimeTruncKeyImmutability:
     def test_is_frozen(self) -> None:
-        k = TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        k = TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         # TimeTruncKey is a frozen Pydantic v2 model — mutation raises
         # ValidationError, not the generic Exception.
         with pytest.raises(ValidationError):
@@ -131,57 +131,57 @@ class TestTimeTruncKeyWithColumnSqlKey:
     pair, exactly like the base-column case."""
 
     def test_constructs_from_columnsqlkey(self) -> None:
-        col = ColumnSqlKey(model="orders", column_name="effective_at")
+        col = FieldSqlKey(dataset="orders", field_name="effective_at")
         k = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
         assert k.source == col
         assert k.granularity == "month"
         assert k.phase == Phase.ROW
 
     def test_preserves_columnsqlkey_path_for_cross_model(self) -> None:
-        col = ColumnSqlKey(
-            path=("customers",), model="customers", column_name="effective_at",
+        col = FieldSqlKey(
+            path=("customers",), dataset="customers", field_name="effective_at",
         )
         k = TimeTruncKey(source=col, granularity=TimeGranularity.DAY)
-        assert isinstance(k.source, ColumnSqlKey)
+        assert isinstance(k.source, FieldSqlKey)
         assert k.source.path == ("customers",)
-        assert k.source.column_name == "effective_at"
+        assert k.source.field_name == "effective_at"
 
     def test_same_derived_column_and_grain_intern_equal(self) -> None:
         a = TimeTruncKey(
-            source=ColumnSqlKey(model="orders", column_name="effective_at"),
+            source=FieldSqlKey(dataset="orders", field_name="effective_at"),
             granularity=TimeGranularity.MONTH,
         )
         b = TimeTruncKey(
-            source=ColumnSqlKey(model="orders", column_name="effective_at"),
+            source=FieldSqlKey(dataset="orders", field_name="effective_at"),
             granularity=TimeGranularity.MONTH,
         )
         assert a == b
         assert hash(a) == hash(b)
 
     def test_different_grain_on_derived_column_distinct(self) -> None:
-        col = ColumnSqlKey(model="orders", column_name="effective_at")
+        col = FieldSqlKey(dataset="orders", field_name="effective_at")
         a = TimeTruncKey(source=col, granularity=TimeGranularity.DAY)
         b = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
         assert a != b
 
     def test_base_and_derived_columns_distinct(self) -> None:
         a = TimeTruncKey(
-            source=ColumnKey(leaf="effective_at"), granularity=TimeGranularity.MONTH,
+            source=FieldKey(leaf="effective_at"), granularity=TimeGranularity.MONTH,
         )
         b = TimeTruncKey(
-            source=ColumnSqlKey(model="orders", column_name="effective_at"),
+            source=FieldSqlKey(dataset="orders", field_name="effective_at"),
             granularity=TimeGranularity.MONTH,
         )
         assert a != b
 
     def test_usable_as_dict_key(self) -> None:
         k = TimeTruncKey(
-            source=ColumnSqlKey(model="orders", column_name="effective_at"),
+            source=FieldSqlKey(dataset="orders", field_name="effective_at"),
             granularity=TimeGranularity.MONTH,
         )
         d = {k: "slot_1"}
         same = TimeTruncKey(
-            source=ColumnSqlKey(model="orders", column_name="effective_at"),
+            source=FieldSqlKey(dataset="orders", field_name="effective_at"),
             granularity=TimeGranularity.MONTH,
         )
         assert d[same] == "slot_1"

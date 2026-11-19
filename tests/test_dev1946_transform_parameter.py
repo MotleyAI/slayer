@@ -16,25 +16,25 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import SlayerError, TimeAxisError
-from slayer.core.keys import AggregateKey, ColumnKey, Grain, TimeTruncKey, TransformKey
+from slayer.core.keys import AggregateKey, FieldKey, Grain, TimeTruncKey, TransformKey
 from slayer.core.refs import agg_kwarg_canonical_str
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.plan import plan_query
 from slayer.core.syntax import parse_expr
-from slayer.ir.planned import PlainProducerKernel
+from slayer.ir.planned import PlainProducerKernel, PlannedQuery, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1840_fixtures import (
     bundle as orders_bundle,
-    dev1840_models,
+    dev1840_datasets,
     gen as orders_gen,
     make_exec_engine as make_orders_engine,
 )
-from tests._dev1841_fixtures import ModelMeasure, associated_warnings, broadcast_warnings
+from tests._dev1841_fixtures import DatasetMetric, associated_warnings, broadcast_warnings
 from tests._dev1847_fixtures import (
-    dev1847_models,
+    dev1847_datasets,
     gen as sales_gen,
     make_exec_engine as make_sales_engine,
     sales_q,
@@ -91,11 +91,11 @@ from tests._dev1946_fixtures import (
     local_sales_global,
 )
 
-AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
+AMOUNT = DatasetMetric(expression="sum(amount)", name="a")
 
 
-def _m(formula: str) -> ModelMeasure:
-    return ModelMeasure(formula=formula, name="w")
+def _m(expression: str) -> DatasetMetric:
+    return DatasetMetric(expression=expression, name="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -123,14 +123,14 @@ def _assert_time_axis_error(exc) -> None:
 
 
 def _orders_scope_bundle():
-    models = dev1840_models()
-    return ModelScope(source_model=models[0]), orders_bundle()
+    models = dev1840_datasets()
+    return DatasetScope(population=models[0]), orders_bundle()
 
 
 def _sales_scope_bundle():
-    models = dev1847_models()
-    return (ModelScope(source_model=models[0]),
-            ResolvedSourceBundle(dialect="sqlite", source_model=models[0], referenced_models=models[1:]))
+    models = dev1847_datasets()
+    return (DatasetScope(population=models[0]),
+            ResolvedSourceBundle(dialect="sqlite", population=models[0], referenced_datasets=models[1:]))
 
 
 # --------------------------------------------------------------------------- #
@@ -149,9 +149,9 @@ class TestPositionalEqualsKeyword:
 
     async def test_positional_equals_keyword_values(self, orders_engine):
         kw = await orders_engine.execute(
-            mode_q(None, dimensions=["customers.tier"], measures=[_m(RANKED)]))
+            mode_q(None, dimensions=["customers.tier"], metrics=[_m(RANKED)]))
         pos = await orders_engine.execute(
-            mode_q(None, dimensions=["customers.tier"], measures=[_m(RANKED_POSITIONAL)]))
+            mode_q(None, dimensions=["customers.tier"], metrics=[_m(RANKED_POSITIONAL)]))
         assert tier_vals(pos) == tier_vals(kw)
         assert_cells(tier_vals(kw),
                      {"gold": 475 / 8, "silver": 97.5, "bronze": 40.0, None: None})
@@ -162,7 +162,7 @@ class TestAssociateMode:
 
     async def test_associate_by_status(self, orders_engine):
         resp = await orders_engine.execute(
-            mode_q("associate", dimensions=["status"], measures=[_m(RANKED)]))
+            mode_q("associate", dimensions=["status"], metrics=[_m(RANKED)]))
         assert_cells(status_vals(resp), ranked_assoc_by_status())
         assert associated_warnings(resp)
 
@@ -172,13 +172,13 @@ class TestLocalRootSales:
 
     async def test_by_region(self, sales_engine):
         resp = await sales_engine.execute(
-            sales_q(dimensions=["region"], measures=[_m(LOCAL_SALES)]))
+            sales_q(dimensions=["region"], metrics=[_m(LOCAL_SALES)]))
         assert_cells(region_vals(resp), local_sales_by_region())
         _no_mode_warnings(resp)
 
     async def test_by_region_and_city(self, sales_engine):
         resp = await sales_engine.execute(
-            sales_q(dimensions=["region", "city"], measures=[_m(LOCAL_SALES_CITY)]))
+            sales_q(dimensions=["region", "city"], metrics=[_m(LOCAL_SALES_CITY)]))
         got = region_city_vals(resp)
         want = local_sales_by_region_city()
         assert set(got) == set(want), (set(got), set(want))
@@ -189,7 +189,7 @@ class TestLocalRootSales:
                 assert float(got[key]) == pytest.approx(value), key
 
     async def test_global(self, sales_engine):
-        resp = await sales_engine.execute(sales_q(measures=[_m(LOCAL_SALES)]))
+        resp = await sales_engine.execute(sales_q(metrics=[_m(LOCAL_SALES)]))
         assert float(global_val(resp)) == pytest.approx(local_sales_global())  # 810/33
 
 
@@ -198,7 +198,7 @@ class TestCollapsingLast:
 
     async def test_broadcast_mode_broadcasts_over_months(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
-            "broadcast", time_dimensions=ordered_month_td(), measures=[_m(LAST_PARAM)]))
+            "broadcast", time_dimensions=ordered_month_td(), metrics=[_m(LAST_PARAM)]))
         vals = ordered_month_vals(resp)
         assert set(vals) == {"2024-01", "2024-02", "2024-03", "2024-04"}
         for value in vals.values():
@@ -208,7 +208,7 @@ class TestCollapsingLast:
     async def test_by_tier_and_month(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
             "broadcast", dimensions=["customers.tier"], time_dimensions=ordered_month_td(),
-            measures=[_m(LAST_PARAM)]))
+            metrics=[_m(LAST_PARAM)]))
         assert_cells(tier_month_vals(resp), last_by_tier_month())
         assert broadcast_warnings(resp)
 
@@ -218,7 +218,7 @@ class TestNoAxisCumsum:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_measure_position(self, orders_engine, mode):
-        q = mode_q(mode, time_dimensions=ordered_month_td(), measures=[_m(NOAXIS_CUMSUM)])
+        q = mode_q(mode, time_dimensions=ordered_month_td(), metrics=[_m(NOAXIS_CUMSUM)])
         with pytest.raises(TimeAxisError) as ei:
             await orders_engine.execute(q)
         _assert_time_axis_error(ei.value)
@@ -226,8 +226,8 @@ class TestNoAxisCumsum:
     @pytest.mark.parametrize("mode", MODES)
     async def test_filter_position(self, orders_engine, mode):
         q = mode_q(mode, dimensions=["customers.tier"],
-                   time_dimensions=ordered_month_td(), measures=[AMOUNT],
-                   filters=[f"{NOAXIS_CUMSUM} > 50"])
+                   time_dimensions=ordered_month_td(), metrics=[AMOUNT],
+                   filter=[f"{NOAXIS_CUMSUM} > 50"])
         with pytest.raises(TimeAxisError) as ei:
             await orders_engine.execute(q)
         _assert_time_axis_error(ei.value)
@@ -239,16 +239,16 @@ class TestDeterminedCumsum:
     @pytest.mark.parametrize("mode", MODES)
     async def test_values_every_mode(self, orders_engine, mode):
         resp = await orders_engine.execute(
-            mode_q(mode, time_dimensions=signup_month_td(), measures=[_m(DET_CUMSUM)]))
+            mode_q(mode, time_dimensions=signup_month_td(), metrics=[_m(DET_CUMSUM)]))
         assert_cells(month_vals(resp), {**det_cumsum_by_signup_month(), None: None})
         _no_mode_warnings(resp)
 
     async def test_filter_gt_50_keeps_jan_feb(self, orders_engine):
         full = await orders_engine.execute(
-            mode_q(None, time_dimensions=signup_month_td(), measures=[AMOUNT]))
+            mode_q(None, time_dimensions=signup_month_td(), metrics=[AMOUNT]))
         pruned = await orders_engine.execute(mode_q(
-            None, time_dimensions=signup_month_td(), measures=[AMOUNT],
-            filters=[f"{DET_CUMSUM} > 50"]))
+            None, time_dimensions=signup_month_td(), metrics=[AMOUNT],
+            filter=[f"{DET_CUMSUM} > 50"]))
         kept = month_vals(pruned, "a")
         assert set(kept) == {"2024-01", "2024-02"}
         for month, value in kept.items():        # surviving values unchanged
@@ -256,8 +256,8 @@ class TestDeterminedCumsum:
 
     async def test_order_by_descending(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
-            None, time_dimensions=signup_month_td(), measures=[AMOUNT],
-            order=[{"column": DET_CUMSUM, "direction": "desc"}]))
+            None, time_dimensions=signup_month_td(), metrics=[AMOUNT],
+            order=[{"field": DET_CUMSUM, "direction": "desc"}]))
         months = [k for k in month_vals(resp, "a") if k is not None]
         assert months == ["2024-02", "2024-01", "2024-03", "2024-04"]
 
@@ -268,13 +268,13 @@ class TestUngrainedInner:
     @pytest.mark.parametrize("mode", MODES)
     async def test_by_tier_executes(self, orders_engine, mode):
         resp = await orders_engine.execute(
-            mode_q(mode, dimensions=["customers.tier"], measures=[_m(UNGRAINED_RANK)]))
+            mode_q(mode, dimensions=["customers.tier"], metrics=[_m(UNGRAINED_RANK)]))
         assert_cells(tier_vals(resp), {**ungrained_rank_by_tier(), None: None})
         _no_mode_warnings(resp)
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_by_status_fails_closed(self, orders_engine, mode):
-        q = mode_q(mode, dimensions=["status"], measures=[_m(UNGRAINED_RANK)])
+        q = mode_q(mode, dimensions=["status"], metrics=[_m(UNGRAINED_RANK)])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -286,7 +286,7 @@ class TestWindowedInner:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_fails_closed_every_mode(self, orders_engine, mode):
-        q = mode_q(mode, time_dimensions=ordered_month_td(), measures=[_m(WINDOWED_INNER)])
+        q = mode_q(mode, time_dimensions=ordered_month_td(), metrics=[_m(WINDOWED_INNER)])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -299,7 +299,7 @@ class TestWindowedOuter:
     @pytest.mark.parametrize("mode", MODES)
     async def test_by_signup_month_every_mode(self, orders_engine, mode):
         resp = await orders_engine.execute(mode_q(
-            mode, time_dimensions=signup_month_td(), measures=[_m(WINDOWED_OUTER)]))
+            mode, time_dimensions=signup_month_td(), metrics=[_m(WINDOWED_OUTER)]))
         assert_cells(month_vals(resp), {**windowed_outer_by_signup_month(), None: None})
         _no_mode_warnings(resp)
 
@@ -309,10 +309,10 @@ class TestRankedFilterAndOrder:
 
     async def test_filter_gt_50_by_tier(self, orders_engine):
         full = await orders_engine.execute(
-            mode_q(None, dimensions=["customers.tier"], measures=[AMOUNT]))
+            mode_q(None, dimensions=["customers.tier"], metrics=[AMOUNT]))
         pruned = await orders_engine.execute(mode_q(
-            None, dimensions=["customers.tier"], measures=[AMOUNT],
-            filters=[f"{RANKED} > 50"]))
+            None, dimensions=["customers.tier"], metrics=[AMOUNT],
+            filter=[f"{RANKED} > 50"]))
         kept = tier_vals(pruned, "a")
         assert set(kept) == {"gold", "silver"}  # 59.375, 97.5 > 50; bronze 40, NULL out
         for tier, value in kept.items():        # surviving values unchanged
@@ -320,8 +320,8 @@ class TestRankedFilterAndOrder:
 
     async def test_order_by_descending(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
-            None, dimensions=["customers.tier"], measures=[AMOUNT],
-            order=[{"column": RANKED, "direction": "desc"}]))
+            None, dimensions=["customers.tier"], metrics=[AMOUNT],
+            order=[{"field": RANKED, "direction": "desc"}]))
         tiers = [r["orders.customers.tier"] for r in resp.data
                  if r["orders.customers.tier"] is not None]
         assert tiers == ["silver", "gold", "bronze"]  # 97.5, 59.375, 40
@@ -332,7 +332,7 @@ class TestNestedParameter:
 
     async def test_broadcast_to_status(self, orders_engine):
         resp = await orders_engine.execute(
-            mode_q("broadcast", dimensions=["status"], measures=[_m(NESTED)]))
+            mode_q("broadcast", dimensions=["status"], metrics=[_m(NESTED)]))
         got = status_vals(resp)
         assert set(got) == {"ok", "new"}
         for value in got.values():
@@ -343,7 +343,7 @@ class TestNestedParameter:
     @pytest.mark.parametrize("mode", MODES)
     async def test_by_tier_every_mode(self, orders_engine, mode):
         resp = await orders_engine.execute(
-            mode_q(mode, dimensions=["customers.tier"], measures=[_m(NESTED)]))
+            mode_q(mode, dimensions=["customers.tier"], metrics=[_m(NESTED)]))
         assert_cells(tier_vals(resp), {**nested_by_tier(), None: None})
         _no_mode_warnings(resp)
 
@@ -353,7 +353,7 @@ class TestCrossModelLocalRoot:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_global(self, orders_engine, mode):
-        resp = await orders_engine.execute(mode_q(mode, measures=[_m(XMODEL_LOCAL)]))
+        resp = await orders_engine.execute(mode_q(mode, metrics=[_m(XMODEL_LOCAL)]))
         (row,) = resp.data
         assert float(row["orders.w"]) == pytest.approx(xmodel_global())  # 281/16
         _no_mode_warnings(resp)
@@ -361,7 +361,7 @@ class TestCrossModelLocalRoot:
     @pytest.mark.parametrize("mode", MODES)
     async def test_by_status(self, orders_engine, mode):
         resp = await orders_engine.execute(
-            mode_q(mode, dimensions=["status"], measures=[_m(XMODEL_LOCAL)]))
+            mode_q(mode, dimensions=["status"], metrics=[_m(XMODEL_LOCAL)]))
         assert_cells(status_vals(resp), xmodel_by_status())  # ok 116/11, new 33
         _no_mode_warnings(resp)
 
@@ -372,7 +372,7 @@ class TestOwnPartitionBy:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_global(self, orders_engine, mode):
-        resp = await orders_engine.execute(mode_q(mode, measures=[_m(OWN_PARTITION)]))
+        resp = await orders_engine.execute(mode_q(mode, metrics=[_m(OWN_PARTITION)]))
         (row,) = resp.data
         assert float(row["orders.w"]) == pytest.approx(own_global())  # 760/11
         _no_mode_warnings(resp)
@@ -380,7 +380,7 @@ class TestOwnPartitionBy:
     @pytest.mark.parametrize("mode", MODES)
     async def test_by_tier(self, orders_engine, mode):
         resp = await orders_engine.execute(
-            mode_q(mode, dimensions=["customers.tier"], measures=[_m(OWN_PARTITION)]))
+            mode_q(mode, dimensions=["customers.tier"], metrics=[_m(OWN_PARTITION)]))
         assert_cells(tier_vals(resp), {**own_by_tier(), None: None})
         _no_mode_warnings(resp)
 
@@ -388,9 +388,9 @@ class TestOwnPartitionBy:
 # --------------------------------------------------------------------------- #
 # Plan shape.
 # --------------------------------------------------------------------------- #
-def _customers_attach(planned):
+def _customers_attach(planned: PlannedQuery) -> RegroupAttachPlan:
     (att,) = [a for a in planned.regroup_attach_plans
-              if a.producer_root_model == "customers"]
+              if a.producer_root_dataset == "customers"]
     return att
 
 
@@ -409,13 +409,13 @@ class TestPlanShape:
     ])
     def test_plain_kernel_outside_association(self, mode, dims):
         att = _customers_attach(plan_query(
-            query=mode_q(mode, dimensions=dims, measures=[_m(RANKED)]),
+            query=mode_q(mode, dimensions=dims, metrics=[_m(RANKED)]),
             bundle=orders_bundle()))
         assert isinstance(att.kernel, PlainProducerKernel)  # no new kernel
 
     def test_association_kernel_picks_the_weight(self):
         planned = plan_query(
-            query=mode_q("associate", dimensions=["status"], measures=[_m(RANKED)]),
+            query=mode_q("associate", dimensions=["status"], metrics=[_m(RANKED)]),
             bundle=orders_bundle())
         [attach] = _attaches_of_kind(planned, "association")
         assert "weight" in [p.name for p in attach.kernel.picked_params]
@@ -423,7 +423,7 @@ class TestPlanShape:
     def test_trailing_window_kernel_picks_the_weight(self):
         planned = plan_query(
             query=mode_q(None, time_dimensions=signup_month_td(),
-                         measures=[_m(WINDOWED_OUTER)]),
+                         metrics=[_m(WINDOWED_OUTER)]),
             bundle=orders_bundle())
         [attach] = _attaches_of_kind(planned, "trailing-window")
         assert "weight" in [p.name for p in attach.kernel.picked_params]
@@ -437,7 +437,7 @@ class TestPlanShape:
     async def test_scope_closed_no_placeholder_leak(self, formula, tds, mode):
         kw = {} if tds is None else {"time_dimensions": tds}
         dims = None if tds is not None else ["status"]
-        q = mode_q(mode, measures=[_m(formula)],
+        q = mode_q(mode, metrics=[_m(formula)],
                    **({"dimensions": dims} if dims else {}), **kw)
         sql = await orders_gen(q, dialect="sqlite")
         assert "__regroup__" not in sql, sql
@@ -445,9 +445,9 @@ class TestPlanShape:
 
     async def test_adding_the_measure_is_cardinality_neutral(self, orders_engine):
         base = await orders_engine.execute(
-            mode_q(None, dimensions=["status"], measures=[AMOUNT]))
+            mode_q(None, dimensions=["status"], metrics=[AMOUNT]))
         withp = await orders_engine.execute(
-            mode_q(None, dimensions=["status"], measures=[AMOUNT, _m(RANKED)]))
+            mode_q(None, dimensions=["status"], metrics=[AMOUNT, _m(RANKED)]))
         assert len(withp.data) == len(base.data)
         assert status_vals(withp, "a") == pytest.approx(status_vals(base, "a"))
 
@@ -456,8 +456,8 @@ class TestPlanShape:
 # Re-aggregation outer (sales graph).
 # --------------------------------------------------------------------------- #
 def _sales_bundle() -> ResolvedSourceBundle:
-    models = dev1847_models()
-    return ResolvedSourceBundle(dialect="sqlite", source_model=models[0], referenced_models=models[1:])
+    models = dev1847_datasets()
+    return ResolvedSourceBundle(dialect="sqlite", population=models[0], referenced_datasets=models[1:])
 
 
 class TestReaggregationOuter:
@@ -466,19 +466,19 @@ class TestReaggregationOuter:
 
     async def test_by_region(self, sales_engine):
         resp = await sales_engine.execute(
-            sales_q(dimensions=["region"], measures=[_m(REAGG_RANK_COUNT)]))
+            sales_q(dimensions=["region"], metrics=[_m(REAGG_RANK_COUNT)]))
         assert_cells(region_vals(resp), reagg_rank_by_region())
 
     def test_carrier_picks_the_transform_weight(self):
         bundle = _sales_bundle()
         # The weight IS a transform constituent (not a column/aggregate).
         bound = bind_expr(parse_expr(REAGG_RANK_COUNT),
-                          scope=ModelScope(source_model=bundle.source_model), bundle=bundle)
+                          scope=DatasetScope(population=bundle.population), bundle=bundle)
         assert isinstance(bound.value_key, AggregateKey)
         assert isinstance(dict(bound.value_key.kwargs)["weight"], TransformKey)
         # …and rides the carrier as a picked parameter named ``weight``.
         planned = plan_query(
-            query=sales_q(dimensions=["region"], measures=[_m(REAGG_RANK_COUNT)]),
+            query=sales_q(dimensions=["region"], metrics=[_m(REAGG_RANK_COUNT)]),
             bundle=bundle)
         picked = [p.name for a in planned.regroup_attach_plans
                   for p in getattr(a.kernel, "picked_params", [])]
@@ -486,13 +486,13 @@ class TestReaggregationOuter:
 
     async def test_scope_closed_no_leak(self):
         sql = await sales_gen(
-            sales_q(dimensions=["region"], measures=[_m(REAGG_RANK_COUNT)]),
+            sales_q(dimensions=["region"], metrics=[_m(REAGG_RANK_COUNT)]),
             dialect="sqlite")
         assert "__regroup__" not in sql, sql
         assert_scope_closed(sql, dialect="sqlite")
 
     async def test_partition_by_product_fails_closed(self, sales_engine):
-        q = sales_q(dimensions=["region"], measures=[_m(REAGG_RANK_PRODUCT)])
+        q = sales_q(dimensions=["region"], metrics=[_m(REAGG_RANK_PRODUCT)])
         with pytest.raises(SlayerError) as ei:
             await sales_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -521,7 +521,7 @@ class TestBindLevel:
     def test_transform_ranking_key_refused(self):
         scope, bundle = _orders_scope_bundle()
         parsed = parse_expr(LAST_RANK_KEY)
-        with pytest.raises(ValueError, match="ranks by a column"):
+        with pytest.raises(ValueError, match="ranks by a field"):
             bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_time_bucketed_partition_key_granularity_in_fragment(self):
@@ -529,11 +529,11 @@ class TestBindLevel:
         granularities gets distinct canonical fragments — the fragment keeps a
         ``TimeTruncKey``'s granularity, as it already does for the resolved
         ``time_key``, so month- and year-bucketed aliases stay legible and stable."""
-        inner = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",
-                             partition_keys=Grain.of([ColumnKey(leaf="region")]))
+        inner = AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
+                             partition_keys=Grain.of([FieldKey(leaf="region")]))
 
         def _ranked(gran: TimeGranularity) -> TransformKey:
             return TransformKey(op="rank", input=inner, partition_keys=Grain.of([
-                TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=gran)]))
+                TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=gran)]))
 
         assert agg_kwarg_canonical_str(_ranked(TimeGranularity.MONTH)) != agg_kwarg_canonical_str(_ranked(TimeGranularity.YEAR))

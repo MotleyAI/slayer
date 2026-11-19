@@ -1,0 +1,14 @@
+{
+ "source": "tests/dialects/test_dev2177_param_emission.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  }
+ ]
+}

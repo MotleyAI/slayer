@@ -13,14 +13,14 @@ import yaml
 
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
-from slayer.core.scope import StageColumn, StageSchema
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.scope import StageField, StageSchema
 from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle, stage_bundle_with_siblings
 from slayer.sql.generator import SQLGenerator
 
 from tests import _dev1948_fixtures as f48
-from tests._dev1966_fixtures import customers_model, dev1966_engine, m, orders_model, query
+from tests._dev1966_fixtures import customers_dataset, dev1966_engine, m, orders_dataset, query
 from tests._law_harness import DEFERRAL_SITES
 
 _INDEX_YAML = pathlib.Path(__file__).parent.parent / "architecture" / "index.yaml"
@@ -28,12 +28,12 @@ _INDEX_YAML = pathlib.Path(__file__).parent.parent / "architecture" / "index.yam
 
 class TestGeneratorInvariant:
     def test_unspliced_query_backed_model_raises_a_non_deferral_value_error(self) -> None:
-        qb = SlayerModel(name="qb_unspliced", data_source="test",
-                         source_queries=[query(source_model="orders", measures=[m("sum(amount)", "a")])])
+        qb = SlayerDataset(name="qb_unspliced", data_source="test",
+                         source_queries=[query(population="orders", metrics=[m("sum(amount)", "a")])])
         generator = SQLGenerator(dialect="postgres")
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=qb)
+        bundle = ResolvedSourceBundle(dialect="postgres", population=qb)
         with pytest.raises(ValueError) as exc:
-            generator._emit_relation(model=qb, alias="qb_unspliced", bundle=bundle)
+            generator._emit_relation(dataset=qb, alias="qb_unspliced", bundle=bundle)
         msg = str(exc.value)
         assert "qb_unspliced" in msg, msg
         assert "query-backed" in msg, msg
@@ -48,39 +48,39 @@ class TestGeneratorInvariant:
 
 
 def _schema(name: str) -> StageSchema:
-    return StageSchema(relation_name=name, grain=["id"], columns=[
-        StageColumn(name="id", sql_alias="id", type=DataType.INT),
-        StageColumn(name="tr", sql_alias="tr", type=DataType.TEXT),
+    return StageSchema(relation_name=name, grain=["id"], fields=[
+        StageField(name="id", sql_alias="id", datatype=DataType.INT),
+        StageField(name="tr", sql_alias="tr", datatype=DataType.TEXT),
     ])
 
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
-        dialect="postgres", source_model=orders_model(),
-        referenced_models=[orders_model(), customers_model()])
+        dialect="postgres", population=orders_dataset(),
+        referenced_datasets=[orders_dataset(), customers_dataset()])
 
 
 class TestStageBundleCollision:
     def test_identical_host_entry_is_deduplicated(self) -> None:
         out = stage_bundle_with_siblings(
-            bundle=_bundle(), source_model=orders_model(),
+            bundle=_bundle(), source_dataset=orders_dataset(),
             sibling_schemas={"c": _schema("c")}, data_source="test")
-        names = [x.name for x in out.referenced_models]
+        names = [x.name for x in out.referenced_datasets]
         assert sorted(names) == ["c", "customers", "orders"]
 
     def test_an_extended_host_replaces_its_base(self) -> None:
-        extended = orders_model().model_copy(update={"columns": [
-            *orders_model().columns, Column(name="double_amount", sql="amount * 2", type=DataType.DOUBLE)]})
+        extended = orders_dataset().model_copy(update={"fields": [
+            *orders_dataset().fields, DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.DOUBLE)]})
         out = stage_bundle_with_siblings(
-            bundle=_bundle(), source_model=extended, sibling_schemas={}, data_source="test")
-        (host,) = [x for x in out.referenced_models if x.name == "orders"]
-        assert host.get_column("double_amount") is not None
+            bundle=_bundle(), source_dataset=extended, sibling_schemas={}, data_source="test")
+        (host,) = [x for x in out.referenced_datasets if x.name == "orders"]
+        assert host.get_field("double_amount") is not None
 
     def test_a_stage_identity_meeting_a_different_model_raises(self) -> None:
-        bundle, host, siblings = _bundle(), orders_model(), {"customers": _schema("customers")}
+        bundle, host, siblings = _bundle(), orders_dataset(), {"customers": _schema("customers")}
         with pytest.raises(ValueError, match="customers"):
             stage_bundle_with_siblings(
-                bundle=bundle, source_model=host, sibling_schemas=siblings, data_source="test")
+                bundle=bundle, source_dataset=host, sibling_schemas=siblings, data_source="test")
 
 
 def _stamped_bundle(planned: PlannedQuery) -> ResolvedSourceBundle:
@@ -91,7 +91,7 @@ def _stamped_bundle(planned: PlannedQuery) -> ResolvedSourceBundle:
 def _assert_no_later_stage(planned: List[PlannedQuery]) -> None:
     relations = [p.stage_schema.relation_name if p.stage_schema else None for p in planned[:-1]]
     for i, p in enumerate(planned):
-        universe = set(_stamped_bundle(p).models_by_name)
+        universe = set(_stamped_bundle(p).datasets_by_name)
         later = {r for r in relations[i + 1:] if r}
         assert not universe & later, (i, universe & later)
         assert set(p.stage_reads) <= universe, (i, p.stage_reads, universe)
@@ -99,7 +99,7 @@ def _assert_no_later_stage(planned: List[PlannedQuery]) -> None:
 
 class TestStampedBundle:
     @pytest.fixture
-    def planned(self, monkeypatch) -> List[Any]:
+    def planned(self, monkeypatch: pytest.MonkeyPatch) -> List[Any]:
         captured: List[Any] = []
         real = query_engine_module.plan_stages
 
@@ -123,30 +123,30 @@ class TestStampedBundle:
 
     async def test_spliced_consumer(self, planned) -> None:
         async with dev1966_engine("sqlite") as e:
-            await e.execute(query(source_model="clients", dimensions=["tier"],
-                                  measures=[m("sum(cust_rev.rev)", "r")]), dry_run=True)
+            await e.execute(query(population="clients", dimensions=["tier"],
+                                  metrics=[m("sum(cust_rev.rev)", "r")]), dry_run=True)
         assert len(planned) == 3
         _assert_no_later_stage(planned)
 
 
 class TestEmissionLaw:
     @pytest.mark.parametrize("consumer", ["source", "join_target", "stage_chain"])
-    async def test_emitted_stage_relations_are_declared(self, consumer, monkeypatch) -> None:
+    async def test_emitted_stage_relations_are_declared(self, consumer, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: List[tuple] = []
         real = SQLGenerator._emit_relation
 
-        def spy(self, *, model, alias, bundle):
-            seen.append((model.sql_table, frozenset(self._gen_stage_reads)))
-            return real(self, model=model, alias=alias, bundle=bundle)
+        def spy(self, *, dataset, alias, bundle):
+            seen.append((dataset.sql_table, frozenset(self._gen_stage_reads)))
+            return real(self, dataset=dataset, alias=alias, bundle=bundle)
 
         monkeypatch.setattr(SQLGenerator, "_emit_relation", spy)
         queries = {
-            "source": query(source_model="cust_rev", measures=[m("sum(rev)", "t")]),
-            "join_target": query(source_model="clients", dimensions=["tier"],
-                                 measures=[m("sum(cust_rev.rev)", "r")]),
-            "stage_chain": [query(name="s", source_model="clients", dimensions=["tier"],
-                                  measures=[m("sum(cust_rev.rev)", "r")]),
-                            query(source_model="s", measures=[m("sum(r)", "t")])],
+            "source": query(population="cust_rev", metrics=[m("sum(rev)", "t")]),
+            "join_target": query(population="clients", dimensions=["tier"],
+                                 metrics=[m("sum(cust_rev.rev)", "r")]),
+            "stage_chain": [query(name="s", population="clients", dimensions=["tier"],
+                                  metrics=[m("sum(cust_rev.rev)", "r")]),
+                            query(population="s", metrics=[m("sum(r)", "t")])],
         }
         async with dev1966_engine("sqlite") as e:
             await e.execute(queries[consumer], dry_run=True)

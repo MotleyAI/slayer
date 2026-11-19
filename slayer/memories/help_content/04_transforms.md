@@ -1,7 +1,7 @@
 # Transforms
 
 A transform wraps an aggregated value and computes across result rows. Transforms
-work in measures, filters and order, and nest in either order
+work in metrics, filters and order, and nest in either order
 (`cumsum(change(sum(amount)))`, `change(cumsum(sum(amount)))`).
 
 ## Catalogue
@@ -49,6 +49,6 @@ ranks NULL, so a rank filter drops it. Top N per group is a filter:
 ## Limits
 
 `partition_by=` is accepted on the rank family only; other transforms partition by
-the query's dimensions. A row-level column that is not a query dimension cannot be
+the query's dimensions. A row-level field that is not a query dimension cannot be
 mixed into a transform's input. Whether a filter needs a stage around a transform:
 the query object's `name` field.

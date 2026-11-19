@@ -12,7 +12,7 @@ import pytest
 
 from slayer.core.errors import DistinctDimensionValuesError, PositionTypingError
 
-from tests._dev1865_fixtures import ModelMeasure, q
+from tests._dev1865_fixtures import DatasetMetric, q
 
 
 class TestMixedGrainOr:
@@ -21,14 +21,14 @@ class TestMixedGrainOr:
         # a query dimension) — neither scope holds the whole OR.
         query = q(
             dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises(PositionTypingError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value).lower()
         assert "field" in msg
-        assert "measure" in msg
+        assert "metric" in msg
         assert "status" in msg
         assert "partition" in msg or "sum(amount)" in msg
 
@@ -38,11 +38,11 @@ class TestRawRowsHaveNoMeasurePosition:
         query = q(
             dimensions=["status"],
             distinct_dimension_values=False,
-            filters=["sum(amount) > 100"],
+            filter=["sum(amount) > 100"],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)
-        assert "measure" in str(ei.value).lower()
+        assert "metric" in str(ei.value).lower()
 
     async def test_order_on_measure_in_raw_rows_errors(self, exec_engine) -> None:
         # An aggregate order target is valid as neither field nor measure when the
@@ -50,8 +50,8 @@ class TestRawRowsHaveNoMeasurePosition:
         query = q(
             dimensions=["status"],
             distinct_dimension_values=False,
-            order=[{"column": "sum(amount)", "direction": "desc"}],
+            order=[{"field": "sum(amount)", "direction": "desc"}],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)
-        assert "measure" in str(ei.value).lower()
+        assert "metric" in str(ei.value).lower()

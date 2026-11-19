@@ -9,25 +9,25 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.join_walker import model_column_type
-from slayer.core.keys import ColumnKey, ValueKey, boolean_valued, numeric_valued
-from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.core.relationship_walker import dataset_field_type
+from slayer.core.keys import FieldKey, ValueKey, boolean_valued, numeric_valued
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import stage_column_type
+from slayer.engine.key_metadata import stage_field_type
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev2046_fixtures import customers_model, orders_model
+from tests._dev2046_fixtures import customers_dataset, orders_dataset
 
-ORDERS = orders_model()
-CUSTOMERS = customers_model()
-BUNDLE = ResolvedSourceBundle(dialect="postgres", source_model=ORDERS, referenced_models=[CUSTOMERS])
-COLUMN_TYPE = model_column_type(model=ORDERS, models_by_name={"orders": ORDERS, "customers": CUSTOMERS})
+ORDERS = orders_dataset()
+CUSTOMERS = customers_dataset()
+BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
+COLUMN_TYPE = dataset_field_type(dataset=ORDERS, datasets_by_name={"orders": ORDERS, "customers": CUSTOMERS})
 
 
 def _bind(text: str) -> ValueKey:
     return bind_expr(
-        parse_expr(text), scope=ModelScope(source_model=ORDERS), bundle=BUNDLE, allow_measures=True,
+        parse_expr(text), scope=DatasetScope(population=ORDERS), bundle=BUNDLE, allow_metrics=True,
     ).value_key
 
 
@@ -84,7 +84,7 @@ def _bind(text: str) -> ValueKey:
     ("iif(flag, amount, 0) * 2", False),
 ])
 def test_recognition(text: str, expected: bool) -> None:
-    assert boolean_valued(_bind(text), column_type=COLUMN_TYPE) is expected
+    assert boolean_valued(_bind(text), field_type=COLUMN_TYPE) is expected
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -109,19 +109,19 @@ def test_recognition(text: str, expected: bool) -> None:
     ("lower(status)", False),
 ])
 def test_numeric_recognition(text: str, expected: bool) -> None:
-    assert numeric_valued(_bind(text), column_type=COLUMN_TYPE) is expected
+    assert numeric_valued(_bind(text), field_type=COLUMN_TYPE) is expected
 
 
 def test_stage_column() -> None:
     """A stage's BOOLEAN column is boolean-valued through the stage's column types."""
-    schema = StageSchema(relation_name="s1", columns=[
-        StageColumn(name="fm", sql_alias="fm", type=DataType.BOOLEAN),
-        StageColumn(name="fs", sql_alias="fs", type=DataType.INT),
+    schema = StageSchema(relation_name="s1", fields=[
+        StageField(name="fm", sql_alias="fm", datatype=DataType.BOOLEAN),
+        StageField(name="fs", sql_alias="fs", datatype=DataType.INT),
     ])
-    column_type = stage_column_type(schema)
-    assert boolean_valued(ColumnKey(leaf="fm"), column_type=column_type) is True
-    assert boolean_valued(ColumnKey(leaf="fs"), column_type=column_type) is False
+    column_type = stage_field_type(schema)
+    assert boolean_valued(FieldKey(leaf="fm"), field_type=column_type) is True
+    assert boolean_valued(FieldKey(leaf="fs"), field_type=column_type) is False
 
 
 def test_unknown_column_type_is_not_boolean() -> None:
-    assert boolean_valued(ColumnKey(leaf="flag"), column_type=lambda _key: None) is False
+    assert boolean_valued(FieldKey(leaf="flag"), field_type=lambda _key: None) is False

@@ -13,18 +13,19 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.warnings import BroadcastGrainWarningPayload
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1836_fixtures import (
     _seed_duckdb,
     _seed_sqlite,
-    customers_model as _customers_1836,
-    orders_model as _orders_1836,
-    regions_model,
-    segments_model,
+    customers_dataset as _customers_1836,
+    orders_dataset as _orders_1836,
+    regions_dataset,
+    segments_dataset,
 )
 from tests._engine_helpers import _engine_generate
 
@@ -43,73 +44,73 @@ from tests._dev1836_fixtures import (  # noqa: E402,F401  (re-export)
 # (composite, nested/recursive, self-qualified, own-join, column-filter local /
 # proven-hop / unproven-hop, partition_by local / grand, transform, typed,
 # round-trip, cross-model cycle). See EQUIV_PAIRS for the hand-expanded twins.
-CUSTOMER_MEASURES: List[ModelMeasure] = [
-    ModelMeasure(name="aov", formula="sum(spend) / count(*)"),
-    ModelMeasure(name="aov_big", formula="aov * 2"),
-    ModelMeasure(name="self_aov", formula="sum(customers.spend) / count(customers.*)"),
-    ModelMeasure(name="pop_total", formula="sum(regions.pop)"),
-    ModelMeasure(name="gold_spend_total", formula="sum(gold_spend)"),
-    ModelMeasure(name="north_spend_total", formula="sum(north_spend)"),
-    ModelMeasure(name="vip_spend_total", formula="sum(vip_spend)"),
-    ModelMeasure(name="spend_by_tier", formula="sum(spend, partition_by=tier)"),
-    ModelMeasure(name="spend_grand", formula="sum(spend, partition_by=[])"),
-    ModelMeasure(name="spend_run", formula="cumsum(sum(spend))"),
-    ModelMeasure(name="typed_aov", formula="sum(spend) / count(*)", type=DataType.DOUBLE),
-    ModelMeasure(name="order_total", formula="sum(orders.amount)"),
-    ModelMeasure(name="cyc_c", formula="orders.cyc_o"),
+CUSTOMER_MEASURES: List[DatasetMetric] = [
+    DatasetMetric(name="aov", expression="sum(spend) / count(*)"),
+    DatasetMetric(name="aov_big", expression="aov * 2"),
+    DatasetMetric(name="self_aov", expression="sum(customers.spend) / count(customers.*)"),
+    DatasetMetric(name="pop_total", expression="sum(regions.pop)"),
+    DatasetMetric(name="gold_spend_total", expression="sum(gold_spend)"),
+    DatasetMetric(name="north_spend_total", expression="sum(north_spend)"),
+    DatasetMetric(name="vip_spend_total", expression="sum(vip_spend)"),
+    DatasetMetric(name="spend_by_tier", expression="sum(spend, partition_by=tier)"),
+    DatasetMetric(name="spend_grand", expression="sum(spend, partition_by=[])"),
+    DatasetMetric(name="spend_run", expression="cumsum(sum(spend))"),
+    DatasetMetric(name="typed_aov", expression="sum(spend) / count(*)", datatype=DataType.DOUBLE),
+    DatasetMetric(name="order_total", expression="sum(orders.amount)"),
+    DatasetMetric(name="cyc_c", expression="orders.cyc_o"),
 ]
 
 # On ``orders`` — host measures whose bare-name resolution recurses into a
 # dotted cross-model reference, plus the cross-model cycle partner.
-ORDERS_MEASURES: List[ModelMeasure] = [
-    ModelMeasure(name="host_runs_dotted", formula="cumsum(customers.aov)"),
-    ModelMeasure(name="host_mix", formula="sum(amount) / customers.aov"),
-    ModelMeasure(name="cyc_o", formula="customers.cyc_c"),
+ORDERS_MEASURES: List[DatasetMetric] = [
+    DatasetMetric(name="host_runs_dotted", expression="cumsum(customers.aov)"),
+    DatasetMetric(name="host_mix", expression="sum(amount) / customers.aov"),
+    DatasetMetric(name="cyc_o", expression="customers.cyc_c"),
 ]
 
 
 # Models — DEV-1836 shapes with the saved measures overlaid.
 #: A filtered column whose predicate crosses the PROVEN customers → regions hop
 #: (safe cross-model input, so ``sum(north_spend)`` executes; cf. ``vip_spend``).
-_NORTH_SPEND = Column(
-    name="north_spend", type=DataType.DOUBLE, sql="spend",
+_NORTH_SPEND = DatasetField(
+    name="north_spend", datatype=DataType.DOUBLE, sql="spend",
     filter="regions.name = 'North'",
 )
 
 
-def customers_model() -> SlayerModel:
+def customers_dataset() -> SlayerDataset:
     base = _customers_1836()
     return base.model_copy(update={
-        "columns": list(base.columns) + [_NORTH_SPEND],
-        "measures": CUSTOMER_MEASURES,
+        "fields": list(base.fields) + [_NORTH_SPEND],
+        "metrics": CUSTOMER_MEASURES,
     })
 
 
-def orders_model() -> SlayerModel:
-    return _orders_1836().model_copy(update={"measures": ORDERS_MEASURES})
+def orders_dataset() -> SlayerDataset:
+    return _orders_1836().model_copy(update={"metrics": ORDERS_MEASURES})
 
 
-def dev1842_models() -> List[SlayerModel]:
+def dev1842_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model(), regions_model(), segments_model()]
+    return [orders_dataset(), customers_dataset(), regions_dataset(), segments_dataset()]
 
 
 # Query + generation shorthands.
 def q(**kw):
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def month_td(column: str = "ordered_at"):
     return [TimeDimension(
-        dimension=column, granularity=TimeGranularity.MONTH,
+        field=column, granularity=TimeGranularity.MONTH,
     )]
 
 
 async def gen(query, *, dialect: str = "duckdb", validate: bool = False) -> str:
-    models = dev1842_models()
+    models = dev1842_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
@@ -121,7 +122,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1842_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1842_datasets()) as (engine, _db):
         yield engine
 
 
@@ -134,9 +135,9 @@ def rows_by(resp, *keys) -> dict:
     return out
 
 
-def broadcast_warnings(resp) -> list:
+def broadcast_warnings(resp: SlayerResponse) -> list[BroadcastGrainWarningPayload]:
     return [w for w in (resp.warnings or [])
-            if getattr(w, "kind", None) == "broadcast"]
+            if isinstance(w, BroadcastGrainWarningPayload)]
 
 
 #: (dotted saved-measure spelling, hand-expanded host-prefixed twin). Every pair
@@ -175,11 +176,11 @@ PARITY_ERROR_PAIRS = {
 
 __all__ = [
     "CUSTOMER_MEASURES", "ORDERS_MEASURES",
-    "customers_model", "orders_model", "regions_model", "segments_model",
-    "dev1842_models", "q", "month_td", "gen", "make_exec_engine",
+    "customers_dataset", "orders_dataset", "regions_dataset", "segments_dataset",
+    "dev1842_datasets", "q", "month_td", "gen", "make_exec_engine",
     "rows_by", "broadcast_warnings",
     "EQUIV_PAIRS", "TRANSFORM_PAIR", "PARITY_ERROR_PAIRS",
-    "ModelMeasure", "SlayerModel", "DataType",
+    "DatasetMetric", "SlayerDataset", "DataType",
     "GOLD_SPEND_BY_REGION", "POP_TOTAL", "SPEND_BY_REGION", "SPEND_BY_TIER",
     "SPEND_TOTAL",
 ]

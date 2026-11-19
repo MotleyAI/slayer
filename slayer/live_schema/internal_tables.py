@@ -1,7 +1,7 @@
 """Recognition of well-known ELT / migration housekeeping tables.
 
-An unfiltered ingest models these as first-class semantic models, so they clog
-the model list handed to an AI agent over MCP — burning tokens and inviting
+An unfiltered ingest makes these first-class datasets, so they clog
+the dataset list handed to an AI agent over MCP — burning tokens and inviting
 nonsense aggregations/joins. Pure and DB-free so the rule table is unit-testable
 without a database.
 
@@ -47,8 +47,8 @@ _INTERNAL_EXACT: dict[str, str] = {
 def internal_table_rule(table_name: str) -> str | None:
     """Return the tool that owns ``table_name`` as bookkeeping, else ``None``.
 
-    Match on the live object name, not a derived model name: ``__``-sanitization
-    turns ``_dlt_loads__x`` into the model ``_dlt_loads_x``, a string the
+    Match on the live object name, not a derived dataset name: ``__``-sanitization
+    turns ``_dlt_loads__x`` into the dataset ``_dlt_loads_x``, a string the
     database never had. Exact names are checked before prefixes (the sets don't
     overlap, so it's for determinism, not precedence).
     """

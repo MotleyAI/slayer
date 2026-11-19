@@ -17,7 +17,7 @@ import time
 from unittest.mock import patch
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.index import (
     Corpus,
@@ -27,15 +27,15 @@ from slayer.search.index import (
 from slayer.search.retrievers.tantivy import TantivyRetriever
 
 
-def _model(name: str = "orders") -> SlayerModel:
-    return SlayerModel(
+def _dataset(name: str = "orders") -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         sql_table=name,
         data_source="mydb",
         description=f"{name} fact table",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE,
                    description="line amount in cents"),
         ],
     )
@@ -53,7 +53,7 @@ def _memories() -> list[Memory]:
 def _build_corpus() -> Corpus:
     return build_in_memory_corpus(
         memories=_memories(),
-        models=[_model()],
+        datasets=[_dataset()],
         datasources=["mydb"],
     )
 
@@ -240,14 +240,14 @@ async def test_memory_hits_with_no_memory_id_are_skipped() -> None:
 async def test_default_no_op_write_hooks() -> None:
     retriever = TantivyRetriever()
     memory = Memory(id="1", learning="x", entities=[])
-    model = _model()
+    model = _dataset()
     assert await retriever.upsert_memory(memory) == []
-    assert await retriever.refresh_model_subtree(model) == []
+    assert await retriever.refresh_dataset_subtree(model) == []
     assert await retriever.refresh_datasource(
-        name="mydb", models=[model],
+        name="mydb", datasets=[model],
     ) == []
     assert await retriever.delete_memory("1") is None
-    assert await retriever.delete_model(
+    assert await retriever.delete_dataset(
         data_source="mydb", name="orders",
     ) is None
     assert await retriever.delete_datasource("mydb") is None

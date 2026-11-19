@@ -1,0 +1,154 @@
+{
+ "source": "tests/test_dev1835_guard_dissolution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount, window='90d'))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount, window='90d'))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount, window='90d'), -1)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount, window='90d'), -1)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d') / sum(amount)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d') / sum(amount)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='1y') / 2",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(amount, window='1y') / 2",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(last(amount), -1)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "time_shift(last(amount), -1)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(last(amount))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "change(last(amount))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change_pct(last(amount))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "change_pct(last(amount))",
+    "name": "x"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 238,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,27 @@
+{
+ "source": "tests/test_osi_metrics.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "v"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "v"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

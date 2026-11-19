@@ -9,16 +9,16 @@ import pytest
 
 from slayer.core.errors import SlayerError
 from slayer.core.keys import AggregateKey, TransformKey
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import _source_is_reaggregation, bind_expr
 from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
-    dev1847_models,
+    dev1847_datasets,
     INNER_CR,
-    ColumnRef,
-    ModelMeasure,
+    FieldRef,
+    DatasetMetric,
     SlayerQuery,
     gen,
     sales_q,
@@ -66,7 +66,7 @@ class TestFullyAttachedAccepted:
     async def test_reaggregation_compiles_to_sql(self):
         """Accepted end-to-end: emits SQL rather than raising the gate."""
         sql = await gen(sales_q(dimensions=["region"],
-                                measures=[ModelMeasure(formula=f"avg({INNER_CR})",
+                                metrics=[DatasetMetric(expression=f"avg({INNER_CR})",
                                                        name="acr")]))
         assert "SELECT" in sql.upper()
 
@@ -88,8 +88,8 @@ class TestRejections:
         ref-free."""
         query = sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=f"wavg({INNER_CR}, weight=id)", name="w")])
+            metrics=[DatasetMetric(
+                expression=f"wavg({INNER_CR}, weight=id)", name="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -104,7 +104,7 @@ class TestRejections:
         grain; same one-rule error."""
         query = sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"wavg({INNER_CR})", name="w")])
+            metrics=[DatasetMetric(expression=f"wavg({INNER_CR})", name="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -119,8 +119,8 @@ class TestRejections:
         NotImplementedError."""
         query = sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=f"sum({INNER_CR}, window='90d')", name="w")])
+            metrics=[DatasetMetric(
+                expression=f"sum({INNER_CR}, window='90d')", name="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -139,25 +139,25 @@ class TestCrossModelAndFilteredOperandNowAccepted:
     async def test_cross_model_expression_accepted(self):
         """A dotted joined-model leaf inside the expression now compiles."""
         query = SlayerQuery(
-            source_model="corders",
-            dimensions=[ColumnRef(name="customer_id")],
-            measures=[ModelMeasure(formula="sum(amount - customers.region_id)",
+            population="corders",
+            dimensions=[FieldRef(name="customer_id")],
+            metrics=[DatasetMetric(expression="sum(amount - customers.region_id)",
                                    name="x")])
         assert "SELECT" in (await gen(query)).upper()
 
     async def test_filtered_column_operand_accepted(self):
         """A filtered column operand desugars to CASE WHEN, not a rejection."""
         query = sales_q(dimensions=["region"],
-                        measures=[ModelMeasure(formula="sum(q_amount - 1)",
+                        metrics=[DatasetMetric(expression="sum(q_amount - 1)",
                                                name="x")])
         assert "CASE WHEN" in (await gen(query)).upper()
 
 
-def _bound(formula: str):
-    models = dev1847_models()
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+def _bound(expression: str):
+    models = dev1847_datasets()
+    bundle = ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
     return bind_expr(
-        parse_expr(formula), scope=ModelScope(source_model=models[0]), bundle=bundle,
+        parse_expr(expression), scope=DatasetScope(population=models[0]), bundle=bundle,
     ).value_key
 
 
@@ -181,6 +181,6 @@ class TestUnknownOuterAggregationRejectedAtBinding:
         """Unknown custom-aggregation candidates are rejected at binding."""
         query = sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"magic_fn({INNER_CR})", name="x")])
+            metrics=[DatasetMetric(expression=f"magic_fn({INNER_CR})", name="x")])
         with pytest.raises((SlayerError, ValueError), match="(?i)unknown function"):
             await gen(query)

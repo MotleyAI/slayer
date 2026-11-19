@@ -1,0 +1,17 @@
+{
+ "source": "tests/test_dev1841_association_filters.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -175,7 +175,7 @@ def _domain_violation(fn: str, values: Sequence[object]) -> _Violation:
 
 
 def check_domain(fn: str, values: Sequence[object], *, texts: Sequence[str]) -> None:
-    """Literal arguments outside ``fn``'s domain (whose column form yields NULL) are a plan-time error."""
+    """Literal arguments outside ``fn``'s domain (whose field form yields NULL) are a plan-time error."""
     violation = _domain_violation(fn, values)
     if violation is None:
         return
@@ -184,7 +184,7 @@ def check_domain(fn: str, values: Sequence[object], *, texts: Sequence[str]) -> 
     noun = "argument" if len(positions) == 1 else "arguments"
     raise _error(
         f"{fn}() {noun} {shown} {'is' if len(positions) == 1 else 'are'} {reason}.",
-        suggestion=f"Use an argument inside the domain of {fn}(); over a column, out-of-domain values yield NULL.",
+        suggestion=f"Use an argument inside the domain of {fn}(); over a field, out-of-domain values yield NULL.",
     )
 
 

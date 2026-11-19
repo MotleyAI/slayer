@@ -19,14 +19,14 @@ SKIP_MARKER = "<!-- docs-guard: skip -->"
 _FENCE = re.compile(r"^(?P<indent>\s*)(?P<fence>`{3,}|~{3,})\s*(?P<lang>[\w+-]*)")
 _JSON_LANGS = frozenset({"json", "jsonc"})
 _YAML_LANGS = frozenset({"yaml", "yml"})
-#: Keys only a model or a model extension carries.
-_MODEL_KEYS = frozenset({
-    "sql_table", "sql", "columns", "data_source", "joins", "source_name", "default_time_dimension",
+#: Keys only a dataset or a dataset extension carries.
+_DATASET_KEYS = frozenset({
+    "sql_table", "sql", "fields", "data_source", "relationships", "source_name", "default_time_dimension",
     "source_queries", "aggregations",
 })
-#: Mode-A subtrees of a model: raw SQL, column filters, custom-aggregation templates.
-_MODEL_SKIPPED = frozenset({"sql", "sql_table", "filters", "columns", "aggregations"})
-_QUERY_FIELDS = frozenset({"measures", "dimensions", "time_dimensions", "filters", "order"})
+#: Mode-A subtrees of a dataset: raw SQL, field filters, custom-aggregation templates.
+_DATASET_SKIPPED = frozenset({"sql", "sql_table", "filters", "fields", "aggregations"})
+_QUERY_FIELDS = frozenset({"metrics", "dimensions", "time_dimensions", "filter", "order"})
 
 
 class Snippet(BaseModel):
@@ -54,7 +54,7 @@ class Extraction(BaseModel):
 # Walking a parsed value
 # --------------------------------------------------------------------------- #
 def mode_b_values(node: Any) -> list[str]:
-    """Every Mode-B string in a parsed query, model or fragment, in document order."""
+    """Every Mode-B string in a parsed query, dataset or fragment, in document order."""
     return list(_walk(node))
 
 
@@ -63,29 +63,28 @@ def _walk(node: Any) -> Iterator[str]:
         for item in node:
             yield from _walk(item)
     elif isinstance(node, dict):
-        yield from (_model if _MODEL_KEYS & node.keys() else _query)(node)
+        yield from (_dataset if _DATASET_KEYS & node.keys() else _query)(node)
 
 
-def _model(node: dict[str, Any]) -> Iterator[str]:
+def _dataset(node: dict[str, Any]) -> Iterator[str]:
     for key, value in node.items():
-        if key == "measures":
-            yield from _measures(value)
-        elif key not in _MODEL_SKIPPED:
+        if key == "metrics":
+            yield from _metrics(value)
+        elif key not in _DATASET_SKIPPED:
             yield from _walk(value)
 
 
 def _query(node: dict[str, Any]) -> Iterator[str]:
-    if "params" in node:  # a custom aggregation: its formula is a SQL template
+    if "params" in node:  # a custom aggregation: its expression is a SQL template
         return
-    for key in ("formula", "expression"):
-        if isinstance(node.get(key), str):
-            yield node[key]
-    if isinstance(node.get("dimension"), str) and "granularity" in node:
-        yield node["dimension"]
+    if isinstance(node.get("expression"), str):
+        yield node["expression"]
+    if isinstance(node.get("field"), str) and "granularity" in node:
+        yield node["field"]
     for key, value in node.items():
         if key in _QUERY_FIELDS:
             yield from _FIELD_READERS[key](value)
-        elif key not in ("formula", "expression"):
+        elif key != "expression":
             yield from _walk(value)
 
 
@@ -104,16 +103,16 @@ def _entries(value: Any, *, keys: tuple[str, ...]) -> Iterator[str]:
             yield from (entry[k] for k in keys if isinstance(entry.get(k), str))
 
 
-def _measures(value: Any) -> Iterator[str]:
-    return _entries(value, keys=("formula",))
+def _metrics(value: Any) -> Iterator[str]:
+    return _entries(value, keys=("expression",))
 
 
 _FIELD_READERS = {
-    "measures": _measures,
+    "metrics": _metrics,
     "dimensions": lambda v: _entries(v, keys=("expression",)),
-    "time_dimensions": lambda v: _entries(v, keys=("dimension", "column")),
-    "filters": _strings,
-    "order": lambda v: _entries(v, keys=("column",)),
+    "time_dimensions": lambda v: _entries(v, keys=("field",)),
+    "filter": _strings,
+    "order": lambda v: _entries(v, keys=("field",)),
 }
 
 
@@ -172,7 +171,7 @@ def _scalar_pattern(value: str) -> re.Pattern[str]:
     """``value`` as a whole JSON string or YAML scalar, never as part of a longer one."""
     plain = re.escape(value)
     quoted = re.escape(json.dumps(value))
-    yaml_slot = r"^\s*(?:-\s+|-?\s*(?:formula|expression|dimension|column)\s*:\s+)"
+    yaml_slot = r"^\s*(?:-\s+|-?\s*(?:expression|field)\s*:\s+)"
     return re.compile(rf"{quoted}|{yaml_slot}['\"]?{plain}['\"]?\s*(?:#.*)?$", re.M)
 
 
@@ -226,5 +225,5 @@ def extract_markdown(text: str, *, path: str) -> Extraction:
 
 
 def extract_yaml_file(text: str, *, path: str) -> Extraction:
-    """Mode-B strings from a whole YAML file (a stored model, query or config)."""
+    """Mode-B strings from a whole YAML file (a stored dataset, query or config)."""
     return _extract_block(text, lang="yaml", path=path, start=1)

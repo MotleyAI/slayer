@@ -1,0 +1,61 @@
+{
+ "source": "tests/test_dev1747_derived_crossing_order.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "name",
+    "model": "customers.regions"
+   },
+   "new": {
+    "name": "name",
+    "dataset": "customers.regions"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 257,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 261,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -8,13 +8,13 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from tests._dev1471_fixtures import (
     BACKENDS,
     date_str,
     make_engine,
-    orders_model,
+    orders_dataset,
     orders_table_spec,
 )
 from tests._engine_helpers import _engine_generate
@@ -28,7 +28,7 @@ _ROWS = [
     (5, 102, 50.0, "N", "2025-05-05", "2025-05-06"),
 ]
 
-_LAST_TOUCH = Column(name="last_touch", sql="coalesce(shipped_at, created_at)", type=DataType.TIMESTAMP)
+_LAST_TOUCH = DatasetField(name="last_touch", sql="coalesce(shipped_at, created_at)", datatype=DataType.TIMESTAMP)
 
 
 def _norm(sql: str) -> str:
@@ -41,7 +41,7 @@ async def _engine(backend: str, tmp: str, *, extra_columns=()):
         base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
         tables=[orders_table_spec(_ROWS)],
-        models=[orders_model(extra_columns=extra_columns)],
+        datasets=[orders_dataset(extra_columns=extra_columns)],
     )
 
 
@@ -51,8 +51,8 @@ async def test_temporal_max_returns_full_date(backend: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         eng = await _engine(backend, tmp)
         resp = await eng.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "max(created_at)"}],
+            "population": "orders", "dimensions": ["customer_id"],
+            "metrics": [{"expression": "max(created_at)"}],
         }))
         got = {r["orders.customer_id"]: date_str(r["orders.created_at_max"]) for r in resp.data}
         assert got == {100: "2025-03-20", 101: "2025-02-25", 102: "2025-05-05"}
@@ -64,8 +64,8 @@ async def test_partitioned_temporal_aggregate_returns_full_date(backend: str) ->
     with tempfile.TemporaryDirectory() as tmp:
         eng = await _engine(backend, tmp)
         resp = await eng.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "max(created_at, partition_by=customer_id)"}],
+            "population": "orders", "dimensions": ["customer_id"],
+            "metrics": [{"expression": "max(created_at, partition_by=customer_id)"}],
         }))
         key = "orders.created_at_max_partition_by_customer_id"
         got = {r["orders.customer_id"]: date_str(r[key]) for r in resp.data}
@@ -78,8 +78,8 @@ async def test_derived_temporal_column_returns_full_date(backend: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         eng = await _engine(backend, tmp, extra_columns=[_LAST_TOUCH])
         resp = await eng.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "max(last_touch)"}],
+            "population": "orders", "dimensions": ["customer_id"],
+            "metrics": [{"expression": "max(last_touch)"}],
         }))
         got = {r["orders.customer_id"]: date_str(r["orders.last_touch_max"]) for r in resp.data}
         assert got == {100: "2025-03-22", 101: "2025-02-25", 102: "2025-05-06"}
@@ -89,10 +89,10 @@ async def test_sqlite_sql_has_no_temporal_cast() -> None:
     """The SQLite aggregate is bare ``MAX(orders.created_at)`` — no ``AS TIMESTAMP`` wrapper."""
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "max(created_at)"}],
+            "population": "orders", "dimensions": ["customer_id"],
+            "metrics": [{"expression": "max(created_at)"}],
         }),
-        model=orders_model(), dialect="sqlite",
+        dataset=orders_dataset(), dialect="sqlite",
     )
     normalized = _norm(sql)
     assert "MAX(orders.created_at)" in normalized, sql
@@ -104,10 +104,10 @@ async def test_sqlite_derived_column_sql_has_no_temporal_cast() -> None:
     """The derived-column seam is suppressed on SQLite too (Codex's third seam)."""
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "max(last_touch)"}],
+            "population": "orders", "dimensions": ["customer_id"],
+            "metrics": [{"expression": "max(last_touch)"}],
         }),
-        model=orders_model(extra_columns=[_LAST_TOUCH]), dialect="sqlite",
+        dataset=orders_dataset(extra_columns=[_LAST_TOUCH]), dialect="sqlite",
     )
     assert "AS TIMESTAMP" not in _norm(sql), sql
 
@@ -146,9 +146,9 @@ _EXPECTED_SQL = {
 async def test_other_dialects_keep_their_casts(dialect: str) -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "max(created_at)"}],
+            "population": "orders", "dimensions": ["customer_id"],
+            "metrics": [{"expression": "max(created_at)"}],
         }),
-        model=orders_model(), dialect=dialect,
+        dataset=orders_dataset(), dialect=dialect,
     )
     assert _norm(sql) == _EXPECTED_SQL[dialect]

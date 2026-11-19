@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._cast_fixtures import check_array_cast, check_try_cast_targets, tags_model, tags_statements
-from tests._dev2101_fixtures import by_key, dev2101_models, q, seed_server
+from tests._cast_fixtures import check_array_cast, check_try_cast_targets, tags_dataset, tags_statements
+from tests._dev2101_fixtures import by_key, dev2101_datasets, q, seed_server
 from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
@@ -28,8 +28,8 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, int
     cur.execute("SELECT current_setting('server_version_num')")
     version_num = int(cur.fetchone()[0])
     postgresql.commit()
-    models = [*dev2101_models(data_source="pg"), tags_model(data_source="pg")]
-    async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path), models=models) as engine:
+    models = [*dev2101_datasets(data_source="pg"), tags_dataset(data_source="pg")]
+    async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path), datasets=models) as engine:
         yield engine, version_num
 
 
@@ -37,7 +37,7 @@ async def test_try_cast_integer_rule(pg) -> None:
     engine, version_num = pg
     if version_num < 160000:
         pytest.skip("Postgres before 16 gets a plain CAST")
-    await check_try_cast_targets(engine, model="orders")
+    await check_try_cast_targets(engine, dataset="orders")
 
 
 async def test_try_cast_fractional_double_column(pg) -> None:
@@ -67,9 +67,9 @@ async def test_try_cast_of_an_aggregate_reads_the_group(pg) -> None:
     engine, version_num = pg
     if version_num < 160000:
         pytest.skip("Postgres before 16 gets a plain CAST")
-    resp = await engine.execute(q(dimensions=["region"], measures=[
-        {"formula": "TRY_CAST(count(*) AS INT)", "name": "n"},
-        {"formula": "TRY_CAST(count(*) + TRY_CAST('1' AS INT) AS INT)", "name": "m"},
+    resp = await engine.execute(q(dimensions=["region"], metrics=[
+        {"expression": "TRY_CAST(count(*) AS INT)", "name": "n"},
+        {"expression": "TRY_CAST(count(*) + TRY_CAST('1' AS INT) AS INT)", "name": "m"},
     ]))
     assert by_key(resp, "region", "n") == {"EU": 2, "US": 2, None: 1}, resp.sql
     assert by_key(resp, "region", "m") == {"EU": 3, "US": 3, None: 2}, resp.sql
@@ -82,7 +82,7 @@ async def test_array_cast_is_a_list(pg) -> None:
 async def test_zoned_timestamp_with_precision_executes(pg) -> None:
     resp = await pg[0].execute(q(
         dimensions=["id", {"expression": "CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)", "name": "x"}],
-        filters=["id = 1"], distinct_dimension_values=False,
+        filter=["id = 1"], distinct_dimension_values=False,
     ))
     assert len(resp.data) == 1, resp.sql
     assert by_key(resp, "id", "x")[1] is not None, resp.sql

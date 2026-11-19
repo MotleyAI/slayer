@@ -28,8 +28,8 @@ from slayer.core.keys import (
     ArrayLiteralKey,
     CastKey,
     ListSetKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
@@ -61,32 +61,32 @@ class TestLeafKinds:
 
     def test_column_key_exact_match_becomes_local(self) -> None:
         out = reroot_value_key(
-            ColumnKey(path=("customers",), leaf="tier"), target_path=TARGET,
+            FieldKey(path=("customers",), leaf="tier"), target_path=TARGET,
         )
-        assert out == ColumnKey(path=(), leaf="tier")
+        assert out == FieldKey(path=(), leaf="tier")
 
     def test_column_key_deeper_hop_keeps_residual(self) -> None:
         out = reroot_value_key(
-            ColumnKey(path=("customers", "regions"), leaf="name"), target_path=TARGET,
+            FieldKey(path=("customers", "regions"), leaf="name"), target_path=TARGET,
         )
-        assert out == ColumnKey(path=("regions",), leaf="name")
+        assert out == FieldKey(path=("regions",), leaf="name")
 
     def test_column_key_off_path_is_unchanged(self) -> None:
         """A path that does not START with target_path is left alone — the
         function never invents an anchoring it cannot justify."""
-        key = ColumnKey(path=("suppliers",), leaf="name")
+        key = FieldKey(path=("suppliers",), leaf="name")
         assert reroot_value_key(key, target_path=TARGET) == key
 
     def test_column_key_local_is_unchanged(self) -> None:
-        key = ColumnKey(path=(), leaf="amount")
+        key = FieldKey(path=(), leaf="amount")
         assert reroot_value_key(key, target_path=TARGET) == key
 
     def test_column_sql_key_strips_prefix(self) -> None:
         out = reroot_value_key(
-            ColumnSqlKey(path=("customers",), model="customers", column_name="cr"),
+            FieldSqlKey(path=("customers",), dataset="customers", field_name="cr"),
             target_path=TARGET,
         )
-        assert out == ColumnSqlKey(path=(), model="customers", column_name="cr")
+        assert out == FieldSqlKey(path=(), dataset="customers", field_name="cr")
 
     def test_star_key_strips_prefix(self) -> None:
         out = reroot_value_key(StarKey(path=("customers",)), target_path=TARGET)
@@ -102,27 +102,27 @@ class TestLeafKinds:
         not inherit that blind spot."""
         out = reroot_value_key(
             TimeTruncKey(
-                source=ColumnKey(path=("customers",), leaf="signup_at"),
+                source=FieldKey(path=("customers",), leaf="signup_at"),
                 granularity=TimeGranularity.MONTH,
             ),
             target_path=TARGET,
         )
         assert out == TimeTruncKey(
-            source=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH,
+            source=FieldKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH,
         )
 
     def test_time_trunc_key_over_derived_column(self) -> None:
         out = reroot_value_key(
             TimeTruncKey(
-                source=ColumnSqlKey(
-                    path=("customers",), model="customers", column_name="signup_d",
+                source=FieldSqlKey(
+                    path=("customers",), dataset="customers", field_name="signup_d",
                 ),
                 granularity=TimeGranularity.DAY,
             ),
             target_path=TARGET,
         )
-        assert out.source == ColumnSqlKey(
-            path=(), model="customers", column_name="signup_d",
+        assert out.source == FieldSqlKey(
+            path=(), dataset="customers", field_name="signup_d",
         )
 
 
@@ -133,21 +133,21 @@ class TestCompositeKinds:
     def test_aggregate_source_args_and_kwargs(self) -> None:
         out = reroot_value_key(
             AggregateKey(
-                source=ColumnKey(path=("customers",), leaf="spend"),
+                source=FieldKey(path=("customers",), leaf="spend"),
                 agg="last",
-                args=(ColumnKey(path=("customers",), leaf="signup_at"),),
-                kwargs=(("weight", ColumnKey(path=("customers", "regions"), leaf="pop")),),
+                args=(FieldKey(path=("customers",), leaf="signup_at"),),
+                kwargs=(("weight", FieldKey(path=("customers", "regions"), leaf="pop")),),
             ),
             target_path=TARGET,
         )
-        assert out.source == ColumnKey(path=(), leaf="spend")
-        assert out.args == (ColumnKey(path=(), leaf="signup_at"),)
-        assert out.kwargs == (("weight", ColumnKey(path=("regions",), leaf="pop")),)
+        assert out.source == FieldKey(path=(), leaf="spend")
+        assert out.args == (FieldKey(path=(), leaf="signup_at"),)
+        assert out.kwargs == (("weight", FieldKey(path=("regions",), leaf="pop")),)
 
     def test_aggregate_scalar_kwarg_passes_through(self) -> None:
         out = reroot_value_key(
             AggregateKey(
-                source=ColumnKey(path=("customers",), leaf="spend"),
+                source=FieldKey(path=("customers",), leaf="spend"),
                 agg="percentile",
                 kwargs=(("p", Decimal("0.5")),),
             ),
@@ -160,11 +160,11 @@ class TestCompositeKinds:
             TransformKey(
                 op="cumsum",
                 input=AggregateKey(
-                    source=ColumnKey(path=("customers",), leaf="spend"), agg="sum",
+                    source=FieldKey(path=("customers",), leaf="spend"), agg="sum",
                 ),
-                partition_keys=Grain.of({ColumnKey(path=("customers",), leaf="tier")}),
+                partition_keys=Grain.of({FieldKey(path=("customers",), leaf="tier")}),
                 time_key=TimeTruncKey(
-                    source=ColumnKey(path=("customers",), leaf="signup_at"),
+                    source=FieldKey(path=("customers",), leaf="signup_at"),
                     granularity=TimeGranularity.MONTH,
                 ),
             ),
@@ -172,9 +172,9 @@ class TestCompositeKinds:
         )
         assert isinstance(out.input, AggregateKey)
         assert isinstance(out.time_key, TimeTruncKey)
-        assert out.input.source == ColumnKey(path=(), leaf="spend")
-        assert out.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
-        assert out.time_key.source == ColumnKey(path=(), leaf="signup_at")
+        assert out.input.source == FieldKey(path=(), leaf="spend")
+        assert out.partition_keys == Grain.of({FieldKey(path=(), leaf="tier")})
+        assert out.time_key.source == FieldKey(path=(), leaf="signup_at")
 
     def test_transform_scalar_args_are_type_prohibited_from_holding_keys(self) -> None:
         """``TransformKey.args``/``kwargs`` are ``Tuple[Scalar, ...]`` where
@@ -203,45 +203,45 @@ class TestCompositeKinds:
             ArithmeticKey(
                 op="+",
                 operands=(
-                    ColumnKey(path=("customers",), leaf="spend"),
+                    FieldKey(path=("customers",), leaf="spend"),
                     LiteralKey(value=Decimal("1")),
                 ),
             ),
             target_path=TARGET,
         )
-        assert out.operands[0] == ColumnKey(path=(), leaf="spend")
+        assert out.operands[0] == FieldKey(path=(), leaf="spend")
         assert out.operands[1] == LiteralKey(value=Decimal("1"))
 
     def test_scalar_call_args(self) -> None:
         out = reroot_value_key(
             ScalarCallKey(
                 name="coalesce",
-                args=(ColumnKey(path=("customers",), leaf="tier"), "unknown"),
+                args=(FieldKey(path=("customers",), leaf="tier"), "unknown"),
             ),
             target_path=TARGET,
         )
-        assert out.args[0] == ColumnKey(path=(), leaf="tier")
+        assert out.args[0] == FieldKey(path=(), leaf="tier")
         assert out.args[1] == "unknown"
 
     def test_time_point_members(self) -> None:
         out = reroot_value_key(
             TimePointCmpKey(
-                op="<=", operand=ColumnKey(path=("customers",), leaf="signup_at"), point="2024-12-31",
+                op="<=", operand=FieldKey(path=("customers",), leaf="signup_at"), point="2024-12-31",
             ),
             target_path=TARGET,
         )
-        assert out.operand == ColumnKey(path=(), leaf="signup_at")
+        assert out.operand == FieldKey(path=(), leaf="signup_at")
         assert out.point == "2024-12-31"
 
     def test_in_members(self) -> None:
         out = reroot_value_key(
             InKey(
-                column=ColumnKey(path=("customers",), leaf="tier"),
+                field=FieldKey(path=("customers",), leaf="tier"),
                 values=(LiteralKey(value="gold"),),
             ),
             target_path=TARGET,
         )
-        assert out.column == ColumnKey(path=(), leaf="tier")
+        assert out.field == FieldKey(path=(), leaf="tier")
         assert out.values == (LiteralKey(value="gold"),)
         assert out.negated is False
 
@@ -254,24 +254,24 @@ class TestCompositeKinds:
                 TransformKey(
                     op="cumsum",
                     input=AggregateKey(
-                        source=ColumnKey(path=("customers", "regions"), leaf="pop"),
+                        source=FieldKey(path=("customers", "regions"), leaf="pop"),
                         agg="sum",
                     ),
                     partition_keys=Grain.of({
-                        ColumnKey(path=("customers",), leaf="tier"),
+                        FieldKey(path=("customers",), leaf="tier"),
                     }),
                 ),
                 ScalarCallKey(
                     name="coalesce",
                     args=(
                         InKey(
-                            column=ColumnKey(path=("customers",), leaf="tier"),
+                            field=FieldKey(path=("customers",), leaf="tier"),
                             values=(LiteralKey(value="gold"),),
                         ),
                         TimePointCmpKey(
                             op=">=",
                             operand=TimeTruncKey(
-                                source=ColumnKey(
+                                source=FieldKey(
                                     path=("customers",), leaf="signup_at",
                                 ),
                                 granularity=TimeGranularity.DAY,
@@ -287,14 +287,14 @@ class TestCompositeKinds:
         assert isinstance(transform, TransformKey)
         assert isinstance(transform.input, AggregateKey)
         assert isinstance(call, ScalarCallKey)
-        assert transform.input.source == ColumnKey(path=("regions",), leaf="pop")
-        assert transform.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
+        assert transform.input.source == FieldKey(path=("regions",), leaf="pop")
+        assert transform.partition_keys == Grain.of({FieldKey(path=(), leaf="tier")})
         in_key, time_point = call.args
         assert isinstance(in_key, InKey)
         assert isinstance(time_point, TimePointCmpKey)
         assert isinstance(time_point.operand, TimeTruncKey)
-        assert in_key.column == ColumnKey(path=(), leaf="tier")
-        assert time_point.operand.source == ColumnKey(path=(), leaf="signup_at")
+        assert in_key.field == FieldKey(path=(), leaf="tier")
+        assert time_point.operand.source == FieldKey(path=(), leaf="signup_at")
 
 
 # ---------------------------------------------------------------------------
@@ -311,50 +311,50 @@ class TestTotalityAndFailClosed:
 
 
         samples = {
-            ColumnKey: ColumnKey(path=("customers",), leaf="tier"),
-            ColumnSqlKey: ColumnSqlKey(
-                path=("customers",), model="customers", column_name="cr",
+            FieldKey: FieldKey(path=("customers",), leaf="tier"),
+            FieldSqlKey: FieldSqlKey(
+                path=("customers",), dataset="customers", field_name="cr",
             ),
             TimeTruncKey: TimeTruncKey(
-                source=ColumnKey(path=("customers",), leaf="signup_at"),
+                source=FieldKey(path=("customers",), leaf="signup_at"),
                 granularity=TimeGranularity.DAY,
             ),
             StarKey: StarKey(path=("customers",)),
             LiteralKey: LiteralKey(value="x"),
             AggregateKey: AggregateKey(
-                source=ColumnKey(path=("customers",), leaf="spend"), agg="sum",
+                source=FieldKey(path=("customers",), leaf="spend"), agg="sum",
             ),
             TransformKey: TransformKey(
                 op="cumsum",
                 input=AggregateKey(
-                    source=ColumnKey(path=("customers",), leaf="spend"), agg="sum",
+                    source=FieldKey(path=("customers",), leaf="spend"), agg="sum",
                 ),
             ),
             ArithmeticKey: ArithmeticKey(
                 op="+",
                 operands=(
-                    ColumnKey(path=("customers",), leaf="spend"),
+                    FieldKey(path=("customers",), leaf="spend"),
                     LiteralKey(value=Decimal("1")),
                 ),
             ),
             ScalarCallKey: ScalarCallKey(
-                name="coalesce", args=(ColumnKey(path=("customers",), leaf="tier"),),
+                name="coalesce", args=(FieldKey(path=("customers",), leaf="tier"),),
             ),
             TimePointCmpKey: TimePointCmpKey(
-                op=">=", operand=ColumnKey(path=("customers",), leaf="signup_at"), point="2025-Q1",
+                op=">=", operand=FieldKey(path=("customers",), leaf="signup_at"), point="2025-Q1",
             ),
             InKey: InKey(
-                column=ColumnKey(path=("customers",), leaf="tier"),
+                field=FieldKey(path=("customers",), leaf="tier"),
                 values=(LiteralKey(value="gold"),),
             ),
             SqlFragmentKey: SqlFragmentKey(
-                template="{r0} * 2", refs=(ColumnKey(path=("customers",), leaf="spend"),),
+                template="{r0} * 2", refs=(FieldKey(path=("customers",), leaf="spend"),),
             ),
             CastKey: CastKey(
-                source=ColumnKey(path=("customers",), leaf="spend"), type_text="INT", data_type=DataType.INT,
+                source=FieldKey(path=("customers",), leaf="spend"), type_text="INT", data_type=DataType.INT,
             ),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
-            ListSetKey: ListSetKey(source=ColumnKey(path=("customers",), leaf="tags")),
+            ListSetKey: ListSetKey(source=FieldKey(path=("customers",), leaf="tags")),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)
@@ -380,7 +380,7 @@ class TestTotalityAndFailClosed:
         """``target_path == ()`` is the filtered-local case — the empty prefix
         strips zero hops, so every key comes back equal."""
         key = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="spend"), agg="sum",
+            source=FieldKey(path=("customers",), leaf="spend"), agg="sum",
         )
         assert reroot_value_key(key, target_path=()) == key
 
@@ -395,11 +395,11 @@ class TestTotalityAndFailClosed:
         second time" — while the assertions required the strip. A reader would
         have taken the stated invariant as a real contract; CodeRabbit.)"""
         once = reroot_value_key(
-            ColumnKey(path=("customers", "customers"), leaf="x"), target_path=TARGET,
+            FieldKey(path=("customers", "customers"), leaf="x"), target_path=TARGET,
         )
-        assert once == ColumnKey(path=("customers",), leaf="x")
+        assert once == FieldKey(path=("customers",), leaf="x")
         twice = reroot_value_key(once, target_path=TARGET)
-        assert twice == ColumnKey(path=(), leaf="x")
+        assert twice == FieldKey(path=(), leaf="x")
 
 
 # ---------------------------------------------------------------------------
@@ -412,9 +412,9 @@ class TestPublicResultKeysUnchanged:
         precisely the drift §5.4 exists to end."""
 
         key = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="spend"),
+            source=FieldKey(path=("customers",), leaf="spend"),
             agg="last",
-            args=(ColumnKey(path=("customers", "regions"), leaf="opened_at"),),
+            args=(FieldKey(path=("customers", "regions"), leaf="opened_at"),),
         )
         assert reroot_aggregate_key(key, target_path=TARGET) == reroot_value_key(
             key, target_path=TARGET,
@@ -428,7 +428,7 @@ class TestPublicResultKeysUnchanged:
         dropped-field rebuild would re-default to the same value, so the
         assertion could not fail."""
         key = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="spend"),
+            source=FieldKey(path=("customers",), leaf="spend"),
             agg="approx_count_distinct",
             locus="host",
         )
@@ -438,10 +438,10 @@ class TestPublicResultKeysUnchanged:
 
     def test_kwargs_stay_canonically_sorted_after_reroot(self) -> None:
         key = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="spend"),
+            source=FieldKey(path=("customers",), leaf="spend"),
             agg="corr",
             kwargs=(
-                ("other", ColumnKey(path=("customers",), leaf="x")),
+                ("other", FieldKey(path=("customers",), leaf="x")),
                 ("alpha", Decimal("1")),
             ),
         )

@@ -14,35 +14,35 @@ from tests._golden_harness import bind_golden_tests, record_raise
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1902_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb"]
 
-_AMT = {"formula": "sum(amount)", "name": "amt"}
-_CREDIT = {"formula": "sum(credit)", "name": "cr"}
+_AMT = {"expression": "sum(amount)", "name": "amt"}
+_CREDIT = {"expression": "sum(credit)", "name": "cr"}
 
 
 def _cases() -> dict:
     return {
         "on_clause/renamed_fk": {
             "graph": {"rename_pk": False}, "source": "orders",
-            "kw": {"dimensions": ["customers.name"], "measures": [_AMT]}},
+            "kw": {"dimensions": ["customers.name"], "metrics": [_AMT]}},
         "on_clause/renamed_pk": {
             "graph": {"rename_fk": False}, "source": "orders",
-            "kw": {"dimensions": ["customers.tier"], "measures": [_AMT]}},
+            "kw": {"dimensions": ["customers.tier"], "metrics": [_AMT]}},
         "on_clause/renamed_both_two_hops": {
             "graph": {}, "source": "orders",
-            "kw": {"dimensions": ["customers.regions.name"], "measures": [_AMT]}},
+            "kw": {"dimensions": ["customers.regions.name"], "metrics": [_AMT]}},
         "spine/renamed_both": {
             "graph": {}, "source": "customers",
-            "kw": {"measures": [_CREDIT], "filters": ["orders.status = 'new'"]}},
+            "kw": {"metrics": [_CREDIT], "filter": ["orders.status = 'new'"]}},
         "association/renamed_pk_root": {
             "graph": {}, "source": "orders",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "sum(customers.credit)", "name": "cr"}],
+                   "metrics": [{"expression": "sum(customers.credit)", "name": "cr"}],
                    "to_many_handling": "associate"}},
         "quoting/on_clause_mixed_case": {
             "graph": {"pk_sql": "CustPK"}, "source": "orders",
-            "kw": {"dimensions": ["customers.name"], "measures": [_AMT]}},
+            "kw": {"dimensions": ["customers.name"], "metrics": [_AMT]}},
         "quoting/spine_mixed_case": {
             "graph": {"pk_sql": "CustPK"}, "source": "customers",
-            "kw": {"measures": [_CREDIT], "filters": ["orders.status = 'new'"]}},
+            "kw": {"metrics": [_CREDIT], "filter": ["orders.status = 'new'"]}},
     }
 
 
@@ -61,9 +61,9 @@ _PHYSICAL = {
 async def _generate_one(case, dialect: str):
     models = renamed_graph(**case["graph"])
     try:
-        query = SlayerQuery(source_model=case["source"], **case["kw"])
+        query = SlayerQuery(population=case["source"], **case["kw"])
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

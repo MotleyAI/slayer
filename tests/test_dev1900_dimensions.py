@@ -22,7 +22,7 @@ from tests._dev1900_fixtures import (
     BROADCAST_AMOUNT_TOTAL,
     BROADCAST_SPEND_TOTAL,
     BAD_POP,
-    ModelMeasure,
+    DatasetMetric,
     SPEND_SUM,
     associated_warnings,
     bad_pop_vals,
@@ -52,7 +52,7 @@ def _names_hop(warnings) -> bool:
 class TestBroadcast:
     async def test_broadcasts_the_metric_with_a_warning_naming_the_hop(self, engine):
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[AMOUNT_SUM, SPEND_SUM], to_many_handling="broadcast"))
+            dimensions=[BAD_POP], metrics=[AMOUNT_SUM, SPEND_SUM], to_many_handling="broadcast"))
         amt = bad_pop_vals(resp, "orders.amt")
         spend = bad_pop_vals(resp, "orders.csp")
         # Every cell carries the ungrouped total (broadcast), never the per-event
@@ -70,7 +70,7 @@ class TestBroadcast:
 class TestAssociate:
     async def test_associates_over_distinct_entities_per_cell(self, engine):
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[AMOUNT_SUM, SPEND_SUM],
+            dimensions=[BAD_POP], metrics=[AMOUNT_SUM, SPEND_SUM],
             to_many_handling="associate"))
         amt = bad_pop_vals(resp, "orders.amt")
         spend = bad_pop_vals(resp, "orders.csp")
@@ -88,13 +88,13 @@ class TestErrorMode:
     stop at the first metric and never exercise the other."""
 
     async def test_local_metric_refuses(self, engine):
-        q = orders_q(dimensions=[BAD_POP], measures=[AMOUNT_SUM], to_many_handling="error")
+        q = orders_q(dimensions=[BAD_POP], metrics=[AMOUNT_SUM], to_many_handling="error")
         with pytest.raises(ValueError) as ei:
             await engine.execute(q)
         assert "bad_pop" in str(ei.value), ei.value
 
     async def test_cross_model_metric_refuses(self, engine):
-        q = orders_q(dimensions=[BAD_POP], measures=[SPEND_SUM], to_many_handling="error")
+        q = orders_q(dimensions=[BAD_POP], metrics=[SPEND_SUM], to_many_handling="error")
         with pytest.raises(ValueError) as ei:
             await engine.execute(q)
         assert "bad_pop" in str(ei.value), ei.value
@@ -105,9 +105,9 @@ class TestExplicitPartitionBy:
     async def test_partition_by_fanning_derived_is_hard_error(self, engine, mode):
         """An explicit partition_by naming the fanning derived dimension is an
         error outside associate — every partition key must be attributable."""
-        measure = ModelMeasure(
-            formula="sum(amount, partition_by=customers.regions.bad_pop)", name="w")
-        q = orders_q(dimensions=[BAD_POP], measures=[measure], to_many_handling=mode)
+        measure = DatasetMetric(
+            expression="sum(amount, partition_by=customers.regions.bad_pop)", name="w")
+        q = orders_q(dimensions=[BAD_POP], metrics=[measure], to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
             await engine.execute(q)
         msg = str(ei.value)

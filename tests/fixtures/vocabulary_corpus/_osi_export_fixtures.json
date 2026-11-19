@@ -1,0 +1,56 @@
+{
+ "source": "tests/_osi_export_fixtures.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "ordered_on",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "revenue"
+     }
+    ],
+    "filters": [
+     "region = '{region}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "ordered_on",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "revenue"
+     }
+    ],
+    "filter": [
+     "region = '{region}'"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "trimmed_sum",
+    "formula": "SUM(CASE WHEN {value} < 15 THEN {value} END)"
+   },
+   "new": {
+    "name": "trimmed_sum",
+    "expression": "SUM(CASE WHEN {value} < 15 THEN {value} END)"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -27,11 +27,11 @@ from tests._deprecated_input_helpers import (
     rows,
     strict,
 )
-from tests._library_names_fixtures import agg, measure, stored_engine, t_doc
+from tests._library_names_fixtures import agg, metric, stored_engine, t_doc
 from tests._model_access_fixtures import mcp_text
 
-EXTENSION_OLD = "An extension object in `source_model`"
-LEGACY_CLEAN = {"source_model": {"source_name": "orders"}, "measures": ["count(*)"]}
+EXTENSION_OLD = "An extension object in `population`"
+LEGACY_CLEAN = {"population": {"source_name": "orders"}, "metrics": ["count(*)"]}
 TWO_FORMS = strict(LEGACY_CLEAN)
 
 
@@ -169,11 +169,11 @@ class TestDryRun:
         assert warnings_block.splitlines() == [f"  - {_strict_message()}"]
 
     async def test_mcp_json_carries_a_library_name_shadow(self) -> None:
-        query = {"source_model": "t", "measures": [measure("reverse(a)")]}
-        async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
+        query = {"population": "t", "metrics": [metric("reverse(a)")]}
+        async with stored_engine(datasets=[t_doc(aggregations=[agg("reverse")])]) as engine:
             text = await _dry_run(engine.storage, query, "json")
         shadows = [w for w in json.loads(text)["warnings"] if w.get("kind") == "library_name_shadow"]
-        assert [(w["model"], w["aggregation"], w["function"]) for w in shadows] == [("t", "reverse", "reverse")]
+        assert [(w["dataset"], w["aggregation"], w["function"]) for w in shadows] == [("t", "reverse", "reverse")]
 
     async def test_mcp_json_without_warnings_has_no_warnings_key(self) -> None:
         async with orders_engine() as engine:
@@ -187,14 +187,14 @@ class TestMcpModelSaveMessage:
     async def test_create_model(self) -> None:
         async with orders_engine() as engine:
             with recorded():
-                text = await mcp_text(engine.storage, "create_model", name="saved_strict", query=strict(CLEAN))
+                text = await mcp_text(engine.storage, "create_dataset", name="saved_strict", query=strict(CLEAN))
         assert text.count(_strict_message()) == 1
 
     async def test_edit_model(self) -> None:
         async with orders_engine() as engine:
             with recorded():
-                await mcp_text(engine.storage, "create_model", name="saved_strict", query=CLEAN)
+                await mcp_text(engine.storage, "create_dataset", name="saved_strict", query=CLEAN)
                 reply = json.loads(await mcp_text(
-                    engine.storage, "edit_model", model_name="saved_strict", source_queries=[strict(CLEAN)],
+                    engine.storage, "edit_dataset", dataset_name="saved_strict", source_queries=[strict(CLEAN)],
                 ))
         assert sum(w.count(_strict_message()) for w in reply["warnings"]) == 1

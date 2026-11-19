@@ -5,7 +5,7 @@ semantic_models and metrics definitions. Handles dbt-core's plural list
 format (semantic_models: [...]) by iterating each item and calling parse_obj.
 
 Also scans .sql files and attaches their raw bodies to DbtRegularModel
-entries, so the converter can inline regular-model SQL into SlayerModel.sql
+entries, so the converter can inline regular-model SQL into SlayerDataset.sql
 for semantic models that sit over a query rather than a physical table.
 """
 
@@ -129,7 +129,7 @@ def _collect_sql_files(directory: str) -> dict[str, str]:
 def parse_dbt_project(
     project_path: str,
     *,
-    include_regular_models: bool = False,
+    include_regular_datasets: bool = False,
 ) -> DbtProject:
     """Parse a dbt project directory into a DbtProject.
 
@@ -144,13 +144,13 @@ def parse_dbt_project(
             metadata like ``database``/``schema_name``/``columns``. This
             invokes ``dbt parse`` if the manifest is missing, which is slow
             and fails noisily without dbt-core installed — so the default is
-            False, matching the ``--include-hidden-models`` opt-in flag on
+            False, matching the ``--include-hidden-datasets`` opt-in flag on
             the CLI.
 
             Regardless of this flag, ``.sql`` files in the project are always
             scanned and their bodies attached as ``raw_code`` on
             ``DbtRegularModel`` entries. That raw SQL is used by the converter
-            to inline regular-model SQL into ``SlayerModel.sql`` for semantic
+            to inline regular-model SQL into ``SlayerDataset.sql`` for semantic
             models whose underlying dbt model is a query rather than a
             physical table.
     """
@@ -178,7 +178,7 @@ def parse_dbt_project(
         all_sources.extend(_declared_sources(data.get("sources"), path=path))
         all_metrics.extend(_metrics(data.get("metrics", []), path=path))
 
-    regular_models = _regular_models(project_path, declared=declared, include_manifest=include_regular_models)
+    regular_models = _regular_models(project_path, declared=declared, include_manifest=include_regular_datasets)
     logger.info(
         "Parsed dbt project: %d semantic models, %d metrics, %d regular models from %d files",
         len(all_semantic_models), len(all_metrics), len(regular_models), len(yaml_paths),

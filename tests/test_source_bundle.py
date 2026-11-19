@@ -12,43 +12,43 @@ extension point.
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column, ModelJoin, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
-def _model(name: str, ds: str = "prod") -> SlayerModel:
-    return SlayerModel(
+def _dataset(name: str, ds: str = "prod") -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         data_source=ds,
         sql_table=name,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="value", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="value", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _model_with(
+def _dataset_with(
     name: str,
     *,
     aggs: list[str] | None = None,
     joins: list[str] | None = None,
     ds: str = "prod",
-) -> SlayerModel:
-    return SlayerModel(
+) -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         data_source=ds,
         sql_table=name,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="value", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="value", datatype=DataType.DOUBLE),
         ],
         aggregations=[
-            Aggregation(name=a, formula="AVG({value})") for a in (aggs or [])
+            Aggregation(name=a, expression="AVG({value})") for a in (aggs or [])
         ],
-        joins=[
-            ModelJoin(target_model=t, join_pairs=[["id", "id"]])
+        relationships=[
+            DatasetRelationship(to=t, join_pairs=[["id", "id"]])
             for t in (joins or [])
         ],
     )
@@ -61,48 +61,48 @@ def _model_with(
 
 class TestConstruction:
     def test_minimal(self):
-        m = _model("orders")
-        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m])
-        assert b.source_model is m
-        assert b.referenced_models == [m]
+        m = _dataset("orders")
+        b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m])
+        assert b.population is m
+        assert b.referenced_datasets == [m]
         assert b.named_queries == {}
         assert b.query_variables == {}
         assert b.datasource_hint is None
 
     def test_with_referenced_models(self):
-        m = _model("orders")
-        c = _model("customers")
-        r = _model("regions")
-        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m, c, r])
-        assert b.referenced_models == [m, c, r]
+        m = _dataset("orders")
+        c = _dataset("customers")
+        r = _dataset("regions")
+        b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m, c, r])
+        assert b.referenced_datasets == [m, c, r]
 
     def test_with_named_queries(self):
-        m = _model("orders")
-        q = SlayerQuery(source_model="orders")
+        m = _dataset("orders")
+        q = SlayerQuery(population="orders")
         b = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=m,
-            referenced_models=[m],
+            population=m,
+            referenced_datasets=[m],
             named_queries={"stage_a": q},
         )
         assert b.named_queries["stage_a"] is q
 
     def test_with_query_variables(self):
-        m = _model("orders")
+        m = _dataset("orders")
         b = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=m,
-            referenced_models=[m],
+            population=m,
+            referenced_datasets=[m],
             query_variables={"region": "NA", "threshold": 100},
         )
         assert b.query_variables == {"region": "NA", "threshold": 100}
 
     def test_with_datasource_hint(self):
-        m = _model("orders", ds="warehouse")
+        m = _dataset("orders", ds="warehouse")
         b = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=m,
-            referenced_models=[m],
+            population=m,
+            referenced_datasets=[m],
             datasource_hint="warehouse",
         )
         assert b.datasource_hint == "warehouse"
@@ -115,22 +115,22 @@ class TestConstruction:
 
 class TestGetReferencedModel:
     def test_returns_match(self):
-        m = _model("orders")
-        c = _model("customers")
-        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m, c])
-        assert b.get_referenced_model("customers") is c
+        m = _dataset("orders")
+        c = _dataset("customers")
+        b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m, c])
+        assert b.get_referenced_dataset("customers") is c
 
     def test_returns_none_for_missing(self):
-        m = _model("orders")
-        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m])
-        assert b.get_referenced_model("absent") is None
+        m = _dataset("orders")
+        b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m])
+        assert b.get_referenced_dataset("absent") is None
 
     def test_source_model_is_in_referenced(self):
         # Convention: source_model is also in referenced_models so the
         # binder doesn't have to special-case the host.
-        m = _model("orders")
-        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m])
-        assert b.get_referenced_model("orders") is m
+        m = _dataset("orders")
+        b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m])
+        assert b.get_referenced_dataset("orders") is m
 
 
 # ---------------------------------------------------------------------------
@@ -143,17 +143,17 @@ class TestAnchorlessReadiness:
         # I2: future anchor-less mode reserves source_model=None.
         b = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=None,
-            referenced_models=[_model("orders"), _model("customers")],
+            population=None,
+            referenced_datasets=[_dataset("orders"), _dataset("customers")],
         )
-        assert b.source_model is None
+        assert b.population is None
         # The bundle still holds the set of referenced models that the
         # future global-join planner will operate over.
-        assert len(b.referenced_models) == 2
+        assert len(b.referenced_datasets) == 2
 
     def test_default_source_model_is_none(self):
         # Defaulting to None keeps both modes type-compatible without
         # callers having to pass an explicit None.
         b = ResolvedSourceBundle(dialect="postgres")
-        assert b.source_model is None
-        assert b.referenced_models == []
+        assert b.population is None
+        assert b.referenced_datasets == []

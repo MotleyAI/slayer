@@ -137,6 +137,10 @@ def nothing_sent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sql_client, "create_async_engine", _refuse)
 
 
+def _ds_id(ds: DatasourceConfig) -> str | None:
+    return ds.type
+
+
 @pytest.mark.usefixtures("nothing_sent")
 @pytest.mark.parametrize(
     "ds",
@@ -146,7 +150,7 @@ def nothing_sent(monkeypatch: pytest.MonkeyPatch) -> None:
         DatasourceConfig(name="p", type="postgres", connection_string="postgresql+psycopg://u@db.invalid/d"),
         DatasourceConfig(name="q", type="sqlserver", connection_string="mssql+pyodbc://u@db.invalid/d"),
     ],
-    ids=lambda ds: ds.type,
+    ids=_ds_id,
 )
 def test_the_client_refuses_a_write_unsent(ds: DatasourceConfig) -> None:
     client, refused = SlayerSQLClient(ds), _write_refused()

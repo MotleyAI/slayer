@@ -1,14 +1,14 @@
 """DEV-1743 WP4 — rewrite legacy ``__`` split-alias qualifiers to dotted.
 
-Pre-v9 stored models wrote Mode-A join qualifiers as ``__``-delimited aliases
+Pre-v9 stored datasets wrote Mode-A relationship qualifiers as ``__``-delimited aliases
 (``customers__regions.name``). v9 makes them dotted-canonical
 (``customers.regions.name``). The rewrite runs on load, on the raw dict before
 Pydantic validation, so a legacy store keeps working after the flip.
 
 Split cleanly into a sync AST half (here) and an async storage half (the caller
 in ``StorageBackend``): :func:`extract_dunder_chains` finds candidate hop-chains
-in a SQL string, the caller resolves which ones are real join walks against
-sibling models, and :func:`apply_dunder_rewrite` rewrites only those — leaving
+in a SQL string, the caller resolves which ones are real relationship walks against
+sibling datasets, and :func:`apply_dunder_rewrite` rewrites only those — leaving
 an unresolvable ``__`` (a CTE alias, a physical column) byte-verbatim.
 """
 
@@ -18,7 +18,7 @@ import sqlglot
 from sqlglot import exp
 
 
-def _dunder_chain_for_column(col: exp.Column) -> tuple[str, ...] | None:
+def _dunder_chain_for_field(col: exp.Column) -> tuple[str, ...] | None:
     """Return the ``__``-split hop chain of ``col``'s qualifier, or ``None``.
 
     Only a single-identifier qualifier containing ``__`` qualifies — an
@@ -55,7 +55,7 @@ def extract_dunder_chains(sql_text: str | None) -> set[tuple[str, ...]]:
         return set()
     chains: set[tuple[str, ...]] = set()
     for col in parsed.find_all(exp.Column):
-        chain = _dunder_chain_for_column(col)
+        chain = _dunder_chain_for_field(col)
         if chain is not None:
             chains.add(chain)
     return chains
@@ -67,7 +67,7 @@ def apply_dunder_rewrite(
     """Rewrite each resolvable ``__`` qualifier in ``sql_text`` to dotted.
 
     ``resolvable`` is the subset of :func:`extract_dunder_chains` the caller
-    confirmed are real multi-hop join walks. Chains absent from it are left
+    confirmed are real multi-hop relationship walks. Chains absent from it are left
     exactly as written. Returns ``sql_text`` byte-verbatim when nothing is
     rewritten (never re-serialises an untouched fragment).
     """
@@ -80,7 +80,7 @@ def apply_dunder_rewrite(
     root = parsed
     changed = False
     for col in list(parsed.find_all(exp.Column)):  # NOSONAR(S7504) — materialised before in-place col.replace mutation
-        chain = _dunder_chain_for_column(col)
+        chain = _dunder_chain_for_field(col)
         if chain is None or chain not in resolvable:
             continue
         leaf_sql = col.this.sql()
@@ -93,11 +93,11 @@ def apply_dunder_rewrite(
     return root.sql() if changed else sql_text
 
 
-def _column_surface_refs(columns):
-    """Yield ``(col_dict, key)`` for each column's ``sql`` / ``filter`` string."""
-    if not isinstance(columns, list):
+def _field_surface_refs(fields):
+    """Yield ``(col_dict, key)`` for each field's ``sql`` / ``filter`` string."""
+    if not isinstance(fields, list):
         return
-    for col in columns:
+    for col in fields:
         if not isinstance(col, dict):
             continue
         for key in ("sql", "filter"):
@@ -106,7 +106,7 @@ def _column_surface_refs(columns):
 
 
 def _filter_surface_refs(filters):
-    """Yield ``(filters_list, index)`` for each model-level filter string."""
+    """Yield ``(filters_list, index)`` for each dataset-level filter string."""
     if not isinstance(filters, list):
         return
     for i, f in enumerate(filters):
@@ -116,26 +116,26 @@ def _filter_surface_refs(filters):
 
 def _mode_a_surface_refs(data: dict):
     """Yield ``(container, key)`` for each Mode-A free-SQL string surface in a raw
-    model dict — each column's ``sql`` / ``filter`` (container = the column dict)
-    and each model-level filter (container = the ``filters`` list, key = index).
+    dataset dict — each field's ``sql`` / ``filter`` (container = the field dict)
+    and each dataset-level filter (container = the ``filters`` list, key = index).
     ``container[key]`` reads and writes that surface. One traversal shared by the
     read (:func:`mode_a_surface_texts`) and the mutate
-    (:func:`apply_dunder_rewrite_to_model_dict`) helpers so they can't drift."""
-    yield from _column_surface_refs(data.get("columns"))
+    (:func:`apply_dunder_rewrite_to_dataset_dict`) helpers so they can't drift."""
+    yield from _field_surface_refs(data.get("fields"))
     yield from _filter_surface_refs(data.get("filters"))
 
 
 def mode_a_surface_texts(data: dict) -> list[str]:
-    """Every Mode-A free-SQL string in a raw model dict: each column's ``sql``
-    and ``filter``, plus the model-level ``filters``."""
+    """Every Mode-A free-SQL string in a raw dataset dict: each field's ``sql``
+    and ``filter``, plus the dataset-level ``filters``."""
     return [container[key] for container, key in _mode_a_surface_refs(data)]
 
 
-def apply_dunder_rewrite_to_model_dict(
+def apply_dunder_rewrite_to_dataset_dict(
     data: dict, *, resolvable: set[tuple[str, ...]],
 ) -> None:
-    """Rewrite every Mode-A surface in ``data`` in place — each column's ``sql`` /
-    ``filter`` and the model ``filters`` — replacing resolvable legacy ``__`` join
+    """Rewrite every Mode-A surface in ``data`` in place — each field's ``sql`` /
+    ``filter`` and the dataset ``filters`` — replacing resolvable legacy ``__`` relationship
     qualifiers with their dotted form."""
     for container, key in _mode_a_surface_refs(data):
         container[key] = apply_dunder_rewrite(container[key], resolvable=resolvable)

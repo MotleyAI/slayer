@@ -10,10 +10,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import (
     UnknownReferenceError,
     UnrelatedDatasetError,
-    UnresolvableDimensionJoinError,
+    UnresolvableDimensionRelationshipError,
 )
-from slayer.core.join_search import count_routes
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.relationship_search import count_routes
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -28,16 +28,16 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
-def _pk() -> Column:
-    return Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)
+def _pk() -> DatasetField:
+    return DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)
 
 
-def _d(name: str) -> Column:
-    return Column(name=name, sql=name, type=DataType.DOUBLE)
+def _d(name: str) -> DatasetField:
+    return DatasetField(name=name, sql=name, datatype=DataType.DOUBLE)
 
 
-def _t(name: str) -> Column:
-    return Column(name=name, sql=name, type=DataType.TEXT)
+def _t(name: str) -> DatasetField:
+    return DatasetField(name=name, sql=name, datatype=DataType.TEXT)
 
 
 async def _save_chain(
@@ -45,40 +45,40 @@ async def _save_chain(
     *,
     direct_customer: bool = False,
     drop_customer_consumer: bool = False,
-) -> SlayerModel:
+) -> SlayerDataset:
     """Invoice → Subscription → Customer → Consumer; ``direct_customer`` adds Invoice → Customer (two routes),
     ``drop_customer_consumer`` makes Consumer unreachable."""
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="Consumer", sql_table="Consumer", data_source="test",
-        columns=[_pk(), _t("name"), _t("email"),
-                 Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP)],
+        fields=[_pk(), _t("name"), _t("email"),
+                 DatasetField(name="signup_at", sql="signup_at", datatype=DataType.TIMESTAMP)],
     ))
     customer_joins = (
         [] if drop_customer_consumer
-        else [ModelJoin(target_model="Consumer", join_pairs=[["consumerId", "id"]])]
+        else [DatasetRelationship(to="Consumer", join_pairs=[["consumerId", "id"]])]
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="Customer", sql_table="Customer", data_source="test",
-        columns=[_pk(), _d("consumerId")], joins=customer_joins,
+        fields=[_pk(), _d("consumerId")], relationships=customer_joins,
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="Subscription", sql_table="Subscription", data_source="test",
-        columns=[_pk(), _d("customerId")],
-        joins=[ModelJoin(target_model="Customer", join_pairs=[["customerId", "id"]])],
+        fields=[_pk(), _d("customerId")],
+        relationships=[DatasetRelationship(to="Customer", join_pairs=[["customerId", "id"]])],
     ))
-    invoice_joins = [ModelJoin(target_model="Subscription", join_pairs=[["subscriptionId", "id"]])]
+    invoice_joins = [DatasetRelationship(to="Subscription", join_pairs=[["subscriptionId", "id"]])]
     if direct_customer:
-        invoice_joins.append(ModelJoin(target_model="Customer", join_pairs=[["customerId", "id"]]))
-    invoice = SlayerModel(
+        invoice_joins.append(DatasetRelationship(to="Customer", join_pairs=[["customerId", "id"]]))
+    invoice = SlayerDataset(
         name="Invoice", sql_table="Invoice", data_source="test",
-        columns=[_pk(), _d("subscriptionId"), _d("customerId"), _d("amount"), _t("status"),
-                 Column(name="issued_at", sql="issued_at", type=DataType.TIMESTAMP)],
-        joins=invoice_joins,
+        fields=[_pk(), _d("subscriptionId"), _d("customerId"), _d("amount"), _t("status"),
+                 DatasetField(name="issued_at", sql="issued_at", datatype=DataType.TIMESTAMP)],
+        relationships=invoice_joins,
     )
-    await storage.save_model(invoice)
+    await storage.save_dataset(invoice)
     return invoice
 
 
@@ -95,7 +95,7 @@ async def _dry_sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
 
 
 def _amount_query(**kw) -> dict:
-    return dict(source_model="Invoice", measures=[{"formula": "sum(amount)", "name": "amt"}], **kw)
+    return dict(population="Invoice", metrics=[{"expression": "sum(amount)", "name": "amt"}], **kw)
 
 
 # ===========================================================================
@@ -129,10 +129,10 @@ class TestValidPathBindsAllJoins:
         """A full-path TIME dimension resolves and binds its join too."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery.model_validate({
-            "source_model": "Invoice",
-            "measures": [{"formula": "sum(amount)", "name": "amt"}],
+            "population": "Invoice",
+            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
             "time_dimensions": [{
-                "dimension": "Subscription.Customer.Consumer.signup_at",
+                "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
         }))
@@ -167,7 +167,7 @@ class TestShortFormRoutingAndBrokenChains:
     async def test_broken_explicit_chain_rejects_and_suggests_short_form(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
         q = SlayerQuery(**_amount_query(dimensions=["Customer.Consumer.name"]))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _dry_sql(engine, q)
         assert ei.value.suggested_path == "Consumer.name"
 
@@ -183,7 +183,7 @@ class TestShortFormRoutingAndBrokenChains:
     async def test_short_form_ambiguous_target_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path, direct_customer=True)
         q = SlayerQuery(**_amount_query(dimensions=["Consumer.name"]))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _dry_sql(engine, q)
         assert ei.value.suggested_path == "Customer.Consumer.name"
 
@@ -198,14 +198,14 @@ class TestShortFormRoutingAndBrokenChains:
     async def test_broken_time_dimension_chain_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
         q = SlayerQuery.model_validate({
-            "source_model": "Invoice",
-            "measures": [{"formula": "sum(amount)", "name": "amt"}],
+            "population": "Invoice",
+            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
             "time_dimensions": [{
-                "dimension": "Customer.Consumer.signup_at",
+                "field": "Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
         })
-        with pytest.raises(UnresolvableDimensionJoinError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await _dry_sql(engine, q)
 
     async def test_missing_terminal_column_on_valid_path_rejects(self, tmp_path) -> None:
@@ -230,22 +230,22 @@ class TestDiagnosticsPreserved:
         # A <-> B cycle over two DISTINCT edges; named so each hop resolves
         # unambiguously (two edges on one pair fail closed on a bare
         # model-name token) and the revisit check still fires.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="B", sql_table="B", data_source="test",
-            columns=[_pk(), _d("a_id"), _t("label")],
-            joins=[ModelJoin(target_model="A", join_pairs=[["a_id", "id"]],
+            fields=[_pk(), _d("a_id"), _t("label")],
+            relationships=[DatasetRelationship(to="A", join_pairs=[["a_id", "id"]],
                              name="to_a")],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="A", sql_table="A", data_source="test",
-            columns=[_pk(), _d("b_id"), _d("amount")],
-            joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]],
+            fields=[_pk(), _d("b_id"), _d("amount")],
+            relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]],
                              name="to_b")],
         ))
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
-            "source_model": "A",
-            "measures": [{"formula": "sum(amount)", "name": "amt"}],
+            "population": "A",
+            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
             "dimensions": ["to_b.to_a.amount"],
         })
         with pytest.raises(ValueError) as ei:
@@ -264,9 +264,9 @@ class TestInternalEnrichmentsUnaffected:
         that never binds to a base-table join, and that is legal."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery.model_validate({
-            "source_model": "Invoice",
+            "population": "Invoice",
             "dimensions": ["status"],
-            "measures": [{"formula": "count(Subscription.Customer.Consumer.email)", "name": "c"}],
+            "metrics": [{"expression": "count(Subscription.Customer.Consumer.email)", "name": "c"}],
         }))
         sqlglot.parse_one(sql, dialect="postgres")
 
@@ -282,14 +282,14 @@ class TestDownstreamStageScope:
         engine = await _engine(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
-            "source_model": "Invoice",
+            "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.name"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
+            "population": "s1",
             "dimensions": ["Subscription.Customer.Consumer.email"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -302,7 +302,7 @@ class TestDownstreamStageScope:
 def _count(nodes: set[str], edges: list[tuple[str, str, str | None]], root: str, target: str,
            *, cap: int = 2) -> int:
     models = edge_graph(nodes=nodes, edges=edges)
-    return count_routes(root=models[root], target=target, models_by_name=models, cap=cap)
+    return count_routes(root=models[root], target=target, datasets_by_name=models, cap=cap)
 
 
 class TestCountSimplePaths:

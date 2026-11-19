@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_dbt_relation_quoting.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  }
+ ]
+}

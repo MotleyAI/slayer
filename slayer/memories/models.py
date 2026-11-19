@@ -3,7 +3,7 @@
 A ``Memory`` carries a free-form ``learning`` text, the canonical
 entities it is indexed under, and an optional ``query`` (a fully-
 materialised ``SlayerQuery``). Memories without a ``query`` are surfaced
-in a model ``inspect``'s Learnings section; query-bearing memories appear
+in a dataset ``inspect``'s Learnings section; query-bearing memories appear
 only via ``search`` (in the ``example_queries`` bucket).
 
 Ids are non-empty strings. The default ``id=""`` is the

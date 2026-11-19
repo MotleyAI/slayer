@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 
 from tests._dev1847_fixtures import gen, sales_q
@@ -17,8 +17,8 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "rank_direction_sql_baseline.js
 ALLOWED_DELTAS: dict[str, str] = {}
 
 
-def _q(formula: str, dimensions: list[str]) -> SlayerQuery:
-    return sales_q(dimensions=dimensions, measures=[ModelMeasure(formula=formula, name="r")])
+def _q(expression: str, dimensions: list[str]) -> SlayerQuery:
+    return sales_q(dimensions=dimensions, metrics=[DatasetMetric(expression=expression, name="r")])
 
 
 def _cases() -> dict[str, SlayerQuery]:

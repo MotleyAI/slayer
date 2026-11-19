@@ -19,7 +19,7 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BY_TIER,
     make_exec_engine,
     q,
@@ -33,8 +33,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 
 class TestAttributableRowFilters:
@@ -43,8 +43,8 @@ class TestAttributableRowFilters:
         AND to the result rows — no warning."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["status"], measures=[M, CM],
-            filters=["customers.tier = 'gold'"],
+            dimensions=["status"], metrics=[M, CM],
+            filter=["customers.tier = 'gold'"],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query)
@@ -69,8 +69,8 @@ class TestUnsafeRowFilters:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
-                dimensions=["customers.tier"], measures=[M, CM],
-                filters=["channel = 'web'"],
+                dimensions=["customers.tier"], metrics=[M, CM],
+                filter=["channel = 'web'"],
             ))
         by = rows_by(resp, "orders.customers.tier")
         # Spine: web orders → o1 (c1), o3 (c2), o6 (c4), o7 (orphan).
@@ -91,8 +91,8 @@ class TestUnsafeRowFilters:
         still restricts the result rows."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], measures=[M, CM],
-            filters=["channel = 'app'"],
+            dimensions=["status"], metrics=[M, CM],
+            filter=["channel = 'app'"],
             to_many_handling="broadcast",
         ))
         by = rows_by(resp, "orders.status")
@@ -111,8 +111,8 @@ class TestAggregatePhaseRouting:
         filters the groups, not the producer's rows."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier"], measures=[M, CM],
-            filters=["sum(customers.spend) > 100"],
+            dimensions=["customers.tier"], metrics=[M, CM],
+            filter=["sum(customers.spend) > 100"],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.tier")
@@ -132,8 +132,8 @@ class TestAggregatePhaseRouting:
         """Regression pin: local aggregate filters keep their outer routing."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["customers.tier"], measures=[M],
-            filters=["sum(amount) > 30"],
+            dimensions=["customers.tier"], metrics=[M],
+            filter=["sum(amount) > 30"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",), ("bronze",)}

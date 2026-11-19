@@ -21,7 +21,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import UnrelatedDatasetError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -60,31 +60,31 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="revenue", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="revenue", datatype=DataType.DOUBLE),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
             ],
         )
     )
@@ -94,21 +94,21 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
 def _stage1() -> SlayerQuery:
     return SlayerQuery.model_validate({
         "name": "stage1",
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "sum(amount)"}],
+        "metrics": [{"expression": "sum(amount)"}],
     })
 
 
-async def test_dev1449_flat_name_resolves(engine):
+async def test_dev1449_flat_name_resolves(engine: Tuple[SlayerQueryEngine, str]) -> None:
     """The multi-hop upstream dimension is referenced downstream by its flat
     name ``customers__region``.
     """
     eng, _ = engine
     root = SlayerQuery.model_validate({
-        "source_model": "stage1",
+        "population": "stage1",
         "dimensions": ["customers__region"],
-        "measures": [{"formula": "sum(amount_sum)"}],
+        "metrics": [{"expression": "sum(amount_sum)"}],
     })
     resp = await eng.execute([_stage1(), root])
     assert resp.columns == ["stage1.customers__region", "stage1.amount_sum_sum"]
@@ -128,13 +128,13 @@ async def test_dev1449_flat_name_resolves(engine):
     }
 
 
-async def test_dev1449_dotted_form_raises(engine):
+async def test_dev1449_dotted_form_raises(engine: Tuple[SlayerQueryEngine, str]) -> None:
     """The dotted form reads a model no join path reaches from the flat upstream stage."""
     eng, _ = engine
     root = SlayerQuery.model_validate({
-        "source_model": "stage1",
+        "population": "stage1",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "sum(amount_sum)"}],
+        "metrics": [{"expression": "sum(amount_sum)"}],
     })
     stage1 = _stage1()
     with pytest.raises(UnrelatedDatasetError):

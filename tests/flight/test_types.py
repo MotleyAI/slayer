@@ -15,6 +15,7 @@ from slayer.flight.types import (
     datatype_to_arrow,
     datatype_to_jdbc,
 )
+from tests._arrow_types import ArrowTable
 
 
 @pytest.mark.parametrize(
@@ -125,7 +126,7 @@ def test_pa_table_from_pylist_with_explicit_schema_preserves_null_cells() -> Non
         },
         {"name": None, "count": None, "price": None, "flag": None, "d": None, "ts": None},
     ]
-    table = pa.Table.from_pylist(rows, schema=schema)
+    table: ArrowTable = pa.Table.from_pylist(rows, schema=schema)
     assert table.schema == schema
     assert table.num_rows == 2
     # Column-by-column: the None cell must round-trip as null.
@@ -148,5 +149,5 @@ def test_pa_table_from_pylist_rejects_decimal_into_double() -> None:
         pa.Table.from_pylist(decimal_rows, schema=schema)
     # And the documented shim — pre-coerce Decimal → float — works:
     rows = [{"v": float(decimal.Decimal("3.14"))}]
-    table = pa.Table.from_pylist(rows, schema=schema)
+    table: ArrowTable = pa.Table.from_pylist(rows, schema=schema)
     assert table.column("v").to_pylist() == [3.14]

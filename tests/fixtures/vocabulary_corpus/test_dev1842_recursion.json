@@ -1,0 +1,140 @@
+{
+ "source": "tests/test_dev1842_recursion.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.aov_big",
+    "name": "x"
+   },
+   "new": {
+    "expression": "customers.aov_big",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "(sum(customers.spend) / count(customers.*)) * 2",
+    "name": "x"
+   },
+   "new": {
+    "expression": "(sum(customers.spend) / count(customers.*)) * 2",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "host_runs_dotted",
+    "name": "x"
+   },
+   "new": {
+    "expression": "host_runs_dotted",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(customers.aov)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "cumsum(customers.aov)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.cyc_c",
+    "name": "x"
+   },
+   "new": {
+    "expression": "customers.cyc_c",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "d1",
+    "formula": "d2"
+   },
+   "new": {
+    "name": "d1",
+    "expression": "d2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "d2",
+    "formula": "d3"
+   },
+   "new": {
+    "name": "d2",
+    "expression": "d3"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "d3",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "d3",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "sub",
+    "join_pairs": [
+     [
+      "sub_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "sub",
+    "join_pairs": [
+     [
+      "sub_id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -8,14 +8,14 @@ import re
 
 import pytest
 
-from tests._dev1836_fixtures import ModelMeasure, gen, month_td, q
+from tests._dev1836_fixtures import DatasetMetric, gen, month_td, q
 
 
 async def _raises(band: str) -> str:
     query = q(
         dimensions=["customers.tier", {"expression": band, "name": "b"}],
         time_dimensions=month_td(),
-        measures=[ModelMeasure(formula="sum(amount)", name="s")],
+        metrics=[DatasetMetric(expression="sum(amount)", name="s")],
     )
     with pytest.raises(ValueError) as ei:
         await gen(query=query)

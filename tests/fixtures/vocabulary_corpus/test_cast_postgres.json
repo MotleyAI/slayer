@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_cast_postgres.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "TRY_CAST(count(*) AS INT)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "TRY_CAST(count(*) AS INT)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "TRY_CAST(count(*) + TRY_CAST('1' AS INT) AS INT)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "TRY_CAST(count(*) + TRY_CAST('1' AS INT) AS INT)",
+    "name": "m"
+   }
+  }
+ ],
+ "skipped": []
+}

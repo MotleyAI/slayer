@@ -12,16 +12,16 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.keys import VALUE_KEY_TYPES, InKey, LiteralKey, ScalarCallKey, _FrozenKey
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev2101_fixtures import emit
-from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors
-from tests._dev2137_fixtures import as_list, list_engine, measure, num, query
+from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_dataset, emit_contractors
+from tests._dev2137_fixtures import as_list, list_engine, metric, num, query
 from tests._engine_helpers import seeded_exec_engine
 
 
@@ -37,12 +37,12 @@ async def _values(engine, expr: str, **body: Any) -> dict[str, Any]:
 
 
 async def _count(engine, filter_: str, **body: Any) -> float | None:
-    resp = await engine.execute(query(measures=[measure("count(*)", "n")], filters=[filter_], **body))
+    resp = await engine.execute(query(metrics=[metric("count(*)", "n")], filter=[filter_], **body))
     return num(resp.data[0]["contractors.n"])
 
 
 async def _names(engine, filter_: str, **body: Any) -> set[str]:
-    resp = await engine.execute(query(dimensions=["name"], filters=[filter_], **body))
+    resp = await engine.execute(query(dimensions=["name"], filter=[filter_], **body))
     return {r["contractors.name"] for r in resp.data}
 
 
@@ -97,12 +97,12 @@ class TestLength:
 
 class TestPositions:
     async def test_in_a_measure_formula(self, engine) -> None:
-        resp = await engine.execute(query(measures=[measure("sum(length(skills))", "n")]))
+        resp = await engine.execute(query(metrics=[metric("sum(length(skills))", "n")]))
         assert num(resp.data[0]["contractors.n"]) == 4
 
     async def test_in_a_measure_filter(self, engine) -> None:
-        resp = await engine.execute(query(measures=[measure("count(*)", "n")], dimensions=["team"],
-                                          filters=["contains(skills, 'go')"]))
+        resp = await engine.execute(query(metrics=[metric("count(*)", "n")], dimensions=["team"],
+                                          filter=["contains(skills, 'go')"]))
         assert {r["contractors.team"]: num(r["contractors.n"]) for r in resp.data} == {"A": 1, "B": 1}
 
     async def test_in_a_case_expression(self, engine) -> None:
@@ -165,11 +165,11 @@ MIXED_DDL = ("CREATE TABLE mixed (id INTEGER, scores INTEGER[], prices DOUBLE[])
              "INSERT INTO mixed VALUES (1, [2, 3], [2.0]), (2, [4], [2.5])")
 
 
-def mixed_model() -> SlayerModel:
-    return SlayerModel(name="mixed", sql_table="mixed", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="scores", type=DataType.ARRAY, element_type=DataType.INT),
-        Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE),
+def mixed_dataset() -> SlayerDataset:
+    return SlayerDataset(name="mixed", sql_table="mixed", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INT),
+        DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.DOUBLE),
     ])
 
 
@@ -186,31 +186,31 @@ MIXED_FILTERS = ["contains(scores, 2.0)", "contains_any(scores, prices)", "conta
 class TestMixedNumerics:
     @pytest.mark.parametrize("filter_", MIXED_FILTERS)
     async def test_executes_on_duckdb(self, filter_: str) -> None:
-        async with seeded_exec_engine(dialect="duckdb", seed=_seed_mixed, models=[mixed_model()]) as (eng, _db):
+        async with seeded_exec_engine(dialect="duckdb", seed=_seed_mixed, datasets=[mixed_dataset()]) as (eng, _db):
             resp = await eng.execute(SlayerQuery.model_validate(
-                {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}))
+                {"population": "mixed", "dimensions": ["id"], "filter": [filter_]}))
         assert {int(r["mixed.id"]) for r in resp.data} == {1}, resp.sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     @pytest.mark.parametrize("filter_", MIXED_FILTERS)
     async def test_emits(self, dialect: str, filter_: str) -> None:
-        await emit(SlayerQuery.model_validate({"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}),
-                   dialect=dialect, models=[mixed_model()])
+        await emit(SlayerQuery.model_validate({"population": "mixed", "dimensions": ["id"], "filter": [filter_]}),
+                   dialect=dialect, datasets=[mixed_dataset()])
 
     @pytest.mark.parametrize("filter_", ["contains_any(scores, prices)", "contains_any(prices, scores)"])
     async def test_bigquery_overlap_compares_by_equality(self, filter_: str) -> None:
         # BigQuery has no ``FLOAT64 IN UNNEST(ARRAY<INT64>)`` signature.
         sql = await emit(SlayerQuery.model_validate(
-            {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}), dialect="bigquery",
-            models=[mixed_model()])
+            {"population": "mixed", "dimensions": ["id"], "filter": [filter_]}), dialect="bigquery",
+            datasets=[mixed_dataset()])
         assert "IN UNNEST" not in sql.upper(), sql
 
 
 def _bind(text: str):
-    model = contractors_model()
-    bundle = ResolvedSourceBundle(dialect="duckdb", source_model=model, referenced_models=[])
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=model), bundle=bundle,
-                     allow_measures=True).value_key
+    model = contractors_dataset()
+    bundle = ResolvedSourceBundle(dialect="duckdb", population=model, referenced_datasets=[])
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=model), bundle=bundle,
+                     allow_metrics=True).value_key
 
 
 class TestArrayLiteralKey:
@@ -261,7 +261,7 @@ class TestEmission:
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_date_lists_emit(self, dialect: str) -> None:
-        days = Column(name="days", type=DataType.ARRAY, element_type=DataType.DATE)
-        model = contractors_model().model_copy(update={"columns": [*contractors_model().columns, days]})
+        days = DatasetField(name="days", datatype=DataType.ARRAY, element_type=DataType.DATE)
+        model = contractors_dataset().model_copy(update={"fields": [*contractors_dataset().fields, days]})
         await emit_contractors(query(dimensions=["id", {"expression": "contains(days, DATE '2025-01-01')",
-                                                        "name": "v"}]), dialect=dialect, models=[model])
+                                                        "name": "v"}]), dialect=dialect, datasets=[model])

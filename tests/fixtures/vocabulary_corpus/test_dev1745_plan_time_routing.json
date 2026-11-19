@@ -1,0 +1,150 @@
+{
+ "source": "tests/test_dev1745_plan_time_routing.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "formula": "status",
+      "name": "status"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(eu_amount)",
+      "name": "eu"
+     }
+    ],
+    "filters": [
+     "sum(eu_amount) > 100"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "status"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(eu_amount)",
+      "name": "eu"
+     }
+    ],
+    "filter": [
+     "sum(eu_amount) > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "formula": "status",
+      "name": "status"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "a"
+     }
+    ],
+    "filters": [
+     "sum(amount) > 100"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "status"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "a"
+     }
+    ],
+    "filter": [
+     "sum(amount) > 100"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 179,
+   "reason": "not fully literal"
+  }
+ ]
+}

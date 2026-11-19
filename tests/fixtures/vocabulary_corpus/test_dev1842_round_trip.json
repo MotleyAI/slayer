@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_dev1842_round_trip.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.order_total",
+    "name": "x"
+   },
+   "new": {
+    "expression": "customers.order_total",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.order_total",
+    "name": "x"
+   },
+   "new": {
+    "expression": "customers.order_total",
+    "name": "x"
+   }
+  }
+ ],
+ "skipped": []
+}

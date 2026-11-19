@@ -1,0 +1,72 @@
+{
+ "source": "tests/test_dev2074_surface_parity.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "n",
+    "formula": "count(rname)"
+   },
+   "new": {
+    "name": "n",
+    "expression": "count(rname)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "total",
+    "formula": "count(y)"
+   },
+   "new": {
+    "name": "total",
+    "expression": "count(y)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "x",
+    "dimensions": [
+     "v",
+     "y.v",
+     "y.z.v"
+    ]
+   },
+   "new": {
+    "population": "x",
+    "dimensions": [
+     "v",
+     "y.v",
+     "y.z.v"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 181,
+   "reason": "not fully literal"
+  }
+ ]
+}

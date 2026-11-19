@@ -10,11 +10,11 @@ from pytest_postgresql import factories
 from sqlalchemy.dialects import mssql, postgresql
 
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, ColumnKey
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.keys import AggregateKey, FieldKey
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema import ingestion
-from slayer.engine.key_metadata import measure_key_preserves_native_type
+from slayer.engine.key_metadata import metric_key_preserves_native_type
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import describe_pg_cursor_column
@@ -32,19 +32,19 @@ postgresql_proc = factories.postgresql_proc(port=None)
 
 MONEY_NAMES = ["money", "MONEY", "SMALLMONEY", "smallmoney"]
 _PG_MONEY_OID = 790
-_SUM_AMOUNT = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+_SUM_AMOUNT = AggregateKey(source=FieldKey(leaf="amount"), agg="sum")
 
 
-def _ledger(*, data_source: str = "ds", db_type: str = "money") -> SlayerModel:
-    return SlayerModel(name="ledger", sql_table="ledger", data_source=data_source, columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="amount", type=DataType.DOUBLE, db_type=db_type),
-        Column(name="doubled", sql="amount * 2", type=DataType.DOUBLE, db_type=db_type),
+def _ledger(*, data_source: str = "ds", db_type: str = "money") -> SlayerDataset:
+    return SlayerDataset(name="ledger", sql_table="ledger", data_source=data_source, fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="amount", datatype=DataType.DOUBLE, db_type=db_type),
+        DatasetField(name="doubled", sql="amount * 2", datatype=DataType.DOUBLE, db_type=db_type),
     ])
 
 
-_SUM_QUERY = SlayerQuery.model_validate({"source_model": "ledger", "measures": ["sum(amount)"]})
-_DOUBLED_QUERY = SlayerQuery.model_validate({"source_model": "ledger", "dimensions": ["id", "doubled"]})
+_SUM_QUERY = SlayerQuery.model_validate({"population": "ledger", "metrics": ["sum(amount)"]})
+_DOUBLED_QUERY = SlayerQuery.model_validate({"population": "ledger", "dimensions": ["id", "doubled"]})
 
 
 class TestRawNames:
@@ -58,9 +58,9 @@ class TestRawNames:
 
     @pytest.mark.parametrize("name", MONEY_NAMES)
     def test_a_stored_money_column_preserves_its_aggregate(self, name: str) -> None:
-        model = SlayerModel(name="orders", data_source="ds", sql_table="orders",
-                            columns=[Column(name="amount", type=DataType.DOUBLE, db_type=name)])
-        assert measure_key_preserves_native_type(model=model, key=_SUM_AMOUNT) is True
+        model = SlayerDataset(name="orders", data_source="ds", sql_table="orders",
+                            fields=[DatasetField(name="amount", datatype=DataType.DOUBLE, db_type=name)])
+        assert metric_key_preserves_native_type(dataset=model, key=_SUM_AMOUNT) is True
 
 
 class TestInformationSchemaStrings:
@@ -100,14 +100,14 @@ class TestEmission:
         ("postgres", "money"), ("tsql", "money"), ("tsql", "smallmoney"),
     ])
     async def test_sum_carries_no_float_cast(self, dialect: str, db_type: str) -> None:
-        sql = await _engine_generate(query=_SUM_QUERY, model=_ledger(db_type=db_type), dialect=dialect)
+        sql = await _engine_generate(query=_SUM_QUERY, dataset=_ledger(db_type=db_type), dialect=dialect)
         assert "CAST(" not in sql.upper(), sql
 
     @pytest.mark.parametrize(("dialect", "db_type"), [
         ("postgres", "money"), ("tsql", "money"), ("tsql", "smallmoney"),
     ])
     async def test_derived_column_carries_no_float_cast(self, dialect: str, db_type: str) -> None:
-        sql = await _engine_generate(query=_DOUBLED_QUERY, model=_ledger(db_type=db_type), dialect=dialect)
+        sql = await _engine_generate(query=_DOUBLED_QUERY, dataset=_ledger(db_type=db_type), dialect=dialect)
         assert "CAST(" not in sql.upper(), sql
 
 
@@ -117,7 +117,7 @@ _LEDGER = (
 )
 
 
-async def _ingested(datasource: DatasourceConfig) -> SlayerModel:
+async def _ingested(datasource: DatasourceConfig) -> SlayerDataset:
     client = SlayerSQLClient(datasource=datasource)
     try:
         models = await ingestion.ingest_datasource_async(datasource, client=client)
@@ -147,9 +147,9 @@ class TestExecutedPostgres:
     async def test_reflected_money_keeps_its_raw_type(self, postgresql_proc: Any) -> None:
         with pg_database(postgresql_proc, statements=_LEDGER, name="money_reflect") as datasource:
             model = await _ingested(datasource)
-        amount = model.get_column("amount")
+        amount = model.get_field("amount")
         assert amount is not None
-        assert amount.type is DataType.DOUBLE
+        assert amount.datatype is DataType.DOUBLE
         assert amount.db_type is not None
         assert amount.db_type.lower() == "money"
 
@@ -164,7 +164,7 @@ class TestExecutedPostgres:
         with pg_database(postgresql_proc, statements=_LEDGER, name="money_exec") as datasource:
             storage = YAMLStorage(base_dir=str(tmp_path / "models"))
             async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
-                await storage.save_model(_ledger(data_source=datasource.name))
+                await storage.save_dataset(_ledger(data_source=datasource.name))
                 sum_sql = (await engine.execute(query=_SUM_QUERY, dry_run=True)).sql
                 doubled_sql = (await engine.execute(query=_DOUBLED_QUERY, dry_run=True)).sql
                 total = await engine.execute(query=_SUM_QUERY)

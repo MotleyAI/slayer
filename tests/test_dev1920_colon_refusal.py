@@ -10,7 +10,7 @@ import pytest
 
 from slayer.core.enums import AGGREGATION_ALIASES, BUILTIN_AGGREGATIONS
 from slayer.core.errors import ColonSpellingError
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -104,45 +104,45 @@ async def _query_failure(storage: StorageBackend, query: dict) -> BaseException:
 
 #: (query fields, colon span, twin).
 QUERY_POSITIONS = [
-    pytest.param({"measures": ["amount:sum"]}, "amount:sum", "sum(amount)", id="measure"),
-    pytest.param({"measures": [{"name": "t", "formula": "amount:sum"}]}, "amount:sum", "sum(amount)",
+    pytest.param({"metrics": ["amount:sum"]}, "amount:sum", "sum(amount)", id="measure"),
+    pytest.param({"metrics": [{"name": "t", "expression": "amount:sum"}]}, "amount:sum", "sum(amount)",
                  id="named-measure"),
-    pytest.param({"measures": ["*:count"]}, "*:count", "count(*)", id="star"),
-    pytest.param({"measures": ["customers.*:count"]}, "customers.*:count", "count(customers.*)",
+    pytest.param({"metrics": ["*:count"]}, "*:count", "count(*)", id="star"),
+    pytest.param({"metrics": ["customers.*:count"]}, "customers.*:count", "count(customers.*)",
                  id="cross-model-star"),
-    pytest.param({"measures": ["price:percentile(p=0.9)"]}, "price:percentile(p=0.9)", "percentile(price, p=0.9)",
+    pytest.param({"metrics": ["price:percentile(p=0.9)"]}, "price:percentile(p=0.9)", "percentile(price, p=0.9)",
                  id="keyword-param"),
-    pytest.param({"measures": ["balance:last(updated_at)"]}, "balance:last(updated_at)",
+    pytest.param({"metrics": ["balance:last(updated_at)"]}, "balance:last(updated_at)",
                  "last(balance, updated_at)", id="positional-param"),
-    pytest.param({"measures": ["amount:sum(window='30d')"], "time_dimensions": ["date_trunc('month', created_at)"]},
+    pytest.param({"metrics": ["amount:sum(window='30d')"], "time_dimensions": ["date_trunc('month', created_at)"]},
                  "amount:sum(window='30d')", "sum(amount, window='30d')", id="window"),
-    pytest.param({"measures": ["count(*)"], "filters": ["amount:sum > 100"]}, "amount:sum", "sum(amount)",
+    pytest.param({"metrics": ["count(*)"], "filter": ["amount:sum > 100"]}, "amount:sum", "sum(amount)",
                  id="filter"),
-    pytest.param({"measures": ["count(*)"], "dimensions": ["status"],
-                  "order": [{"column": "amount:sum", "direction": "desc"}]}, "amount:sum", "sum(amount)",
+    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+                  "order": [{"field": "amount:sum", "direction": "desc"}]}, "amount:sum", "sum(amount)",
                  id="order-string"),
-    pytest.param({"measures": ["count(*)"], "dimensions": ["status"],
-                  "order": [{"column": {"name": "amount:sum"}, "direction": "desc"}]}, "amount:sum", "sum(amount)",
+    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+                  "order": [{"field": {"name": "amount:sum"}, "direction": "desc"}]}, "amount:sum", "sum(amount)",
                  id="order-object"),
-    pytest.param({"measures": ["count(*)"], "dimensions": ["status"], "order": [{"amount:sum": "desc"}]},
+    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"], "order": [{"amount:sum": "desc"}]},
                  "amount:sum", "sum(amount)", id="order-shorthand"),
-    pytest.param({"measures": ["count(*)"], "dimensions": ["created_at:month"]}, "created_at:month",
+    pytest.param({"metrics": ["count(*)"], "dimensions": ["created_at:month"]}, "created_at:month",
                  "date_trunc('month', created_at)", id="dimension"),
-    pytest.param({"measures": ["count(*)"], "time_dimensions": ["created_at:month"]}, "created_at:month",
+    pytest.param({"metrics": ["count(*)"], "time_dimensions": ["created_at:month"]}, "created_at:month",
                  "date_trunc('month', created_at)", id="time-dimension"),
-    pytest.param({"measures": ["count(*)"], "time_dimensions": [{"dimension": "created_at:month",
+    pytest.param({"metrics": ["count(*)"], "time_dimensions": [{"field": "created_at:month",
                                                                   "granularity": "month"}]},
                  "created_at:month", "date_trunc('month', created_at)", id="time-dimension-column"),
-    pytest.param({"measures": ["count(*)"], "dimensions": ["status"],
-                  "order": [{"column": "customers.created_at:month", "direction": "asc"}]},
+    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+                  "order": [{"field": "customers.created_at:month", "direction": "asc"}]},
                  "customers.created_at:month", "date_trunc('month', customers.created_at)", id="order-granularity"),
-    pytest.param({"measures": ["count(*)"], "main_time_dimension": "created_at:month"}, "created_at:month",
+    pytest.param({"metrics": ["count(*)"], "main_time_dimension": "created_at:month"}, "created_at:month",
                  "date_trunc('month', created_at)", id="main-time-dimension"),
-    pytest.param({"measures": ["count(*)"],
+    pytest.param({"metrics": ["count(*)"],
                   "dimensions": [{"name": "d", "expression": "amount:sum(partition_by=region)"}]},
                  "amount:sum(partition_by=region)", "sum(amount, partition_by=region)", id="computed-dimension"),
-    pytest.param({"source_model": {"source_name": "orders", "measures": [{"name": "m", "formula": "amount:sum"}]},
-                  "measures": ["m"]}, "amount:sum", "sum(amount)", id="model-extension-measure"),
+    pytest.param({"population": {"source_name": "orders", "metrics": [{"name": "m", "expression": "amount:sum"}]},
+                  "metrics": ["m"]}, "amount:sum", "sum(amount)", id="model-extension-measure"),
 ]
 
 
@@ -151,37 +151,37 @@ class TestFreshQueries:
     async def test_position(self, make_store: StoreFactory, fields: dict, span: str,  # noqa: F811
                             twin: str) -> None:
         storage = await make_store()
-        exc = await _query_failure(storage, {"source_model": "orders", **fields})
+        exc = await _query_failure(storage, {"population": "orders", **fields})
         assert_colon_refused(exc, span=span, twin=twin)
 
     @pytest.mark.parametrize("agg", AGG_NAMES)
     async def test_every_builtin_and_alias_as_a_measure(self, make_store: StoreFactory,  # noqa: F811
                                                         agg: str) -> None:
         storage = await make_store()
-        exc = await _query_failure(storage, {"source_model": "orders", "measures": [f"amount:{agg}"]})
+        exc = await _query_failure(storage, {"population": "orders", "metrics": [f"amount:{agg}"]})
         assert_colon_refused(exc, span=f"amount:{agg}", twin=f"{agg}(amount)")
 
     async def test_custom_granularity(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store(granularities=[FISCAL_QUARTER])
-        exc = await _query_failure(storage, {"source_model": "orders", "measures": ["count(*)"],
+        exc = await _query_failure(storage, {"population": "orders", "metrics": ["count(*)"],
                                              "time_dimensions": ["created_at:fiscal_quarter"]})
         assert_colon_refused(exc, span="created_at:fiscal_quarter", twin="fiscal_quarter(created_at)")
 
     async def test_non_colon_colons_run(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
-        resp = await run(storage, {"source_model": "orders", "filters": ["note = 'a:sum'"], "measures": [
-            {"name": "total", "formula": "sum(amount::INT)"},
-            {"name": "tagged", "formula": "sum(amount) FILTER (WHERE note = 'x:count')"},
+        resp = await run(storage, {"population": "orders", "filter": ["note = 'a:sum'"], "metrics": [
+            {"name": "total", "expression": "sum(amount::INT)"},
+            {"name": "tagged", "expression": "sum(amount) FILTER (WHERE note = 'x:count')"},
         ]})
         assert rows(resp) == [{"orders.total": 60.0, "orders.tagged": None}]
 
 
 async def _save_failure(storage: StorageBackend, doc: dict) -> BaseException:
-    model = SlayerModel.model_validate(doc)
+    model = SlayerDataset.model_validate(doc)
     engine = SlayerQueryEngine(storage=storage)
     try:
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(model)
+            await engine.save_dataset(model)
     finally:
         engine.close()
     return ei.value
@@ -191,20 +191,20 @@ class TestSaves:
     async def test_model_measure(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         doc = {"name": "orders_m", "sql_table": "orders", "data_source": DS,
-               "columns": [{"name": "order_id", "type": "INT", "primary_key": True},
-                           {"name": "amount", "type": "DOUBLE"}],
-               "measures": [{"name": "total", "formula": "amount:sum"}]}
+               "fields": [{"name": "order_id", "datatype": "INT", "primary_key": True},
+                           {"name": "amount", "datatype": "DOUBLE"}],
+               "metrics": [{"name": "total", "expression": "amount:sum"}]}
         exc = await _save_failure(storage, doc)
         assert_colon_refused(exc, span="amount:sum", twin="sum(amount)")
-        assert await storage.get_model("orders_m", data_source=DS) is None
+        assert await storage.get_dataset("orders_m", data_source=DS) is None
 
     async def test_query_backed_model(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         doc = {"name": "order_count", "data_source": DS,
-               "source_queries": [{"source_model": "orders", "measures": [{"name": "n", "formula": "*:count"}]}]}
+               "source_queries": [{"population": "orders", "metrics": [{"name": "n", "expression": "*:count"}]}]}
         exc = await _save_failure(storage, doc)
         assert_colon_refused(exc, span="*:count", twin="count(*)")
-        assert await storage.get_model("order_count", data_source=DS) is None
+        assert await storage.get_dataset("order_count", data_source=DS) is None
 
 
 EntityCall = Callable[[StorageBackend], Awaitable[Any]]
@@ -213,14 +213,14 @@ EntityCall = Callable[[StorageBackend], Awaitable[Any]]
 async def _recommend(storage: StorageBackend) -> Any:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return await engine.recommend_root_model(["orders.amount:sum"], data_source=DS)
+        return await engine.recommend_population(["orders.amount:sum"], data_source=DS)
     finally:
         engine.close()
 
 
 async def _save_memory_query(storage: StorageBackend) -> Any:
     return await MemoryService(storage=storage).save_memory(
-        learning="revenue", linked_entities={"source_model": "orders", "measures": ["amount:sum"]})
+        learning="revenue", linked_entities={"population": "orders", "metrics": ["amount:sum"]})
 
 
 async def _save_memory(storage: StorageBackend) -> Any:
@@ -228,7 +228,7 @@ async def _save_memory(storage: StorageBackend) -> Any:
 
 
 class TestEntityReferences:
-    @pytest.mark.parametrize("call", [_recommend, _save_memory], ids=["recommend-root-model", "memory"])
+    @pytest.mark.parametrize("call", [_recommend, _save_memory], ids=["recommend-population", "memory"])
     async def test_refused(self, make_store: StoreFactory, call: EntityCall) -> None:  # noqa: F811
         storage = await make_store()
         with pytest.raises(ValueError) as ei:

@@ -64,19 +64,19 @@ def with_fields(base: Dict[str, Any], **fields: Any) -> Dict[str, Any]:
 PARITY = {
     "extra_dimension": ({"dimensions": ["region"]}, with_fields(MONTHLY_REVENUE, dimensions=["region"])),
     "extra_measure": (
-        {"measures": ["count(*)"]}, with_fields(MONTHLY_REVENUE, measures=[REVENUE, "count(*)"]),
+        {"metrics": ["count(*)"]}, with_fields(MONTHLY_REVENUE, metrics=[REVENUE, "count(*)"]),
     ),
     "extra_filter": (
-        {"filters": ["amount >= 50"]},
-        with_fields(MONTHLY_REVENUE, filters=["status = 'paid'", "amount >= 50"]),
+        {"filter": ["amount >= 50"]},
+        with_fields(MONTHLY_REVENUE, filter=["status = 'paid'", "amount >= 50"]),
     ),
     "window": (
         {"time_dimensions": [{**MONTH_TD, "date_range": ["2025-02-01", "2025-03-31"]}]},
         with_fields(MONTHLY_REVENUE, time_dimensions=[{**MONTH_TD, "date_range": ["2025-02-01", "2025-03-31"]}]),
     ),
     "order_limit": (
-        {"order": [{"column": "revenue", "direction": "desc"}], "limit": 1},
-        with_fields(MONTHLY_REVENUE, order=[{"column": "revenue", "direction": "desc"}], limit=1),
+        {"order": [{"field": "revenue", "direction": "desc"}], "limit": 1},
+        with_fields(MONTHLY_REVENUE, order=[{"field": "revenue", "direction": "desc"}], limit=1),
     ),
     "second_granularity": (
         {"time_dimensions": ["date_trunc('year', ordered_at)"]},
@@ -87,7 +87,7 @@ PARITY = {
         with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "date_trunc('year', ordered_at)"]),
     ),
     "identical_duplicates": (
-        {"dimensions": ["orders.region"], "measures": [REVENUE]},
+        {"dimensions": ["orders.region"], "metrics": [REVENUE]},
         with_fields(MONTHLY_REVENUE, dimensions=["region"]),
     ),
 }
@@ -116,12 +116,12 @@ class TestSingleStage:
         assert region_month(resp) == BY_REGION_MONTH
 
     async def test_extra_measure(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute("monthly_revenue", refine={"measures": ["count(*)"]})
+        resp = await engine.execute("monthly_revenue", refine={"metrics": ["count(*)"]})
         assert by_month(resp.data, value="orders._count") == {"2025-01": 1, "2025-02": 2, "2025-03": 1}
         assert by_month(resp.data) == MONTHLY
 
     async def test_extra_filter(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute("monthly_revenue", refine={"filters": ["amount >= 50"]})
+        resp = await engine.execute("monthly_revenue", refine={"filter": ["amount >= 50"]})
         assert by_month(resp.data) == {"2025-01": 100.0, "2025-02": 70.0, "2025-03": 50.0}
 
     async def test_window_added(self, engine: SlayerQueryEngine) -> None:
@@ -132,7 +132,7 @@ class TestSingleStage:
 
     async def test_order_and_limit(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(
-            "monthly_revenue", refine={"order": [{"column": "revenue", "direction": "desc"}], "limit": 1},
+            "monthly_revenue", refine={"order": [{"field": "revenue", "direction": "desc"}], "limit": 1},
         )
         assert [(month(r["orders.ordered_at"]), r["orders.revenue"]) for r in resp.data] == [("2025-02", 105.0)]
 
@@ -143,13 +143,13 @@ class TestSingleStage:
 
     async def test_identical_duplicates_collapse(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(
-            "monthly_revenue", refine={"dimensions": ["orders.region"], "measures": [REVENUE]},
+            "monthly_revenue", refine={"dimensions": ["orders.region"], "metrics": [REVENUE]},
         )
         assert region_month(resp) == BY_REGION_MONTH
 
     async def test_duplicate_filter_is_dropped(self, engine: SlayerQueryEngine) -> None:
         plain = await engine.execute("monthly_revenue")
-        refined = await engine.execute("monthly_revenue", refine={"filters": ["status = 'paid'"]})
+        refined = await engine.execute("monthly_revenue", refine={"filter": ["status = 'paid'"]})
         assert refined.sql == plain.sql
 
     async def test_empty_refinement_is_plain_run(self, engine: SlayerQueryEngine) -> None:
@@ -164,13 +164,13 @@ class TestSingleStage:
     ) -> None:
         calls = executed_sql(monkeypatch)
         with pytest.raises(RefinementConflictError) as info:
-            await engine.execute("monthly_revenue", refine={"measures": [{"formula": "count(*)", "name": "revenue"}]})
-        for part in ("measures", "revenue", "sum(amount)", "count(*)"):
+            await engine.execute("monthly_revenue", refine={"metrics": [{"expression": "count(*)", "name": "revenue"}]})
+        for part in ("metrics", "revenue", "sum(amount)", "count(*)"):
             assert part in str(info.value)
         assert calls == []
 
     @pytest.mark.parametrize("refinement", [
-        {"source_model": "orders"}, {"name": "x"}, {"version": 4}, {"variables": {"a": 1}}, {"bogus": 1},
+        {"population": "orders"}, {"name": "x"}, {"version": 4}, {"variables": {"a": 1}}, {"bogus": 1},
     ])
     async def test_forbidden_fields_rejected_before_execution(
         self, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch, refinement: Dict[str, Any],
@@ -181,9 +181,9 @@ class TestSingleStage:
         assert calls == []
 
     async def test_stored_model_unchanged(self, engine: SlayerQueryEngine) -> None:
-        before = await engine.storage.get_model("monthly_revenue")
+        before = await engine.storage.get_dataset("monthly_revenue")
         await engine.execute("monthly_revenue", refine={"dimensions": ["region"], "limit": 1})
-        assert await engine.storage.get_model("monthly_revenue") == before
+        assert await engine.storage.get_dataset("monthly_revenue") == before
 
 
 class TestSavedWindow:
@@ -198,7 +198,7 @@ class TestSavedWindow:
         ]
 
     async def test_filter_narrows_window(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute("monthly_revenue_q1", refine={"filters": ["ordered_at >= '2025-02-01'"]})
+        resp = await engine.execute("monthly_revenue_q1", refine={"filter": ["ordered_at >= '2025-02-01'"]})
         assert [(month(r["orders.ordered_at"]), r["orders.revenue"]) for r in resp.data] == [("2025-02", 105.0)]
 
     async def test_limit_cleared(self, engine: SlayerQueryEngine) -> None:
@@ -235,11 +235,11 @@ class TestMultiStage:
         }
 
     async def test_filter_applies_to_final_stage(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute("avg_customer_revenue", refine={"filters": ["region = 'EU'"]})
+        resp = await engine.execute("avg_customer_revenue", refine={"filter": ["region = 'EU'"]})
         assert resp.data == [{"per_customer.avg_revenue": pytest.approx(52.5)}]
 
     async def test_earlier_stage_untouched(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute("avg_customer_revenue", refine={"measures": ["count(*)"]})
+        resp = await engine.execute("avg_customer_revenue", refine={"metrics": ["count(*)"]})
         assert resp.data == [{"per_customer.avg_revenue": pytest.approx(63.75), "per_customer._count": 4}]
 
     async def test_parity_with_hand_written(self, engine: SlayerQueryEngine) -> None:
@@ -265,23 +265,23 @@ class TestVariables:
 
     async def test_refinement_with_runtime_variables(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(
-            "revenue_by_status", refine={"measures": ["count(*)"]}, variables={"status": "refunded"},
+            "revenue_by_status", refine={"metrics": ["count(*)"]}, variables={"status": "refunded"},
         )
         assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
 
     async def test_refinement_placeholder_gets_saved_default(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute("revenue_by_status", refine={"filters": ["'{status}' = status"]})
+        resp = await engine.execute("revenue_by_status", refine={"filter": ["'{status}' = status"]})
         assert {r["orders.region"]: r["orders.revenue"] for r in resp.data} == {"US": 150.0, "EU": 105.0}
 
     async def test_refinement_placeholder_gets_runtime_value(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(
-            "revenue_by_status", refine={"filters": ["'{status}' = status"]}, variables={"status": "refunded"},
+            "revenue_by_status", refine={"filter": ["'{status}' = status"]}, variables={"status": "refunded"},
         )
         assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0}]
 
     async def test_refinement_placeholder_new_variable(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(
-            "monthly_revenue", refine={"filters": ["region = '{region}'"]}, variables={"region": "EU"},
+            "monthly_revenue", refine={"filter": ["region = '{region}'"]}, variables={"region": "EU"},
         )
         assert by_month(resp.data) == {"2025-02": 105.0}
 

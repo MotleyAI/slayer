@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_memory_description.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 117,
+   "reason": "not fully literal"
+  }
+ ]
+}

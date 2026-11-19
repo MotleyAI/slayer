@@ -18,22 +18,22 @@ from tests._gateway_harness import (
     DirectAccessAttempted,
     RecordingClient,
     backend_of,
-    customers_model,
+    customers_dataset,
     no_direct_access,
-    orders_model,
+    orders_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
 )
 
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}]}
 
 
 async def test_a_plain_engine_query_is_refused(tmp_path: Path) -> None:
     db = str(tmp_path / "shop.db")
     seed_shop(db)
     storage = await shop_storage(
-        str(tmp_path / "store"), datasource=shop_datasource(db), models=[orders_model(), customers_model()],
+        str(tmp_path / "store"), datasource=shop_datasource(db), datasets=[orders_dataset(), customers_dataset()],
     )
     engine = SlayerQueryEngine(storage=storage)
     with no_direct_access() as guard, pytest.raises(Exception) as excinfo:  # NOSONAR(S5958) — may surface wrapped

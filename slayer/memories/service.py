@@ -14,7 +14,7 @@ CLI, Python client). Responsibilities:
 Memory retrieval lives in :mod:`slayer.search.service`.
 
 Errors raise typed exceptions (``ValueError``, ``EntityResolutionError``,
-``MemoryNotFoundError``, ``AmbiguousModelError``) — the MCP / REST / CLI
+``MemoryNotFoundError``, ``AmbiguousDatasetError``) — the MCP / REST / CLI
 wrappers catch and format them per their convention.
 """
 
@@ -44,7 +44,7 @@ def _coerce_query(query: QueryInput) -> SlayerQuery:
 
     Strings (run-by-name) are intentionally rejected: the new surface
     only takes either an entity list (each item resolved strictly) or a
-    full query body. A bare model name carries no entities to extract,
+    full query body. A bare dataset name carries no entities to extract,
     so the previous string-coercion pathway has no useful behaviour
     here.
     """

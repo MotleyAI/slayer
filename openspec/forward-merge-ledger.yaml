@@ -1,2 +1,13 @@
 # 1.x requirements intentionally absent from this line: {title, one_x_hash, reason}; see scripts/forward_merge_specs.py.
-[]
+- title: Distinct-entity association over the virtual model
+  one_x_hash: f539a99f4d1981438c90d9e8224f2dd6f803ab7b72700ba2a7b5cbd63fcb9cc5
+  reason: main associates by default (mode omitted) and keeps its own body; same primary-key-else-row-identity rule.
+- title: Association eligibility, input handling and row identity
+  one_x_hash: e911996f925ff4db6ee273387fad6ab5224111e60e916b72d7d18642a753f44b
+  reason: main associates by default, so an ineligible aggregate broadcasts when the mode is omitted; same keyless-home rule.
+- title: Per-query row identity for keyless homes
+  one_x_hash: d60459d0ec1963a3e06f3aff445946aeeeb021572e309cc19830c2c57ca49bf6
+  reason: main's body applies in every mode that associates, the default included; same primary-key rule and scenarios.
+- title: Association across a list hop needs no key
+  one_x_hash: fd0e2538ffef4ebe8c330e8f9eb31d468cfc27729627ae4429277a9b4a9be0a9
+  reason: main applies it when the mode is omitted too (association is the default); same primary-key-else-row-identity rule.

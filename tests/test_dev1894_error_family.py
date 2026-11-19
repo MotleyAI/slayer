@@ -10,13 +10,13 @@ from pydantic import ValidationError
 
 from slayer.core.errors import (
     AssociationError,
-    CanonicalAliasShadowsColumnError,
+    CanonicalAliasShadowsFieldError,
     ComputedDimensionError,
     DimensionTypeError,
     DistinctDimensionValuesError,
-    DuplicateMeasureNameError,
-    MeasureNameCollidesWithColumnError,
-    ModelFilterError,
+    DuplicateMetricNameError,
+    MetricNameCollidesWithFieldError,
+    DatasetFilterError,
     NameCollisionError,
     ParameterGrainError,
     PartitionKeyError,
@@ -25,28 +25,28 @@ from slayer.core.errors import (
     ReaggregationError,
     SlayerError,
     TimeAxisError,
-    TimeDimensionColumnError,
+    TimeDimensionFieldError,
     TransformInputError,
     UnanalyzableDependencyError,
     UnknownReferenceError,
-    UnsafeJoinInputError,
+    UnsafeRelationshipInputError,
     WindowDurationError,
 )
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.models import DatasetMetric
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.core.window_duration import parse_window_duration
 from slayer.mcp.server import create_mcp_server
 from slayer.memories.service import MemoryService
 from slayer.storage.yaml_storage import YAMLStorage
 
 FAMILIES = (
-    TimeAxisError, WindowDurationError, PartitionKeyError, UnsafeJoinInputError,
+    TimeAxisError, WindowDurationError, PartitionKeyError, UnsafeRelationshipInputError,
     UnanalyzableDependencyError, TransformInputError, ComputedDimensionError,
     AssociationError, ParameterGrainError, ReaggregationError, NameCollisionError,
-    DimensionTypeError, ModelFilterError,
+    DimensionTypeError, DatasetFilterError,
 )
 #: Re-parented classes that take the base's keyword constructor.
-KEYWORD_REPARENTED = (PositionTypingError, DistinctDimensionValuesError, TimeDimensionColumnError)
+KEYWORD_REPARENTED = (PositionTypingError, DistinctDimensionValuesError, TimeDimensionFieldError)
 
 
 class TestBaseConstructor:
@@ -93,9 +93,9 @@ class TestBaseConstructor:
 class TestPickle:
     @pytest.mark.parametrize("exc", [
         TimeAxisError(summary="S.", location="measure 'm'", suggestion="Fix."),
-        DuplicateMeasureNameError(name="total", occurrences=["sum(a)", "sum(b)"]),
-        MeasureNameCollidesWithColumnError(name="amount", model="orders"),
-        CanonicalAliasShadowsColumnError(formula="sum(amount)", canonical="amount_sum", model="orders"),
+        DuplicateMetricNameError(name="total", occurrences=["sum(a)", "sum(b)"]),
+        MetricNameCollidesWithFieldError(name="amount", dataset="orders"),
+        CanonicalAliasShadowsFieldError(expression="sum(amount)", canonical="amount_sum", dataset="orders"),
     ], ids=lambda e: type(e).__name__)
     def test_round_trip(self, exc) -> None:
         back = pickle.loads(pickle.dumps(exc))
@@ -106,8 +106,8 @@ class TestPickle:
 
 class TestHierarchy:
     @pytest.mark.parametrize("cls", FAMILIES + KEYWORD_REPARENTED + (
-        MeasureNameCollidesWithColumnError, CanonicalAliasShadowsColumnError,
-        DuplicateMeasureNameError,
+        MetricNameCollidesWithFieldError, CanonicalAliasShadowsFieldError,
+        DuplicateMetricNameError,
     ))
     def test_every_family_is_a_query_type_error(self, cls) -> None:
         assert issubclass(cls, QueryTypeError)
@@ -116,11 +116,11 @@ class TestHierarchy:
         assert cls is not QueryTypeError
 
     def test_time_dimension_column_error_is_a_time_axis_error(self) -> None:
-        assert issubclass(TimeDimensionColumnError, TimeAxisError)
+        assert issubclass(TimeDimensionFieldError, TimeAxisError)
 
     @pytest.mark.parametrize("cls", (
-        MeasureNameCollidesWithColumnError, CanonicalAliasShadowsColumnError,
-        DuplicateMeasureNameError,
+        MetricNameCollidesWithFieldError, CanonicalAliasShadowsFieldError,
+        DuplicateMetricNameError,
     ))
     def test_structured_collisions_are_name_collisions(self, cls) -> None:
         assert issubclass(cls, NameCollisionError)
@@ -134,21 +134,21 @@ class TestStructuredCollisions:
 
     @pytest.mark.parametrize(("exc", "rendered"), [
         pytest.param(
-            MeasureNameCollidesWithColumnError(name="amount", model="orders"),
-            "MeasureNameCollidesWithColumnError: The declared measure name matches a source column "
-            "on model 'orders'.\n  at measure 'amount'",
+            MetricNameCollidesWithFieldError(name="amount", dataset="orders"),
+            "MetricNameCollidesWithFieldError: The declared metric name matches a source field "
+            "on dataset 'orders'.\n  at metric 'amount'",
             id="measure-collides",
         ),
         pytest.param(
-            CanonicalAliasShadowsColumnError(formula="sum(amount)", canonical="amount_sum", model="orders"),
-            "CanonicalAliasShadowsColumnError: The canonical alias 'amount_sum' shadows a source column "
-            "on model 'orders'.\n  at measure 'sum(amount)'",
+            CanonicalAliasShadowsFieldError(expression="sum(amount)", canonical="amount_sum", dataset="orders"),
+            "CanonicalAliasShadowsFieldError: The canonical alias 'amount_sum' shadows a source field "
+            "on dataset 'orders'.\n  at metric 'sum(amount)'",
             id="canonical-shadows",
         ),
         pytest.param(
-            DuplicateMeasureNameError(name="total", occurrences=["sum(a)", "sum(b)"]),
-            "DuplicateMeasureNameError: The measure name is declared more than once.\n"
-            "  at measure 'total'\n  occurrences: ['sum(a)', 'sum(b)']",
+            DuplicateMetricNameError(name="total", occurrences=["sum(a)", "sum(b)"]),
+            "DuplicateMetricNameError: The metric name is declared more than once.\n"
+            "  at metric 'total'\n  occurrences: ['sum(a)', 'sum(b)']",
             id="duplicate",
         ),
     ])
@@ -158,10 +158,10 @@ class TestStructuredCollisions:
         assert exc.suggestion is None
 
     def test_attributes_kept(self) -> None:
-        assert MeasureNameCollidesWithColumnError(name="amount", model="orders").model == "orders"
-        exc = CanonicalAliasShadowsColumnError(formula="sum(amount)", canonical="amount_sum", model="orders")
-        assert (exc.formula, exc.canonical, exc.model) == ("sum(amount)", "amount_sum", "orders")
-        dup = DuplicateMeasureNameError(name="total", occurrences=["sum(a)", "sum(b)"])
+        assert MetricNameCollidesWithFieldError(name="amount", dataset="orders").dataset == "orders"
+        exc = CanonicalAliasShadowsFieldError(expression="sum(amount)", canonical="amount_sum", dataset="orders")
+        assert (exc.expression, exc.canonical, exc.dataset) == ("sum(amount)", "amount_sum", "orders")
+        dup = DuplicateMetricNameError(name="total", occurrences=["sum(a)", "sum(b)"])
         assert (dup.name, dup.occurrences) == ("total", ["sum(a)", "sum(b)"])
         assert "sum(b)" in str(dup)
 
@@ -186,13 +186,13 @@ class TestWindowDurationParser:
 class TestRawRowsConstruction:
     def _underlying(self, **kwargs) -> Exception:
         with pytest.raises(ValidationError) as ei:
-            SlayerQuery(source_model="orders", distinct_dimension_values=False, **kwargs)
+            SlayerQuery(population="orders", distinct_dimension_values=False, **kwargs)
         ctx = ei.value.errors()[0].get("ctx") or {}
         return ctx["error"]
 
     def test_measures_fail_with_the_stable_format(self) -> None:
         exc = self._underlying(
-            dimensions=[ColumnRef(name="status")], measures=[ModelMeasure(formula="count(*)")],
+            dimensions=[FieldRef(name="status")], metrics=[DatasetMetric(expression="count(*)")],
         )
         assert isinstance(exc, DistinctDimensionValuesError)
         assert isinstance(exc, QueryTypeError)
@@ -219,9 +219,9 @@ class TestMcpPrefix:
 
     @pytest.mark.parametrize("exc", (
         TimeAxisError(summary="S.", location="measure 'm'"),
-        UnknownReferenceError(name="x", scope_kind="model", scope_summary="orders"),
+        UnknownReferenceError(name="x", scope_kind="dataset", scope_summary="orders"),
     ), ids=lambda e: type(e).__name__)
-    async def test_class_name_once(self, exc, tmp_path, monkeypatch) -> None:
+    async def test_class_name_once(self, exc, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         async def _raise(self, *, identifier):  # noqa: ARG001
             raise exc
 
@@ -231,7 +231,7 @@ class TestMcpPrefix:
         assert text == f"Error: {exc}"
         assert text.count(type(exc).__name__) == 1
 
-    async def test_plain_value_error_keeps_its_prefix(self, tmp_path, monkeypatch) -> None:
+    async def test_plain_value_error_keeps_its_prefix(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         async def _raise(self, *, identifier):  # noqa: ARG001
             raise ValueError("plain")
 

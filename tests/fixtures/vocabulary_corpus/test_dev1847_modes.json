@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_dev1847_modes.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=spend_band))",
+    "name": "abt"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=spend_band))",
+    "name": "abt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=amount))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=amount))",
+    "name": "a"
+   }
+  }
+ ],
+ "skipped": []
+}

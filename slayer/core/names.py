@@ -48,7 +48,7 @@ def _unique(*, name: str, hits: List[str]) -> Optional[str]:
 
 
 def name_taken(name: str, taken: Iterable[str]) -> bool:
-    """Whether ``name`` equals one of ``taken`` in any case (a model's names are one case-insensitive namespace)."""
+    """Whether ``name`` equals one of ``taken`` in any case (a dataset's names are one case-insensitive namespace)."""
     folded = name.casefold()
     return any(t.casefold() == folded for t in taken)
 

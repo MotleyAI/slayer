@@ -1,4 +1,4 @@
-"""DEV-1853 — edge-aware route search (``slayer.core.join_search``) and executable root recommendation.
+"""DEV-1853 — edge-aware route search (``slayer.core.relationship_search``) and executable root recommendation.
 
 The graph spans the bidirectional edge set: parallel edges are distinct
 routes, recommendations emit edge-name tokens where a hop needs one, and an
@@ -16,44 +16,44 @@ from typing import cast
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.join_search import count_routes, reachable, shortest_route
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.relationship_search import count_routes, reachable, shortest_route
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1853_fixtures import chain_models, parallel_engine, parallel_models
+from tests._dev1853_fixtures import chain_datasets, parallel_engine, parallel_datasets
 from tests._edge_graph_fixtures import edge_graph
 import slayer.engine.bundle_builder
 
 
 
-def _by(models: list[SlayerModel]) -> dict[str, SlayerModel]:
-    return {m.name: m for m in models}
+def _by(datasets: list[SlayerDataset]) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
 class TestBidirectionalReachability:
     def test_reverse_neighbors_are_reachable(self) -> None:
-        models = _by(chain_models())
-        assert "orders" in reachable(root=models["customers"], models_by_name=models)
-        assert "orders" in reachable(root=models["regions"], models_by_name=models)
+        models = _by(chain_datasets())
+        assert "orders" in reachable(root=models["customers"], datasets_by_name=models)
+        assert "orders" in reachable(root=models["regions"], datasets_by_name=models)
 
     def test_reverse_route_is_unique_on_a_single_edge(self) -> None:
-        models = _by(chain_models())
-        assert count_routes(root=models["customers"], target="orders", models_by_name=models) == 1
+        models = _by(chain_datasets())
+        assert count_routes(root=models["customers"], target="orders", datasets_by_name=models) == 1
 
 
 class TestParallelEdgesAreDistinctRoutes:
     def test_route_counting_reports_ambiguous(self) -> None:
-        models = _by(parallel_models(named=False))
-        assert count_routes(root=models["orders"], target="customers", models_by_name=models, cap=5) == 2
-        assert count_routes(root=models["customers"], target="orders", models_by_name=models, cap=5) == 2
+        models = _by(parallel_datasets(named=False))
+        assert count_routes(root=models["orders"], target="customers", datasets_by_name=models, cap=5) == 2
+        assert count_routes(root=models["customers"], target="orders", datasets_by_name=models, cap=5) == 2
 
     def test_named_parallel_edges_also_count_as_two_routes(self) -> None:
-        models = _by(parallel_models(named=True))
-        assert count_routes(root=models["orders"], target="customers", models_by_name=models, cap=5) == 2
+        models = _by(parallel_datasets(named=True))
+        assert count_routes(root=models["orders"], target="customers", datasets_by_name=models, cap=5) == 2
 
 
 class TestEdgeNameShadowsModelToken:
@@ -62,18 +62,18 @@ class TestEdgeNameShadowsModelToken:
         # first), so the a↔c hop has no executable token — unroutable, never
         # a path that would land on the wrong endpoint.
         models = edge_graph(nodes={"a", "b", "c"}, edges=[("a", "b", "c"), ("a", "c", None)])
-        assert shortest_route(root=models["a"], target="c", models_by_name=models) is None
-        route = shortest_route(root=models["a"], target="b", models_by_name=models)
+        assert shortest_route(root=models["a"], target="c", datasets_by_name=models) is None
+        route = shortest_route(root=models["a"], target="b", datasets_by_name=models)
         assert route is not None
         assert list(route.tokens) == ["c"]
 
 
-async def _engine_for(models, tmpdir: str) -> SlayerQueryEngine:
+async def _engine_for(datasets, tmpdir: str) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-    for model in models:
-        await storage.save_model(model)
+    for model in datasets:
+        await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -91,25 +91,25 @@ async def unnamed_rec_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 class TestRecommendRootModel:
     async def test_named_pair_recommendation_is_executable(
-        self, named_rec_engine,
+        self, named_rec_engine: SlayerQueryEngine,
     ) -> None:
-        rec = await named_rec_engine.recommend_root_model(
+        rec = await named_rec_engine.recommend_population(
             ["orders.status", "customers.name"])
         assert rec.reachable is True
-        assert rec.root_model is not None
+        assert rec.population is not None
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
         crossing = next(p for p in paths.values() if "." in p)
         assert crossing.split(".")[0] in {"billing_customer",
                                           "shipping_customer"}, crossing
         # Executable means executable: the emitted paths bind and run.
-        resp = await named_rec_engine.execute(SlayerQuery(
-            source_model=rec.root_model, dimensions=list(paths.values())))
+        resp = await named_rec_engine.execute(SlayerQuery.model_validate(
+            {"population": rec.population, "dimensions": list(paths.values())}))
         assert resp.data
 
     async def test_unnamed_ambiguous_pair_reports_unreachable(
-        self, unnamed_rec_engine,
+        self, unnamed_rec_engine: SlayerQueryEngine,
     ) -> None:
-        rec = await unnamed_rec_engine.recommend_root_model(
+        rec = await unnamed_rec_engine.recommend_population(
             ["orders.status", "customers.name"])
         assert rec.reachable is False
         assert rec.item_paths == []
@@ -117,23 +117,23 @@ class TestRecommendRootModel:
     async def test_reverse_reachability_growth(self) -> None:
         # a → b and c → b share no directed common root today; the
         # bidirectional graph makes every model a valid root.
-        def leaf(name: str, extra: str, joins=None) -> SlayerModel:
-            return SlayerModel(
+        def leaf(name: str, extra: str, joins=None) -> SlayerDataset:
+            return SlayerDataset(
                 name=name, data_source="test", sql_table=name,
-                columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                         Column(name=extra, type=DataType.TEXT)],
-                joins=joins or [],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                         DatasetField(name=extra, datatype=DataType.TEXT)],
+                relationships=joins or [],
             )
         models = [
-            leaf("a", "x", [ModelJoin(target_model="b",
+            leaf("a", "x", [DatasetRelationship(to="b",
                                       join_pairs=[["id", "id"]])]),
             leaf("b", "y"),
-            leaf("c", "z", [ModelJoin(target_model="b",
+            leaf("c", "z", [DatasetRelationship(to="b",
                                       join_pairs=[["id", "id"]])]),
         ]
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine_for(models, d)
-            rec = await engine.recommend_root_model(["a.x", "c.z"])
+            rec = await engine.recommend_population(["a.x", "c.z"])
             assert rec.reachable is True
             assert {ip.input_item for ip in rec.item_paths} == {"a.x", "c.z"}
 
@@ -141,15 +141,15 @@ class TestRecommendRootModel:
 class TestPeerLoadsAreConcurrent:
     async def test_peer_models_load_concurrently_not_sequentially(self) -> None:
         """The datasource peer scan gathers reads (bounded), not one-by-one."""
-        col = [Column(name="id", type=DataType.DOUBLE)]
+        col = [DatasetField(name="id", datatype=DataType.DOUBLE)]
         peers = {
-            f"m{i}": SlayerModel(
-                name=f"m{i}", sql_table=f"m{i}", data_source="db", columns=col,
+            f"m{i}": SlayerDataset(
+                name=f"m{i}", sql_table=f"m{i}", data_source="db", fields=col,
             )
             for i in range(12)
         }
-        root = SlayerModel(
-            name="root", sql_table="root", data_source="db", columns=col,
+        root = SlayerDataset(
+            name="root", sql_table="root", data_source="db", fields=col,
         )
 
         class _SlowStorage:
@@ -157,15 +157,15 @@ class TestPeerLoadsAreConcurrent:
                 self.in_flight = 0
                 self.max_in_flight = 0
 
-            async def list_models(self, ds: str) -> list[str]:
+            async def list_datasets(self, ds: str) -> list[str]:
                 return list(peers)
 
-            async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+            async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
                 return [("db", name) for name in peers]
 
-            load_models = StorageBackend.load_models
+            load_datasets = StorageBackend.load_datasets
 
-            async def get_model(self, name: str, data_source=None) -> SlayerModel:
+            async def get_dataset(self, name: str, data_source=None) -> SlayerDataset:
                 self.in_flight += 1
                 self.max_in_flight = max(self.max_in_flight, self.in_flight)
                 await asyncio.sleep(0.01)
@@ -173,8 +173,8 @@ class TestPeerLoadsAreConcurrent:
                 return peers[name]
 
         storage = _SlowStorage()
-        out = await slayer.engine.bundle_builder._collect_referenced_models(
-            source_model=root, named_queries={},
+        out = await slayer.engine.bundle_builder._collect_referenced_datasets(
+            source_dataset=root, named_queries={},
             storage=cast("StorageBackend", storage), data_source="db",
             failures=DocumentLoadFailures(),
         )

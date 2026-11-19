@@ -1,0 +1,49 @@
+{
+ "source": "tests/flight/test_dev1894_type_error_status.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "bad_window",
+    "formula": "sum(amount, window='90x')"
+   },
+   "new": {
+    "name": "bad_window",
+    "expression": "sum(amount, window='90x')"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "no_axis",
+    "formula": "sum(cumsum(sum(amount, partition_by=status)))"
+   },
+   "new": {
+    "name": "no_axis",
+    "expression": "sum(cumsum(sum(amount, partition_by=status)))"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  }
+ ]
+}

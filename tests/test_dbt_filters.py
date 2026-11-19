@@ -27,9 +27,9 @@ class TestConvertDbtFilter:
 
         result = convert_dbt_filter(
             filter_str="{{Dimension('customer_id__status')}} = 'active'",
-            source_model_name="orders",
+            population_name="orders",
             entity_registry=reg,
-            model_entity_names={"order_id": "primary", "customer_id": "foreign"},
+            dataset_entity_names={"order_id": "primary", "customer_id": "foreign"},
         )
         assert result == "customers.status = 'active'"
 
@@ -42,9 +42,9 @@ class TestConvertDbtFilter:
 
         result = convert_dbt_filter(
             filter_str="{{Dimension('order_id__status')}} = 'completed'",
-            source_model_name="orders",
+            population_name="orders",
             entity_registry=reg,
-            model_entity_names={"order_id": "primary"},
+            dataset_entity_names={"order_id": "primary"},
         )
         assert result == "status = 'completed'"
 
@@ -53,7 +53,7 @@ class TestConvertDbtFilter:
         reg = _build_registry()
         result = convert_dbt_filter(
             filter_str="{{ TimeDimension('metric_time', 'day') }} >= '2024-01-01'",
-            source_model_name="orders",
+            population_name="orders",
             entity_registry=reg,
         )
         assert result == "metric_time >= '2024-01-01'"
@@ -62,7 +62,7 @@ class TestConvertDbtFilter:
         reg = _build_registry()
         result = convert_dbt_filter(
             filter_str="{{ TimeDimension('order_date') }} >= '2024-01-01'",
-            source_model_name="orders",
+            population_name="orders",
             entity_registry=reg,
         )
         assert result == "order_date >= '2024-01-01'"
@@ -79,7 +79,7 @@ class TestConvertDbtFilter:
 
         result = convert_dbt_filter(
             filter_str="{{ Entity('customer_id') }} IS NOT NULL",
-            source_model_name="orders",
+            population_name="orders",
             entity_registry=reg,
         )
         assert result == "id IS NOT NULL"
@@ -89,7 +89,7 @@ class TestConvertDbtFilter:
         reg = _build_registry()
         result = convert_dbt_filter(
             filter_str="status = 'active'",
-            source_model_name="orders",
+            population_name="orders",
             entity_registry=reg,
         )
         assert result == "status = 'active'"
@@ -103,9 +103,9 @@ class TestConvertDbtFilter:
 
         result = convert_dbt_filter(
             filter_str="{{Dimension('order_id__status')}} = 'active' AND {{Dimension('order_id__type')}} = 'online'",
-            source_model_name="orders",
+            population_name="orders",
             entity_registry=reg,
-            model_entity_names={"order_id": "primary"},
+            dataset_entity_names={"order_id": "primary"},
         )
         assert result == "status = 'active' AND type = 'online'"
 
@@ -121,9 +121,9 @@ class TestConvertDbtFilter:
 
         result = convert_dbt_filter(
             filter_str="{{Dimension('claim_amount__has_loss_payment')}} = 1",
-            source_model_name="claim_amount",
+            population_name="claim_amount",
             entity_registry=reg,
-            model_entity_names={"claim_amount": "primary"},
+            dataset_entity_names={"claim_amount": "primary"},
         )
         # claim_amount is the model's own primary entity, so bare name
         assert result == "has_loss_payment = 1"
@@ -146,9 +146,9 @@ class TestConvertDbtFilter:
 
         result = convert_dbt_filter(
             filter_str="{{Dimension('claim_amount__has_loss_payment')}} = 1",
-            source_model_name="claim_amount",
+            population_name="claim_amount",
             entity_registry=reg,
-            model_entity_names={"claim_amount": "primary"},
+            dataset_entity_names={"claim_amount": "primary"},
             all_semantic_models={"claim_amount": claim_amount, "loss_payment": loss_payment},
         )
         # Should be qualified with peer model name
@@ -171,9 +171,9 @@ class TestConvertDbtFilter:
         with caplog.at_level(logging.WARNING, logger="slayer.dbt.filters"):
             result = convert_dbt_filter(
                 filter_str="{{Dimension('claim_amount__has_loss_payment')}} = 1",
-                source_model_name="claim_amount",
+                population_name="claim_amount",
                 entity_registry=reg,
-                model_entity_names={"claim_amount": "primary"},
+                dataset_entity_names={"claim_amount": "primary"},
                 # all_semantic_models NOT provided
             )
         # Falls back to bare name (cannot find peer)
@@ -206,18 +206,18 @@ class TestConvertDbtFilter:
         reg1 = _build_registry(source, alpha, beta)
         result1 = convert_dbt_filter(
             filter_str="{{Dimension('shared__the_dim')}} = 1",
-            source_model_name="source",
+            population_name="source",
             entity_registry=reg1,
-            model_entity_names={"shared": "primary"},
+            dataset_entity_names={"shared": "primary"},
             all_semantic_models=all_models,
         )
 
         reg2 = _build_registry(source, beta, alpha)
         result2 = convert_dbt_filter(
             filter_str="{{Dimension('shared__the_dim')}} = 1",
-            source_model_name="source",
+            population_name="source",
             entity_registry=reg2,
-            model_entity_names={"shared": "primary"},
+            dataset_entity_names={"shared": "primary"},
             all_semantic_models=all_models,
         )
 

@@ -26,7 +26,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming_bijection import decode_alias, encode_alias
@@ -40,7 +40,7 @@ from tests._engine_helpers import _engine_generate
 DUNDER_KEY = "orders.customer__region.label"
 
 
-def _host_with_label() -> SlayerModel:
+def _host_with_label() -> SlayerDataset:
     """``orders`` host with a Mode-A derived column reading the ``__``-named
     join target ``customer__region`` (exact-match, single hop).
 
@@ -48,15 +48,15 @@ def _host_with_label() -> SlayerModel:
     feature-missing raise comes from :func:`dunder_target` (the join target,
     literally named ``customer__region``) at query time.
     """
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="cr_id", type=DataType.INT),
-            Column(name="region_label", type=DataType.TEXT,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="cr_id", datatype=DataType.INT),
+            DatasetField(name="region_label", datatype=DataType.TEXT,
                    sql="customer__region.label"),
         ],
-        joins=[ModelJoin(target_model="customer__region",
+        relationships=[DatasetRelationship(to="customer__region",
                          join_pairs=[["cr_id", "id"]])],
     )
 
@@ -74,9 +74,9 @@ async def test_bigquery_emits_over_dunder_named_model() -> None:
     sqlglot's bigquery dialect) and must reference the target's physical table.
     """
     sql = await _engine_generate(
-        query=SlayerQuery(source_model="orders", dimensions=["region_label"]),
-        model=_host_with_label(),
-        extra_models=[dunder_target()],
+        query=SlayerQuery(population="orders", dimensions=["region_label"]),
+        dataset=_host_with_label(),
+        extra_datasets=[dunder_target()],
         dialect="bigquery",
     )
     assert "customer_region_dim" in sql
@@ -92,9 +92,9 @@ async def test_tsql_emits_over_dunder_named_model() -> None:
     target's physical table.
     """
     sql = await _engine_generate(
-        query=SlayerQuery(source_model="orders", dimensions=["region_label"]),
-        model=_host_with_label(),
-        extra_models=[dunder_target()],
+        query=SlayerQuery(population="orders", dimensions=["region_label"]),
+        dataset=_host_with_label(),
+        extra_datasets=[dunder_target()],
         dialect="tsql",
     )
     assert "customer_region_dim" in sql

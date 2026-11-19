@@ -2,6 +2,8 @@
 the policy dispatch. ``SqliteDialect.reflect_columns`` is mocked so no live schema is required.
 """
 
+from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 import sqlglot
@@ -20,19 +22,19 @@ from slayer.sql.session_policy import ScopedTable
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _mk_engine(tmp_path, policy):
+def _mk_engine(tmp_path: Path, policy: SessionPolicy | None) -> SlayerQueryEngine:
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir(exist_ok=True)
     return SlayerQueryEngine(storage=YAMLStorage(base_dir=str(storage_dir)), policy=policy)
 
 
-async def _teardown(eng):
+async def _teardown(eng: SlayerQueryEngine) -> None:
     await eng.aclose()
     eng.close()
 
 
 @pytest.fixture
-async def engine(tmp_path):
+async def engine(tmp_path: Path) -> AsyncIterator[SlayerQueryEngine]:
     eng = _mk_engine(
         tmp_path, SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="x"))
     )
@@ -47,12 +49,12 @@ def _cols(*names):
     ]
 
 
-def _patch_columns(monkeypatch, fn):
+def _patch_columns(monkeypatch: pytest.MonkeyPatch, fn):
     """Replace the probe's column read (the SQLite datasource's ``reflect_columns``)."""
     monkeypatch.setattr(SqliteDialect, "reflect_columns", fn)
 
 
-async def _scoped(engine, sql, *, dialect, datasource):
+async def _scoped(engine: SlayerQueryEngine, sql: str, *, dialect: str, datasource: DatasourceConfig) -> str:
     """Apply ``engine``'s policy to the parsed literal ``sql`` and render the tree."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
     return (await engine._apply_policy(statement=tree, dialect=dialect, datasource=datasource)).sql(dialect=dialect)
@@ -68,10 +70,10 @@ def _ds(tmp_path, *, schema_name=None):
     )
 
 
-# -- _column_present ---------------------------------------------------------
+# -- _field_present ---------------------------------------------------------
 
 
-async def test_column_present_true(engine, tmp_path, monkeypatch):
+async def test_field_present_true(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("org", "id"))
     present = await engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
@@ -79,7 +81,7 @@ async def test_column_present_true(engine, tmp_path, monkeypatch):
     assert present is True
 
 
-async def test_column_present_false(engine, tmp_path, monkeypatch):
+async def test_field_present_false(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("id", "amount"))
     present = await engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
@@ -87,7 +89,7 @@ async def test_column_present_false(engine, tmp_path, monkeypatch):
     assert present is False
 
 
-async def test_column_present_case_insensitive(engine, tmp_path, monkeypatch):
+async def test_field_present_case_insensitive(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("Organization_UUID"))
     present = await engine._column_present(
         datasource=_ds(tmp_path),
@@ -97,7 +99,7 @@ async def test_column_present_case_insensitive(engine, tmp_path, monkeypatch):
     assert present is True
 
 
-async def test_column_present_none_on_empty(engine, tmp_path, monkeypatch):
+async def test_field_present_none_on_empty(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     _patch_columns(monkeypatch, lambda self, **k: [])
     present = await engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
@@ -105,7 +107,7 @@ async def test_column_present_none_on_empty(engine, tmp_path, monkeypatch):
     assert present is None
 
 
-async def test_column_present_none_on_introspection_error(engine, tmp_path, monkeypatch):
+async def test_field_present_none_on_introspection_error(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     def boom(self, **k):
         raise RuntimeError("introspection blew up")
 
@@ -116,7 +118,7 @@ async def test_column_present_none_on_introspection_error(engine, tmp_path, monk
     assert present is None
 
 
-async def test_confirmed_result_is_cached(engine, tmp_path, monkeypatch):
+async def test_confirmed_result_is_cached(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     calls = {"n": 0}
 
     def counting(self, **k):
@@ -131,7 +133,7 @@ async def test_confirmed_result_is_cached(engine, tmp_path, monkeypatch):
     assert calls["n"] == 1
 
 
-async def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
+async def test_none_result_is_not_cached(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     seq = iter([[], _cols("org")])
 
     def flaky(self, **k):
@@ -144,7 +146,7 @@ async def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
     assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is True
 
 
-async def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
+async def test_cross_catalog_fails_closed(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     calls = {"n": 0}
 
     def counting(self, **k):
@@ -161,7 +163,7 @@ async def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
     assert calls["n"] == 0
 
 
-async def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
+async def test_schema_resolves_ast_first(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     seen = {}
 
     def capture(self, *, connection, inspector, table, schema, catalog):
@@ -205,7 +207,7 @@ def _ch_ds():
 
 
 @pytest.fixture
-async def join_engine(tmp_path):
+async def join_engine(tmp_path: Path) -> AsyncIterator[SlayerQueryEngine]:
     eng = _mk_engine(tmp_path, _join_policy())
     yield eng
     await _teardown(eng)
@@ -237,7 +239,7 @@ async def test_apply_policy_no_policy_returns_verbatim(tmp_path):
     assert out == statement
 
 
-async def test_apply_policy_column_ruleset_probes(engine, tmp_path, monkeypatch):
+async def test_apply_policy_column_ruleset_probes(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(engine, "_column_present", _always_present)
     out = await _scoped(
         engine, "SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
@@ -245,10 +247,10 @@ async def test_apply_policy_column_ruleset_probes(engine, tmp_path, monkeypatch)
     assert "WHERE org = 'x'" in out
 
 
-async def test_apply_policy_join_ruleset_does_not_probe(join_engine, tmp_path, monkeypatch):
-    """The join path never calls _column_present."""
+async def test_apply_policy_join_ruleset_does_not_probe(join_engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """The join path never calls _field_present."""
     async def boom(**k):
-        raise AssertionError("_column_present must not be called for a join ruleset")
+        raise AssertionError("_field_present must not be called for a join ruleset")
 
     monkeypatch.setattr(join_engine, "_column_present", boom)
     out = await _scoped(
@@ -257,7 +259,7 @@ async def test_apply_policy_join_ruleset_does_not_probe(join_engine, tmp_path, m
     assert "EXISTS" in out.upper()
 
 
-async def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine, monkeypatch):
+async def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch):
     """No profile has been probed, yet the join rule applies: it needs no server setting."""
     monkeypatch.setattr(join_engine, "_column_present", _always_present)
     out = await _scoped(
@@ -268,7 +270,7 @@ async def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine, m
     assert "_rls_src.customer_id GLOBAL IN (SELECT toNullable(_rls_j0.id)" in out
 
 
-async def test_apply_policy_column_only_clickhouse_not_blocked(engine, monkeypatch):
+async def test_apply_policy_column_only_clickhouse_not_blocked(engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(engine, "_column_present", _always_present)
     out = await _scoped(
         engine, "SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()

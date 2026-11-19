@@ -6,17 +6,21 @@ and windowed operands"; python.sql.arc42.md P10 (own ordering / own frame → ow
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Optional
+
 import pytest
 
 from slayer.core.enums import RANKED_AGGREGATIONS
 from slayer.core.errors import AssociationError, ReaggregationError, TimeAxisError
-from slayer.core.keys import AggregateKey, walk_value_keys, window_kwarg_of
+from slayer.core.keys import AggregateKey, FieldKey, walk_value_keys, window_kwarg_of
 from slayer.engine import plan
 from slayer.engine.compile import stages
 from slayer.ir.planned import (
     PlainProducerKernel,
     PlannedQuery,
     RankedProducerKernel,
+    RegroupAttachPlan,
     TrailingWindowProducerKernel,
     regroup_producer_identity,
 )
@@ -55,7 +59,7 @@ from tests._dev2006_fixtures import (
     by_customer,
     by_customer_month,
     dev2006_bundle,
-    dev2006_models,
+    dev2006_datasets,
     m,
     make_exec_engine,
     month_td,
@@ -84,7 +88,7 @@ async def dev1841_engine(request):
 
 
 def _by_customer_q(*formulas: str, **kw):
-    return snap_q(dimensions=["customer_id"], measures=[m(f, f"v{i}" if i else "v") for i, f in enumerate(formulas)], **kw)
+    return snap_q(dimensions=["customer_id"], metrics=[m(f, f"v{i}" if i else "v") for i, f in enumerate(formulas)], **kw)
 
 
 def _approx(actual: dict, expected: dict) -> None:
@@ -94,8 +98,8 @@ def _approx(actual: dict, expected: dict) -> None:
 
 
 async def _sql(query) -> str:
-    models = dev2006_models()
-    return await _engine_generate(query=query, model=models[0], extra_models=models[1:], dialect="duckdb")
+    models = dev2006_datasets()
+    return await _engine_generate(query=query, dataset=models[0], extra_datasets=models[1:], dialect="duckdb")
 
 
 def _plan(query, *, root: str = "account_snapshots") -> PlannedQuery:
@@ -108,7 +112,9 @@ def _kernel_requiring(k) -> bool:
     )
 
 
-def _attaches(pq: PlannedQuery, owner=None):
+def _attaches(
+    pq: PlannedQuery, owner: Optional[RegroupAttachPlan] = None,
+) -> Iterator[tuple[Optional[RegroupAttachPlan], RegroupAttachPlan]]:
     """(owning attach or None, attach) over the whole producer tree."""
     for a in pq.regroup_attach_plans:
         yield owner, a
@@ -132,8 +138,24 @@ def _assert_kernel_invariant(pq: PlannedQuery) -> None:
         assert isinstance(kernel, want), f"{k} renders under {type(kernel).__name__}"
 
 
-def _kernel_attaches(pq: PlannedQuery, kind) -> list:
+def _kernel_attaches(pq: PlannedQuery, kind: type) -> list[tuple[Optional[RegroupAttachPlan], RegroupAttachPlan]]:
     return [(o, a) for o, a in _attaches(pq) if isinstance(a.kernel, kind)]
+
+
+def _ranked_kernel(attach: RegroupAttachPlan) -> RankedProducerKernel:
+    assert isinstance(attach.kernel, RankedProducerKernel)
+    return attach.kernel
+
+
+def _ranking_leaf(attach: RegroupAttachPlan) -> str:
+    key = _ranked_kernel(attach).ranking_time_key
+    assert isinstance(key, FieldKey)
+    return key.leaf
+
+
+def _window_raw(attach: RegroupAttachPlan) -> str:
+    assert isinstance(attach.kernel, TrailingWindowProducerKernel)
+    return attach.kernel.window_raw
 
 
 # --------------------------------------------------------------------------- #
@@ -185,7 +207,7 @@ class TestBucketedOperand:
     async def test_month_bucketed_operand(self, exec_engine, ranking):
         resp = await exec_engine.execute(snap_q(
             dimensions=["customer_id"], time_dimensions=month_td(),
-            measures=[m(f"sum(last(balance, {ranking}{PB_MONTH}))")],
+            metrics=[m(f"sum(last(balance, {ranking}{PB_MONTH}))")],
         ))
         _approx(by_customer_month(resp), LAST_BY_CUSTOMER_MONTH)
 
@@ -194,7 +216,7 @@ class TestWindowedOperands:
     async def _single_stage(self, engine) -> dict:
         resp = await engine.execute(snap_q(
             dimensions=["customer_id"], time_dimensions=month_td(),
-            measures=[m("sum(balance, window='30d')")],
+            metrics=[m("sum(balance, window='30d')")],
         ))
         return by_customer_month(resp)
 
@@ -204,7 +226,7 @@ class TestWindowedOperands:
     ])
     async def test_equals_the_single_stage_windowed_measure(self, exec_engine, formula):
         resp = await exec_engine.execute(snap_q(
-            dimensions=["customer_id"], time_dimensions=month_td(), measures=[m(formula)],
+            dimensions=["customer_id"], time_dimensions=month_td(), metrics=[m(formula)],
         ))
         vals = by_customer_month(resp)
         _approx(vals, WINDOW_30D_BY_CUSTOMER_MONTH)
@@ -212,7 +234,7 @@ class TestWindowedOperands:
 
     async def test_each_windowed_inner_keeps_its_own_window(self, exec_engine):
         resp = await exec_engine.execute(snap_q(
-            dimensions=["customer_id"], time_dimensions=month_td(), measures=[m(TWO_WINDOWS)],
+            dimensions=["customer_id"], time_dimensions=month_td(), metrics=[m(TWO_WINDOWS)],
         ))
         _approx(by_customer_month(resp), WINDOW_30D_PLUS_60D_BY_CUSTOMER_MONTH)
 
@@ -225,16 +247,16 @@ class TestWindowedOperands:
 class TestConsumerPositions:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(snap_q(
-            dimensions=["customer_id"], measures=[m("sum(balance)")],
-            filters=[f"sum({LAST}) > 100"],
+            dimensions=["customer_id"], metrics=[m("sum(balance)")],
+            filter=[f"sum({LAST}) > 100"],
         ))
         assert [r["account_snapshots.customer_id"] for r in resp.data] == [100]
 
     @pytest.mark.parametrize("direction,expected", [("desc", [100, 200]), ("asc", [200, 100])])
     async def test_order_key(self, exec_engine, direction, expected):
         resp = await exec_engine.execute(snap_q(
-            dimensions=["customer_id"], measures=[m("sum(balance)")],
-            order=[{"column": f"sum({LAST})", "direction": direction}],
+            dimensions=["customer_id"], metrics=[m("sum(balance)")],
+            order=[{"field": f"sum({LAST})", "direction": direction}],
         ))
         assert [r["account_snapshots.customer_id"] for r in resp.data] == expected
 
@@ -245,7 +267,7 @@ class TestConsumerPositions:
     async def test_transform_input(self, exec_engine):
         resp = await exec_engine.execute(snap_q(
             dimensions=["customer_id"], time_dimensions=month_td(),
-            measures=[m(f"cumsum(sum(last(balance, {PB_MONTH})))")],
+            metrics=[m(f"cumsum(sum(last(balance, {PB_MONTH})))")],
         ))
         _approx(by_customer_month(resp), CUMSUM_LAST_BY_CUSTOMER_MONTH)
 
@@ -254,12 +276,12 @@ class TestConsumerPositions:
             "expression": f"CASE WHEN sum({LAST}, partition_by=[customer_id]) > 100 THEN 'big' ELSE 'small' END",
             "name": "band",
         }
-        resp = await exec_engine.execute(snap_q(dimensions=[band], measures=[m("sum(balance)")]))
+        resp = await exec_engine.execute(snap_q(dimensions=[band], metrics=[m("sum(balance)")]))
         vals = {r["account_snapshots.band"]: num(r["account_snapshots.v"]) for r in resp.data}
         _approx(vals, BALANCE_BY_BAND)
 
     async def test_aggregation_parameter(self, exec_engine):
-        resp = await exec_engine.execute(snap_q(measures=[m(
+        resp = await exec_engine.execute(snap_q(metrics=[m(
             f"weighted_avg(balance, weight=sum({LAST}, partition_by=[customer_id]))"
         )]))
         assert num(resp.data[0]["account_snapshots.v"]) == pytest.approx(WEIGHTED_AVG_GLOBAL)
@@ -267,13 +289,13 @@ class TestConsumerPositions:
     async def test_explicit_outer_partition(self, exec_engine):
         resp = await exec_engine.execute(snap_q(
             dimensions=["customer_id"], time_dimensions=month_td(),
-            measures=[m(f"sum({LAST}, partition_by=[customer_id])")],
+            metrics=[m(f"sum({LAST}, partition_by=[customer_id])")],
         ))
         expected = {(c, mo): v for c, v in LAST_BY_CUSTOMER.items() for mo in (JAN, FEB)}
         _approx(by_customer_month(resp), expected)
 
     async def test_nested_reaggregation(self, exec_engine):
-        resp = await exec_engine.execute(snap_q(measures=[m(f"max(sum({LAST}, partition_by=[customer_id]))")]))
+        resp = await exec_engine.execute(snap_q(metrics=[m(f"max(sum({LAST}, partition_by=[customer_id]))")]))
         assert num(resp.data[0]["account_snapshots.v"]) == pytest.approx(LAST_BY_CUSTOMER[100])
 
 
@@ -291,8 +313,8 @@ class TestStructuralTwins:
 class TestCrossModelOperand:
     async def test_sum_and_count_per_customer_name(self, exec_engine):
         resp = await exec_engine.execute(snap_q(
-            source_model="customers", dimensions=["name"],
-            measures=[m(f"sum({CM_LAST})"), m(f"count({CM_LAST})", "c")],
+            population="customers", dimensions=["name"],
+            metrics=[m(f"sum({CM_LAST})"), m(f"count({CM_LAST})", "c")],
         ))
         sums = {r["customers.name"]: num(r["customers.v"]) for r in resp.data}
         counts = {r["customers.name"]: r["customers.c"] for r in resp.data}
@@ -324,8 +346,8 @@ class TestAssociatedRankedPickStaysTyped:
     KW = {
         "dimensions": ["status"],
         "time_dimensions": [f1841.TimeDimension(
-            dimension="customers.signup_at", granularity=f1841.TimeGranularity.MONTH)],
-        "measures": [f1841.ModelMeasure(formula="last(customers.spend)", name="l")],
+            field="customers.signup_at", granularity=f1841.TimeGranularity.MONTH)],
+        "metrics": [f1841.DatasetMetric(expression="last(customers.spend)", name="l")],
     }
 
     async def test_cross_model_last_needing_association(self, dev1841_engine):
@@ -349,21 +371,21 @@ class TestPlanStructure:
         [(carrier, ranked)] = _kernel_attaches(pq, RankedProducerKernel)
         assert carrier is not None
         assert carrier.attach_phase == "row"
-        assert ranked.kernel.agg == "last"
-        assert ranked.kernel.ranking_time_key.leaf == "snapshot_date"
+        assert _ranked_kernel(ranked).agg == "last"
+        assert _ranking_leaf(ranked) == "snapshot_date"
 
     def test_distinct_ranking_keys_get_distinct_producers(self) -> None:
         pq = _plan(_by_customer_q(TWO_RANKINGS))
         _assert_kernel_invariant(pq)
         ranked = [a for _, a in _kernel_attaches(pq, RankedProducerKernel)]
-        assert sorted(a.kernel.ranking_time_key.leaf for a in ranked) == ["recorded_at", "snapshot_date"]
+        assert sorted(_ranking_leaf(a) for a in ranked) == ["recorded_at", "snapshot_date"]
         assert len({regroup_producer_identity(a) for a in ranked}) == 2
 
     def test_distinct_windows_get_distinct_producers(self) -> None:
-        pq = _plan(snap_q(dimensions=["customer_id"], time_dimensions=month_td(), measures=[m(TWO_WINDOWS)]))
+        pq = _plan(snap_q(dimensions=["customer_id"], time_dimensions=month_td(), metrics=[m(TWO_WINDOWS)]))
         _assert_kernel_invariant(pq)
         windowed = [a for _, a in _kernel_attaches(pq, TrailingWindowProducerKernel)]
-        assert sorted(a.kernel.window_raw for a in windowed) == ["30d", "60d"]
+        assert sorted(_window_raw(a) for a in windowed) == ["30d", "60d"]
         assert len({regroup_producer_identity(a) for a in windowed}) == 2
 
     def test_structural_twin_interns_to_one_producer(self) -> None:
@@ -377,16 +399,16 @@ class TestPlanStructure:
         _by_customer_q(SEMI),
         _by_customer_q(TWO_RANKINGS),
         _by_customer_q(f"sum({LAST} + max(balance, {PB}))"),
-        snap_q(dimensions=["customer_id"], time_dimensions=month_td(), measures=[m(TWO_WINDOWS)]),
+        snap_q(dimensions=["customer_id"], time_dimensions=month_td(), metrics=[m(TWO_WINDOWS)]),
         snap_q(dimensions=["customer_id"], time_dimensions=month_td(),
-               measures=[m(f"cumsum(sum(last(balance, {PB_MONTH})))")]),
+               metrics=[m(f"cumsum(sum(last(balance, {PB_MONTH})))")]),
     ])
     async def test_emitted_sql_is_scope_closed(self, query) -> None:
         assert_scope_closed(await _sql(query), dialect="duckdb")
 
 
 class TestPlanTimeInvariant:
-    def test_an_inline_kernel_requiring_aggregate_trips_the_plan_assertion(self, monkeypatch) -> None:
+    def test_an_inline_kernel_requiring_aggregate_trips_the_plan_assertion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         real = stages._producer_nesting_rule
 
         def inline_last_roots(*args, **kwargs):
@@ -426,7 +448,7 @@ class TestShiftedKernels:
     ])
     def test_own_grain_leaf_carries_its_kernel(self, inner, kind) -> None:
         pq = _plan(snap_q(dimensions=["customer_id"], time_dimensions=month_td(),
-                          measures=[m(f"time_shift({inner}, -1)")]))
+                          metrics=[m(f"time_shift({inner}, -1)")]))
         [shifted] = [a for a in pq.regroup_attach_plans if a.attach_phase == "shifted"]
         assert isinstance(shifted.kernel, kind)
         _assert_kernel_invariant(pq)
@@ -437,7 +459,7 @@ class TestShiftedKernels:
     ])
     def test_composite_leaf_nests_its_kernel(self, inner, kind) -> None:
         pq = _plan(snap_q(dimensions=["customer_id"], time_dimensions=month_td(),
-                          measures=[m(f"time_shift({inner} + 1, -1)")]))
+                          metrics=[m(f"time_shift({inner} + 1, -1)")]))
         [shifted] = [a for a in pq.regroup_attach_plans if a.attach_phase == "shifted"]
         assert isinstance(shifted.kernel, PlainProducerKernel)
         assert any(isinstance(a.kernel, kind) for a in shifted.producer_plan.regroup_attach_plans)
@@ -452,17 +474,17 @@ class TestShiftedKernels:
     async def test_shifted_values(self, exec_engine, inner, offset, expected):
         resp = await exec_engine.execute(snap_q(
             dimensions=["customer_id"], time_dimensions=month_td(),
-            measures=[m(f"time_shift({inner}, -1)")],
+            metrics=[m(f"time_shift({inner}, -1)")],
         ))
         _approx(by_customer_month(resp), {k: None if v is None else v + offset for k, v in expected.items()})
 
 
 class TestCrossModelKernels:
     def test_cross_model_ranked_operand_is_target_rooted(self) -> None:
-        pq = _plan(snap_q(source_model="customers", dimensions=["name"], measures=[m(f"sum({CM_LAST})")]),
+        pq = _plan(snap_q(population="customers", dimensions=["name"], metrics=[m(f"sum({CM_LAST})")]),
                    root="customers")
         _assert_kernel_invariant(pq)
         [(carrier, ranked)] = _kernel_attaches(pq, RankedProducerKernel)
         assert carrier is not None
         assert carrier.attach_phase == "row"
-        assert ranked.producer_root_model == "account_snapshots"
+        assert ranked.producer_root_dataset == "account_snapshots"

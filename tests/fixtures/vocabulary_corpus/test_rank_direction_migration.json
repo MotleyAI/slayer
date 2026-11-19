@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_rank_direction_migration.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "sales",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     "r"
+    ]
+   },
+   "new": {
+    "population": "sales",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     "r"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 172,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 432,
+   "reason": "not fully literal"
+  }
+ ]
+}

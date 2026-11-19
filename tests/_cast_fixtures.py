@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -25,10 +25,10 @@ CONTAINS_3 = frozenset({1})
 LENGTHS = {1: 2, 2: 1, 3: None}
 
 
-def tags_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def tags_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="tags", sql_table="tags", data_source=data_source,
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="codes", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="codes", datatype=DataType.TEXT)],
     )
 
 
@@ -52,17 +52,17 @@ def _seed_duckdb_tags(db_path: str) -> None:
 
 async def duckdb_tags_engine() -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
-    async with seeded_exec_engine(dialect="duckdb", seed=_seed_duckdb_tags, models=[tags_model()]) as (engine, _):
+    async with seeded_exec_engine(dialect="duckdb", seed=_seed_duckdb_tags, datasets=[tags_dataset()]) as (engine, _):
         yield engine
 
 
 def tags_query(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "tags", **kw})
+    return SlayerQuery.model_validate({"population": "tags", **kw})
 
 
 async def check_array_cast(engine: SlayerQueryEngine) -> None:
     """``contains`` / ``length`` over ``CAST(codes AS INT[])`` read it as a list of INT."""
-    resp = await engine.execute(tags_query(dimensions=["id"], filters=["contains(CAST(codes AS INT[]), 3)"]))
+    resp = await engine.execute(tags_query(dimensions=["id"], filter=["contains(CAST(codes AS INT[]), 3)"]))
     assert {int(r["tags.id"]) for r in resp.data} == CONTAINS_3, resp.sql
     resp = await engine.execute(tags_query(dimensions=["id", {"expression": "length(codes::INT[])", "name": "n"}]))
     got = {int(r["tags.id"]): (None if r["tags.n"] is None else int(r["tags.n"])) for r in resp.data}
@@ -111,8 +111,8 @@ TRY_CAST_TARGET_CASES: list[tuple[str, str, Any]] = [
 TRY_CAST_CASE_IDS = [f"{src}->{to}" for src, to, _ in TRY_CAST_TARGET_CASES]
 
 
-def try_cast_measures() -> list[dict[str, str]]:
-    return [{"formula": f"max(TRY_CAST({src} AS {to}))", "name": f"c{i}"}
+def try_cast_metrics() -> list[dict[str, str]]:
+    return [{"expression": f"max(TRY_CAST({src} AS {to}))", "name": f"c{i}"}
             for i, (src, to, _) in enumerate(TRY_CAST_TARGET_CASES)]
 
 
@@ -122,12 +122,12 @@ def _normalised(value: Any, *, target: str) -> Any:
     return float(value) if target == "DOUBLE" else int(value)
 
 
-async def check_try_cast_targets(engine: SlayerQueryEngine, *, model: str) -> None:
+async def check_try_cast_targets(engine: SlayerQueryEngine, *, dataset: str) -> None:
     """Every ``TRY_CAST_TARGET_CASES`` row in one query over any non-empty ``model``."""
-    resp = await engine.execute(SlayerQuery.model_validate({"source_model": model, "measures": try_cast_measures()}))
+    resp = await engine.execute(SlayerQuery.model_validate({"population": dataset, "metrics": try_cast_metrics()}))
     assert len(resp.data) == 1, resp.data
     row = resp.data[0]
-    got = {TRY_CAST_CASE_IDS[i]: _normalised(row[f"{model}.c{i}"], target=to)
+    got = {TRY_CAST_CASE_IDS[i]: _normalised(row[f"{dataset}.c{i}"], target=to)
            for i, (_, to, _) in enumerate(TRY_CAST_TARGET_CASES)}
     want = {TRY_CAST_CASE_IDS[i]: expected for i, (_, _, expected) in enumerate(TRY_CAST_TARGET_CASES)}
     assert got == want, resp.sql

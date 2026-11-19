@@ -16,8 +16,8 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
@@ -25,43 +25,43 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import make_seeded_sqlite_engine
 
 
-def _models() -> list[SlayerModel]:
-    policy = SlayerModel(
+def _datasets() -> list[SlayerDataset]:
+    policy = SlayerDataset(
         name="policy", sql_table="policy", data_source="test",
-        columns=[
-            Column(name="policy_identifier", type=DataType.INT, primary_key=True),
-            Column(name="policy_number", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="party_a", type=DataType.INT),
+        fields=[
+            DatasetField(name="policy_identifier", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="policy_number", datatype=DataType.TEXT),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="party_a", datatype=DataType.INT),
         ],
-        joins=[
-            ModelJoin(target_model="policy_amount",
+        relationships=[
+            DatasetRelationship(to="policy_amount",
                       join_pairs=[["policy_identifier", "policy_identifier"]],
                       join_type="inner"),
-            ModelJoin(target_model="party", join_pairs=[["party_a", "id"]]),
+            DatasetRelationship(to="party", join_pairs=[["party_a", "id"]]),
         ],
     )
-    policy_amount = SlayerModel(
+    policy_amount = SlayerDataset(
         name="policy_amount", sql_table="policy_amount", data_source="test",
-        columns=[
-            Column(name="pa_id", type=DataType.INT, primary_key=True),
-            Column(name="policy_identifier", type=DataType.INT),
-            Column(name="policy_amount", type=DataType.DOUBLE),
-            Column(name="party_b", type=DataType.INT),
+        fields=[
+            DatasetField(name="pa_id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="policy_identifier", datatype=DataType.INT),
+            DatasetField(name="policy_amount", datatype=DataType.DOUBLE),
+            DatasetField(name="party_b", datatype=DataType.INT),
         ],
-        joins=[
+        relationships=[
             # DEV-1853: no declared reverse edge — the policy_amount → policy
             # hop is the INVERTED policy → policy_amount edge, provably to-one
             # structurally (policy_identifier is policy's PK).
             # Same sibling model as the host, joined on a DIFFERENT key.
-            ModelJoin(target_model="party", join_pairs=[["party_b", "id"]]),
+            DatasetRelationship(to="party", join_pairs=[["party_b", "id"]]),
         ],
     )
-    party = SlayerModel(
+    party = SlayerDataset(
         name="party", sql_table="party", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="code", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="code", datatype=DataType.TEXT),
         ],
     )
     return [policy, policy_amount, party]
@@ -94,12 +94,12 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
         db = os.path.join(d, "revhop.db")
         _seed(db)
         yield await make_seeded_sqlite_engine(
-            base_dir=os.path.join(d, "store"), db_path=db, models=_models(),
+            base_dir=os.path.join(d, "store"), db_path=db, datasets=_datasets(),
         )
 
 
-CM = ModelMeasure(formula="sum(policy_amount.policy_amount)", name="cm")
-MONTH = [TimeDimension(dimension="created_at",
+CM = DatasetMetric(expression="sum(policy_amount.policy_amount)", name="cm")
+MONTH = [TimeDimension(field="created_at",
                        granularity=TimeGranularity.MONTH)]
 
 
@@ -108,7 +108,7 @@ class TestTimeTruncGrainReroots:
         """The TimeTruncKey grain member re-roots through the reverse hop —
         the producer buckets by policy.created_at, exact per month."""
         resp = await engine.execute(SlayerQuery(
-            source_model="policy", time_dimensions=list(MONTH), measures=[CM],
+            population="policy", time_dimensions=list(MONTH), metrics=[CM],
         ))
         assert resp.sql is not None
         assert_scope_closed(resp.sql, dialect="sqlite")
@@ -120,9 +120,9 @@ class TestTimeTruncGrainReroots:
         """The windowed producer's synthesized bucket is the re-rooted host TD
         (the window_td_key call site) — it must execute, not mis-bind."""
         resp = await engine.execute(SlayerQuery(
-            source_model="policy", time_dimensions=list(MONTH),
-            measures=[ModelMeasure(
-                formula="sum(policy_amount.policy_amount, window='20d')", name="w",
+            population="policy", time_dimensions=list(MONTH),
+            metrics=[DatasetMetric(
+                expression="sum(policy_amount.policy_amount, window='20d')", name="w",
             )],
         ))
         assert resp.sql is not None
@@ -143,10 +143,10 @@ class TestSiblingFilterBindsTheHostInstance:
         reverse hop — not the root's own ``party_b`` join, which selects the
         opposite rows here."""
         resp = await engine.execute(SlayerQuery(
-            source_model="policy",
-            dimensions=[ColumnRef(name="policy_number")],
-            measures=[CM],
-            filters=["party.code = 'X'"],
+            population="policy",
+            dimensions=[FieldRef(name="policy_number")],
+            metrics=[CM],
+            filter=["party.code = 'X'"],
         ))
         rows = {r["policy.policy_number"]: r for r in resp.data}
         assert set(rows) == {"POL-1"}, rows

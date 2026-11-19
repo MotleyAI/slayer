@@ -27,7 +27,7 @@ import pyarrow as pa
 import pyarrow.flight as fl
 
 from slayer.flight.handlers import FlightHandlers
-from slayer.flight.server import FlightSqlServer
+from slayer.flight.server import FlightAction, FlightSqlServer
 
 
 class CaptureFlightServer(fl.FlightServerBase):
@@ -145,7 +145,7 @@ class CaptureFlightServer(fl.FlightServerBase):
         self._log(rpc="list_actions", metadata=self._metadata(context))
         return []
 
-    def do_action(self, context: fl.ServerCallContext, action: fl.Action):
+    def do_action(self, context: fl.ServerCallContext, action: FlightAction):
         body_bytes: bytes | None = None
         if action.body is not None:
             body_bytes = action.body.to_pybytes()
@@ -243,7 +243,7 @@ class RecordingFlightSqlServer(FlightSqlServer):
         )
         return super().do_get(context, ticket)
 
-    def do_action(self, context: fl.ServerCallContext, action: fl.Action):
+    def do_action(self, context: fl.ServerCallContext, action: FlightAction):
         body_bytes: bytes | None = (
             action.body.to_pybytes() if action.body is not None else None
         )

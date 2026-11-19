@@ -51,25 +51,25 @@ GRAND_TOTAL           210.
 from __future__ import annotations
 
 from tests._dev1739_fixtures import (  # noqa: F401 — re-exported fixture surface
-    ColumnRef,
-    ModelMeasure,
+    FieldRef,
+    DatasetMetric,
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
     approx_sum,
     cm_cte_bodies,
-    customers_model,
-    dev1739_models,
+    customers_dataset,
+    dev1739_datasets,
     gen,
     make_exec_engine,
     month_key,
     month_td,
-    orders_model,
-    regions_model,
+    orders_dataset,
+    regions_dataset,
     rows_by,
 )
 
-dev1824_models = dev1739_models
+dev1824_models = dev1739_datasets
 
 REGION_TOTAL = {"North": 100.0, "South": 50.0, None: 60.0}
 CITY_TOTAL = {
@@ -118,17 +118,17 @@ BAND35_OF = {
 
 
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 __all__ = [
-    "BAND35", "BAND35_OF", "CITY_TOTAL", "ColumnRef", "GRAND_TOTAL",
-    "ModelMeasure", "RCM_GROUPS", "RC_GROUPS", "REGION_FIRST", "REGION_LAST",
+    "BAND35", "BAND35_OF", "CITY_TOTAL", "FieldRef", "GRAND_TOTAL",
+    "DatasetMetric", "RCM_GROUPS", "RC_GROUPS", "REGION_FIRST", "REGION_LAST",
     "REGION_LAST_AT", "REGION_MONTH_LAST", "REGION_MONTH_TOTAL", "REGION_TOTAL",
     "SlayerQuery", "TRAILING_45D_REGION", "TRAILING_90D_REGION",
     "TimeDimension", "TimeGranularity",
-    "approx_sum", "cm_cte_bodies", "customers_model", "dev1824_models",
-    "dev1739_models", "gen", "make_exec_engine", "month_key", "month_td",
-    "orders_model", "q", "regions_model", "rows_by",
+    "approx_sum", "cm_cte_bodies", "customers_dataset", "dev1824_models",
+    "dev1739_datasets", "gen", "make_exec_engine", "month_key", "month_td",
+    "orders_dataset", "q", "regions_dataset", "rows_by",
 ]

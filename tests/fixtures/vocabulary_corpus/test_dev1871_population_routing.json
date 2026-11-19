@@ -1,0 +1,23 @@
+{
+ "source": "tests/test_dev1871_population_routing.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "orders.status",
+     "regions.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "orders.status",
+     "regions.name"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

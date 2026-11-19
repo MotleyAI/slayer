@@ -77,7 +77,7 @@ class TestHarnessSelfChecks:
         ) == PAIRS_BY_GRAIN["rm"]
         assert sample_pairs(exclude=frozenset({"part_city"})) == PAIRS_BY_GRAIN["rn"]
 
-    async def test_registry_expectation_is_strict(self, monkeypatch) -> None:
+    async def test_registry_expectation_is_strict(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A registered expected raise that stops raising fails loudly — the
         registry can never silently outlive a lifted guard."""
         shape = SHAPES[0]

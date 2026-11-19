@@ -1,0 +1,28 @@
+{
+ "source": "tests/dialects/test_base.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "created_at",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(amount)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": []
+}

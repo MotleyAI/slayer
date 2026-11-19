@@ -1,7 +1,7 @@
 # models/sample-profiling Specification
 
 ## Purpose
-Defines how SLayer profiles column sample values (`Column.sampled`, `sampled_values`, `distinct_count`) lazily on read and on forced refresh: what counts as cached, how a failing model or column bounds and caches its failures, how failures are logged, and how profiling is scoped under a row-level-security policy.
+Defines how SLayer profiles column sample values (`DatasetField.sampled`, `sampled_values`, `distinct_count`) lazily on read and on forced refresh: what counts as cached, how a failing model or column bounds and caches its failures, how failures are logged, and how profiling is scoped under a row-level-security policy.
 
 ## Requirements
 
@@ -128,7 +128,7 @@ A list column SHALL be profiled over its elements, through the same profiling pa
 
 ### Requirement: One profiling path for every sample read and forced refresh
 
-Every sample-value read path — `inspect` of a model at `compact=False`, `inspect` of a column at `compact=False`, and the search column-hit refresh — and every forced refresh (`slayer datasources refresh-samples`, the `edit_model` refresh) SHALL profile a model's columns through one model-level profiling path, so the caching, failure bounding, failure cache and logging rules below hold identically everywhere. Hidden, identifier and opaque (`UNKNOWN`) columns SHALL never be profiled. Numeric/temporal columns SHALL be profiled by a single batched min/max query per call; categorical (text/boolean) columns by one top-values query per column. A forced refresh SHALL keep profiling only `sql_table`-backed models (sql-mode and query-backed models skipped).
+Every sample-value read path — `inspect` of a model at `compact=False`, `inspect` of a column at `compact=False`, and the search column-hit refresh — and every forced refresh (`slayer datasources refresh-samples`, the `edit_dataset` refresh) SHALL profile a model's columns through one model-level profiling path, so the caching, failure bounding, failure cache and logging rules below hold identically everywhere. Hidden, identifier and opaque (`UNKNOWN`) columns SHALL never be profiled. Numeric/temporal columns SHALL be profiled by a single batched min/max query per call; categorical (text/boolean) columns by one top-values query per column. A forced refresh SHALL keep profiling only `sql_table`-backed models (sql-mode and query-backed models skipped).
 
 #### Scenario: Inspecting a model profiles numeric columns with one query
 

@@ -1,7 +1,7 @@
 # queries/saved-measures Specification
 
 ## Purpose
-Defines how saved measures (`ModelMeasure`) are referenced from queries: bare-name resolution on the host model, dotted references to another model's saved measures with typed re-anchoring into the host's coordinate system, the positions where such references are legal, naming and metadata of the resulting columns, recursion and cycle limits, and the error contract for every illegal form.
+Defines how saved measures (`DatasetMetric`) are referenced from queries: bare-name resolution on the host model, dotted references to another model's saved measures with typed re-anchoring into the host's coordinate system, the positions where such references are legal, naming and metadata of the resulting columns, recursion and cycle limits, and the error contract for every illegal form.
 
 ## Requirements
 
@@ -9,8 +9,8 @@ Defines how saved measures (`ModelMeasure`) are referenced from queries: bare-na
 A bare identifier in a measure formula or computed-dimension expression that matches a saved measure on the query's source model SHALL be replaced by that measure's formula, recursively (a saved formula may reference other saved measures on the same model). The expansion MUST be semantically identical to writing the saved formula inline. This is existing behavior, unchanged by this change; it is specified here because the resolution mechanism is being unified.
 
 #### Scenario: Bare reference equals inline formula
-- WHEN a query selects `{formula: "aov"}` and `aov` is saved as `sum(revenue) / count(*)` on the source model
-- THEN the generated SQL and executed values are identical to selecting `{formula: "sum(revenue) / count(*)"}`
+- WHEN a query selects `{expression: "aov"}` and `aov` is saved as `sum(revenue) / count(*)` on the source model
+- THEN the generated SQL and executed values are identical to selecting `{expression: "sum(revenue) / count(*)"}`
 
 #### Scenario: Existing bare-name behavior is preserved
 - WHEN the pre-existing bare-name test suites (root position, transforms, arithmetic, chained measures, naming, type inheritance) run against the unified resolution mechanism
@@ -44,7 +44,7 @@ A dotted reference whose join path resolves through the host's join graph and wh
 - THEN the first executes and the second fails with the circular error
 
 ### Requirement: Re-anchoring covers every reference kind
-Re-anchoring SHALL apply to every reference kind in the saved formula: plain columns, star sources (`count(*)`), references crossing the target's own joins (nested paths), `partition_by` members, aggregation args/kwargs, and transform inputs. A measure-level column filter (`Column.filter`) SHALL keep its owner-anchored meaning — it is interpreted relative to the model owning the filtered column, identically to the hand-expanded form. A self-qualified reference inside the saved formula (`customers.spend` written on `customers`) MUST NOT double-prefix.
+Re-anchoring SHALL apply to every reference kind in the saved formula: plain columns, star sources (`count(*)`), references crossing the target's own joins (nested paths), `partition_by` members, aggregation args/kwargs, and transform inputs. A measure-level column filter (`DatasetField.filter`) SHALL keep its owner-anchored meaning — it is interpreted relative to the model owning the filtered column, identically to the hand-expanded form. A self-qualified reference inside the saved formula (`customers.spend` written on `customers`) MUST NOT double-prefix.
 
 #### Scenario: Nested-join references re-anchor
 - WHEN a `customers` saved measure references `sum(regions.pop)` and an `orders`-rooted query references it dotted
@@ -81,25 +81,25 @@ Saved-measure references — bare and dotted alike — SHALL be legal in exactly
 - THEN the filter/order resolves to the selected slot, exactly as a selected local measure's name does
 
 ### Requirement: Naming and metadata of dotted references
-An unnamed dotted saved-measure reference SHALL surface under the dotted text as its implicit name, yielding a result key of host-model prefix plus the dotted path (`orders.customers.aov`). An explicit query-level `name` SHALL win. The saved measure's declared `type` SHALL be inherited with the same precedence as for bare references (query-level type, then saved type, then inference); format and description derive from the bound result exactly as for the hand-expanded form.
+An unnamed dotted saved-measure reference SHALL surface under the dotted text as its implicit name, yielding a result key of host-model prefix plus the dotted path (`orders.customers.aov`). An explicit query-level `name` SHALL win. The saved measure's declared `datatype` SHALL be inherited with the same precedence as for bare references (query-level type, then saved type, then inference); format and description derive from the bound result exactly as for the hand-expanded form.
 
 #### Scenario: Implicit name is the dotted path
 - WHEN an `orders`-rooted query selects `customers.aov` without a `name`
 - THEN the result column key is `orders.customers.aov`, and an explicit `name` overrides it
 
 #### Scenario: Saved type is inherited
-- WHEN the target saved measure declares an explicit `type`
+- WHEN the target saved measure declares an explicit `datatype`
 - THEN the dotted reference's result column carries that type unless the query measure overrides it
 
 ### Requirement: Saved measures on query-backed models fail closed
-A query-backed model (non-empty `source_queries`) SHALL reject directly-declared `measures` at validation time with an error naming the remedy (declare the measure in the backing query's final stage, or supply it via a `ModelExtension`). Measures supplied by a `ModelExtension` over a query-backed base SHALL keep working, bare and dotted alike. This is BREAKING for stored models carrying such measures; they were silently dropped before and never took effect.
+A query-backed model (non-empty `source_queries`) SHALL reject directly-declared `metrics` at validation time with an error naming the remedy (declare the measure in the backing query's final stage, or supply it via a `DatasetExtension`). Measures supplied by a `DatasetExtension` over a query-backed base SHALL keep working, bare and dotted alike. This is BREAKING for stored models carrying such measures; they were silently dropped before and never took effect.
 
 #### Scenario: Direct measures on a query-backed model are rejected
-- WHEN a model with non-empty `source_queries` declares a `measures` list
+- WHEN a model with non-empty `source_queries` declares a `metrics` list
 - THEN model validation fails with an error naming the model and the remedy
 
 #### Scenario: Extension-supplied measures over a query-backed base work
-- WHEN a `ModelExtension` over a query-backed base adds a saved measure and a query references it
+- WHEN a `DatasetExtension` over a query-backed base adds a saved measure and a query references it
 - THEN the reference resolves and executes correctly
 
 ### Requirement: Unresolvable dotted names name both namespaces

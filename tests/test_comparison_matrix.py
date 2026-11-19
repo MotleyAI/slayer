@@ -50,7 +50,7 @@ def test_list_columns_row_has_probes_on_every_engine():
     assert "tags" in (ROOT / "examples" / "comparisons" / "dataset.sql").read_text()
 
 
-def test_probe_on_unknown_row_is_rejected(tmp_path, monkeypatch):
+def test_probe_on_unknown_row_is_rejected(tmp_path, monkeypatch: pytest.MonkeyPatch):
     probes = tmp_path / "probes.yaml"
     probes.write_text("probes:\n  - id: x1\n    row: Q999\n    slayer: {}\n")
     monkeypatch.setattr(export_matrix, "PROBES", probes)

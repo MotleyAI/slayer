@@ -7,8 +7,8 @@ from collections.abc import Iterator
 
 import pytest
 
-from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.query import DatasetExtension, SlayerQuery
 from slayer.database import engine_factory
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.models import Memory
@@ -47,11 +47,11 @@ def _stage(version: int | None = 9) -> dict:
 def _assert_upgraded(query: SlayerQuery | None) -> None:
     assert query is not None
     assert query.version == CURRENT_VERSIONS["SlayerQuery"]
-    assert query.source_model == "orders"
+    assert query.population == "orders"
     (extension,) = query.extensions or []
-    assert isinstance(extension, ModelExtension)
+    assert isinstance(extension, DatasetExtension)
     assert extension.source_name == "orders"
-    assert [(j.target_model, j.join_pairs) for j in extension.joins or []] == [("customers", [["customer_id", "id"]])]
+    assert [(j.to, j.join_pairs) for j in extension.relationships or []] == [("customers", [["customer_id", "id"]])]
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +95,7 @@ class TestQueryDocument:
         twice = SlayerQuery.model_validate(dumped)
         assert twice == once
         assert twice.model_dump(mode="json", exclude_none=True) == dumped
-        assert dumped["source_model"] == "orders"
+        assert dumped["population"] == "orders"
 
 
 class TestStoredModels:
@@ -104,11 +104,11 @@ class TestStoredModels:
         self, tmp_path, shop_ds, backend: str,
     ) -> None:
         storage = await _qb_store(tmp_path, shop_ds, backend)
-        model = await storage.get_model("rev2_q", data_source=DS)
+        model = await storage.get_dataset("rev2_q", data_source=DS)
         assert model is not None
         _assert_upgraded((model.source_queries or [None])[0])
-        resp = await run(storage, {"source_model": "rev2_q", "dimensions": ["customers__region"],
-                                   "measures": [{"formula": "sum(rev2)", "name": "t"}]})
+        resp = await run(storage, {"population": "rev2_q", "dimensions": ["customers__region"],
+                                   "metrics": [{"expression": "sum(rev2)", "name": "t"}]})
         assert by_dimension(resp, dim_suffix="customers__region") == RECORDED
 
     async def test_a_saved_query_run_by_name_returns_its_rows(self, tmp_path, shop_ds) -> None:
@@ -125,18 +125,18 @@ class TestStoredModels:
         self, tmp_path, shop_ds, backend: str,
     ) -> None:
         storage = await _qb_store(tmp_path, shop_ds, backend)
-        model = await storage.get_model("rev2_q", data_source=DS)
+        model = await storage.get_dataset("rev2_q", data_source=DS)
         assert model is not None
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         [stage] = (await raw_doc(storage, "rev2_q"))["source_queries"]
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
-        assert stage["source_model"] == "orders"
+        assert stage["population"] == "orders"
         assert [e["source_name"] for e in stage["extensions"]] == ["orders"]
-        assert await storage.get_model("rev2_q", data_source=DS) == model
+        assert await storage.get_dataset("rev2_q", data_source=DS) == model
 
     def test_a_current_version_model_holding_a_stored_stage(self) -> None:
         doc = query_backed_v10(name="rev2_q", stages=[_stage()], version=CURRENT_VERSIONS["SlayerModel"])
-        _assert_upgraded((SlayerModel.model_validate(doc).source_queries or [None])[0])
+        _assert_upgraded((SlayerDataset.model_validate(doc).source_queries or [None])[0])
 
 
 class TestMemories:
@@ -182,7 +182,7 @@ def _extensions_stage(stored_filter: str) -> dict:
 
 
 async def _loaded_stage(storage: StorageBackend) -> SlayerQuery:
-    model = await storage.get_model("rev_x", data_source=DS)
+    model = await storage.get_dataset("rev_x", data_source=DS)
     assert model is not None
     (stage,) = model.source_queries or []
     return stage
@@ -211,9 +211,9 @@ class TestExtensionColumnFilterLiterals:
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(), customers_v10(), qb])
         loaded = await _loaded_stage(storage)
-        assert loaded.filters == [repaired]
+        assert loaded.filter == [repaired]
         _assert_no_extension_columns(loaded)
-        resp = await run(storage, {"source_model": "rev_x", "measures": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == expected
 
     async def test_a_non_temporal_extension_column_literal_stays_verbatim(self, tmp_path, shop_ds) -> None:
@@ -221,9 +221,9 @@ class TestExtensionColumnFilterLiterals:
         storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(), customers_v10(), qb])
         loaded = await _loaded_stage(storage)
-        assert loaded.filters == ["status = '2024/01/01'"]
+        assert loaded.filter == ["status = '2024/01/01'"]
         _assert_no_extension_columns(loaded)
-        resp = await run(storage, {"source_model": "rev_x", "measures": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 60.0
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -235,6 +235,6 @@ class TestExtensionColumnFilterLiterals:
                                   models=[orders_v10(), customers_v10()], memories=[memory])
         loaded = await storage.get_memory("m_ext_f")
         assert loaded.query is not None
-        assert loaded.query.filters == ["CAST(CAST(ordered_at AS DATE) AS DATE) >= '2024-01-01'"]
+        assert loaded.query.filter == ["CAST(CAST(ordered_at AS DATE) AS DATE) >= '2024-01-01'"]
         _assert_no_extension_columns(loaded.query)
         assert measure_total(await run(storage, loaded.query), measure="rev") == 200.0

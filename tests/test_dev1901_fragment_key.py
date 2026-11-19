@@ -11,8 +11,8 @@ from pydantic import ValidationError
 from slayer.core.keys import (
     KIND_POLICY,
     AggregateKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     KindPolicy,
     Phase,
     SqlFragmentKey,
@@ -24,10 +24,10 @@ from slayer.core.keys import (
 from slayer.core.refs import legacy_key_repr
 from slayer.sql.naming import canonical_aggregate_alias
 
-AMOUNT = ColumnKey(path=(), leaf="amount")
-SPEND = ColumnKey(path=("customers",), leaf="spend")
-POP = ColumnKey(path=("customers", "regions"), leaf="pop")
-CUST_SPEND = ColumnSqlKey(path=(), model="orders", column_name="cust_spend")
+AMOUNT = FieldKey(path=(), leaf="amount")
+SPEND = FieldKey(path=("customers",), leaf="spend")
+POP = FieldKey(path=("customers", "regions"), leaf="pop")
+CUST_SPEND = FieldSqlKey(path=(), dataset="orders", field_name="cust_spend")
 FRAG = SqlFragmentKey(template="{r0} * {r1}", refs=(SPEND, POP))
 
 
@@ -104,7 +104,7 @@ class TestTraversal:
         out = reroot_value_key(FRAG, target_path=("customers",))
         assert out == SqlFragmentKey(
             template="{r0} * {r1}",
-            refs=(ColumnKey(path=(), leaf="spend"), ColumnKey(path=("regions",), leaf="pop")))
+            refs=(FieldKey(path=(), leaf="spend"), FieldKey(path=("regions",), leaf="pop")))
 
     def test_substitute_reaches_the_refs(self) -> None:
         out = substitute_value_keys(key=FRAG, mapping={POP: AMOUNT})
@@ -137,7 +137,7 @@ class TestAliasEncoding:
     @staticmethod
     def _alias(weight) -> str:
         alias = canonical_aggregate_alias(
-            _agg(weight), profile="cross_model_cte", source_relation="orders")
+            _agg(weight), profile="cross_dataset_cte", source_relation="orders")
         assert alias is not None
         return alias
 

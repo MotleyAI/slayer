@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.live_schema.schema_drift import IdempotentIngestResult
@@ -55,14 +55,14 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 database=os.path.join(tmpdir, "live.db"),
             )
         )
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="mydb",
-                columns=[
-                    Column(name="id", sql="id", primary_key=True),
-                    Column(name="amount", sql="amount"),
+                fields=[
+                    DatasetField(name="id", sql="id", primary_key=True),
+                    DatasetField(name="amount", sql="amount"),
                 ],
             )
         )
@@ -114,7 +114,7 @@ class TestIngestDanglingRefCleanup:
         async def _raise(*args, **kwargs):
             raise RuntimeError("transient")
 
-        monkeypatch.setattr(storage, "get_model", _raise)
+        monkeypatch.setattr(storage, "get_dataset", _raise)
         try:
             await _ingest(
                 storage=storage, datasource=ds,
@@ -138,20 +138,20 @@ class TestIngestDanglingRefCleanup:
         # Memory carries Memory.query referencing the existing column;
         # drop the column to make the query stale.
         attached = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(amount)")],
         )
         await storage.save_memory(
             learning="x",
             entities=["mydb.orders.amount"],
             query=attached,
         )
-        existing = await storage.get_model("orders", data_source="mydb")
+        existing = await storage.get_dataset("orders", data_source="mydb")
         assert existing is not None
-        await storage.save_model(
+        await storage.save_dataset(
             existing.model_copy(
                 update={
-                    "columns": [c for c in existing.columns if c.name != "amount"],
+                    "fields": [c for c in existing.fields if c.name != "amount"],
                 },
             )
         )
@@ -164,7 +164,7 @@ class TestIngestDanglingRefCleanup:
         )
         # An IngestionError tagged ``memory:<id>`` should be present.
         memory_errors = [
-            e for e in result.errors if "memory:" in e.model_name
+            e for e in result.errors if "memory:" in e.dataset_name
         ]
         assert memory_errors, (
             f"expected an IngestionError for stale Memory.query; "
@@ -174,6 +174,6 @@ class TestIngestDanglingRefCleanup:
         # per the plan. Agents who discover the broken query re-save it.
         reloaded = await storage.get_memory(seeded.id)
         assert reloaded.query is not None
-        assert reloaded.query.source_model == "orders"
-        assert reloaded.query.measures is not None
-        assert reloaded.query.measures[0].formula == "sum(amount)"
+        assert reloaded.query.population == "orders"
+        assert reloaded.query.metrics is not None
+        assert reloaded.query.metrics[0].expression == "sum(amount)"

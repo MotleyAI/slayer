@@ -1,0 +1,231 @@
+{
+ "source": "tests/test_functional_aggregations.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_agg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "my_agg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "my_agg(price)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "my_agg(price)"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rolling_avg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "rolling_avg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "rolling_avg(customers.score)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "rolling_avg(customers.score)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "max(grand_total)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "max(grand_total)"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_agg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "my_agg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(revenue)",
+     "count(*)"
+    ],
+    "dimensions": [
+     "status"
+    ],
+    "filters": [
+     "sum(revenue) > 0"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(revenue)",
+     "count(*)"
+    ],
+    "dimensions": [
+     "status"
+    ],
+    "filter": [
+     "sum(revenue) > 0"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 321,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 325,
+   "reason": "not a standalone aggregation: ValidationError"
+  },
+  {
+   "line": 391,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 397,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 398,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 399,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 465,
+   "reason": "not fully literal"
+  }
+ ]
+}

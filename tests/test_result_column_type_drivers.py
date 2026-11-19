@@ -14,7 +14,7 @@ import pytest
 import sqlalchemy.exc
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig
+from slayer.core.models import DatasetField, DatasourceConfig
 from slayer.database import client as sql_client
 from slayer.database.client import ResultColumnType, SlayerSQLClient, get_result_column_types_sync
 from slayer.sql.dialects import dialect_for_ds_type
@@ -345,7 +345,7 @@ class TestSqlServerDescribe:
     def test_a_fallback_decimal_keeps_its_native_type(self, scale: int) -> None:
         described = _describe("mssql", _row("m", Decimal, precision=10, scale=scale))
         assert described is not None
-        derived = Column(name="d", sql="m * 2", type=described.type, db_type=described.db_type)
+        derived = DatasetField(name="d", sql="m * 2", datatype=described.type, db_type=described.db_type)
         assert keeps_native_type(col=derived, dialect=dialect_for_ds_type("mssql")), described
 
     def test_declared_type_names(self) -> None:

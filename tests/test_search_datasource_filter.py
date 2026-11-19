@@ -25,7 +25,7 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend, resolve_storage
 
@@ -39,14 +39,14 @@ async def storage_two_datasources() -> AsyncIterator[StorageBackend]:
             await storage.save_datasource(DatasourceConfig(
                 name=ds_name, type="sqlite", database=":memory:",
             ))
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source=ds_name,
                 description=f"{ds_name} orders fact table",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE,
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE,
                            description=f"{ds_name} order amount"),
                 ],
             ))

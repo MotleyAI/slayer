@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_rank_direction_golden_sql.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 21,
+   "reason": "not fully literal"
+  }
+ ]
+}

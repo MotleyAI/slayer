@@ -1,0 +1,118 @@
+{
+ "source": "tests/test_dev2013_expression_attribution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=amount))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=amount))",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "avg(sum(amount))",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(sum(amount, partition_by=customers.regions.name), weight=id)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(sum(amount, partition_by=customers.regions.name), weight=id)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=amount))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=amount))",
+    "name": "a"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 150,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 302,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 452,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 524,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 539,
+   "reason": "not fully literal"
+  }
+ ]
+}

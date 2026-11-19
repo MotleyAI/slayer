@@ -51,7 +51,7 @@ import slayer.sql.generator as generator_module
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import SlayerError
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.sql.dialects import _ALL_DIALECTS
 from slayer.sql.naming import (
@@ -272,32 +272,32 @@ class TestBeltCaseFolding:
 # ---------------------------------------------------------------------------
 
 
-def _vehicle_model() -> SlayerModel:
-    return SlayerModel(
+def _vehicle_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def _customers_model() -> SlayerModel:
+def _customers_dataset() -> SlayerDataset:
     """Grandfathered case-only column pair over two physical columns (saved unvalidated)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="customers",
         sql_table="public.customers",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="Rev", sql="revx", type=DataType.DOUBLE),
-            Column(name="rev", sql="revy", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="Rev", sql="revx", datatype=DataType.DOUBLE),
+            DatasetField(name="rev", sql="revy", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -305,37 +305,37 @@ def _customers_model() -> SlayerModel:
 def _cm_vehicle_query() -> SlayerQuery:
     """Distinct result names whose ``_cm_`` CTE names differ ONLY in case."""
     return SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[
-            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
+            TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
         ],
-        measures=[
-            ModelMeasure(formula="sum(customers.Rev)", name="up"),
-            ModelMeasure(formula="sum(customers.rev)", name="down"),
+        metrics=[
+            DatasetMetric(expression="sum(customers.Rev)", name="up"),
+            DatasetMetric(expression="sum(customers.rev)", name="down"),
         ],
     )
 
 
 async def _cm_vehicle_sql(dialect: str) -> str:
     return await _engine_generate(
-        query=_cm_vehicle_query(), model=_vehicle_model(),
-        extra_models=[_customers_model()], dialect=dialect, validate=False,
+        query=_cm_vehicle_query(), dataset=_vehicle_dataset(),
+        extra_datasets=[_customers_dataset()], dialect=dialect, validate=False,
     )
 
 
 def _case_only_result_names_query() -> SlayerQuery:
     """Two measures whose result names differ ONLY in case — refused before SQL generation."""
     return SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[
             TimeDimension(
-                dimension="created_at",
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
-        measures=[
-            ModelMeasure(formula="time_shift(sum(revenue), -1, 'month')", name="Foo"),
-            ModelMeasure(formula="time_shift(max(revenue), -2, 'month')", name="foo"),
+        metrics=[
+            DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="Foo"),
+            DatasetMetric(expression="time_shift(max(revenue), -2, 'month')", name="foo"),
         ],
     )
 
@@ -411,12 +411,12 @@ class TestE2eCaseFoldingAllDialects:
     @pytest.mark.parametrize("dialect", FOLDING_DIALECTS + EXACT_DIALECTS)
     async def test_case_only_result_names_are_refused(self, dialect: str) -> None:
         query = _case_only_result_names_query()
-        model = _vehicle_model()
-        extra_models = [_customers_model()]
+        model = _vehicle_dataset()
+        extra_models = [_customers_dataset()]
         with pytest.raises(SlayerError) as err:
             await _engine_generate(
-                query=query, model=model,
-                extra_models=extra_models, dialect=dialect, validate=False,
+                query=query, dataset=model,
+                extra_datasets=extra_models, dialect=dialect, validate=False,
             )
         assert "Foo" in str(err.value)
         assert "foo" in str(err.value)
@@ -424,28 +424,28 @@ class TestE2eCaseFoldingAllDialects:
     async def test_case_only_cp_result_names_are_refused(self) -> None:
         """The ``consecutive_periods`` family: same refusal, before its CTEs are minted."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
-            measures=[
-                ModelMeasure(
-                    formula="consecutive_periods(sum(revenue) > 0)", name="Foo",
+            metrics=[
+                DatasetMetric(
+                    expression="consecutive_periods(sum(revenue) > 0)", name="Foo",
                 ),
-                ModelMeasure(
-                    formula="consecutive_periods(sum(revenue) > 100)", name="foo",
+                DatasetMetric(
+                    expression="consecutive_periods(sum(revenue) > 100)", name="foo",
                 ),
             ],
         )
-        model = _vehicle_model()
-        extra_models = [_customers_model()]
+        model = _vehicle_dataset()
+        extra_models = [_customers_dataset()]
         with pytest.raises(SlayerError) as err:
             await _engine_generate(
-                query=query, model=model,
-                extra_models=extra_models, dialect="postgres", validate=False,
+                query=query, dataset=model,
+                extra_datasets=extra_models, dialect="postgres", validate=False,
             )
         assert "Foo" in str(err.value)
         assert "foo" in str(err.value)

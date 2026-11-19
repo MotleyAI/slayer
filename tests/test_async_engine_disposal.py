@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import client as sql_client
@@ -61,11 +61,11 @@ def _sqlite_engine(workspace: Path, *, rows: str) -> SlayerQueryEngine:
         conn.execute(f"INSERT INTO t (val) VALUES {rows}")
     storage = YAMLStorage(base_dir=str(workspace / "store"))
     asyncio.run(storage.save_datasource(DatasourceConfig(name="lite", type="sqlite", database=str(db))))
-    asyncio.run(storage.save_model(SlayerModel(
+    asyncio.run(storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="val", sql="val", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="val", sql="val", datatype=DataType.DOUBLE),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -95,7 +95,7 @@ async def _reused_then(client: SlayerSQLClient, fake: MagicMock, work: Coroutine
 
 class TestAsyncEngineDisposal:
 
-    async def test_aclose_disposes_cached_async_engine(self, workspace: Path, monkeypatch) -> None:
+    async def test_aclose_disposes_cached_async_engine(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         plant_async_engine(monkeypatch, client, fake)
@@ -107,7 +107,7 @@ class TestAsyncEngineDisposal:
         assert engine._sql_clients
         plant_async_engine(monkeypatch, client, _fake_async_engine())
 
-    async def test_aclose_is_idempotent(self, workspace: Path, monkeypatch) -> None:
+    async def test_aclose_is_idempotent(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         plant_async_engine(monkeypatch, client, fake)
@@ -115,7 +115,7 @@ class TestAsyncEngineDisposal:
         await engine.aclose()
         fake.dispose.assert_awaited_once()
 
-    async def test_failed_dispose_leaves_no_stale_engine(self, workspace: Path, monkeypatch) -> None:
+    async def test_failed_dispose_leaves_no_stale_engine(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A failed dispose can't leave a half-torn engine cached."""
         engine, client = _engine_with_pg_client(workspace)
         plant_async_engine(monkeypatch, client, _fake_async_engine(side_effect=RuntimeError("dispose failed")))
@@ -124,7 +124,7 @@ class TestAsyncEngineDisposal:
 
         plant_async_engine(monkeypatch, client, _fake_async_engine())
 
-    async def test_dispose_failure_logged_not_raised(self, workspace: Path, monkeypatch) -> None:
+    async def test_dispose_failure_logged_not_raised(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Dispose errors must not mask the real query error in ``finally``."""
         engine, client = _engine_with_pg_client(workspace)
         plant_async_engine(
@@ -132,7 +132,7 @@ class TestAsyncEngineDisposal:
         )
         await engine.aclose()  # does not raise
 
-    def test_bridge_keeps_its_loops_engine_until_close(self, workspace: Path, monkeypatch) -> None:
+    def test_bridge_keeps_its_loops_engine_until_close(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The bridge loop outlives ``run_sync``: its engine is disposed by ``close()``, not per call."""
         engine = _sqlite_engine(workspace, rows="(1.0), (2.0), (3.0)")
         client = _pg_client()
@@ -141,8 +141,8 @@ class TestAsyncEngineDisposal:
 
         result = engine.run_sync(_planted_then(
             monkeypatch, client, fake, engine.execute(SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": ["sum(val)"],
+                "population": "t",
+                "metrics": ["sum(val)"],
             })),
         ))
         assert math.isclose(result.data[0]["t.val_sum"], 6.0)
@@ -150,11 +150,11 @@ class TestAsyncEngineDisposal:
         engine.close()
         fake.dispose.assert_awaited_once()
 
-    def test_bridge_keeps_its_loops_engine_until_close_even_on_error(self, workspace: Path, monkeypatch) -> None:
+    def test_bridge_keeps_its_loops_engine_until_close_even_on_error(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         q = SlayerQuery(
-            source_model="missing", measures=["count(*)"],  # type: ignore[arg-type]
+            population="missing", metrics=["count(*)"],  # type: ignore[arg-type]
         )
         workflow = _planted_then(monkeypatch, client, fake, engine.execute(q))
         with pytest.raises(Exception):
@@ -163,7 +163,7 @@ class TestAsyncEngineDisposal:
         engine.close()
         fake.dispose.assert_awaited_once()
 
-    def test_repeated_bridges_share_one_engine(self, workspace: Path, monkeypatch) -> None:
+    def test_repeated_bridges_share_one_engine(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """20 bridges reuse the one engine built on the bridge loop; ``close()`` disposes it once
         (the Storyline N-block pattern)."""
         engine = _sqlite_engine(workspace, rows="(1.0)")
@@ -172,7 +172,7 @@ class TestAsyncEngineDisposal:
         ))
         engine._sql_clients[("fake", "postgres")] = client_i
         fake = _fake_async_engine()
-        count = SlayerQuery.model_validate({"source_model": "t", "measures": ["count(*)"]})
+        count = SlayerQuery.model_validate({"population": "t", "metrics": ["count(*)"]})
 
         engine.run_sync(_planted_then(monkeypatch, client_i, fake, engine.execute(count)))
         monkeypatch.setattr(sql_client, "create_async_engine", _no_second_build)
@@ -199,23 +199,23 @@ class TestAsyncEngineDisposal:
         asyncio.run(storage.save_datasource(
             DatasourceConfig(name="lite", type="sqlite", database=str(db)),
         ))
-        asyncio.run(storage.save_model(SlayerModel(
+        asyncio.run(storage.save_dataset(SlayerDataset(
             name="t", data_source="lite", sql_table="t",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="v", sql="v", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="v", sql="v", datatype=DataType.INT),
             ],
         )))
         engine = SlayerQueryEngine(storage=storage)
 
-        r1 = engine.execute_sync(SlayerQuery.model_validate({"source_model": "t", "measures": ["count(*)", "sum(v)"]}))
+        r1 = engine.execute_sync(SlayerQuery.model_validate({"population": "t", "metrics": ["count(*)", "sum(v)"]}))
         assert r1.data[0]["t._count"] == 3
         assert r1.data[0]["t.v_sum"] == 60
         assert len(engine._sql_clients) == 1
         client = cast(SlayerSQLClient, next(iter(engine._sql_clients.values())))
         sync_engine_first = client._sync_engine
 
-        r2 = engine.execute_sync(SlayerQuery.model_validate({"source_model": "t", "measures": ["count(*)", "sum(v)"]}))
+        r2 = engine.execute_sync(SlayerQuery.model_validate({"population": "t", "metrics": ["count(*)", "sum(v)"]}))
         assert r2.data[0]["t._count"] == 3
         assert client in engine._sql_clients.values()
         assert client._sync_engine is sync_engine_first, (

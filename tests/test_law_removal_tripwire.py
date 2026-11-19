@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 import slayer
 from tests.test_law_resource_ownership import _canonical, _import_bindings
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SLAYER = REPO / "slayer"
@@ -36,14 +37,18 @@ PINNED: dict[tuple[str, str], str] = {
             "engine.broken_dependents", "engine.internal_tables", "engine.fk_edges", "storage.type_refinement",
             "engine.home", "engine.dimension_routing", "engine.filter_reachability",
             "engine.join_safety", "engine.unrelated", "engine.syntax", "core.formula", "osi.expression",
+            "core.join_edges", "core.join_search", "core.join_walker", "engine.cardinality.join_safety",
+            "engine.column_dependency", "engine.model_reads", "importers.measures", "inspect.model_render",
+            "sql.column_expansion", "storage.extension_columns", "storage.model_overlay",
         )
     },
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
     ("slayer/core/query.py", "strict"): "3.0",
-    ("slayer/core/query.py", "An extension object in `source_model`"): "3.0",
+    ("slayer/core/query.py", "An extension object in `population`"): "3.0",
     **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
     ("slayer/engine/elaborate_env.py", "midnight"): "3.0",
+    ("slayer/core/vocabulary.py", ""): "3.0",
 }
 
 
@@ -152,14 +157,14 @@ def test_tagged_sites_are_exactly_the_covered_workarounds() -> None:
     assert not wrong, "tagged sites with a removal version other than the pinned one:\n" + "\n".join(wrong)
 
 
-def _named_at(version: str, monkeypatch) -> set[tuple[str, str] | None]:
+def _named_at(version: str, monkeypatch: pytest.MonkeyPatch) -> set[tuple[str, str] | None]:
     monkeypatch.setattr(slayer, "__version__", version)
     sites = _scan()
     problems = _problems(sites, version=_package_version())
     return {_feature(s) for s in sites if any(p.startswith(f"{s.where}: ") for p in problems)}
 
 
-def test_at_the_next_major_the_tripwire_names_every_pinned_site(monkeypatch) -> None:
+def test_at_the_next_major_the_tripwire_names_every_pinned_site(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _named_at(f"{_major(_package_version()) + 1}.0.0", monkeypatch) == set(PINNED)
 
 

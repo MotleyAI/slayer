@@ -29,10 +29,10 @@ import pytest
 import slayer.engine.query_engine as qe
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    SlayerModel,
+    DatasetRelationship,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -48,37 +48,37 @@ from tests._engine_helpers import _engine_generate
 # ``["customers.region", "customers__region"]`` projects both — and both flatten
 # to ``customers__region``.
 # --------------------------------------------------------------------------- #
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers_t",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT),
         ],
     )
 
 
-def _host_with_flat_collider() -> SlayerModel:
-    return SlayerModel(
+def _host_with_flat_collider() -> SlayerDataset:
+    return SlayerDataset(
         name="hostm", data_source=DS, sql_table="hostm_t",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="cust_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="cust_id", datatype=DataType.INT),
             # Literal flat column that collides with the joined dim's flattened
             # alias (C11 carve-out). Legal to declare today (D5).
-            Column(name="customers__region", type=DataType.TEXT),
+            DatasetField(name="customers__region", datatype=DataType.TEXT),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["cust_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["cust_id", "id"]])],
     )
 
 
-async def _execute_named(models, name: str, *, dialect: str = "postgres"):
+async def _execute_named(datasets, name: str, *, dialect: str = "postgres"):
     """Save ``models`` (validation off) and run ``engine.execute(name)``."""
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name=DS, type=dialect))
-        for m in models:
-            await storage.save_model(m, _validate=False)
+        for m in datasets:
+            await storage.save_dataset(m, _validate=False)
         engine = SlayerQueryEngine(storage=storage)
         return await engine.execute(name, dry_run=True)
 
@@ -87,17 +87,17 @@ async def _execute_named(models, name: str, *, dialect: str = "postgres"):
 # 1. Stage-level: the __-flatten collision must raise a clear collision error.
 # --------------------------------------------------------------------------- #
 class TestStageFlattenCollision:
-    def _qb(self) -> SlayerModel:
-        return SlayerModel(
+    def _qb(self) -> SlayerDataset:
+        return SlayerDataset(
             name="qb", data_source=DS,
             source_queries=[
                 # Inner stage projects BOTH the joined dim and the literal
                 # flat column; both flatten downstream to ``customers__region``.
                 SlayerQuery(
-                    name="inner", source_model="hostm",
+                    name="inner", population="hostm",
                     dimensions=["customers.region", "customers__region"],
                 ),
-                SlayerQuery(source_model="inner"),
+                SlayerQuery(population="inner"),
             ],
         )
 
@@ -123,14 +123,14 @@ class TestStageFlattenCollision:
 #    involved, so this holds identically before and after the flip.
 # --------------------------------------------------------------------------- #
 class TestSameNameCollisionGuardLive:
-    def _orders(self) -> SlayerModel:
-        return SlayerModel(
+    def _orders(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders", data_source=DS, sql_table="orders_t",
             default_time_dimension="created_at",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
             ],
         )
 
@@ -139,18 +139,18 @@ class TestSameNameCollisionGuardLive:
         """INVARIANT LOCK: two projected columns that flatten to the same
         downstream name raise, before and after the flip."""
         query = SlayerQuery(
-            source_model="orders",
-            measures=[
-                {"formula": "cumsum(sum(amount))", "name": "dup"},
-                {"formula": "cumsum(sum(amount))", "name": "dup"},
+            population="orders",
+            metrics=[
+                {"expression": "cumsum(sum(amount))", "name": "dup"},
+                {"expression": "cumsum(sum(amount))", "name": "dup"},
             ],
             time_dimensions=[
-                {"dimension": {"name": "created_at"}, "granularity": "month"},
+                {"field": {"name": "created_at"}, "granularity": "month"},
             ],
         )
         model = self._orders()
-        with pytest.raises(ValueError, match=r"Stage column name collision on 'dup'"):
-            await _engine_generate(query=query, model=model, validate=False)
+        with pytest.raises(ValueError, match=r"Stage field name collision on 'dup'"):
+            await _engine_generate(query=query, dataset=model, validate=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -172,21 +172,21 @@ class TestQueryBackedFlattenMessage:
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(datasource())
-            await storage.save_model(_customers(), _validate=False)
-            await storage.save_model(_host_with_flat_collider(), _validate=False)
+            await storage.save_dataset(_customers(), _validate=False)
+            await storage.save_dataset(_host_with_flat_collider(), _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
-                source_model="hostm",
+                population="hostm",
                 dimensions=["customers.region", "customers__region"],
             )
             with pytest.raises(Exception, match=r"(?i)flatten|collision"):
-                await engine.create_model_from_query(
+                await engine.create_dataset_from_query(
                     query=query, name="cmfq", save=False,
                 )
 
     @pytest.mark.asyncio
     async def test_collision_fires_before_build_flat_rename_wrapper(
-        self, monkeypatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """FAIL-FIRST [C9]: the flatten-collision check must fire BEFORE
         ``build_flat_rename_wrapper``. We stub the wrapper to raise a sentinel;
@@ -200,15 +200,15 @@ class TestQueryBackedFlattenMessage:
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(datasource())
-            await storage.save_model(_customers(), _validate=False)
-            await storage.save_model(_host_with_flat_collider(), _validate=False)
+            await storage.save_dataset(_customers(), _validate=False)
+            await storage.save_dataset(_host_with_flat_collider(), _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
-                source_model="hostm",
+                population="hostm",
                 dimensions=["customers.region", "customers__region"],
             )
             with pytest.raises(Exception, match=r"(?i)flatten|collision") as ei:
-                await engine.create_model_from_query(
+                await engine.create_dataset_from_query(
                     query=query, name="cmfq2", save=False,
                 )
             # The sentinel must NOT be what propagated.
@@ -221,18 +221,18 @@ class TestQueryBackedFlattenMessage:
 #    the [D5] flatten guard (Codex, post-merge review).
 # --------------------------------------------------------------------------- #
 class TestComputedDimFlattenCollision:
-    def _host(self) -> SlayerModel:
+    def _host(self) -> SlayerDataset:
         # No literal ``customers__region`` column here (so the computed-dim name
         # doesn't trip the column/measure shadow check first) — only the joined
         # ``customers.region``, which flattens to ``customers__region``.
-        return SlayerModel(
+        return SlayerDataset(
             name="hostm", data_source=DS, sql_table="hostm_t",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="cust_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="cust_id", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
-            joins=[ModelJoin(target_model="customers",
+            relationships=[DatasetRelationship(to="customers",
                              join_pairs=[["cust_id", "id"]])],
         )
 
@@ -241,13 +241,13 @@ class TestComputedDimFlattenCollision:
         """FAIL-FIRST: a computed dim explicitly named ``customers__region`` and a
         joined dim ``customers.region`` both flatten to ``customers__region`` and
         must raise the clear D5 message, not a generic duplicate-name error."""
-        query = SlayerQuery.model_validate({"source_model": "hostm", "dimensions": [
+        query = SlayerQuery.model_validate({"population": "hostm", "dimensions": [
                 "customers.region",
                 {"expression": "amount", "name": "customers__region"},
-            ], "measures": [{"formula": "sum(amount)"}]})
+            ], "metrics": [{"expression": "sum(amount)"}]})
         host = self._host()
         extras = [_customers()]
         with pytest.raises(ValueError, match=r"flatten to the same downstream name"):
             await _engine_generate(
-                query=query, model=host, extra_models=extras, validate=False,
+                query=query, dataset=host, extra_datasets=extras, validate=False,
             )

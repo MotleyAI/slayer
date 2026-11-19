@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_dev1853_join_sync_retirement.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  }
+ ]
+}

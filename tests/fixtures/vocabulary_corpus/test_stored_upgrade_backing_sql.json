@@ -1,0 +1,25 @@
+{
+ "source": "tests/test_stored_upgrade_backing_sql.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev",
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "rev",
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

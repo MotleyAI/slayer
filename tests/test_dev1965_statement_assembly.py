@@ -13,7 +13,7 @@ from sqlglot.expressions.core import Expression
 import slayer.sql.dialects.tsql as tsql_module
 import slayer.sql.naming as naming
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import SqlDialect, get_dialect
@@ -34,7 +34,7 @@ from tests._dev1965_fixtures import (
     from_name,
     gen,
     month_key,
-    orders_model,
+    orders_dataset,
     outer_derived,
     parse,
     q,
@@ -44,7 +44,7 @@ from tests._dev1965_fixtures import (
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
 from tests.test_dev1756_identifier_length import _assert_within_limit
 
-_DESC_CREATED = [{"column": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
 _FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 
@@ -110,7 +110,7 @@ class TestOneTopLevelWith:
 
     async def test_tsql_offset_without_order_gets_a_noop_ordering(self) -> None:
         # An inner stage: a final stage with dimensions is default-ordered.
-        stages = [cumsum_chain(name="s1", limit=2, offset=1), q(source_model="s1", measures=["sum(running)"])]
+        stages = [cumsum_chain(name="s1", limit=2, offset=1), q(population="s1", metrics=["sum(running)"])]
         sql = await gen(stages, dialect="tsql")
         top = assert_single_top_level_with(sql, "tsql")
         paged = next(s for s in top.find_all(exp.Select) if s.args.get("offset"))
@@ -136,7 +136,7 @@ class TestOuterOrderBy:
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_non_projected_order_field_resolves_against_the_chain(self, dialect: str) -> None:
         sql = await gen(cumsum_chain(
-            order=[{"column": "max(amount)", "direction": "desc"}], limit=3,
+            order=[{"field": "max(amount)", "direction": "desc"}], limit=3,
         ), dialect=dialect)
         top = assert_single_top_level_with(sql, dialect)
         carried = set(outer_derived(top).named_selects)
@@ -151,7 +151,7 @@ class TestOuterOrderBy:
     async def test_non_projected_order_field_stays_out_of_rows(self, dialect: str) -> None:
         async with exec_engine(dialect) as engine:
             resp = await engine.execute(cumsum_chain(
-                order=[{"column": "max(amount)", "direction": "desc"}], limit=3,
+                order=[{"field": "max(amount)", "direction": "desc"}], limit=3,
             ))
         assert [month_key(r["orders.created_at"]) for r in resp.data] == [
             "2024-04", "2024-03", "2024-02",
@@ -176,7 +176,7 @@ class TestOuterOrderBy:
 class TestPostFilter:
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_post_filter_is_the_where_of_the_final_select(self, dialect: str) -> None:
-        sql = await gen(cumsum_chain(filters=["cumsum(sum(amount)) > 50"]), dialect=dialect)
+        sql = await gen(cumsum_chain(filter=["cumsum(sum(amount)) > 50"]), dialect=dialect)
         assert "_filtered" not in sql, sql
         top = assert_single_top_level_with(sql, dialect)
         final = outer_derived(top)
@@ -193,13 +193,13 @@ class TestPostFilter:
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     async def test_post_filter_keeps_the_transform_inputs(self, dialect: str) -> None:
         async with exec_engine(dialect) as engine:
-            resp = await engine.execute(cumsum_chain(filters=["cumsum(sum(amount)) > 50"]))
+            resp = await engine.execute(cumsum_chain(filter=["cumsum(sum(amount)) > 50"]))
         got = {month_key(r["orders.created_at"]): float(r["orders.running"]) for r in resp.data}
         assert got == {m: v for m, v in CUMSUM_BY_MONTH.items() if v > 50}
 
     _COMPOSITE = {
         "dimensions": [{"expression": "lower(status)", "name": "ls"}],
-        "filters": ["cumsum(sum(amount)) > 50 or lower(status) == 'c'"],
+        "filter": ["cumsum(sum(amount)) > 50 or lower(status) == 'c'"],
     }
 
     async def test_composite_dimension_filter_reads_a_carried_column(self) -> None:
@@ -223,7 +223,7 @@ class TestPostFilter:
     _OR_MIX = ["cumsum(sum(amount)) > 250 or cumsum(sum(amount)) < 50", "cumsum(sum(amount)) < 260"]
 
     async def test_post_conjuncts_keep_their_grouping(self) -> None:
-        sql = await gen(cumsum_chain(filters=self._OR_MIX), dialect="postgres")
+        sql = await gen(cumsum_chain(filter=self._OR_MIX), dialect="postgres")
         where = where_of(outer_derived(parse(sql, "postgres")))
         assert where is not None, sql
         _assert_grouped_conjuncts(where, expected=2)
@@ -231,7 +231,7 @@ class TestPostFilter:
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     async def test_post_conjunct_rows(self, dialect: str) -> None:
         async with exec_engine(dialect) as engine:
-            resp = await engine.execute(cumsum_chain(filters=self._OR_MIX))
+            resp = await engine.execute(cumsum_chain(filter=self._OR_MIX))
         assert [month_key(r["orders.created_at"]) for r in resp.data] == ["2024-01"]
 
 
@@ -245,7 +245,7 @@ class TestPostFilter:
 class TestWhereHaving:
     async def test_where_and_having_are_grouped_conjunctions(self) -> None:
         sql = await gen(where_having_query(), dialect="postgres",
-                        model=orders_model(filters=[MODE_A_OR]))
+                        dataset=orders_dataset(filters=[MODE_A_OR]))
         select = next(
             s for s in parse(sql, "postgres").find_all(exp.Select) if s.args.get("having")
         )
@@ -258,7 +258,7 @@ class TestWhereHaving:
 
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     async def test_mode_a_or_filter_keeps_its_grouping(self, dialect: str) -> None:
-        async with exec_engine(dialect, model=orders_model(filters=[MODE_A_OR])) as engine:
+        async with exec_engine(dialect, dataset=orders_dataset(filters=[MODE_A_OR])) as engine:
             resp = await engine.execute(where_having_query())
         assert {r["orders.region"]: float(r["orders.amount_sum"]) for r in resp.data} == {
             "US": 160.0,
@@ -274,22 +274,22 @@ LONG = "c" * 310
 _CUSTOMER_ROWS = [(i, "gold" if i % 2 else "silver") for i in range(1, 8)]
 
 
-def _qb_models(data_source: str) -> list[SlayerModel]:
-    orders = orders_model()
+def _qb_datasets(data_source: str) -> list[SlayerDataset]:
+    orders = orders_dataset()
     orders.data_source = data_source
-    orders.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
-    customers = SlayerModel(
+    orders.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name=LONG, sql="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name=LONG, sql="tier", datatype=DataType.TEXT),
         ],
     )
     return [orders, customers]
 
 
 def _qb_stage() -> SlayerQuery:
-    return q(dimensions=[f"customers.{LONG}"], measures=["sum(amount)"])
+    return q(dimensions=[f"customers.{LONG}"], metrics=["sum(amount)"])
 
 
 class TestQueryBackedWrap:
@@ -305,19 +305,19 @@ class TestQueryBackedWrap:
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(DatasourceConfig(name="ds", type=ds_type, database="db"))
-            for model in _qb_models("ds"):
-                await storage.save_model(model)
+            for model in _qb_datasets("ds"):
+                await storage.save_dataset(model)
             engine = SlayerQueryEngine(storage=storage)
-            expanded = await engine._expand_query_backed_model(
-                model=SlayerModel(name="qb", source_queries=[_qb_stage()], data_source="ds"),
+            expanded = await engine._expand_query_backed_dataset(
+                dataset=SlayerDataset(name="qb", source_queries=[_qb_stage()], data_source="ds"),
                 runtime_kwarg=None,
             )
         assert expanded.sql is not None
         fit = get_dialect(dialect).fit_alias
-        assert {c.name: c.sql for c in expanded.columns} == {
+        assert {c.name: c.sql for c in expanded.fields} == {
             f"customers__{LONG}": fit(f"customers__{LONG}"), "amount_sum": "amount_sum",
         }
-        assert set(parse(expanded.sql, dialect).named_selects) == {c.sql for c in expanded.columns}
+        assert set(parse(expanded.sql, dialect).named_selects) == {c.sql for c in expanded.fields}
         _assert_within_limit(expanded.sql, limit, dialect=dialect)
 
     async def test_duckdb_rows_are_keyed_by_column_names(self) -> None:
@@ -332,13 +332,13 @@ class TestQueryBackedWrap:
             con.close()
 
         pytest.importorskip("duckdb")
-        qb = SlayerModel(name="qb", source_queries=[_qb_stage()], data_source="test")
+        qb = SlayerDataset(name="qb", source_queries=[_qb_stage()], data_source="test")
         async with seeded_exec_engine(
-            dialect="duckdb", seed=seed, models=[*_qb_models("test"), qb],
+            dialect="duckdb", seed=seed, datasets=[*_qb_datasets("test"), qb],
         ) as (engine, _db):
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "qb", "dimensions": [f"customers__{LONG}"],
-                "measures": ["sum(amount_sum)"],
+                "population": "qb", "dimensions": [f"customers__{LONG}"],
+                "metrics": ["sum(amount_sum)"],
             }))
         assert {
             r[f"qb.customers__{LONG}"]: float(r["qb.amount_sum_sum"]) for r in resp.data
@@ -353,20 +353,20 @@ class TestQueryBackedWrap:
 # --------------------------------------------------------------------------- #
 
 
-def _stat_seams(formula: str) -> dict:
-    month = [{"dimension": "created_at", "granularity": "month"}]
-    measure = [{"formula": formula, "name": "w"}]
+def _stat_seams(expression: str) -> dict:
+    month = [{"field": "created_at", "granularity": "month"}]
+    measure = [{"expression": expression, "name": "w"}]
     return {
         "producer_hoist": SlayerQuery.model_validate({
-            "source_model": "orders", "time_dimensions": F15.month_td(), "measures": measure,
+            "population": "orders", "time_dimensions": F15.month_td(), "metrics": measure,
         }),
         "non_root_stage": [
-            {"name": "s1", "source_model": "orders", "time_dimensions": month, "measures": measure},
-            {"source_model": "s1", "measures": [{"formula": "max(w)", "name": "mx"}]},
+            {"name": "s1", "population": "orders", "time_dimensions": month, "metrics": measure},
+            {"population": "s1", "metrics": [{"expression": "max(w)", "name": "mx"}]},
         ],
         "root_stage": [
-            {"name": "s1", "source_model": "orders", "dimensions": ["id"]},
-            {"source_model": "orders", "time_dimensions": month, "measures": measure},
+            {"name": "s1", "population": "orders", "dimensions": ["id"]},
+            {"population": "orders", "time_dimensions": month, "metrics": measure},
         ],
     }
 
@@ -377,9 +377,9 @@ def _stat_seams(formula: str) -> dict:
     "corr(amount, other=qty, window='90d')",
 ])
 async def test_mysql_windowed_sample_statistic_uses_var_samp(formula: str, seam: str) -> None:
-    models = F15.dev1915_models()
+    models = F15.dev1915_datasets()
     sql = await _engine_generate(
-        query=_stat_seams(formula)[seam], model=models[0], extra_models=models[1:],
+        query=_stat_seams(formula)[seam], dataset=models[0], extra_datasets=models[1:],
         dialect="mysql", validate=False,
     )
     assert "VAR_SAMP(" in sql, sql

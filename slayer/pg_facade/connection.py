@@ -30,7 +30,7 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer import usage_reporting
 from slayer.core.enums import DataType
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.engine_view import EngineStorage
@@ -70,7 +70,9 @@ from slayer.pg_facade.types import (
     value_to_binary,
     value_to_text,
 )
+from slayer.core import probes as core_probes
 from slayer.core import timing
+from slayer import otel
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +264,7 @@ def _default_engine_factory(storage: object, *, client_factory: "ClientFactory |
 
 
 def _engine_view_of(*, engine: object, storage: object) -> object:
-    """``engine``'s storage view when it wraps ``storage`` (it refines stored models through the engine), else ``storage``."""
+    """``engine``'s storage view when it wraps ``storage`` (it refines stored datasets through the engine), else ``storage``."""
     view = getattr(engine, "storage", None)
     if isinstance(view, EngineStorage) and (view is storage or view.inner is storage):
         return view
@@ -364,7 +366,7 @@ class PgConnection:
         self._catalog_extras = catalog_extra_relations
         self._tx_state: bytes = proto.TX_IDLE
         # Logical database name (``current_database()`` / ``table_catalog``),
-        # taken from the ``database`` startup parameter. NOT a model-resolution
+        # taken from the ``database`` startup parameter. NOT a dataset-resolution
         # datasource — execution routes per query (see ``QueryResult.data_source``).
         self._database: str = DEFAULT_DATABASE
         self._catalog: FacadeCatalog | None = None
@@ -586,17 +588,17 @@ class PgConnection:
 
     async def _build_catalog(self) -> FacadeCatalog:
         storage = cast(StorageBackend, self._read_storage)
-        models_by_datasource: dict[str, list[SlayerModel]] = {}
+        datasets_by_datasource: dict[str, list[SlayerDataset]] = {}
         schema_by_datasource: dict[str, str] = {}
         failures = DocumentLoadFailures()
         for datasource in await storage.list_datasources():
-            models_by_datasource[datasource] = failures.skip(await storage.load_models(data_source=datasource))
+            datasets_by_datasource[datasource] = failures.skip(await storage.load_datasets(data_source=datasource))
             config = await storage.get_datasource(datasource)
             if config is not None and config.postgres_schema:
                 schema_by_datasource[datasource] = config.postgres_schema
         priority = await storage.get_datasource_priority()
         return build_catalog_grouped_by_schema(
-            models_by_datasource=models_by_datasource,
+            datasets_by_datasource=datasets_by_datasource,
             schema_by_datasource=schema_by_datasource,
             datasource_priority=priority,
             default_schema=PUBLIC_SCHEMA,
@@ -1023,7 +1025,7 @@ class PgConnection:
             probe_matcher=self._probe_matcher,
             # Pass a lazy factory so the DuckDB executor is only
             # materialised when ``is_catalog_only(parsed)`` is True
-            # (Codex round 16). Non-catalog model queries skip the
+            # (Codex round 16). Non-catalog dataset queries skip the
             # construction cost entirely.
             catalog_sql_executor=lambda: executor_for(
                 self._catalog, self._database,
@@ -1057,7 +1059,7 @@ class PgConnection:
     ) -> bool:
         """Translate + respond. Returns False if an error was sent."""
         # Refresh the catalog before translating so an idle connection picks
-        # up model/schema edits within the TTL window (no-op when disabled or
+        # up dataset/schema edits within the TTL window (no-op when disabled or
         # mid-transaction).
         await self._maybe_refresh_catalog()
         try:
@@ -1128,13 +1130,14 @@ class PgConnection:
             self._writer.write(proto.encode_data_row(values))
         self._writer.write(proto.encode_command_complete(command="SELECT", rows=len(batch.rows)))
 
+    @otel.request(surface="pg", token="query")
     async def _run_query(
         self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
         usage_reporting.observe_query(result.query)
         try:
             # The translator resolves the per-query datasource from the
-            # referenced model(s) and rejects cross-datasource joins. A model
+            # referenced dataset(s) and rejects cross-datasource joins. A dataset
             # query always carries one; guard the impossible None rather than
             # passing it to the engine.
             with usage_reporting.counting(surface="pg", token="query"):
@@ -1147,11 +1150,12 @@ class PgConnection:
                     )
             usage_reporting.observe_executed(response)
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
+            core_probes.current().set({"error.type": type(exc).__qualname__})  # the request failed though handled
             code, message = _engine_error_fields(exc)
             await self._send_error(code=code, message=message)
             self._fail_tx()
             return False
-        mapping = result.column_name_mapping
+        mapping = result.field_name_mapping
         types = result.projection_types
         formats = proto.parse_result_format_codes(result_formats or [], len(mapping))
         if send_row_description:
@@ -1186,7 +1190,7 @@ class PgConnection:
                 for i, c in enumerate(cols)
             ]
         if isinstance(result, QueryResult):
-            mapping = result.column_name_mapping
+            mapping = result.field_name_mapping
             types = result.projection_types
             formats = proto.parse_result_format_codes(result_formats or [], len(mapping))
             return [
@@ -1362,7 +1366,7 @@ def _build_column_type_index(
     used by the Bind-time empty-string-to-NULL rewrite.
 
     Covers pg_catalog.*, information_schema.* (via the ``_is_<name>``
-    builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
+    builder-name remap), and user-dataset tables under ``PUBLIC_SCHEMA``.
     """
     out: ColumnTypeIndex = {}
     _index_catalog_relations(
@@ -1399,7 +1403,7 @@ def _index_catalog_relations(
 
 
 def _index_user_tables(*, out: ColumnTypeIndex, catalog: FacadeCatalog) -> None:
-    """Populate ``out`` with user-model column types under PUBLIC_SCHEMA."""
+    """Populate ``out`` with user-dataset column types under PUBLIC_SCHEMA."""
     for sch in catalog.schemas:
         schema_lower = sch.name.lower()
         for tbl in sch.tables:
@@ -1422,7 +1426,7 @@ def _record_column_type(
 ) -> None:
     """Insert (key → dt) into ``out`` unless the key already exists with a
     different type. Case-distinct quoted identifiers (e.g. ``id`` INT and
-    ``"ID"`` TEXT in the same model) would otherwise collide because the
+    ``"ID"`` TEXT in the same dataset) would otherwise collide because the
     index lower-cases column names — last-writer-wins on the previous
     implementation could rewrite an empty-string text comparison to NULL.
     Skip the second occurrence and warn once. Same-type collisions are

@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from slayer.core.errors import IdCollisionError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.storage.base import (
     _find_case_colliding_id,
     _fs_equivalence_key,
@@ -42,8 +42,8 @@ def _ds(name: str, host: str = "h") -> DatasourceConfig:
     return DatasourceConfig(name=name, type="postgres", host=host)
 
 
-def _model(name: str, data_source: str = "db", table: str = "t") -> SlayerModel:
-    return SlayerModel(name=name, data_source=data_source, sql_table=table)
+def _dataset(name: str, data_source: str = "db", table: str = "t") -> SlayerDataset:
+    return SlayerDataset(name=name, data_source=data_source, sql_table=table)
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ class TestDatasourceCollision:
         self, storage: YAMLStorage,
     ) -> None:
         # Models under an orphan datasource reserve its name.
-        await storage.save_model(_model("orders", data_source="db"))
+        await storage.save_dataset(_dataset("orders", data_source="db"))
         ds = _ds("DB")
         with pytest.raises(IdCollisionError):
             await storage.save_datasource(ds)
@@ -112,52 +112,52 @@ class TestModelCollision:
     async def test_case_variant_name_rejected(
         self, storage: YAMLStorage,
     ) -> None:
-        await storage.save_model(_model("orders", table="first"))
-        model = _model("Orders", table="second")
+        await storage.save_dataset(_dataset("orders", table="first"))
+        model = _dataset("Orders", table="second")
         with pytest.raises(IdCollisionError) as exc_info:
-            await storage.save_model(model)
-        assert exc_info.value.kind == "model"
+            await storage.save_dataset(model)
+        assert exc_info.value.kind == "dataset"
         assert exc_info.value.new_id == "Orders"
         assert exc_info.value.existing_id == "orders"
         assert exc_info.value.data_source == "db"
-        loaded = await storage.get_model("orders", data_source="db")
+        loaded = await storage.get_dataset("orders", data_source="db")
         assert loaded.sql_table == "first"
 
     async def test_exact_resave_upserts(self, storage: YAMLStorage) -> None:
-        await storage.save_model(_model("orders", table="first"))
-        await storage.save_model(_model("orders", table="second"))
-        loaded = await storage.get_model("orders", data_source="db")
+        await storage.save_dataset(_dataset("orders", table="first"))
+        await storage.save_dataset(_dataset("orders", table="second"))
+        loaded = await storage.get_dataset("orders", data_source="db")
         assert loaded.sql_table == "second"
 
     async def test_same_name_in_other_datasource_ok(
         self, storage: YAMLStorage,
     ) -> None:
-        await storage.save_model(_model("orders", data_source="db_a"))
-        await storage.save_model(_model("Orders", data_source="db_b"))
-        assert await storage.get_model("orders", data_source="db_a") is not None
-        assert await storage.get_model("Orders", data_source="db_b") is not None
+        await storage.save_dataset(_dataset("orders", data_source="db_a"))
+        await storage.save_dataset(_dataset("Orders", data_source="db_b"))
+        assert await storage.get_dataset("orders", data_source="db_a") is not None
+        assert await storage.get_dataset("Orders", data_source="db_b") is not None
 
     async def test_case_variant_data_source_rejected(
         self, storage: YAMLStorage,
     ) -> None:
         await storage.save_datasource(_ds("db"))
-        model = _model("orders", data_source="DB")
+        model = _dataset("orders", data_source="DB")
         with pytest.raises(IdCollisionError) as exc_info:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert exc_info.value.kind == "datasource"
 
     async def test_data_source_vs_other_models_rejected(
         self, storage: YAMLStorage,
     ) -> None:
-        await storage.save_model(_model("orders", data_source="db"))
-        model = _model("customers", data_source="DB")
+        await storage.save_dataset(_dataset("orders", data_source="db"))
+        model = _dataset("customers", data_source="DB")
         with pytest.raises(IdCollisionError):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
     async def test_validate_false_bypasses(self, storage: YAMLStorage) -> None:
         # The migration write-back path must stay able to persist legacy data.
-        await storage.save_model(_model("orders"))
-        await storage.save_model(_model("Orders"), _validate=False)
+        await storage.save_dataset(_dataset("orders"))
+        await storage.save_dataset(_dataset("Orders"), _validate=False)
 
 
 # ---------------------------------------------------------------------------
@@ -201,10 +201,10 @@ class TestSqliteAllowsCaseVariants:
         assert (await sqlite_storage.get_datasource("DB")).host == "upper"
 
     async def test_models(self, sqlite_storage: SQLiteStorage) -> None:
-        await sqlite_storage.save_model(_model("orders", table="lower"))
-        await sqlite_storage.save_model(_model("Orders", table="upper"), _validate=False)
-        low = await sqlite_storage.get_model("orders", data_source="db")
-        up = await sqlite_storage.get_model("Orders", data_source="db")
+        await sqlite_storage.save_dataset(_dataset("orders", table="lower"))
+        await sqlite_storage.save_dataset(_dataset("Orders", table="upper"), _validate=False)
+        low = await sqlite_storage.get_dataset("orders", data_source="db")
+        up = await sqlite_storage.get_dataset("Orders", data_source="db")
         assert low.sql_table == "lower"
         assert up.sql_table == "upper"
 
@@ -221,8 +221,8 @@ class TestSqliteAllowsCaseVariants:
     async def test_wrapped_sqlite_allows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = resolve_storage(os.path.join(tmpdir, "test.db"))
-            await storage.save_model(_model("orders"))
-            await storage.save_model(_model("Orders"), _validate=False)
+            await storage.save_dataset(_dataset("orders"))
+            await storage.save_dataset(_dataset("Orders"), _validate=False)
 
 
 # ---------------------------------------------------------------------------
@@ -238,10 +238,10 @@ class TestFactoryStorage:
             ds = _ds("DB")
             with pytest.raises(IdCollisionError):
                 await storage.save_datasource(ds)
-            await storage.save_model(_model("orders"))
-            model = _model("Orders")
+            await storage.save_dataset(_dataset("orders"))
+            model = _dataset("Orders")
             with pytest.raises(IdCollisionError):
-                await storage.save_model(model)
+                await storage.save_dataset(model)
             await storage.save_memory(
                 id="X", learning="a", entities=["mydb.orders"],
             )

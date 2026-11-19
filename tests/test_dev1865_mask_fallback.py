@@ -11,16 +11,16 @@ import pytest
 
 from slayer.sql import generator as generator_module
 
-from tests._dev1865_fixtures import ModelMeasure, make_exec_engine, q
+from tests._dev1865_fixtures import DatasetMetric, make_exec_engine, q
 
 # A combined-select shape (the partitioned measure attaches a producer CTE), so
 # the outer scope the fallback routes to actually exists.
 _QUERY_KWARGS = dict(
     dimensions=["region", "city"],
-    filters=["sum(amount) > 55"],
-    measures=[
-        ModelMeasure(formula="sum(amount)", name="s"),
-        ModelMeasure(formula="sum(amount, partition_by=region)", name="part"),
+    filter=["sum(amount) > 55"],
+    metrics=[
+        DatasetMetric(expression="sum(amount)", name="s"),
+        DatasetMetric(expression="sum(amount, partition_by=region)", name="part"),
     ],
 )
 
@@ -31,7 +31,7 @@ def _rows(resp):
 
 @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
 async def test_forced_fallback_matches_the_having_lowering(
-    backend, monkeypatch,
+    backend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = type("R", (), {"param": backend})()
     async for engine in make_exec_engine(request):

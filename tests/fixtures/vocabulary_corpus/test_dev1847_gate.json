@@ -1,0 +1,53 @@
+{
+ "source": "tests/test_dev1847_gate.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount - customers.region_id)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(amount - customers.region_id)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(q_amount - 1)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(q_amount - 1)",
+    "name": "x"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 184,
+   "reason": "not fully literal"
+  }
+ ]
+}

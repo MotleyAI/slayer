@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.live_schema.schema_drift import IdempotentIngestResult
 from slayer.database import engine_factory
@@ -50,15 +50,15 @@ async def shop(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncGenerator
         engine_factory.invalidate_engine(datasource)
 
 
-async def _qty(storage: YAMLStorage, model: str) -> list[Any]:
+async def _qty(storage: YAMLStorage, dataset: str) -> list[Any]:
     async with owned_query_engine(storage=storage) as engine:
-        rows = (await engine.execute({"source_model": model, "dimensions": ["qty"]})).data
-    return [r[f"{model}.qty"] for r in rows]
+        rows = (await engine.execute({"population": dataset, "dimensions": ["qty"]})).data
+    return [r[f"{dataset}.qty"] for r in rows]
 
 
 async def _drift(storage: YAMLStorage) -> list[Any]:
     async with owned_query_engine(storage=storage) as engine:
-        return await engine.validate_models(data_source=DS)
+        return await engine.validate_datasets(data_source=DS)
 
 
 async def _ingest(*, datasource: DatasourceConfig, storage: YAMLStorage, **scope: Any) -> IdempotentIngestResult:
@@ -67,9 +67,9 @@ async def _ingest(*, datasource: DatasourceConfig, storage: YAMLStorage, **scope
                                                   client=engine.client_for(datasource), **scope)
 
 
-async def _ingested(storage: YAMLStorage) -> SlayerModel:
-    (name,) = await storage.list_models()
-    model = await storage.get_model(name)
+async def _ingested(storage: YAMLStorage) -> SlayerDataset:
+    (name,) = await storage.list_datasets()
+    model = await storage.get_dataset(name)
     assert model is not None
     return model
 
@@ -89,7 +89,7 @@ async def test_schema_name_with_a_dot(shop: tuple[DatasourceConfig, YAMLStorage]
     assert model.sql_table == '"sales.v2".orders'
     assert await _qty(storage, model.name) == [5]
     again = await _ingest(datasource=datasource, storage=storage, schema="sales.v2")
-    assert [(a.created, a.new_columns) for a in again.additions] == [(False, [])]
+    assert [(a.created, a.new_fields) for a in again.additions] == [(False, [])]
     assert again.to_delete == []
     assert again.errors == []
     assert await _drift(storage) == []
@@ -107,7 +107,7 @@ async def test_mixed_case_live_name(shop: tuple[DatasourceConfig, YAMLStorage]) 
 async def test_stored_name_reads_its_table(shop: tuple[DatasourceConfig, YAMLStorage], sql_table: str,
                                            value: int) -> None:
     _, storage = shop
-    await storage.save_model(SlayerModel(name="m", data_source=DS, sql_table=sql_table,
-                                         columns=[Column(name="qty", type=DataType.INT)]))
+    await storage.save_dataset(SlayerDataset(name="m", data_source=DS, sql_table=sql_table,
+                                         fields=[DatasetField(name="qty", datatype=DataType.INT)]))
     assert await _qty(storage, "m") == [value]
     assert await _drift(storage) == []

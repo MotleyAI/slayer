@@ -26,60 +26,60 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from tests import _dev1900_fixtures
-from tests._dev1900_fixtures import dev1900_models
+from tests._dev1900_fixtures import dev1900_datasets
 from tests._engine_helpers import seeded_exec_engine
 
 _REGION_EXTRA = [("North", "2020-01-15", 1), ("South", "2021-06-15", 2)]
 
 
-def _by_name(models: List[SlayerModel], name: str) -> SlayerModel:
-    return next(m for m in models if m.name == name)
+def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def dev1954_models(*, named: bool = True) -> List[SlayerModel]:
+def dev1954_datasets(*, named: bool = True) -> List[SlayerDataset]:
     """``named=False`` leaves the ``customers → regions`` edge unnamed."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     customers = _by_name(models, "customers")
-    customers.joins = [
-        ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE,
+    customers.relationships = [
+        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE,
                   name="hr" if named else None)
-        if j.target_model == "regions" else j
-        for j in customers.joins
+        if j.to == "regions" else j
+        for j in customers.relationships
     ]
-    customers.measures.append(ModelMeasure(name="tot_spend", formula="sum(spend)"))
+    customers.metrics.append(DatasetMetric(name="tot_spend", expression="sum(spend)"))
 
     regions = _by_name(models, "regions")
-    regions.columns = [c.model_copy(update={"label": "Population"}) if c.name == "pop" else c
-                       for c in regions.columns]
-    regions.columns.append(Column(name="rname", type=DataType.TEXT, label="Region name"))
-    regions.columns.append(Column(name="founded_at", type=DataType.TIMESTAMP,
+    regions.fields = [c.model_copy(update={"label": "Population"}) if c.name == "pop" else c
+                       for c in regions.fields]
+    regions.fields.append(DatasetField(name="rname", datatype=DataType.TEXT, label="Region name"))
+    regions.fields.append(DatasetField(name="founded_at", datatype=DataType.TIMESTAMP,
                                   label="Founded"))
-    regions.measures.append(ModelMeasure(name="maxpop", formula="max(pop)"))
+    regions.metrics.append(DatasetMetric(name="maxpop", expression="max(pop)"))
 
     orders = _by_name(models, "orders")
-    orders.columns.append(Column(
-        name="north_amount", type=DataType.DOUBLE, sql="amount",
+    orders.fields.append(DatasetField(
+        name="north_amount", datatype=DataType.DOUBLE, sql="amount",
         filter="customers.regions.rname = 'North'"))
-    orders.columns.append(Column(
-        name="region_label", type=DataType.TEXT, sql="customers.regions.rname"))
-    orders.measures.append(ModelMeasure(name="rp", formula="max(customers.regions.pop)"))
+    orders.fields.append(DatasetField(
+        name="region_label", datatype=DataType.TEXT, sql="customers.regions.rname"))
+    orders.metrics.append(DatasetMetric(name="rp", expression="max(customers.regions.pop)"))
     orders.aggregations.append(Aggregation(
-        name="wpop", formula="SUM({value} * {weight})",
+        name="wpop", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="customers.regions.pop")]))
     return models
 
@@ -107,7 +107,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
@@ -116,7 +116,7 @@ async def make_exec_engine(
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
         dialect=dialect, seed=seed,
-        models=models if models is not None else dev1954_models(),
+        datasets=datasets if datasets is not None else dev1954_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -126,7 +126,7 @@ def slayer_query(**kw) -> SlayerQuery:
 
 
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return slayer_query(**kw)
 
 
@@ -136,14 +136,14 @@ def table_count(sql: str, table: str, *, dialect: str = "duckdb") -> int:
                if t.name == table)
 
 
-def by_key(resp, dim: str, measure: str) -> dict:
+def by_key(resp, dim: str, metric: str) -> dict:
     """``{dim value: measure value}`` over ``resp.data``."""
-    out = {r[dim]: r[measure] for r in resp.data}
+    out = {r[dim]: r[metric] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one group key"
     return out
 
 
-def execution_spy(monkeypatch) -> list:
+def execution_spy(monkeypatch: pytest.MonkeyPatch) -> list:
     """Record every SQL string sent to the database."""
     calls: list = []
     orig = SlayerSQLClient.execute

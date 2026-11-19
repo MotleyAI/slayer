@@ -1,0 +1,173 @@
+{
+ "source": "tests/test_dev1966_inline_qb_ban.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "iqb",
+    "data_source": "test",
+    "source_queries": [
+     {
+      "source_model": "orders",
+      "dimensions": [
+       "status"
+      ],
+      "measures": [
+       {
+        "formula": "sum(amount)",
+        "name": "rev"
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "iqb",
+    "data_source": "test",
+    "source_queries": [
+     {
+      "population": "orders",
+      "dimensions": [
+       "status"
+      ],
+      "metrics": [
+       {
+        "expression": "sum(amount)",
+        "name": "rev"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)",
+      "name": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders_inline",
+    "data_source": "test",
+    "sql_table": "orders",
+    "columns": [
+     {
+      "name": "id",
+      "type": "INT",
+      "primary_key": true
+     },
+     {
+      "name": "customer_id",
+      "type": "INT"
+     },
+     {
+      "name": "amount",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "orders_inline",
+    "data_source": "test",
+    "sql_table": "orders",
+    "fields": [
+     {
+      "name": "id",
+      "datatype": "INT",
+      "primary_key": true
+     },
+     {
+      "name": "customer_id",
+      "datatype": "INT"
+     },
+     {
+      "name": "amount",
+      "datatype": "DOUBLE"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders_sql",
+    "data_source": "test",
+    "sql": "SELECT id, customer_id, amount FROM orders",
+    "columns": [
+     {
+      "name": "id",
+      "type": "INT",
+      "primary_key": true
+     },
+     {
+      "name": "customer_id",
+      "type": "INT"
+     },
+     {
+      "name": "amount",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "orders_sql",
+    "data_source": "test",
+    "sql": "SELECT id, customer_id, amount FROM orders",
+    "fields": [
+     {
+      "name": "id",
+      "datatype": "INT",
+      "primary_key": true
+     },
+     {
+      "name": "customer_id",
+      "datatype": "INT"
+     },
+     {
+      "name": "amount",
+      "datatype": "DOUBLE"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -10,8 +10,8 @@ import re
 import pytest
 
 from tests._dev1832_fixtures import (
-    ModelMeasure,
-    dev1832_models,
+    DatasetMetric,
+    dev1832_datasets,
     TimeDimension,
     TimeGranularity,
     gen,
@@ -51,29 +51,29 @@ async def exec_engine(request):
         yield engine
 
 
-def _filtered_models() -> list:
+def _filtered_datasets() -> list:
     """``monthly`` with the model-level filter ``amount > 5`` (drops South Jan and West Feb)."""
-    models = dev1832_models()
+    models = dev1832_datasets()
     next(m for m in models if m.name == "monthly").filters.append("amount > 5")
     return models
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def filtered_engine(request):
-    async for engine in make_exec_engine(request, models=_filtered_models()):
+    async for engine in make_exec_engine(request, datasets=_filtered_datasets()):
         yield engine
 
 
 def _dr_td() -> list:
-    return [TimeDimension(dimension="ordered_at",
+    return [TimeDimension(field="ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 
 
-def _q(formula: str, *, date_range: bool = False, **kw):
+def _q(expression: str, *, date_range: bool = False, **kw):
     kw.setdefault("dimensions", ["region"])
     return monthly_q(time_dimensions=_dr_td() if date_range else month_td(),
-                     measures=[ModelMeasure(formula=formula, name="t")], **kw)
+                     metrics=[DatasetMetric(expression=expression, name="t")], **kw)
 
 
 def _cells(resp, name: str = "monthly.t") -> dict:
@@ -170,7 +170,7 @@ class TestFrameRule:
         """Regression guard: already correct before the producer rewrite."""
         resp = await exec_engine.execute(_q(
             "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
-            filters=["ordered_at >= '2024-02-01' and region = 'North'"]))
+            filter=["ordered_at >= '2024-02-01' and region = 'North'"]))
         _assert_cells(_cells(resp), cells={(N, FEB), (N, MAR)},
                       expected={(N, FEB): 20.0, (N, MAR): 40.0})
 
@@ -189,8 +189,8 @@ class TestSharedShiftedRelation:
     def _two_offsets(self):
         return monthly_q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=f"time_shift({SHARE}, -1)", name="t1"),
-                      ModelMeasure(formula=f"time_shift({SHARE}, -2)", name="t2")])
+            metrics=[DatasetMetric(expression=f"time_shift({SHARE}, -1)", name="t1"),
+                      DatasetMetric(expression=f"time_shift({SHARE}, -2)", name="t2")])
 
     async def test_two_offsets_values(self, exec_engine) -> None:
         resp = await exec_engine.execute(self._two_offsets())

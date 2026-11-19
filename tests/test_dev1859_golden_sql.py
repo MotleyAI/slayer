@@ -9,9 +9,9 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1840_fixtures import dev1840_models, signup_month_td
-from tests._dev1847_fixtures import INNER_UP_PRODUCT, dev1847_models
-from tests._dev1859_fixtures import customers_wsum_models, sales_wsum_models
+from tests._dev1840_fixtures import dev1840_datasets, signup_month_td
+from tests._dev1847_fixtures import INNER_UP_PRODUCT, dev1847_datasets
+from tests._dev1859_fixtures import customers_wsum_datasets, sales_wsum_datasets
 from tests._dev1919_fixtures import WINDOWED_CUSTOM_PARAM, WINDOWED_PARAM
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -20,10 +20,10 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1859_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
 _MODEL_SETS = {
-    "sales": dev1847_models,
-    "sales_wsum": sales_wsum_models,
-    "orders": dev1840_models,
-    "orders_wsum": customers_wsum_models,
+    "sales": dev1847_datasets,
+    "sales_wsum": sales_wsum_datasets,
+    "orders": dev1840_datasets,
+    "orders_wsum": customers_wsum_datasets,
 }
 _REGION_SUM = "sum(amount, partition_by=region)"
 _HEADLINE = ("weighted_avg(customers.spend, "
@@ -38,60 +38,60 @@ def _cases() -> dict:
     return {
         "mixed/headline": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [
-                {"formula": f"sum(quantity * {INNER_UP_PRODUCT})", "name": "m"}]}},
+            "kw": {"dimensions": ["region"], "metrics": [
+                {"expression": f"sum(quantity * {INNER_UP_PRODUCT})", "name": "m"}]}},
         "mixed/outer_partition": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region", "product"], "measures": [
-                {"formula": f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=region)",
+            "kw": {"dimensions": ["region", "product"], "metrics": [
+                {"expression": f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=region)",
                  "name": "m"}]}},
         "param/associate": {
             "models": "orders", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": _HEADLINE, "name": "w"}]}},
+                   "metrics": [{"expression": _HEADLINE, "name": "w"}]}},
         "param/broadcast": {
             "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": _HEADLINE, "name": "w"}]}},
+                   "metrics": [{"expression": _HEADLINE, "name": "w"}]}},
         "mixed/cross_model_constituent": {
             "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": _MIXED_TWIN, "name": "w"}]}},
+                   "metrics": [{"expression": _MIXED_TWIN, "name": "w"}]}},
         "param/ordinary": {
             "models": "sales_wsum", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [
-                {"formula": f"weighted_avg(amount, weight={_REGION_SUM})",
+            "kw": {"dimensions": ["region"], "metrics": [
+                {"expression": f"weighted_avg(amount, weight={_REGION_SUM})",
                  "name": "w"}]}},
         "param/mixed_plus": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [
-                {"formula": (f"weighted_avg(quantity * {INNER_UP_PRODUCT}, "
+            "kw": {"dimensions": ["region"], "metrics": [
+                {"expression": (f"weighted_avg(quantity * {INNER_UP_PRODUCT}, "
                              f"weight={_REGION_SUM})"), "name": "w"}]}},
         "param/literal": {
             "models": "sales_wsum", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [
-                {"formula": f"wsum(1, weight={_REGION_SUM})", "name": "w"}]}},
+            "kw": {"dimensions": ["region"], "metrics": [
+                {"expression": f"wsum(1, weight={_REGION_SUM})", "name": "w"}]}},
         "param/ungrained_reagg": {
             "models": "sales_wsum", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [
-                {"formula": ("wsum(sum(amount, partition_by=[city, region]), "
+            "kw": {"dimensions": ["region"], "metrics": [
+                {"expression": ("wsum(sum(amount, partition_by=[city, region]), "
                              "weight=count(id))"), "name": "w"}]}},
         "param/ranked_transform": {
             "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": _RANKED_TRANSFORM, "name": "w"}]}},
+                   "metrics": [{"expression": _RANKED_TRANSFORM, "name": "w"}]}},
         "param/local_ranked_transform": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": _LOCAL_RANKED_TRANSFORM, "name": "w"}]}},
+                   "metrics": [{"expression": _LOCAL_RANKED_TRANSFORM, "name": "w"}]}},
         "param/windowed": {
             "models": "orders", "source": "orders", "mode": None,
             "kw": {"time_dimensions": signup_month_td(),
-                   "measures": [{"formula": WINDOWED_PARAM, "name": "w"}]}},
+                   "metrics": [{"expression": WINDOWED_PARAM, "name": "w"}]}},
         "param/windowed_custom": {
             "models": "orders_wsum", "source": "orders", "mode": None,
             "kw": {"time_dimensions": signup_month_td(),
-                   "measures": [{"formula": WINDOWED_CUSTOM_PARAM, "name": "w"}]}},
+                   "metrics": [{"expression": WINDOWED_CUSTOM_PARAM, "name": "w"}]}},
     }
 
 
@@ -101,9 +101,9 @@ async def _generate_one(case, dialect: str):
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model=case["source"], **kw)
+        query = SlayerQuery(population=case["source"], **kw)
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

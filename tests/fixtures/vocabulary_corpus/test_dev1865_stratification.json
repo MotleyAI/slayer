@@ -1,0 +1,116 @@
+{
+ "source": "tests/test_dev1865_stratification.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "part"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "part"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d', partition_by=region)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d', partition_by=region)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "part"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "part"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[])",
+    "name": "grand"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[])",
+    "name": "grand"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(amount)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": []
+}

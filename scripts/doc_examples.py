@@ -31,7 +31,7 @@ SHELL_LANGS = {"bash", "sh", "shell", "zsh", "console", "shell-session"}
 MARKER_RE = re.compile(r'^!!!\s+note\s+"Illustrative schema"\s*$')
 NOT_A_QUERY_RE = re.compile(r"^<!--\s*doc-check:\s*not-a-query\s*-->$")
 FENCE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}+|~{3,}+)(?P<info>[^`]*)$")
-SOURCE_MODEL_RE = re.compile(r"\bsource_model\b")
+POPULATION_RE = re.compile(r"(?<![\w-])population(?![\w-])")
 REFERENCE_RE = re.compile(r"(?<![\w/.\-])jaffle_shop(?:\.[A-Za-z_]\w*)+")
 LINK_DEFINITION_RE = re.compile(r"^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:", re.MULTILINE)
 BLANK_LINE_RE = re.compile(r"\n[ \t]*\n")
@@ -52,11 +52,11 @@ class DocBlock(BaseModel):
     lang: str
     marked: bool
     not_a_query: bool
-    source_model_mentions: int
+    population_mentions: int
     queries: list[DocQuery]
 
     def has_unextracted_mention(self) -> bool:
-        return self.source_model_mentions > sum(_query_key_count(q.query) for q in self.queries)
+        return self.population_mentions > sum(_query_key_count(q.query) for q in self.queries)
 
 
 class DocReference(BaseModel):
@@ -109,7 +109,7 @@ def _block(
         lang=lang,
         marked=standalone and bool(MARKER_RE.match(_preceding_line(lines, index, skip_indented=True))),
         not_a_query=standalone and bool(NOT_A_QUERY_RE.match(_preceding_line(lines, index, skip_indented=False))),
-        source_model_mentions=len(SOURCE_MODEL_RE.findall(body)),
+        population_mentions=len(POPULATION_RE.findall(body)),
         queries=[DocQuery(line=first_body_line + rel, query=q) for rel, q in extract_queries(lang=lang, body=body)],
     )
 
@@ -248,20 +248,20 @@ def parse_page(*, path: str, text: str) -> DocPage:
 
 
 def _is_query(value: Any) -> bool:
-    return isinstance(value, dict) and "source_model" in value
+    return isinstance(value, dict) and "population" in value
 
 
 def _query_key_count(value: Any) -> int:
-    """Number of ``source_model`` keys anywhere in ``value``."""
+    """Number of ``population`` keys anywhere in ``value``."""
     if isinstance(value, dict):
-        return ("source_model" in value) + sum(_query_key_count(v) for v in value.values())
+        return ("population" in value) + sum(_query_key_count(v) for v in value.values())
     if isinstance(value, list):
         return sum(_query_key_count(v) for v in value)
     return 0
 
 
 def _queries_in(value: Any) -> Iterator[Any]:
-    """Queries (top-level ``source_model`` objects, or non-empty lists of them) inside a parsed literal."""
+    """Queries (top-level ``population`` objects, or non-empty lists of them) inside a parsed literal."""
     if _is_query(value):
         yield value
     elif isinstance(value, list) and value and all(_is_query(v) for v in value):
@@ -272,7 +272,7 @@ def _queries_in(value: Any) -> Iterator[Any]:
 
 
 class _LineCursor:
-    """Assigns each query the body line of its first ``source_model``, scanning forward."""
+    """Assigns each query the body line of its first ``population``, scanning forward."""
 
     def __init__(self, body: str) -> None:
         self.body = body
@@ -280,13 +280,13 @@ class _LineCursor:
 
     def line_of(self, query: Any, *, start: int = 0) -> int:
         self.pos = max(self.pos, start)
-        first = SOURCE_MODEL_RE.search(self.body, self.pos)
+        first = POPULATION_RE.search(self.body, self.pos)
         if first is None:
             return self.body.count("\n", 0, start)
         line = self.body.count("\n", 0, first.start())
         self.pos = first.end()
-        for _ in range(repr(query).count("source_model") - 1):
-            nxt = SOURCE_MODEL_RE.search(self.body, self.pos)
+        for _ in range(repr(query).count("population") - 1):
+            nxt = POPULATION_RE.search(self.body, self.pos)
             if nxt is None:
                 break
             self.pos = nxt.end()

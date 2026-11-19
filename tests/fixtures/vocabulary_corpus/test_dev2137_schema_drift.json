@@ -1,0 +1,62 @@
+{
+ "source": "tests/test_dev2137_schema_drift.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "contractors",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "skills = 'go'"
+    ]
+   },
+   "new": {
+    "population": "contractors",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filter": [
+     "skills = 'go'"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  }
+ ]
+}

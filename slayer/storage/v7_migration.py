@@ -22,6 +22,6 @@ from slayer.storage.migrations import register_migration
 
 
 @register_migration(entity="SlayerModel", source_version=6)
-def _model_v6_to_v7(data: dict) -> dict:
+def _dataset_v6_to_v7(data: dict) -> dict:
     """No-op forward. The new fields default to ``None`` on validation."""
     return data

@@ -13,11 +13,11 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     Phase,
 )
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -36,25 +36,25 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 
-def _orders_model(with_amount: bool = False) -> SlayerModel:
+def _orders_dataset(with_amount: bool = False) -> SlayerDataset:
     """Orders joined to customers; ``with_amount`` adds amount/created_at."""
     columns = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="status", type=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="status", datatype=DataType.TEXT),
     ]
     if with_amount:
         columns += [
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ]
-    columns.append(Column(name="customer_id", type=DataType.INT))
-    return SlayerModel(
+    columns.append(DatasetField(name="customer_id", datatype=DataType.INT))
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="prod",
-        columns=columns,
-        joins=[ModelJoin(
-            target_model="customers",
+        fields=columns,
+        relationships=[DatasetRelationship(
+            to="customers",
             join_pairs=[["customer_id", "id"]],
         )],
     )
@@ -64,7 +64,7 @@ async def _engine_from_sql(
     *,
     ddl: list[str],
     inserts: list[tuple[str, list[tuple]]],
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
 ) -> SlayerQueryEngine:
     """Build a ``SlayerQueryEngine`` over a throwaway seeded SQLite file."""
     d = tempfile.mkdtemp()
@@ -80,8 +80,8 @@ async def _engine_from_sql(
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    for model in models:
-        await storage.save_model(model)
+    for model in datasets:
+        await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -110,24 +110,24 @@ async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
                 (3, "EU", 70.0, "2023-08-01"),
             ]),
         ],
-        models=[
-            SlayerModel(
+        datasets=[
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="prod",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="region", type=DataType.TEXT),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="signup_at", type=DataType.TIMESTAMP),
-                    Column(
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="region", datatype=DataType.TEXT),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+                    DatasetField(
                         name="signup_at_alias",
                         sql="signup_at",
-                        type=DataType.TIMESTAMP,
+                        datatype=DataType.TIMESTAMP,
                     ),
                 ],
             ),
-            _orders_model(with_amount=True),
+            _orders_dataset(with_amount=True),
         ],
     )
 
@@ -135,13 +135,13 @@ async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def test_b_no_time_dimension_with_explicit_time_arg(
-    engine_with_seeded_data,
+    engine_with_seeded_data: SlayerQueryEngine,
 ) -> None:
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["status"],
-        "measures": [{"formula": "last(amount, created_at)"}],
+        "metrics": [{"expression": "last(amount, created_at)"}],
     }))
     assert resp.data, resp.sql
     by_status = {row["orders.status"]: row for row in resp.data}
@@ -155,13 +155,13 @@ async def test_b_no_time_dimension_with_explicit_time_arg(
 
 
 async def test_c_cross_model_bare_column_explicit_time_arg(
-    engine_with_seeded_data,
+    engine_with_seeded_data: SlayerQueryEngine,
 ) -> None:
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "last(customers.amount, customers.signup_at)"}],
+        "metrics": [{"expression": "last(customers.amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
     by_region = {row["orders.customers.region"]: row for row in resp.data}
@@ -175,27 +175,27 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
 
 
 async def test_local_first_last_over_derived_column_expands_inner_refs(
-    engine_with_seeded_data,
+    engine_with_seeded_data: SlayerQueryEngine,
 ) -> None:
     """Derived ``ColumnSqlKey`` aggregate source must qualify inner bare refs; the execute is the pin (an unqualified ref fails 'no such column')."""
     engine = engine_with_seeded_data
-    orders = await engine.storage.get_model("orders")
+    orders = await engine.storage.get_dataset("orders")
     assert orders is not None
     orders = orders.model_copy(update={
-        "columns": list(orders.columns) + [
-            Column(
+        "fields": list(orders.fields) + [
+            DatasetField(
                 name="net_amount",
                 sql="amount * 0.9",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
         ],
     })
-    await engine.storage.save_model(orders)
+    await engine.storage.save_dataset(orders)
 
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["status"],
-        "measures": [{"formula": "last(net_amount, created_at)"}],
+        "metrics": [{"expression": "last(net_amount, created_at)"}],
     }))
     assert resp.data, resp.sql
 
@@ -221,27 +221,27 @@ async def test_cross_model_first_last_uses_target_default_time_dimension() -> No
                 (3, "EU", 70.0, "2023-08-01"),
             ]),
         ],
-        models=[
-            SlayerModel(
+        datasets=[
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="prod",
                 default_time_dimension="signup_at",  # ← the fallback target
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="region", type=DataType.TEXT),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="signup_at", type=DataType.TIMESTAMP),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="region", datatype=DataType.TEXT),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
                 ],
             ),
-            _orders_model(with_amount=True),
+            _orders_dataset(with_amount=True),
         ],
     )
 
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "last(customers.amount)"}],
+        "metrics": [{"expression": "last(customers.amount)"}],
     }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
@@ -258,28 +258,28 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
             "id INTEGER PRIMARY KEY, region TEXT, amount REAL)",
         ],
         inserts=[],
-        models=[
-            SlayerModel(
+        datasets=[
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="prod",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="region", type=DataType.TEXT),
-                    Column(name="amount", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="region", datatype=DataType.TEXT),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE),
                 ],
             ),
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="prod",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="customer_id", type=DataType.INT),
-                    Column(name="amount", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="customer_id", datatype=DataType.INT),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE),
                 ],
-                joins=[ModelJoin(
-                    target_model="customers",
+                relationships=[DatasetRelationship(
+                    to="customers",
                     join_pairs=[["customer_id", "id"]],
                 )],
             ),
@@ -287,26 +287,26 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
     )
 
     query = SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "last(customers.amount)"}],
+        "metrics": [{"expression": "last(customers.amount)"}],
     })
     with pytest.raises(ValueError, match=r"first/last.*ranking time"):
         await engine.execute(query)
 
 
 async def test_d_cross_cross_model_derived_time_arg(
-    engine_with_seeded_data,
+    engine_with_seeded_data: SlayerQueryEngine,
 ) -> None:
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.DAY,
         )],
-        measures=[{
-            "formula": "last(customers.amount, customers.signup_at_alias)",
+        metrics=[{
+            "expression": "last(customers.amount, customers.signup_at_alias)",
         }],
         to_many_handling="broadcast",
     ))
@@ -331,29 +331,29 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
                 (2, "NA", 999.0, "2023-08-01", "2024-01-01"),
             ]),
         ],
-        models=[
-            SlayerModel(
+        datasets=[
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="prod",
                 default_time_dimension="signup_at",
                 filters=["deleted_at IS NULL"],
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="region", type=DataType.TEXT),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="signup_at", type=DataType.TIMESTAMP),
-                    Column(name="deleted_at", type=DataType.TIMESTAMP),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="region", datatype=DataType.TEXT),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+                    DatasetField(name="deleted_at", datatype=DataType.TIMESTAMP),
                 ],
             ),
-            _orders_model(),
+            _orders_dataset(),
         ],
     )
 
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "last(customers.amount)"}],
+        "metrics": [{"expression": "last(customers.amount)"}],
     }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     # Orders of a deleted customer read the filtered-out target as NULL.
@@ -386,34 +386,34 @@ async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> Non
                 (3, "NA", 300.0, "2023-09-01", "inactive"),
             ]),
         ],
-        models=[
-            SlayerModel(
+        datasets=[
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="prod",
                 default_time_dimension="signup_at",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="region", type=DataType.TEXT),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="signup_at", type=DataType.TIMESTAMP),
-                    Column(name="status", type=DataType.TEXT),
-                    Column(
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="region", datatype=DataType.TEXT),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+                    DatasetField(name="status", datatype=DataType.TEXT),
+                    DatasetField(
                         name="active_amount",
                         sql="amount",
                         filter="status = 'active'",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                     ),
                 ],
             ),
-            _orders_model(),
+            _orders_dataset(),
         ],
     )
 
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "last(customers.active_amount)"}],
+        "metrics": [{"expression": "last(customers.active_amount)"}],
     }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
@@ -442,34 +442,34 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
                 (2, "NA", "2099-02-01"),
             ]),
         ],
-        models=[
-            SlayerModel(
+        datasets=[
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="prod",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="region", type=DataType.TEXT),
-                    Column(name="created_at", type=DataType.TIMESTAMP),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="region", datatype=DataType.TEXT),
+                    DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
                 ],
             ),
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="prod",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="created_at", type=DataType.TIMESTAMP),
-                    Column(name="customer_id", type=DataType.INT),
-                    Column(
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                    DatasetField(name="customer_id", datatype=DataType.INT),
+                    DatasetField(
                         name="created_day",
                         sql="date(created_at)",
-                        type=DataType.TIMESTAMP,
+                        datatype=DataType.TIMESTAMP,
                     ),
                 ],
-                joins=[ModelJoin(
-                    target_model="customers",
+                relationships=[DatasetRelationship(
+                    to="customers",
                     join_pairs=[["customer_id", "id"]],
                 )],
             ),
@@ -477,9 +477,9 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
     )
 
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "last(amount, created_day)"}],
+        "metrics": [{"expression": "last(amount, created_day)"}],
     }))
     assert resp.data, resp.sql
     by_region = {row["orders.customers.region"]: row for row in resp.data}
@@ -489,53 +489,53 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
 
 
 
-def _u_regions() -> SlayerModel:
-    return SlayerModel(
+def _u_regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="opened_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="opened_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
 
-def _u_customers() -> SlayerModel:
-    return SlayerModel(
+def _u_customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
-            Column(name="signup_at_alias", sql="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="signup_at_alias", sql="signup_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def _u_orders(extra: list[Column] | None = None) -> SlayerModel:
+def _u_orders(extra: list[DatasetField] | None = None) -> SlayerDataset:
     cols = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="status", type=DataType.TEXT),
-        Column(name="amount", type=DataType.DOUBLE),
-        Column(name="created_at", type=DataType.TIMESTAMP),
-        Column(name="customer_id", type=DataType.INT),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="status", datatype=DataType.TEXT),
+        DatasetField(name="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="customer_id", datatype=DataType.INT),
     ]
     cols += extra or []
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="prod",
-        columns=cols,
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        fields=cols,
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def _u_bundle(orders: SlayerModel) -> ResolvedSourceBundle:
+def _u_bundle(orders: SlayerDataset) -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=orders,
-        referenced_models=[orders, _u_customers(), _u_regions()],
+        population=orders,
+        referenced_datasets=[orders, _u_customers(), _u_regions()],
     )
 
 
@@ -553,14 +553,14 @@ def _planned_slots(query: SlayerQuery, bundle: ResolvedSourceBundle):
 
 
 def _host_scope(
-    gen: SQLGenerator, *, source_model: SlayerModel, bundle: ResolvedSourceBundle,
+    gen: SQLGenerator, *, source_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
     relation: str | None = None,
 ) -> ScopeFrame:
     alloc = AliasAllocator()
-    rel = relation or source_model.name
+    rel = relation or source_dataset.name
     return ScopeFrame(
         scope_id=alloc.next_scope_id(rel),
-        root_model=source_model, root_relation=rel,
+        root_dataset=source_dataset, root_relation=rel,
         bundle=bundle, dialect=gen._dialect, allocator=alloc,
     )
 
@@ -571,35 +571,35 @@ class TestExplicitTimeArgOf:
 
     def test_returns_first_columnkey(self) -> None:
         key = AggregateKey(
-            source=ColumnKey(leaf="amount"), agg="last",
-            args=(ColumnKey(leaf="created_at"),),
+            source=FieldKey(leaf="amount"), agg="last",
+            args=(FieldKey(leaf="created_at"),),
         )
-        assert self._gen()._explicit_time_arg_of(key) == ColumnKey(leaf="created_at")
+        assert self._gen()._explicit_time_arg_of(key) == FieldKey(leaf="created_at")
 
     def test_returns_first_columnsqlkey(self) -> None:
-        arg = ColumnSqlKey(path=(), model="orders", column_name="created_at_alias")
-        key = AggregateKey(source=ColumnKey(leaf="amount"), agg="first", args=(arg,))
+        arg = FieldSqlKey(path=(), dataset="orders", field_name="created_at_alias")
+        key = AggregateKey(source=FieldKey(leaf="amount"), agg="first", args=(arg,))
         assert self._gen()._explicit_time_arg_of(key) == arg
 
     def test_returns_path_bearing_arg_as_is(self) -> None:
-        arg = ColumnKey(path=("customers",), leaf="signup_at")
-        key = AggregateKey(source=ColumnKey(leaf="amount"), agg="last", args=(arg,))
+        arg = FieldKey(path=("customers",), leaf="signup_at")
+        key = AggregateKey(source=FieldKey(leaf="amount"), agg="last", args=(arg,))
         assert self._gen()._explicit_time_arg_of(key) == arg
 
     def test_none_for_non_first_last(self) -> None:
         key = AggregateKey(
-            source=ColumnKey(leaf="amount"), agg="sum",
-            args=(ColumnKey(leaf="created_at"),),
+            source=FieldKey(leaf="amount"), agg="sum",
+            args=(FieldKey(leaf="created_at"),),
         )
         assert self._gen()._explicit_time_arg_of(key) is None
 
     def test_none_for_empty_args(self) -> None:
-        key = AggregateKey(source=ColumnKey(leaf="amount"), agg="last", args=())
+        key = AggregateKey(source=FieldKey(leaf="amount"), agg="last", args=())
         assert self._gen()._explicit_time_arg_of(key) is None
 
     def test_none_when_first_arg_is_scalar(self) -> None:
         key = AggregateKey(
-            source=ColumnKey(leaf="amount"), agg="last",
+            source=FieldKey(leaf="amount"), agg="last",
             args=(Decimal("5"),),
         )
         assert self._gen()._explicit_time_arg_of(key) is None
@@ -609,7 +609,7 @@ class TestTimeArgJoinDiscovery:
     def _gen(self) -> SQLGenerator:
         return SQLGenerator(dialect="postgres")
 
-    def _run(self, query: SlayerQuery, orders: SlayerModel) -> ScopeFrame:
+    def _run(self, query: SlayerQuery, orders: SlayerDataset) -> ScopeFrame:
         bundle = _u_bundle(orders)
         planned = plan_query(query=query, bundle=bundle)
         sub = (
@@ -627,7 +627,7 @@ class TestTimeArgJoinDiscovery:
         }
         order = list(sub.projection)
         gen = self._gen()
-        scope = _host_scope(gen, source_model=orders, bundle=bundle)
+        scope = _host_scope(gen, source_dataset=orders, bundle=bundle)
         gen._resolve_agg_inputs_via_scope(
             base_render_order=order, slots_by_id=slots, scope=scope,
         )
@@ -636,9 +636,9 @@ class TestTimeArgJoinDiscovery:
     def test_single_hop_time_arg_registers_join(self) -> None:
         scope = self._run(
             SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "last(amount, customers.signup_at)"}],
+                "metrics": [{"expression": "last(amount, customers.signup_at)"}],
             }),
             _u_orders(),
         )
@@ -647,9 +647,9 @@ class TestTimeArgJoinDiscovery:
     def test_multi_hop_time_arg_registers_every_prefix(self) -> None:
         scope = self._run(
             SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "last(amount, customers.regions.opened_at)"}],
+                "metrics": [{"expression": "last(amount, customers.regions.opened_at)"}],
             }),
             _u_orders(),
         )
@@ -658,13 +658,13 @@ class TestTimeArgJoinDiscovery:
 
     def test_local_derived_crossing_time_arg_registers_join(self) -> None:
         orders = _u_orders(extra=[
-            Column(name="cust_signup", sql="customers.signup_at", type=DataType.TIMESTAMP),
+            DatasetField(name="cust_signup", sql="customers.signup_at", datatype=DataType.TIMESTAMP),
         ])
         scope = self._run(
             SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "last(amount, cust_signup)"}],
+                "metrics": [{"expression": "last(amount, cust_signup)"}],
             }),
             orders,
         )
@@ -673,9 +673,9 @@ class TestTimeArgJoinDiscovery:
     def test_composite_time_arg_registers_join(self) -> None:
         scope = self._run(
             SlayerQuery(
-                source_model="orders", dimensions=["status"],
-                measures=[{
-                    "formula": "last(amount, customers.signup_at) + 1", "name": "plus1",
+                population="orders", dimensions=["status"],
+                metrics=[{
+                    "expression": "last(amount, customers.signup_at) + 1", "name": "plus1",
                 }],
             ),
             _u_orders(),
@@ -684,15 +684,15 @@ class TestTimeArgJoinDiscovery:
 
     def test_cross_model_time_arg_not_registered_on_host(self) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "last(customers.amount, customers.signup_at)"}],
+            "population": "orders",
+            "metrics": [{"expression": "last(customers.amount, customers.signup_at)"}],
         })
         bundle = _u_bundle(_u_orders())
         order, slots = _planned_slots(query, bundle)
         planned = plan_query(query=query, bundle=bundle)
         attach = next(
             a for a in planned.regroup_attach_plans
-            if a.producer_root_model == "customers"
+            if a.producer_root_dataset == "customers"
         )
         prod_agg = next(
             s for s in attach.producer_plan.aggregate_slots
@@ -702,7 +702,7 @@ class TestTimeArgJoinDiscovery:
         assert prod_agg.key.locus == "target", prod_agg.key
         assert not any(isinstance(s.key, AggregateKey) for s in slots.values())
         gen = self._gen()
-        scope = _host_scope(gen, source_model=_u_orders(), bundle=bundle)
+        scope = _host_scope(gen, source_dataset=_u_orders(), bundle=bundle)
         seen: list = []
         real = ScopeFrame.resolve
 
@@ -722,15 +722,15 @@ class TestTimeArgJoinDiscovery:
         gen = self._gen()
         orders = _u_orders()
         bundle = _u_bundle(orders)
-        residual = ColumnSqlKey(path=("regions",), model="regions", column_name="opened_day")
+        residual = FieldSqlKey(path=("regions",), dataset="regions", field_name="opened_day")
         key = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="last", args=(residual,),
+            source=FieldKey(path=(), leaf="amount"), agg="last", args=(residual,),
         )
         slot = ValueSlot(
             id="s0", key=key, declared_name="x", public_name="x",
             phase=Phase.AGGREGATE, type=DataType.DOUBLE,
         )
-        scope = _host_scope(gen, source_model=orders, bundle=bundle)
+        scope = _host_scope(gen, source_dataset=orders, bundle=bundle)
         seen: list = []
         real = ScopeFrame.resolve
 
@@ -749,8 +749,8 @@ class TestTimeArgJoinDiscovery:
 class TestGateUsesSharedArgSelection:
     def _scalar_first_arg_key(self) -> AggregateKey:
         return AggregateKey(
-            source=ColumnKey(leaf="amount"), agg="last",
-            args=(Decimal("5"), ColumnKey(leaf="created_at")),
+            source=FieldKey(leaf="amount"), agg="last",
+            args=(Decimal("5"), FieldKey(leaf="created_at")),
         )
 
     def test_scalar_first_positional_is_not_an_explicit_time_arg(self) -> None:
@@ -758,11 +758,11 @@ class TestGateUsesSharedArgSelection:
 
     def test_scalar_first_arg_gate_requires_default_time(self) -> None:
         # no default_time_dimension, and two temporal columns: no sole-column default
-        orders = _u_orders(extra=[Column(name="updated_at", sql="created_at", type=DataType.TIMESTAMP)])
+        orders = _u_orders(extra=[DatasetField(name="updated_at", sql="created_at", datatype=DataType.TIMESTAMP)])
         bundle = _u_bundle(orders)
         key = self._scalar_first_arg_key()
         with pytest.raises(ValueError, match="ranking time"):
-            resolve_ranking_time_key(key=key, root_model=orders, bundle=bundle)
+            resolve_ranking_time_key(key=key, root_dataset=orders, bundle=bundle)
 
 
 async def _multi_hop_engine() -> SlayerQueryEngine:
@@ -792,7 +792,7 @@ async def _multi_hop_engine() -> SlayerQueryEngine:
                 (20, "EU", "2021-01-01"),  # opened later → wins `last`
             ]),
         ],
-        models=[
+        datasets=[
             _u_regions(),
             _u_customers(),
             _u_orders(),
@@ -803,9 +803,9 @@ async def _multi_hop_engine() -> SlayerQueryEngine:
 async def test_e2e_noncomposite_local_crossing_time_arg() -> None:
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["status"],
-        "measures": [{"formula": "last(amount, customers.signup_at)"}],
+        "metrics": [{"expression": "last(amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -818,9 +818,9 @@ async def test_e2e_noncomposite_local_crossing_time_arg() -> None:
 async def test_e2e_multi_hop_local_crossing_time_arg() -> None:
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["status"],
-        "measures": [{"formula": "last(amount, customers.regions.opened_at)"}],
+        "metrics": [{"expression": "last(amount, customers.regions.opened_at)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -832,7 +832,7 @@ async def test_e2e_multi_hop_local_crossing_time_arg() -> None:
 
 async def test_e2e_local_derived_crossing_time_arg() -> None:
     orders = _u_orders(extra=[
-        Column(name="cust_signup", sql="customers.signup_at", type=DataType.TIMESTAMP),
+        DatasetField(name="cust_signup", sql="customers.signup_at", datatype=DataType.TIMESTAMP),
     ])
     engine = await _engine_from_sql(
         ddl=[
@@ -856,12 +856,12 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
             ]),
             ("INSERT INTO regions VALUES (?,?,?)", [(10, "NA", "2020-01-01")]),
         ],
-        models=[_u_regions(), _u_customers(), orders],
+        datasets=[_u_regions(), _u_customers(), orders],
     )
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["status"],
-        "measures": [{"formula": "last(amount, cust_signup)"}],
+        "metrics": [{"expression": "last(amount, cust_signup)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -874,9 +874,9 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
     """A crossing time arg isolates the aggregate into its own ``_cm_`` CTE; the ``customers`` join appears once per scope (host base + CTE), never twice within one."""
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "last(amount, customers.signup_at)"}],
+        "metrics": [{"expression": "last(amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
     assert "_cm_" in resp.sql, (

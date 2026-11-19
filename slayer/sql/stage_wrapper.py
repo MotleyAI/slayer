@@ -1,7 +1,7 @@
 """Flat-rename wrapper over a composed stage statement.
 
 Shared by the multi-stage CTE chaining, the regroup producer attach and the
-query-backed virtual-model wrap: output columns become the flat downstream
+query-backed virtual-dataset wrap: output columns become the flat downstream
 bind names, checked against the expected stage schema.
 """
 from __future__ import annotations

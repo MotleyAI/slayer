@@ -301,7 +301,7 @@ class TestCacheBounding:
     def _lite(n: int) -> DatasourceConfig:
         return DatasourceConfig(name=f"lite{n}", type="sqlite", database=_tmp_db(f"slayer-cache-{n}.db"))
 
-    def test_cache_evicts_least_recently_used_over_limit(self, monkeypatch) -> None:
+    def test_cache_evicts_least_recently_used_over_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         engine_factory.reset_cache()
         monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "2")
         first, second, third = (self._lite(i) for i in range(3))
@@ -313,7 +313,7 @@ class TestCacheBounding:
         assert engine_factory._cache_key(first, first.get_connection_string()) not in cached
         engine_factory.reset_cache()
 
-    def test_reuse_refreshes_recency(self, monkeypatch) -> None:
+    def test_reuse_refreshes_recency(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A hit must move the entry to the MRU end, else the cap degenerates
         into FIFO and evicts the hottest engine."""
         engine_factory.reset_cache()
@@ -328,7 +328,7 @@ class TestCacheBounding:
         assert engine_factory._cache_key(second, second.get_connection_string()) not in remaining
         engine_factory.reset_cache()
 
-    def test_eviction_disposes_the_engine(self, monkeypatch) -> None:
+    def test_eviction_disposes_the_engine(self, monkeypatch: pytest.MonkeyPatch) -> None:
         engine_factory.reset_cache()
         monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "1")
         first, second = self._lite(0), self._lite(1)
@@ -338,7 +338,7 @@ class TestCacheBounding:
         disposed.assert_called_once()
         engine_factory.reset_cache()
 
-    def test_dispose_failure_does_not_break_caching(self, monkeypatch) -> None:
+    def test_dispose_failure_does_not_break_caching(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A pool that refuses to close must not take the factory with it."""
         engine_factory.reset_cache()
         monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "1")
@@ -348,7 +348,7 @@ class TestCacheBounding:
             assert isinstance(engine_factory.get_engine(second), sa.Engine)
         engine_factory.reset_cache()
 
-    def test_lowering_the_limit_trims_on_the_next_hit(self, monkeypatch) -> None:
+    def test_lowering_the_limit_trims_on_the_next_hit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Trimming only on insert leaves the cache oversized until the next
         miss."""
         engine_factory.reset_cache()
@@ -368,7 +368,7 @@ class TestCacheBounding:
         ) in engine_factory._engine_cache
         engine_factory.reset_cache()
 
-    def test_hit_trim_disposes_outside_the_lock(self, monkeypatch) -> None:
+    def test_hit_trim_disposes_outside_the_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``dispose()`` does I/O, so it must not run under the lock."""
         engine_factory.reset_cache()
         cold, hot = self._lite(0), self._lite(1)
@@ -386,7 +386,7 @@ class TestCacheBounding:
         assert held == [False], "disposal ran while holding the cache lock"
         engine_factory.reset_cache()
 
-    def test_zero_limit_bypasses_reuse_on_a_hit(self, monkeypatch) -> None:
+    def test_zero_limit_bypasses_reuse_on_a_hit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """With caching off, an already-cached key must be dropped and rebuilt,
         not handed back moments before we dispose it."""
         engine_factory.reset_cache()
@@ -401,11 +401,11 @@ class TestCacheBounding:
         engine_factory.reset_cache()
 
     @pytest.mark.parametrize(argnames="raw", argvalues=["nonsense", "-1", ""])
-    def test_bad_limit_env_falls_back_to_default(self, monkeypatch, raw: str) -> None:
+    def test_bad_limit_env_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
         monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, raw)
         assert engine_factory._max_cached_engines() == engine_factory.DEFAULT_MAX_CACHED_ENGINES
 
-    def test_zero_limit_disables_caching(self, monkeypatch) -> None:
+    def test_zero_limit_disables_caching(self, monkeypatch: pytest.MonkeyPatch) -> None:
         engine_factory.reset_cache()
         monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "0")
         engine_factory.get_engine(self._lite(0))

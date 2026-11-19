@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_dev1900_population_guard.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "oa"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "oa"
+   }
+  }
+ ],
+ "skipped": []
+}

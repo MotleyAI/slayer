@@ -1,0 +1,132 @@
+{
+ "source": "tests/test_dev1739_guards.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=city)"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=city)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=ordered_at)"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=ordered_at)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=region)"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=region)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d', partition_by=region)"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d', partition_by=region)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount, partition_by=region))"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount, partition_by=region))"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(amount), partition_by=region, direction='desc')"
+   },
+   "new": {
+    "expression": "rank(sum(amount), partition_by=region, direction='desc')"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[channel, region])"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[channel, region])"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=channel_region)"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=channel_region)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 246,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 248,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 249,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 250,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 253,
+   "reason": "not fully literal"
+  }
+ ]
+}

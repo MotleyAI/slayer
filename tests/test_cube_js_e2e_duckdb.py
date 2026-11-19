@@ -10,7 +10,7 @@ import os
 import pytest
 
 from slayer.core.models import DatasourceConfig
-from slayer.core.query import SlayerQuery, extract_model_variables
+from slayer.core.query import SlayerQuery, extract_dataset_variables
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.js_parser import parse_cube_js
 from slayer.cube.models import CubeProject
@@ -71,8 +71,8 @@ async def imported(tmp_path):
         await converter.collect_metadata(client=engine.client_for(datasource))
         result = converter.convert()
         assert not result.report.has_errors, [i.message for i in result.report.issues if i.severity == "error"]
-        model = next(m for m in result.models if m.name == "RrDrivers")
-        await storage.save_model(model)
+        model = next(m for m in result.datasets if m.name == "RrDrivers")
+        await storage.save_dataset(model)
         yield engine, model
     finally:
         await engine.aclose()
@@ -86,26 +86,26 @@ def _sole_value(resp):
 
 async def test_import_yields_expected_variable_contract(imported):
     _, model = imported
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert set(v.required) == {"fulfillment_date_from", "fulfillment_date_to"}
     assert set(v.optional) == {"brand", "market", "category"}
 
 
 async def test_count_with_optional_omitted_is_unfiltered(imported):
     engine, _ = imported
-    q = SlayerQuery(
-        source_model="RrDrivers", measures=[{"formula": "count"}], variables=_FULL_VARS,
-    )
+    q = SlayerQuery.model_validate({
+        "population": "RrDrivers", "metrics": [{"expression": "count"}], "variables": _FULL_VARS,
+    })
     resp = await engine.execute(q)
     assert _sole_value(resp) == 3
 
 
 async def test_count_with_brand_pushdown(imported):
     engine, _ = imported
-    q = SlayerQuery(
-        source_model="RrDrivers", measures=[{"formula": "count"}],
-        variables={**_FULL_VARS, "brand": ["Acme"]},
-    )
+    q = SlayerQuery.model_validate({
+        "population": "RrDrivers", "metrics": [{"expression": "count"}],
+        "variables": {**_FULL_VARS, "brand": ["Acme"]},
+    })
     resp = await engine.execute(q)
     assert _sole_value(resp) == 2
 
@@ -117,10 +117,10 @@ async def test_count_with_scalar_brand_pushdown(imported):
     declared-list coercion this renders ``IN (Acme)`` and DuckDB fails on the
     unknown column reference."""
     engine, _ = imported
-    q = SlayerQuery(
-        source_model="RrDrivers", measures=[{"formula": "count"}],
-        variables={**_FULL_VARS, "brand": "Acme"},
-    )
+    q = SlayerQuery.model_validate({
+        "population": "RrDrivers", "metrics": [{"expression": "count"}],
+        "variables": {**_FULL_VARS, "brand": "Acme"},
+    })
     resp = await engine.execute(q)
     assert _sole_value(resp) == 2
 
@@ -129,10 +129,10 @@ async def test_scalar_and_list_pushdowns_agree(imported):
     engine, _ = imported
 
     async def _count(brand):
-        q = SlayerQuery(
-            source_model="RrDrivers", measures=[{"formula": "count"}],
-            variables={**_FULL_VARS, "brand": brand},
-        )
+        q = SlayerQuery.model_validate({
+            "population": "RrDrivers", "metrics": [{"expression": "count"}],
+            "variables": {**_FULL_VARS, "brand": brand},
+        })
         return _sole_value(await engine.execute(q))
 
     assert await _count("Zeta") == await _count(["Zeta"]) == 1
@@ -140,10 +140,10 @@ async def test_scalar_and_list_pushdowns_agree(imported):
 
 async def test_grouped_max_measure(imported):
     engine, _ = imported
-    q = SlayerQuery(
-        source_model="RrDrivers", dimensions=["category"],
-        measures=[{"formula": "qty_ty"}], variables=_FULL_VARS,
-    )
+    q = SlayerQuery.model_validate({
+        "population": "RrDrivers", "dimensions": ["category"],
+        "metrics": [{"expression": "qty_ty"}], "variables": _FULL_VARS,
+    })
     resp = await engine.execute(q)
     by_cat = {}
     for row in resp.data:
@@ -155,9 +155,9 @@ async def test_grouped_max_measure(imported):
 
 async def test_required_filter_omitted_raises_and_names_variable(imported):
     engine, _ = imported
-    q = SlayerQuery(
-        source_model="RrDrivers", measures=[{"formula": "count"}],
-        variables={"brand": ["Acme"]},  # required date vars omitted
-    )
+    q = SlayerQuery.model_validate({
+        "population": "RrDrivers", "metrics": [{"expression": "count"}],
+        "variables": {"brand": ["Acme"]},  # required date vars omitted
+    })
     with pytest.raises(Exception, match="fulfillment_date_from"):
         await engine.execute(q)

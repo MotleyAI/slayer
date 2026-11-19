@@ -1,0 +1,138 @@
+{
+ "source": "tests/test_dev1964_dual_phase_consumption.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "pband",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "pband",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "x",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "x",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=[region, created_at, customers.created_at]), partition_by=[created_at, customers.created_at])",
+    "name": "m"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=[region, created_at, customers.created_at]), partition_by=[created_at, customers.created_at])",
+    "name": "m"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 262,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 377,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 440,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 441,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 442,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 443,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 444,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 445,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 446,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 448,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 449,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 450,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 453,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 455,
+   "reason": "not fully literal"
+  }
+ ]
+}

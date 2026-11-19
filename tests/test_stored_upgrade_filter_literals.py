@@ -19,6 +19,7 @@ from tests._stored_upgrade_fixtures import (
     run,
     seed_shop,
 )
+from slayer.storage.base import StorageBackend
 
 REPAIRED_CASES = [
     pytest.param("ordered_at >= '2024-01-01T00:00:00Z'", 200.0, id="zulu"),
@@ -56,10 +57,10 @@ async def _store(*, tmp_path, ds: DatasourceConfig, backend: str, filters: list[
                            models=[orders_v10(), customers_v10(), qb])
 
 
-async def _loaded_filters(storage) -> list[str]:
-    model = await storage.get_model("rev_f", data_source=DS)
+async def _loaded_filters(storage: StorageBackend) -> list[str]:
+    model = await storage.get_dataset("rev_f", data_source=DS)
     assert model is not None
-    return list((model.source_queries or [])[0].filters or [])
+    return list((model.source_queries or [])[0].filter or [])
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -68,7 +69,7 @@ async def test_legacy_literal_against_temporal_column_runs(tmp_path, shop_ds, ba
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend=backend, filters=[stored_filter])
     [loaded] = await _loaded_filters(storage)
     assert not [frag for frag in LEGACY_FRAGMENTS if frag in loaded], loaded
-    resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev)"]})
     assert measure_total(resp, measure="rev_sum") == expected
 
 
@@ -86,7 +87,7 @@ async def test_non_temporal_or_unresolvable_comparison_stays_verbatim(tmp_path, 
 
 async def test_text_column_comparison_keeps_its_rows(tmp_path, shop_ds):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=["status = '2024/01/01'"])
-    resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev)"]})
     assert measure_total(resp, measure="rev_sum") == 60.0
 
 
@@ -98,7 +99,7 @@ async def test_memory_query_filter_literal_is_repaired(tmp_path, shop_ds, backen
                               memories=[memory_v2(memory_id="m_filter", query=query)])
     mem = await storage.get_memory("m_filter")
     assert mem.query is not None
-    [loaded] = mem.query.filters or []
+    [loaded] = mem.query.filter or []
     assert "+02:00" not in loaded
     resp = await run(storage, mem.query)
     assert measure_total(resp, measure="rev") == 150.0

@@ -15,18 +15,15 @@ Graph schema
 Node tables (one per entity kind):
   Memory        id STRING (canonical ``memory:<id>`` form), learning STRING
   Datasource    id STRING, name STRING
-  Model         id STRING, name STRING, description STRING
-  ModelColumn   id STRING, name STRING, data_type STRING, description STRING
-  Measure       id STRING, name STRING, description STRING
+  Dataset       id STRING, name STRING, description STRING
+  DatasetField  id STRING, name STRING, data_type STRING, description STRING
+  Metric        id STRING, name STRING, description STRING
   Aggregation   id STRING, name STRING
 
-Note: the node table for schema columns is named ``ModelColumn`` (not ``Column``)
-because ``Column`` is a reserved keyword in LadybugDB ≥ 0.15.
-
 Relationship tables:
-  MENTIONS   Memory → {Datasource, Model, ModelColumn, Measure, Aggregation, Memory}
-  CONTAINS   Datasource → Model, Model → {ModelColumn, Measure, Aggregation}
-  JOINS      Model → Model
+  MENTIONS       Memory → {Datasource, Dataset, DatasetField, Metric, Aggregation, Memory}
+  CONTAINS       Datasource → Dataset, Dataset → {DatasetField, Metric, Aggregation}
+  RELATIONSHIPS  Dataset → Dataset
 
 All queries must be read-only ``MATCH … RETURN … AS id`` statements.
 The ``MATCH (n:A:B)`` multi-label pattern returns nodes from BOTH table A
@@ -44,6 +41,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from slayer.core.models import SlayerDataset
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -150,15 +148,15 @@ def _create_schema(conn: Any) -> None:
         "id STRING, name STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
-        "CREATE NODE TABLE Model("
+        "CREATE NODE TABLE Dataset("
         "id STRING, name STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
-        "CREATE NODE TABLE ModelColumn("
+        "CREATE NODE TABLE DatasetField("
         "id STRING, name STRING, data_type STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
-        "CREATE NODE TABLE Measure("
+        "CREATE NODE TABLE Metric("
         "id STRING, name STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
@@ -168,56 +166,56 @@ def _create_schema(conn: Any) -> None:
     conn.execute(
         "CREATE REL TABLE MENTIONS("
         "FROM Memory TO Datasource, "
-        "FROM Memory TO Model, "
-        "FROM Memory TO ModelColumn, "
-        "FROM Memory TO Measure, "
+        "FROM Memory TO Dataset, "
+        "FROM Memory TO DatasetField, "
+        "FROM Memory TO Metric, "
         "FROM Memory TO Aggregation, "
         "FROM Memory TO Memory"
         ")"
     )
     conn.execute(
         "CREATE REL TABLE CONTAINS("
-        "FROM Datasource TO Model, "
-        "FROM Model TO ModelColumn, "
-        "FROM Model TO Measure, "
-        "FROM Model TO Aggregation"
+        "FROM Datasource TO Dataset, "
+        "FROM Dataset TO DatasetField, "
+        "FROM Dataset TO Metric, "
+        "FROM Dataset TO Aggregation"
         ")"
     )
-    conn.execute("CREATE REL TABLE JOINS(FROM Model TO Model, cardinality STRING)")
+    conn.execute("CREATE REL TABLE RELATIONSHIPS(FROM Dataset TO Dataset, cardinality STRING)")
 
 
-def _insert_model_child_nodes(conn: Any, canonical_model: str, model: Any) -> None:
-    """Insert ModelColumn, Measure, and Aggregation nodes for one model."""
-    for col in model.columns:
+def _insert_dataset_child_nodes(conn: Any, canonical_dataset: str, dataset: SlayerDataset) -> None:
+    """Insert DatasetField, Metric, and Aggregation nodes for one dataset."""
+    for col in dataset.fields:
         if col.hidden:
             continue
         conn.execute(
-            "CREATE (:ModelColumn {"
+            "CREATE (:DatasetField {"
             "id: $id, name: $name, data_type: $dt, description: $descr"
             "})",
             {
-                "id": f"{canonical_model}.{col.name}",
+                "id": f"{canonical_dataset}.{col.name}",
                 "name": col.name,
-                "dt": col.type.value if col.type is not None else "",
+                "dt": col.datatype.value if col.datatype is not None else "",
                 "descr": col.description or "",
             },
         )
-    for measure in model.measures:
-        if not measure.name:
+    for metric in dataset.metrics:
+        if not metric.name:
             continue
         conn.execute(
-            "CREATE (:Measure {id: $id, name: $name, description: $descr})",
+            "CREATE (:Metric {id: $id, name: $name, description: $descr})",
             {
-                "id": f"{canonical_model}.{measure.name}",
-                "name": measure.name,
-                "descr": measure.description or "",
+                "id": f"{canonical_dataset}.{metric.name}",
+                "name": metric.name,
+                "descr": metric.description or "",
             },
         )
-    for agg in model.aggregations:
+    for agg in dataset.aggregations:
         conn.execute(
             "CREATE (:Aggregation {id: $id, name: $name, description: $descr})",
             {
-                "id": f"{canonical_model}.{agg.name}",
+                "id": f"{canonical_dataset}.{agg.name}",
                 "name": agg.name,
                 "descr": agg.description or "",
             },
@@ -227,7 +225,7 @@ def _insert_model_child_nodes(conn: Any, canonical_model: str, model: Any) -> No
 def _insert_nodes(
     conn: Any,
     datasource_names: list[str],
-    visible_models: dict,
+    visible_datasets: dict[str, SlayerDataset],
     memories: list,
     datasource_descriptions: dict[str, str | None] | None = None,
 ) -> None:
@@ -250,17 +248,17 @@ def _insert_nodes(
             },
         )
 
-    for canonical_model, model in visible_models.items():
-        _, model_name = canonical_model.split(".", 1)
+    for canonical_dataset, dataset in visible_datasets.items():
+        _, dataset_name = canonical_dataset.split(".", 1)
         conn.execute(
-            "CREATE (:Model {id: $id, name: $name, description: $descr})",
+            "CREATE (:Dataset {id: $id, name: $name, description: $descr})",
             {
-                "id": canonical_model,
-                "name": model_name,
-                "descr": model.description or "",
+                "id": canonical_dataset,
+                "name": dataset_name,
+                "descr": dataset.description or "",
             },
         )
-        _insert_model_child_nodes(conn, canonical_model, model)
+        _insert_dataset_child_nodes(conn, canonical_dataset, dataset)
 
     for mem in memories:
         conn.execute(
@@ -276,57 +274,57 @@ def _insert_nodes(
 def _insert_contains_edges(
     conn: Any,
     datasource_names: list[str],
-    visible_models: dict,
+    visible_datasets: dict[str, SlayerDataset],
 ) -> None:
-    """Insert CONTAINS edges: Datasource→Model and Model→{ModelColumn/Measure/Agg}."""
+    """Insert CONTAINS edges: Datasource→Dataset and Dataset→{DatasetField/Metric/Agg}."""
     ds_set = set(datasource_names)
-    for canonical_model, model in visible_models.items():
-        ds = canonical_model.split(".", 1)[0]
+    for canonical_dataset, dataset in visible_datasets.items():
+        ds = canonical_dataset.split(".", 1)[0]
         if ds in ds_set:
             conn.execute(
-                "MATCH (d:Datasource {id: $ds}), (m:Model {id: $model}) "
+                "MATCH (d:Datasource {id: $ds}), (m:Dataset {id: $dataset}) "
                 "CREATE (d)-[:CONTAINS]->(m)",
-                {"ds": ds, "model": canonical_model},
+                {"ds": ds, "dataset": canonical_dataset},
             )
-        for col in model.columns:
+        for col in dataset.fields:
             if col.hidden:
                 continue
             conn.execute(
-                "MATCH (m:Model {id: $model}), (c:ModelColumn {id: $col}) "
+                "MATCH (m:Dataset {id: $dataset}), (c:DatasetField {id: $field}) "
                 "CREATE (m)-[:CONTAINS]->(c)",
-                {"model": canonical_model, "col": f"{canonical_model}.{col.name}"},
+                {"dataset": canonical_dataset, "field": f"{canonical_dataset}.{col.name}"},
             )
-        for measure in model.measures:
-            if not measure.name:
+        for metric in dataset.metrics:
+            if not metric.name:
                 continue
             conn.execute(
-                "MATCH (m:Model {id: $model}), (ms:Measure {id: $ms}) "
+                "MATCH (m:Dataset {id: $dataset}), (ms:Metric {id: $ms}) "
                 "CREATE (m)-[:CONTAINS]->(ms)",
-                {"model": canonical_model, "ms": f"{canonical_model}.{measure.name}"},
+                {"dataset": canonical_dataset, "ms": f"{canonical_dataset}.{metric.name}"},
             )
-        for agg in model.aggregations:
+        for agg in dataset.aggregations:
             conn.execute(
-                "MATCH (m:Model {id: $model}), (a:Aggregation {id: $agg}) "
+                "MATCH (m:Dataset {id: $dataset}), (a:Aggregation {id: $agg}) "
                 "CREATE (m)-[:CONTAINS]->(a)",
-                {"model": canonical_model, "agg": f"{canonical_model}.{agg.name}"},
+                {"dataset": canonical_dataset, "agg": f"{canonical_dataset}.{agg.name}"},
             )
 
 
-def _insert_joins_edges(conn: Any, visible_models: dict) -> None:
-    """Insert JOINS edges: Model→Model (via model.joins). Missing targets silently skipped."""
-    for canonical_model, model in visible_models.items():
-        ds = canonical_model.split(".", 1)[0]
-        for join in model.joins:
-            target_canonical = f"{ds}.{join.target_model}"
-            if target_canonical not in visible_models:
+def _insert_relationships_edges(conn: Any, visible_datasets: dict[str, SlayerDataset]) -> None:
+    """Insert RELATIONSHIPS edges: Dataset→Dataset (via dataset.relationships). Missing targets silently skipped."""
+    for canonical_dataset, dataset in visible_datasets.items():
+        ds = canonical_dataset.split(".", 1)[0]
+        for relationship in dataset.relationships:
+            target_canonical = f"{ds}.{relationship.to}"
+            if target_canonical not in visible_datasets:
                 continue
             conn.execute(
-                "MATCH (src:Model {id: $src}), (tgt:Model {id: $tgt}) "
-                "CREATE (src)-[:JOINS {cardinality: $card}]->(tgt)",
+                "MATCH (src:Dataset {id: $src}), (tgt:Dataset {id: $tgt}) "
+                "CREATE (src)-[:RELATIONSHIPS {cardinality: $card}]->(tgt)",
                 {
-                    "src": canonical_model,
+                    "src": canonical_dataset,
                     "tgt": target_canonical,
-                    "card": str(join.cardinality) if join.cardinality else "",
+                    "card": str(relationship.cardinality) if relationship.cardinality else "",
                 },
             )
 
@@ -336,9 +334,9 @@ def _connect_entity_mention(
     src: str,
     entity: str,
     ds_set: set[str],
-    valid_models: set[str],
-    valid_columns: set[str],
-    valid_measures: set[str],
+    valid_datasets: set[str],
+    valid_fields: set[str],
+    valid_metrics: set[str],
     valid_aggs: set[str],
     valid_memory_canonicals: set[str],
 ) -> None:
@@ -355,15 +353,15 @@ def _connect_entity_mention(
             "CREATE (m)-[:MENTIONS]->(d)",
             {"src": src, "tgt": entity},
         )
-    elif entity in valid_models:
+    elif entity in valid_datasets:
         conn.execute(
-            "MATCH (m:Memory {id: $src}), (n:Model {id: $tgt}) "
+            "MATCH (m:Memory {id: $src}), (n:Dataset {id: $tgt}) "
             "CREATE (m)-[:MENTIONS]->(n)",
             {"src": src, "tgt": entity},
         )
-    elif entity in valid_measures:
+    elif entity in valid_metrics:
         conn.execute(
-            "MATCH (m:Memory {id: $src}), (ms:Measure {id: $tgt}) "
+            "MATCH (m:Memory {id: $src}), (ms:Metric {id: $tgt}) "
             "CREATE (m)-[:MENTIONS]->(ms)",
             {"src": src, "tgt": entity},
         )
@@ -373,46 +371,46 @@ def _connect_entity_mention(
             "CREATE (m)-[:MENTIONS]->(a)",
             {"src": src, "tgt": entity},
         )
-    elif entity in valid_columns:
+    elif entity in valid_fields:
         conn.execute(
-            "MATCH (m:Memory {id: $src}), (c:ModelColumn {id: $tgt}) "
+            "MATCH (m:Memory {id: $src}), (c:DatasetField {id: $tgt}) "
             "CREATE (m)-[:MENTIONS]->(c)",
             {"src": src, "tgt": entity},
         )
 
 
 def _build_valid_entity_sets(
-    visible_models: dict,
+    visible_datasets: dict[str, SlayerDataset],
     memories: list,
 ) -> tuple[set[str], set[str], set[str], set[str]]:
-    """Build (valid_columns, valid_measures, valid_aggs, valid_memory_canonicals)."""
-    valid_columns: set[str] = set()
-    valid_measures: set[str] = set()
+    """Build (valid_fields, valid_metrics, valid_aggs, valid_memory_canonicals)."""
+    valid_fields: set[str] = set()
+    valid_metrics: set[str] = set()
     valid_aggs: set[str] = set()
-    for canonical_model, model in visible_models.items():
-        for col in model.columns:
+    for canonical_dataset, dataset in visible_datasets.items():
+        for col in dataset.fields:
             if not col.hidden:
-                valid_columns.add(f"{canonical_model}.{col.name}")
-        for measure in model.measures:
-            if measure.name:
-                valid_measures.add(f"{canonical_model}.{measure.name}")
-        for agg in model.aggregations:
-            valid_aggs.add(f"{canonical_model}.{agg.name}")
+                valid_fields.add(f"{canonical_dataset}.{col.name}")
+        for metric in dataset.metrics:
+            if metric.name:
+                valid_metrics.add(f"{canonical_dataset}.{metric.name}")
+        for agg in dataset.aggregations:
+            valid_aggs.add(f"{canonical_dataset}.{agg.name}")
     valid_memory_canonicals = {f"{_MEMORY_PREFIX}{m.id}" for m in memories}
-    return valid_columns, valid_measures, valid_aggs, valid_memory_canonicals
+    return valid_fields, valid_metrics, valid_aggs, valid_memory_canonicals
 
 
 def _insert_mentions_edges(
     conn: Any,
     memories: list,
-    visible_models: dict,
+    visible_datasets: dict[str, SlayerDataset],
     datasource_names: list[str],
 ) -> None:
-    """Insert MENTIONS edges: Memory → {Datasource, Model, ModelColumn, Measure, Agg, Memory}."""
+    """Insert MENTIONS edges: Memory → {Datasource, Dataset, DatasetField, Metric, Agg, Memory}."""
     ds_set = set(datasource_names)
-    valid_models: set[str] = set(visible_models)
-    valid_columns, valid_measures, valid_aggs, valid_memory_canonicals = (
-        _build_valid_entity_sets(visible_models, memories)
+    valid_datasets: set[str] = set(visible_datasets)
+    valid_fields, valid_metrics, valid_aggs, valid_memory_canonicals = (
+        _build_valid_entity_sets(visible_datasets, memories)
     )
 
     for mem in memories:
@@ -420,7 +418,7 @@ def _insert_mentions_edges(
         for entity in mem.entities:
             _connect_entity_mention(
                 conn, src, entity,
-                ds_set, valid_models, valid_columns, valid_measures, valid_aggs,
+                ds_set, valid_datasets, valid_fields, valid_metrics, valid_aggs,
                 valid_memory_canonicals,
             )
 
@@ -428,7 +426,7 @@ def _insert_mentions_edges(
 async def build_graph(storage: StorageBackend, *, failures: DocumentLoadFailures | None = None) -> tuple[Any, Any]:
     """Build an ephemeral in-memory LadybugDB graph from ``storage``.
 
-    Returns ``(db, conn)``. Hidden models and hidden columns are excluded.
+    Returns ``(db, conn)``. Hidden datasets and hidden fields are excluded.
     Memory canonical IDs are stored in ``memory:<id>`` form.
     """
     mod = _import_graph_module()
@@ -440,9 +438,9 @@ async def build_graph(storage: StorageBackend, *, failures: DocumentLoadFailures
 
     datasource_names = await storage.list_datasources()
     failures = failures or DocumentLoadFailures()
-    visible_models: dict = {
+    visible_datasets: dict[str, SlayerDataset] = {
         f"{m.data_source}.{m.name}": m
-        for m in failures.skip(await storage.load_models()) if not m.hidden
+        for m in failures.skip(await storage.load_datasets()) if not m.hidden
     }
 
     memories = await storage.list_memories(entities=None, failures=failures)
@@ -459,13 +457,13 @@ async def build_graph(storage: StorageBackend, *, failures: DocumentLoadFailures
     _insert_nodes(
         conn,
         datasource_names,
-        visible_models,
+        visible_datasets,
         memories,
         datasource_descriptions=datasource_descriptions,
     )
-    _insert_contains_edges(conn, datasource_names, visible_models)
-    _insert_joins_edges(conn, visible_models)
-    _insert_mentions_edges(conn, memories, visible_models, datasource_names)
+    _insert_contains_edges(conn, datasource_names, visible_datasets)
+    _insert_relationships_edges(conn, visible_datasets)
+    _insert_mentions_edges(conn, memories, visible_datasets, datasource_names)
 
     return db, conn
 

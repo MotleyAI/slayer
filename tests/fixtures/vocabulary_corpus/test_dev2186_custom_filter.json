@@ -1,0 +1,103 @@
+{
+ "source": "tests/test_dev2186_custom_filter.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "time_dimensions": [
+     {
+      "dimension": "orders.created_at",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "time_dimensions": [
+     {
+      "field": "orders.created_at",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "expression": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "measures": [
+     {
+      "formula": "sum(pr)",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "s",
+    "metrics": [
+     {
+      "expression": "sum(pr)",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "count",
+    "formula": "COUNT(*)"
+   },
+   "new": {
+    "name": "count",
+    "expression": "COUNT(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 42,
+   "reason": "unclassifiable"
+  }
+ ]
+}

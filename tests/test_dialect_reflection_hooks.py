@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -287,7 +287,7 @@ def duck_paths(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
 
 
 @contextmanager
-def _attached(paths: tuple[Path, Path]) -> Iterator[sa.Engine]:
+def _attached(paths: tuple[Path, Path]) -> Generator[sa.Engine, None, None]:
     main, other = paths
     with disposable_engine(f"duckdb:///{main}") as engine:
 
@@ -422,7 +422,7 @@ def sqlite_engine(tmp_path: Path) -> Iterator[sa.Engine]:
 
 
 @contextmanager
-def _statements(engine: sa.Engine) -> Iterator[list[str]]:
+def _statements(engine: sa.Engine) -> Generator[list[str], None, None]:
     seen: list[str] = []
 
     def _record(_conn, _cursor, statement, *_rest) -> None:  # noqa: ANN001

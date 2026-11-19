@@ -1,0 +1,204 @@
+{
+ "source": "tests/test_time_points_date_range.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "daily",
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "year",
+      "date_range": [
+       "2026-01-01",
+       null
+      ]
+     }
+    ]
+   },
+   "new": {
+    "population": "daily",
+    "metrics": [
+     {
+      "expression": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "year",
+      "date_range": [
+       "2026-01-01",
+       null
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "m",
+    "source_model": "ev",
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "m",
+    "population": "ev",
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "m",
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "month",
+      "date_range": [
+       "2025-02",
+       "2025-03"
+      ]
+     }
+    ]
+   },
+   "new": {
+    "population": "m",
+    "metrics": [
+     {
+      "expression": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "month",
+      "date_range": [
+       "2025-02",
+       "2025-03"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "m",
+    "source_model": "ev",
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "m",
+    "population": "ev",
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "m",
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "year",
+      "date_range": "2025-Q1"
+     }
+    ]
+   },
+   "new": {
+    "population": "m",
+    "metrics": [
+     {
+      "expression": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "year",
+      "date_range": "2025-Q1"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

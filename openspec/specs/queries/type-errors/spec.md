@@ -6,7 +6,7 @@ Defines the error contract for query type errors: every well-formedness violatio
 ## Requirements
 
 ### Requirement: Query type errors are typed and stably formatted
-Every query type error the checker raises SHALL be an instance of a concrete rule-family class under the `QueryTypeError` base (itself a `SlayerError`, and so a `ValueError`); the base itself SHALL never be raised, and constructing it directly SHALL fail. The families are `TimeAxisError` (with `TimeDimensionColumnError` beneath it), `WindowDurationError`, `PartitionKeyError`, `UnsafeJoinInputError`, `UnanalyzableDependencyError`, `TransformInputError`, `ComputedDimensionError`, `AssociationError`, `ParameterGrainError`, `ReaggregationError`, `NameCollisionError` (with `MeasureNameCollidesWithColumnError`, `CanonicalAliasShadowsColumnError`, `DuplicateMeasureNameError` beneath it), `DimensionTypeError`, `ModelFilterError`, `PositionTypingError` and `DistinctDimensionValuesError`. The error's text SHALL be: a first line `<ClassName>: <summary>` naming the defect; then, when the error has a subject (a measure, filter, dimension, order item, transform, time dimension or model filter), a line `  at <subject>`; then, when a remedy exists, a line `  suggestion: <remedy>`. The summary, subject and remedy SHALL also be exposed as the error's `summary`, `location` and `suggestion` attributes (`None` when absent).
+Every query type error the checker raises SHALL be an instance of a concrete rule-family class under the `QueryTypeError` base (itself a `SlayerError`, and so a `ValueError`); the base itself SHALL never be raised, and constructing it directly SHALL fail. The families are `TimeAxisError` (with `TimeDimensionFieldError` beneath it), `WindowDurationError`, `PartitionKeyError`, `UnsafeRelationshipInputError`, `UnanalyzableDependencyError`, `TransformInputError`, `ComputedDimensionError`, `AssociationError`, `ParameterGrainError`, `ReaggregationError`, `NameCollisionError` (with `MetricNameCollidesWithFieldError`, `CanonicalAliasShadowsFieldError`, `DuplicateMetricNameError` beneath it), `DimensionTypeError`, `DatasetFilterError`, `PositionTypingError` and `DistinctDimensionValuesError`. The error's text SHALL be: a first line `<ClassName>: <summary>` naming the defect; then, when the error has a subject (a measure, filter, dimension, order item, transform, time dimension or model filter), a line `  at <subject>`; then, when a remedy exists, a line `  suggestion: <remedy>`. The summary, subject and remedy SHALL also be exposed as the error's `summary`, `location` and `suggestion` attributes (`None` when absent).
 
 #### Scenario: A partition key that is not a query dimension
 - **WHEN** a query's rank-family transform declares a `partition_by=` column that is neither a query dimension nor a time dimension
@@ -65,11 +65,11 @@ MCP tool errors that prefix an error with its class name SHALL not repeat the pr
 - **THEN** the class name appears once, at the start of the error text
 
 ### Requirement: A measure-name collision suggests a free name
-When a query measure's declared name equals a source column of the query's source model, the `MeasureNameCollidesWithColumnError` SHALL carry a `suggestion:` naming a free alternative: the formula's derived (canonical) name when that name is neither a source column nor already used in the query, otherwise the first `<name>_<n>` (n = 2, 3, …) that is neither.
+When a query measure's declared name equals a source column of the query's source model, the `MetricNameCollidesWithFieldError` SHALL carry a `suggestion:` naming a free alternative: the formula's derived (canonical) name when that name is neither a source column nor already used in the query, otherwise the first `<name>_<n>` (n = 2, 3, …) that is neither.
 
 #### Scenario: The derived name is free
-- **WHEN** a query rooted at a model with a column `credit` measures `{"formula": "sum(credit)", "name": "credit"}`
-- **THEN** the query fails with `MeasureNameCollidesWithColumnError` whose `suggestion` names `credit_sum`
+- **WHEN** a query rooted at a model with a column `credit` measures `{"expression": "sum(credit)", "name": "credit"}`
+- **THEN** the query fails with `MetricNameCollidesWithFieldError` whose `suggestion` names `credit_sum`
 
 #### Scenario: The derived name is taken
 - **WHEN** the same query also declares another measure named `credit_sum`

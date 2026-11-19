@@ -8,7 +8,7 @@ import logging
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -138,7 +138,7 @@ def lite(tmp_path: Path) -> Iterator[DatasourceConfig]:
 
 
 @contextlib.contextmanager
-def _exclusively_locked(ds: DatasourceConfig) -> Iterator[None]:
+def _exclusively_locked(ds: DatasourceConfig) -> Generator[None, None, None]:
     """Hold the datasource's SQLite file under ``BEGIN EXCLUSIVE`` from another connection."""
     path = ds.get_connection_string().removeprefix("sqlite:///")
     with open_connection(path, isolation_level=None) as conn:

@@ -19,7 +19,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -51,55 +51,55 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="revenue", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="revenue", datatype=DataType.DOUBLE),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
             ],
         )
     )
     yield SlayerQueryEngine(storage=storage)
 
 
-async def test_single_cross_model_parametric_key(engine):
+async def test_single_cross_model_parametric_key(engine: SlayerQueryEngine):
     resp = await engine.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "percentile(customers.revenue, p=0.5)"}],
+            "metrics": [{"expression": "percentile(customers.revenue, p=0.5)"}],
         })
     )
     assert "orders.customers.revenue_percentile_p_0_5" in resp.columns
 
 
-async def test_two_parametric_variants_distinct_keys(engine):
+async def test_two_parametric_variants_distinct_keys(engine: SlayerQueryEngine):
     resp = await engine.execute(
         SlayerQuery(
-            source_model="orders",
+            population="orders",
             dimensions=["customers.region"],
-            measures=[
-                {"formula": "percentile(customers.revenue, p=0.5)"},
-                {"formula": "percentile(customers.revenue, p=0.95)"},
+            metrics=[
+                {"expression": "percentile(customers.revenue, p=0.5)"},
+                {"expression": "percentile(customers.revenue, p=0.95)"},
             ],
         )
     )

@@ -46,7 +46,7 @@ So `ordered_at <= '2024-12'` includes Dec 31 10:00, and `ordered_at = '2024-06'`
 
 A date-only string in a comparison is its midnight, as in SQL: `ordered_at <= '2024-12-31'` stops at `2024-12-31 00:00:00`. For the whole day write `ordered_at in '2024-12-31'`, or `ordered_at < '2025-01-01'` as an upper bound. Where this differs from the whole day (`<=`, `>`, `=`, `!=` or `BETWEEN` against a TIMESTAMP), the response carries a `date_only_midnight` warning naming that spelling; it is dropped in SLayer 3.0.
 
-A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal column keeps its string meaning; a relative token or single-string `in` there is a type error naming the column — declare its `type`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
+A temporal operand is anything typed DATE or TIMESTAMP: a declared field (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal field keeps its string meaning; a relative token or single-string `in` there is a type error naming the field — declare its `datatype`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
 
 ## Time buckets
 
@@ -59,9 +59,9 @@ A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base,
 A time dimension's `date_range` is one time point, or a `[lower, upper]` pair where either bound may be `null` (open):
 
 ```json
-{"dimension": "created_at", "granularity": "month", "date_range": "last 3 months"}
-{"dimension": "created_at", "granularity": "month", "date_range": ["2025-01-15", "2025-03"]}
-{"dimension": "created_at", "granularity": "month", "date_range": ["2024-01-01", null]}
+{"field": "created_at", "granularity": "month", "date_range": "last 3 months"}
+{"field": "created_at", "granularity": "month", "date_range": ["2025-01-15", "2025-03"]}
+{"field": "created_at", "granularity": "month", "date_range": ["2024-01-01", null]}
 ```
 
 A pair means `x >= lower` and `x <= upper` with each date-only bound read as its whole day, so `["2024-01-01", "2024-12-31"]` covers all of Dec 31; write an instant (`'2024-12-31 00:00:00'`) for a midnight-inclusive end. `[]`, three or more elements, `[null, null]` and unparseable bounds are rejected when the query is built; a relative unit the datasource does not define (`last fortnight`) fails when the query is planned.
@@ -71,19 +71,19 @@ A pair means `x >= lower` and `x <= upper` with each date-only bound read as its
 A trailing window has to read rows from *before* the earliest bucket you asked for — otherwise that bucket silently under-counts. So a **time bound narrows which buckets come back, not which rows the window may reach**. These return identical numbers:
 
 ```json
-{"time_dimensions": [{"dimension": "created_at", "granularity": "month", "date_range": "2025"}]}
+{"time_dimensions": [{"field": "created_at", "granularity": "month", "date_range": "2025"}]}
 ```
 ```json
-{"time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
- "filters": ["created_at in '2025'"]}
+{"time_dimensions": [{"field": "created_at", "granularity": "month"}],
+ "filter": ["created_at in '2025'"]}
 ```
 
-A bound is a *frame* bound when it bounds a **time dimension's own expression** (a column or any temporal row-level expression) by a time point — `<`, `<=`, `>`, `>=`, a period `=` / `in`, a `date_range`, or `date_trunc('<unit>', expr)` against a point. Everything else restricts the window's input like any row filter:
+A bound is a *frame* bound when it bounds a **time dimension's own expression** (a field or any temporal row-level expression) by a time point — `<`, `<=`, `>`, `>=`, a period `=` / `in`, a `date_range`, or `date_trunc('<unit>', expr)` against a point. Everything else restricts the window's input like any row filter:
 
 - an instant `=` (a date-only `=` included), and `!=` / `not in` against a period;
-- a bound on a temporal expression that is not one of the query's time dimensions, or against another column;
+- a bound on a temporal expression that is not one of the query's time dimensions, or against another field;
 - a bound wrapped in `or` or `not`;
-- `filters` declared on the **model**.
+- `filters` declared on the **dataset**.
 
 Mixed filters are split: `"created_at >= '2025-01-01' and status = 'paid'"` restricts the window's input to paid rows while still reaching back before January. The same holds for [`time_shift`](formulas.md#transform-functions). To clip the underlying rows, apply the bound in an inner stage of a multi-stage query.
 
@@ -93,22 +93,22 @@ With `whole_periods_only: true`, every frame bound on a time dimension's express
 
 ## Time spine
 
-Every datasource has a built-in, never-stored model `time_spine` with one column, `timestamp`; each model's **axis** — its `default_time_dimension`, else its only DATE / TIMESTAMP column — joins it many-to-one, so a time dimension on `time_spine.timestamp` returns every bucket in range, gaps included, with each fact attributed through its own axis:
+Every datasource has a built-in, never-stored dataset `time_spine` with one field, `timestamp`; each dataset's **axis** — its `default_time_dimension`, else its only DATE / TIMESTAMP field — joins it many-to-one, so a time dimension on `time_spine.timestamp` returns every bucket in range, gaps included, with each fact attributed through its own axis:
 
 ```json
 {"dimensions": ["customers.region"],
- "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-01-01", "2025-06-30"]}],
- "measures": [{"formula": "sum(orders.amount)"}, {"formula": "sum(returns.amount)"}]}
+ "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-01-01", "2025-06-30"]}],
+ "metrics": [{"expression": "sum(orders.amount)"}, {"expression": "sum(returns.amount)"}]}
 ```
 
-The population is `time_spine × P` (P the population of the remaining dimensions, or `source_model`); the spine needs a lower frame bound (the upper defaults to the current bucket), a filter on it must be a frame bound, it has no countable rows (no aggregation over it, no raw-rows query), a model reaches it by its nearest axis over to-one hops (equal-length routes are a typed error), and wrap a measure in `coalesce(..., 0)` to fill empty buckets.
+The population is `time_spine × P` (P the population of the remaining dimensions, or `population`); the spine needs a lower frame bound (the upper defaults to the current bucket), a filter on it must be a frame bound, it has no countable rows (no aggregation over it, no raw-rows query), a dataset reaches it by its nearest axis over to-one hops (equal-length routes are a typed error), and wrap a metric in `coalesce(..., 0)` to fill empty buckets.
 
 A stage of a multi-stage query, or a saved query, can be a spine query too; later stages then see one row per bucket.
 
-A query reaches the spine in any case (`TIME_SPINE.timestamp`) unless quoted, `time_spine` in any case is reserved as a model name, and a model's `joins` never target it, since it already joins each model through its axis.
+A query reaches the spine in any case (`TIME_SPINE.timestamp`) unless quoted, `time_spine` in any case is reserved as a dataset name, and a dataset's `relationships` never target it, since it already joins each dataset through its axis.
 
-An expression is never an axis: a time dimension whose expression reads `time_spine.timestamp` (`time_spine.timestamp + INTERVAL '1 day'`) is a typed error that names the remedy of bucketing the column itself, while any other expression time dimension is an ordinary dimension of P.
+An expression is never an axis: a time dimension whose expression reads `time_spine.timestamp` (`time_spine.timestamp + INTERVAL '1 day'`) is a typed error that names the remedy of bucketing the field itself, while any other expression time dimension is an ordinary dimension of P.
 
 ## Custom granularities
 
-A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `date_trunc('fiscal_year', order_date)`, `Column.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.
+A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `date_trunc('fiscal_year', order_date)`, `DatasetField.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.

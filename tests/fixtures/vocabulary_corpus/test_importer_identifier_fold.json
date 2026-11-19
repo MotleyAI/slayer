@@ -1,0 +1,21 @@
+{
+ "source": "tests/test_importer_identifier_fold.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "items",
+    "dimensions": [
+     "amount"
+    ]
+   },
+   "new": {
+    "population": "items",
+    "dimensions": [
+     "amount"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

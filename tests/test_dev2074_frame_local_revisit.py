@@ -10,11 +10,11 @@ import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
-from slayer.core.errors import CircularJoinPathError
+from slayer.core.enums import DataType, RelationshipCardinality, TimeGranularity
+from slayer.core.errors import CircularRelationshipPathError
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.join_walker import follow, resolved_terminal, walk, walk_cancelling
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.relationship_walker import follow, resolved_terminal, walk, walk_cancelling
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.extensions import QueryScope, query_scopes
@@ -24,7 +24,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine, seeded_exec_engine
 
 DS = "ds"
-M2O = JoinCardinality.MANY_TO_ONE
+M2O = RelationshipCardinality.MANY_TO_ONE
 CURRENCY = NumberFormat(type=NumberFormatType.CURRENCY, symbol="$")
 
 # --------------------------------------------------------------------------- #
@@ -76,91 +76,91 @@ def _seed(db_path: str, *, duck: bool) -> None:
             cur.executemany(f"INSERT INTO {table} VALUES ({','.join('?' * len(rows[0]))})", rows)
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders", default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE, format=CURRENCY),
-            Column(name="big", type=DataType.BOOLEAN),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE, format=CURRENCY),
+            DatasetField(name="big", datatype=DataType.BOOLEAN),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="customers", name="customer",
+        relationships=[DatasetRelationship(to="customers", name="customer",
                          join_pairs=[["customer_id", "id"]], cardinality=M2O)],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="last_order_id", type=DataType.INT),
-            Column(name="first_order_id", type=DataType.INT),
-            Column(name="last_amount", type=DataType.DOUBLE, sql="last_order.amount",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="last_order_id", datatype=DataType.INT),
+            DatasetField(name="first_order_id", datatype=DataType.INT),
+            DatasetField(name="last_amount", datatype=DataType.DOUBLE, sql="last_order.amount",
                    label="Latest amount", format=CURRENCY),
-            Column(name="first_amount", type=DataType.DOUBLE, sql="first_order.amount"),
-            Column(name="last_ordered_at", type=DataType.TIMESTAMP, sql="last_order.ordered_at"),
+            DatasetField(name="first_amount", datatype=DataType.DOUBLE, sql="first_order.amount"),
+            DatasetField(name="last_ordered_at", datatype=DataType.TIMESTAMP, sql="last_order.ordered_at"),
         ],
-        joins=[
-            ModelJoin(target_model="orders", name="last_order",
+        relationships=[
+            DatasetRelationship(to="orders", name="last_order",
                       join_pairs=[["last_order_id", "id"]], cardinality=M2O),
-            ModelJoin(target_model="orders", name="first_order",
+            DatasetRelationship(to="orders", name="first_order",
                       join_pairs=[["first_order_id", "id"]], cardinality=M2O),
         ],
-        measures=[
-            ModelMeasure(name="order_total", formula="sum(customer.amount)"),
-            ModelMeasure(name="latest_total", formula="sum(last_order.amount)"),
-            ModelMeasure(name="latest_big_share", formula="avg(last_order.big)"),
-            ModelMeasure(name="last_ranked", formula="last(customer.amount)"),
-            ModelMeasure(name="bad", formula="count(last_order.customer.id)"),
+        metrics=[
+            DatasetMetric(name="order_total", expression="sum(customer.amount)"),
+            DatasetMetric(name="latest_total", expression="sum(last_order.amount)"),
+            DatasetMetric(name="latest_big_share", expression="avg(last_order.big)"),
+            DatasetMetric(name="last_ranked", expression="last(customer.amount)"),
+            DatasetMetric(name="bad", expression="count(last_order.customer.id)"),
         ],
     )
 
 
-def _cycle_models() -> list[SlayerModel]:
-    def node(name: str, nxt: str, extra: Sequence[Column] = ()) -> SlayerModel:
-        return SlayerModel(
+def _cycle_datasets() -> list[SlayerDataset]:
+    def node(name: str, nxt: str, extra: Sequence[DatasetField] = ()) -> SlayerDataset:
+        return SlayerDataset(
             name=name, data_source=DS, sql_table=name,
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                     Column(name=f"{nxt}_id", type=DataType.INT),
-                     Column(name="v", type=DataType.TEXT), *extra],
-            joins=[ModelJoin(target_model=nxt, join_pairs=[[f"{nxt}_id", "id"]], cardinality=M2O)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                     DatasetField(name=f"{nxt}_id", datatype=DataType.INT),
+                     DatasetField(name="v", datatype=DataType.TEXT), *extra],
+            relationships=[DatasetRelationship(to=nxt, join_pairs=[[f"{nxt}_id", "id"]], cardinality=M2O)],
         )
 
     return [
-        node("x", "y", [Column(name="zv", type=DataType.TEXT, sql="y.z.v")]),
+        node("x", "y", [DatasetField(name="zv", datatype=DataType.TEXT, sql="y.z.v")]),
         node("y", "z"),
-        node("z", "x", [Column(name="xzv", type=DataType.TEXT, sql="x.zv")]),
+        node("z", "x", [DatasetField(name="xzv", datatype=DataType.TEXT, sql="x.zv")]),
     ]
 
 
-def _ab_models() -> list[SlayerModel]:
-    a = SlayerModel(
+def _ab_datasets() -> list[SlayerDataset]:
+    a = SlayerDataset(
         name="a", data_source=DS, sql_table="a",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="b_id", type=DataType.INT),
-                 Column(name="bw", type=DataType.DOUBLE, sql="to_b.w")],
-        joins=[ModelJoin(target_model="b", name="to_b", join_pairs=[["b_id", "id"]], cardinality=M2O)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="b_id", datatype=DataType.INT),
+                 DatasetField(name="bw", datatype=DataType.DOUBLE, sql="to_b.w")],
+        relationships=[DatasetRelationship(to="b", name="to_b", join_pairs=[["b_id", "id"]], cardinality=M2O)],
     )
-    b = SlayerModel(
+    b = SlayerDataset(
         name="b", data_source=DS, sql_table="b",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="a_id", type=DataType.INT),
-                 Column(name="w", type=DataType.DOUBLE),
-                 Column(name="abw", type=DataType.DOUBLE, sql="to_a.bw")],
-        joins=[ModelJoin(target_model="a", name="to_a", join_pairs=[["a_id", "id"]], cardinality=M2O)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="a_id", datatype=DataType.INT),
+                 DatasetField(name="w", datatype=DataType.DOUBLE),
+                 DatasetField(name="abw", datatype=DataType.DOUBLE, sql="to_a.bw")],
+        relationships=[DatasetRelationship(to="a", name="to_a", join_pairs=[["a_id", "id"]], cardinality=M2O)],
     )
     return [a, b]
 
 
-def _all_models() -> list[SlayerModel]:
-    return [_orders(), _customers(), *_cycle_models(), *_ab_models()]
+def _all_datasets() -> list[SlayerDataset]:
+    return [_orders(), _customers(), *_cycle_datasets(), *_ab_datasets()]
 
-def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
-    return query_scopes([stage], models_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+def _stage_scope(stage: SlayerQuery, datasets_by_name: dict) -> QueryScope:
+    return query_scopes([stage], datasets_by_ds={"ds": datasets_by_name}, data_source="ds")[0][0]
 
 
 
@@ -185,13 +185,13 @@ async def ctx(request) -> AsyncIterator[_Ctx]:
         pytest.importorskip("duckdb_engine")
     async with seeded_exec_engine(
         dialect=dialect, seed=lambda p: _seed(p, duck=dialect == "duckdb"),
-        models=_all_models(), datasource=DS, validate=False,
+        datasets=_all_datasets(), datasource=DS, validate=False,
     ) as (engine, db_path):
         yield _Ctx(engine, db_path, dialect)
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -225,7 +225,7 @@ class TestDerivedColumnsCompose:
         oracle = ctx.oracle(f"SELECT o.id, lo.amount {_ORDERS_THROUGH_LAST} ORDER BY o.id")
         assert [(i, _num(v)) for i, v in oracle] == [(11, 20.0), (12, 20.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id", "customer.last_amount"], order=[{"column": "id", "direction": "asc"}]))
+            dimensions=["id", "customer.last_amount"], order=[{"field": "id", "direction": "asc"}]))
         got = [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.last_amount")]
         assert got == [(i, _num(v)) for i, v in oracle]
         assert resp.sql is not None
@@ -236,7 +236,7 @@ class TestDerivedColumnsCompose:
 
     async def test_same_chain_typed_in_one_frame_is_refused(self, ctx: _Ctx) -> None:
         query = _q(dimensions=["id", "customer.last_order.amount"])
-        with pytest.raises(CircularJoinPathError) as ei:
+        with pytest.raises(CircularRelationshipPathError) as ei:
             await ctx.engine.execute(query)
         assert ei.value.hop == "last_order"
         assert ei.value.revisited == "orders"
@@ -246,8 +246,8 @@ class TestDerivedColumnsCompose:
             f"SELECT c.name, MAX(lo.amount) {_ORDERS_THROUGH_LAST} GROUP BY c.name ORDER BY c.name")
         assert [(n, _num(v)) for n, v in oracle] == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], measures=[{"formula": "max(customer.last_amount)", "name": "m"}],
-            order=[{"column": "customer.name", "direction": "asc"}]))
+            dimensions=["customer.name"], metrics=[{"expression": "max(customer.last_amount)", "name": "m"}],
+            order=[{"field": "customer.name", "direction": "asc"}]))
         assert [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.m")] == [
             (n, _num(v)) for n, v in oracle]
         assert _broadcasts(resp) == []
@@ -262,7 +262,7 @@ class TestDerivedColumnsCompose:
         assert norm == [(11, 10.0, 10.0, 20.0), (12, 20.0, 10.0, 20.0), (21, 5.0, 5.0, 5.0)]
         resp = await ctx.engine.execute(_q(
             dimensions=["id", "amount", "customer.first_amount", "customer.last_amount"],
-            order=[{"column": "id", "direction": "asc"}]))
+            order=[{"field": "id", "direction": "asc"}]))
         got = [(i, _num(a), _num(f), _num(lv)) for i, a, f, lv in _rows(
             resp, "orders.id", "orders.amount", "orders.customer.first_amount", "orders.customer.last_amount")]
         assert got == norm
@@ -275,12 +275,12 @@ class TestDerivedColumnsCompose:
             "LEFT JOIN z z2 ON y.z_id = z2.id ORDER BY z.id")
         assert oracle == [(100, "z200"), (200, "z100")]
         resp = await ctx.engine.execute(SlayerQuery.model_validate(
-            {"source_model": "z", "dimensions": ["id", "xzv"], "order": [{"column": "id", "direction": "asc"}]}))
+            {"population": "z", "dimensions": ["id", "xzv"], "order": [{"field": "id", "direction": "asc"}]}))
         assert _rows(resp, "z.id", "z.xzv") == oracle
 
     async def test_directed_three_cycle_typed_in_one_frame_is_refused(self, ctx: _Ctx) -> None:
-        query = SlayerQuery.model_validate({"source_model": "z", "dimensions": ["x.y.z.v"]})
-        with pytest.raises(CircularJoinPathError) as ei:
+        query = SlayerQuery.model_validate({"population": "z", "dimensions": ["x.y.z.v"]})
+        with pytest.raises(CircularRelationshipPathError) as ei:
             await ctx.engine.execute(query)
         assert ei.value.revisited == "z"
 
@@ -290,7 +290,7 @@ class TestDerivedColumnsCompose:
             "LEFT JOIN b b2 ON a2.b_id = b2.id ORDER BY a.id")
         assert [(i, _num(w)) for i, w in oracle] == [(1, 200.0), (2, 100.0)]
         resp = await ctx.engine.execute(SlayerQuery.model_validate(
-            {"source_model": "a", "dimensions": ["id", "to_b.abw"], "order": [{"column": "id", "direction": "asc"}]}))
+            {"population": "a", "dimensions": ["id", "to_b.abw"], "order": [{"field": "id", "direction": "asc"}]}))
         assert [(i, _num(w)) for i, w in _rows(resp, "a.id", "a.to_b.abw")] == [
             (i, _num(w)) for i, w in oracle]
 
@@ -298,14 +298,14 @@ class TestDerivedColumnsCompose:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         engine = SlayerQueryEngine(storage=storage)
-        models = [_orders(), _customers(), *_cycle_models(), *_ab_models()]
+        models = [_orders(), _customers(), *_cycle_datasets(), *_ab_datasets()]
         for model in models:
-            await engine.save_model(model.model_copy(update={
-                "columns": [c for c in model.columns if c.sql is None], "measures": []}))
+            await engine.save_dataset(model.model_copy(update={
+                "fields": [c for c in model.fields if c.sql is None], "metrics": []}))
         for model in models:
-            await engine.save_model(model)
+            await engine.save_dataset(model)
         for name in ("customers", "z", "b"):
-            assert await storage.get_model(name, data_source=DS) is not None
+            assert await storage.get_dataset(name, data_source=DS) is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -322,8 +322,8 @@ class TestSavedMeasuresCompose:
         oracle = [(n, _num(v)) for n, v in ctx.oracle(_ORDER_TOTAL_BY_NAME)]
         assert oracle == [("ann", 30.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], measures=["customer.order_total"],
-            order=[{"column": "customer.name", "direction": "asc"}]))
+            dimensions=["customer.name"], metrics=["customer.order_total"],
+            order=[{"field": "customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.order_total")]
         assert got == oracle
         assert _broadcasts(resp) == []
@@ -333,7 +333,7 @@ class TestSavedMeasuresCompose:
             "SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id IN (SELECT customer_id FROM orders)")
         assert _num(total) == 35.0
         resp = await ctx.engine.execute(_q(
-            dimensions=["id"], measures=["customer.order_total"], to_many_handling="broadcast"))
+            dimensions=["id"], metrics=["customer.order_total"], to_many_handling="broadcast"))
         assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [35.0] * 3
         assert _broadcasts(resp) != []
 
@@ -344,8 +344,8 @@ class TestSavedMeasuresCompose:
             "FROM orders o ORDER BY o.id")]
         assert oracle == [(11, 30.0), (12, 30.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id"], measures=["customer.order_total"], to_many_handling=mode,
-            order=[{"column": "id", "direction": "asc"}]))
+            dimensions=["id"], metrics=["customer.order_total"], to_many_handling=mode,
+            order=[{"field": "id", "direction": "asc"}]))
         assert [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.order_total")] == oracle
 
     async def test_measure_through_a_pointer_back_to_the_host(self, ctx: _Ctx) -> None:
@@ -354,27 +354,27 @@ class TestSavedMeasuresCompose:
             "GROUP BY c.name ORDER BY c.name")]
         assert oracle == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], measures=["customer.latest_total"], to_many_handling="associate",
-            order=[{"column": "customer.name", "direction": "asc"}]))
+            dimensions=["customer.name"], metrics=["customer.latest_total"], to_many_handling="associate",
+            order=[{"field": "customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.latest_total")]
         assert got == oracle
 
     async def test_formula_revisiting_its_own_frame_is_refused(self, ctx: _Ctx) -> None:
-        query = _q(dimensions=["customer.name"], measures=["customer.bad"])
-        with pytest.raises(CircularJoinPathError) as ei:
+        query = _q(dimensions=["customer.name"], metrics=["customer.bad"])
+        with pytest.raises(CircularRelationshipPathError) as ei:
             await ctx.engine.execute(query)
         assert ei.value.hop == "customer"
         assert ei.value.revisited == "customers"
 
     async def test_composing_measure_has_no_hand_written_equivalent(self, ctx: _Ctx) -> None:
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], measures=["customer.latest_total"], to_many_handling="associate"))
+            dimensions=["customer.name"], metrics=["customer.latest_total"], to_many_handling="associate"))
         assert resp.data
         query = _q(
             dimensions=["customer.name"],
-            measures=[{"formula": "sum(customer.last_order.amount)", "name": "h"}],
+            metrics=[{"expression": "sum(customer.last_order.amount)", "name": "h"}],
             to_many_handling="associate")
-        with pytest.raises(CircularJoinPathError):
+        with pytest.raises(CircularRelationshipPathError):
             await ctx.engine.execute(query)
 
 
@@ -388,17 +388,17 @@ class TestComposedOccurrenceMetadata:
             "ON c.last_order_id = lo.id GROUP BY c.name"))
         assert {k: _num(v) for k, v in oracle.items()} == {"ann": 1.0, "bob": 0.0}
         native = await ctx.engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers", "dimensions": ["name"],
-            "measures": [{"formula": "avg(last_order.big)", "name": "s"},
-                         {"formula": "sum(last_order.amount)", "name": "t"}]}))
-        assert native.attributes.measures["customers.s"].format == NumberFormat(type=NumberFormatType.PERCENT)
-        assert native.attributes.measures["customers.t"].format == CURRENCY
+            "population": "customers", "dimensions": ["name"],
+            "metrics": [{"expression": "avg(last_order.big)", "name": "s"},
+                         {"expression": "sum(last_order.amount)", "name": "t"}]}))
+        assert native.attributes.metrics["customers.s"].format == NumberFormat(type=NumberFormatType.PERCENT)
+        assert native.attributes.metrics["customers.t"].format == CURRENCY
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], measures=["customer.latest_big_share", "customer.latest_total"],
+            dimensions=["customer.name"], metrics=["customer.latest_big_share", "customer.latest_total"],
             to_many_handling="associate"))
-        assert resp.attributes.measures["orders.customer.latest_big_share"].format == NumberFormat(
+        assert resp.attributes.metrics["orders.customer.latest_big_share"].format == NumberFormat(
             type=NumberFormatType.PERCENT)
-        assert resp.attributes.measures["orders.customer.latest_total"].format == CURRENCY
+        assert resp.attributes.metrics["orders.customer.latest_total"].format == CURRENCY
         got = {n: _num(v) for n, v in _rows(resp, "orders.customer.name", "orders.customer.latest_big_share")}
         assert got == {k: _num(v) for k, v in oracle.items()}
 
@@ -409,8 +409,8 @@ class TestComposedOccurrenceMetadata:
             "ORDER BY c.name")]
         assert oracle == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], measures=["customer.last_ranked"],
-            order=[{"column": "customer.name", "direction": "asc"}]))
+            dimensions=["customer.name"], metrics=["customer.last_ranked"],
+            order=[{"field": "customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.last_ranked")]
         assert got == oracle
 
@@ -419,11 +419,11 @@ class TestComposedOccurrenceMetadata:
             f"SELECT CAST(lo.ordered_at AS VARCHAR), COUNT(*) {_ORDERS_THROUGH_LAST} "
             "GROUP BY lo.ordered_at ORDER BY lo.ordered_at DESC")
         assert [(str(t)[:7], n) for t, n in oracle] == [("2024-03", 1), ("2024-02", 2)]
-        td = TimeDimension(dimension="customer.last_ordered_at",
+        td = TimeDimension(field="customer.last_ordered_at",
                            granularity=TimeGranularity.MONTH)
         resp = await ctx.engine.execute(_q(
-            time_dimensions=[td], measures=[{"formula": "count(*)", "name": "n"}],
-            order=[{"column": "customer.last_ordered_at", "direction": "desc"}]))
+            time_dimensions=[td], metrics=[{"expression": "count(*)", "name": "n"}],
+            order=[{"field": "customer.last_ordered_at", "direction": "desc"}]))
         key = next(k for k in resp.columns if "last_ordered_at" in k)
         got = [(str(t)[:7], n) for t, n in _rows(resp, key, "orders.n")]
         assert got == [(str(t)[:7], n) for t, n in oracle]
@@ -435,8 +435,8 @@ class TestComposedOccurrenceMetadata:
         ):
             kw = {"to_many_handling": "associate"}
             if edge_spelled.endswith("total"):
-                one = await ctx.engine.execute(_q(measures=[edge_spelled], **kw), dry_run=True)
-                two = await ctx.engine.execute(_q(measures=[model_spelled], **kw), dry_run=True)
+                one = await ctx.engine.execute(_q(metrics=[edge_spelled], **kw), dry_run=True)
+                two = await ctx.engine.execute(_q(metrics=[model_spelled], **kw), dry_run=True)
             else:
                 one = await ctx.engine.execute(_q(dimensions=[edge_spelled]), dry_run=True)
                 two = await ctx.engine.execute(_q(dimensions=[model_spelled]), dry_run=True)
@@ -446,7 +446,7 @@ class TestComposedOccurrenceMetadata:
 # --------------------------------------------------------------------------- #
 # Composed key paths walk with revisits allowed; schema drift and cancellation.
 # --------------------------------------------------------------------------- #
-def _by_name() -> dict[str, SlayerModel]:
+def _by_name() -> dict[str, SlayerDataset]:
     return {m.name: m for m in (_orders(), _customers())}
 
 
@@ -454,25 +454,25 @@ class TestComposedWalk:
     def test_follow_allows_revisits_walk_does_not(self) -> None:
         models = _by_name()
         chain = follow(root=models["orders"], path=("customer", "last_order", "customer"),
-                       models_by_name=models)
+                       datasets_by_name=models)
         assert chain is not None
-        assert [e.target_model for e in chain] == ["customers", "orders", "customers"]
+        assert [e.to for e in chain] == ["customers", "orders", "customers"]
         terminal = resolved_terminal(root=models["orders"], path=("customer", "last_order"),
-                                     models_by_name=models)
+                                     datasets_by_name=models)
         assert terminal is not None
         assert terminal.name == "orders"
-        with pytest.raises(CircularJoinPathError):
-            walk(root=models["orders"], path=("customer", "last_order"), models_by_name=models)
+        with pytest.raises(CircularRelationshipPathError):
+            walk(root=models["orders"], path=("customer", "last_order"), datasets_by_name=models)
 
     def test_typed_revisit_attributes_to_nothing_in_drift(self) -> None:
         models = _by_name()
-        stage = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customer.last_order.amount"]})
+        stage = SlayerQuery.model_validate({"population": "orders", "dimensions": ["customer.last_order.amount"]})
         graph = _stage_scope(stage, models)
         assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="orders", scope=graph) == set()
 
     def test_composed_reference_attributes_to_its_declaring_model(self) -> None:
         models = _by_name()
-        stage = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customer.last_amount"]})
+        stage = SlayerQuery.model_validate({"population": "orders", "dimensions": ["customer.last_amount"]})
         graph = _stage_scope(stage, models)
         assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="customers", scope=graph) == {
             "last_amount"}
@@ -481,9 +481,9 @@ class TestComposedWalk:
 
 class TestCancellationToTheNearestOccurrence:
     def _cancel(self, *, owner_path: tuple[str, ...], tokens: tuple[str, ...],
-                models: dict[str, SlayerModel] | None = None, root: str = "orders") -> tuple[str, ...] | None:
-        models = models or _by_name()
-        return walk_cancelling(root=models[root], owner_path=owner_path, tokens=tokens, models_by_name=models)
+                datasets: dict[str, SlayerDataset] | None = None, root: str = "orders") -> tuple[str, ...] | None:
+        datasets = datasets or _by_name()
+        return walk_cancelling(root=datasets[root], owner_path=owner_path, tokens=tokens, datasets_by_name=datasets)
 
     def test_repeated_dataset_cancels_to_the_innermost_occurrence(self) -> None:
         assert self._cancel(owner_path=("customer", "last_order"), tokens=("orders",)) == (
@@ -497,27 +497,27 @@ class TestCancellationToTheNearestOccurrence:
     def test_stage_spelling_cancels_to_the_stage_occurrence(self) -> None:
         models = _by_name()
         stage = _orders().model_copy(update={"name": "stage_recent"}).with_spelling("recent")
-        cust = _customers().model_copy(update={"joins": [
-            *_customers().joins,
-            ModelJoin(target_model="stage_recent", name="recent_order",
+        cust = _customers().model_copy(update={"relationships": [
+            *_customers().relationships,
+            DatasetRelationship(to="stage_recent", name="recent_order",
                       join_pairs=[["last_order_id", "id"]], cardinality=M2O),
         ]})
         models = {**models, "customers": cust, "stage_recent": stage}
-        assert self._cancel(root="stage_recent", models=models,
+        assert self._cancel(root="stage_recent", datasets=models,
                             owner_path=("customer", "last_order"), tokens=("recent",)) == ()
-        assert self._cancel(root="stage_recent", models=models,
+        assert self._cancel(root="stage_recent", datasets=models,
                             owner_path=("customer", "last_order"), tokens=("orders",)) == (
             "customer", "last_order")
 
     def test_incident_edge_name_hops_rather_than_cancels(self) -> None:
-        notes = SlayerModel(
+        notes = SlayerDataset(
             name="notes", data_source=DS, sql_table="notes",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)])
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
         cust = _customers().model_copy(update={
-            "columns": [*_customers().columns, Column(name="note_id", type=DataType.INT)],
-            "joins": [*_customers().joins, ModelJoin(
-                target_model="notes", name="orders", join_pairs=[["note_id", "id"]], cardinality=M2O)],
+            "fields": [*_customers().fields, DatasetField(name="note_id", datatype=DataType.INT)],
+            "relationships": [*_customers().relationships, DatasetRelationship(
+                to="notes", name="orders", join_pairs=[["note_id", "id"]], cardinality=M2O)],
         })
         models = {**_by_name(), "customers": cust, "notes": notes}
-        assert self._cancel(models=models, owner_path=("customer", "last_order", "customer"),
+        assert self._cancel(datasets=models, owner_path=("customer", "last_order", "customer"),
                             tokens=("orders",)) == ("customer", "last_order", "customer", "orders")

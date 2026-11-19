@@ -13,7 +13,7 @@ import pytest
 from tests._dev1832_fixtures import (
     _CUSTOMERS_ROWS,
     _ORDERS_ROWS,
-    ModelMeasure,
+    DatasetMetric,
     make_exec_engine,
     month_key,
     month_td,
@@ -69,8 +69,8 @@ class TestPopulationRestriction:
     async def test_association_filter_restricts_shifted_evaluation(self, exec_engine) -> None:
         resp = await exec_engine.execute(orders_q(
             dimensions=["status"], time_dimensions=month_td(),
-            filters=[f"{EVENT_VALUE} > 40"],
-            measures=[ModelMeasure(formula=f"time_shift({SHARE}, -1)", name="t")]))
+            filter=[f"{EVENT_VALUE} > 40"],
+            metrics=[DatasetMetric(expression=f"time_shift({SHARE}, -1)", name="t")]))
         _assert_cells(_cells(resp, "orders.status"), ASSOC_FILTER_SHARE)
 
     async def test_associate_mode_fanning_dimension(self, exec_engine) -> None:
@@ -78,10 +78,10 @@ class TestPopulationRestriction:
         kw = {"dimensions": [EVENT_VALUE], "time_dimensions": month_td(),
               "to_many_handling": "associate"}
         resp = await exec_engine.execute(orders_q(
-            measures=[ModelMeasure(formula="time_shift(sum(amount), -1)", name="t")], **kw))
+            metrics=[DatasetMetric(expression="time_shift(sum(amount), -1)", name="t")], **kw))
         _assert_cells(_cells(resp, f"orders.{EVENT_VALUE}"), ASSOC_DIM_SHIFT)
         plain = await exec_engine.execute(orders_q(
-            measures=[ModelMeasure(formula="sum(amount)", name="s")], **kw))
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")], **kw))
         assert len(resp.data) == len(plain.data)
 
 
@@ -89,8 +89,8 @@ class TestCrossModelPartitionKey:
     async def test_attributable_tier_key(self, exec_engine) -> None:
         resp = await exec_engine.execute(orders_q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)",
+            metrics=[DatasetMetric(
+                expression="time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)",
                 name="t")]))
         _assert_cells(_cells(resp, "orders.customers.tier"), TIER_SHARE)
 
@@ -98,8 +98,8 @@ class TestCrossModelPartitionKey:
         """Regression guard: the input-safety error, never a value."""
         query = orders_q(
             dimensions=["status"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula=f"time_shift(sum(amount) / sum(amount, partition_by=[{EVENT_VALUE}]), -1)",
+            metrics=[DatasetMetric(
+                expression=f"time_shift(sum(amount) / sum(amount, partition_by=[{EVENT_VALUE}]), -1)",
                 name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)

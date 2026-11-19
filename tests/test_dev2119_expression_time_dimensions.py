@@ -10,9 +10,9 @@ import pytest
 from slayer.core.errors import (
     GranularityCallError,
     QueryTypeError,
-    TimeDimensionColumnError,
+    TimeDimensionFieldError,
     TimeLiteralError,
-    UnsafeJoinInputError,
+    UnsafeRelationshipInputError,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -55,7 +55,7 @@ async def _plan_fails(engine: SlayerQueryEngine, query: Any, error: type[Excepti
 
 
 def _count(**kw: Any) -> SlayerQuery:
-    return q(measures=[m("count(*)")], **kw)
+    return q(metrics=[m("count(*)")], **kw)
 
 
 def _rows(resp: SlayerResponse, *, key: str) -> set[tuple]:
@@ -79,11 +79,11 @@ class TestExpressionHomes:
 
     async def test_stage_scope_expression(self, engine) -> None:
         inner = SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders", "dimensions": ["id", "shipped_at", "created_at"],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "name": "s1", "population": "orders", "dimensions": ["id", "shipped_at", "created_at"],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1", "time_dimensions": [td(EFF)], "measures": [{"formula": "sum(rev)", "name": "v"}],
+            "population": "s1", "time_dimensions": [td(EFF)], "metrics": [{"expression": "sum(rev)", "name": "v"}],
         })
         resp = await engine.execute([inner, outer])
         assert by_bucket(resp, f"s1.{EFF_NAME}", "s1.v") == EFF_MONTH_SUM
@@ -92,21 +92,21 @@ class TestExpressionHomes:
 class TestExpressionTyping:
     async def test_leaf_across_a_fanning_hop_fails_closed(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "accounts", "measures": [{"formula": "count(*)", "name": "v"}],
+            "population": "accounts", "metrics": [{"expression": "count(*)", "name": "v"}],
             "time_dimensions": [td("coalesce(orders.shipped_at, signup_ts)")],
         })
-        msg = str(await _plan_fails(engine, query, UnsafeJoinInputError))
+        msg = str(await _plan_fails(engine, query, UnsafeRelationshipInputError))
         assert "shipped_at" in msg
         assert "orders" in msg
 
     async def test_non_temporal_expression_rejected(self, engine) -> None:
-        msg = str(await _plan_fails(engine, _count(time_dimensions=[td("upper(status)")]), TimeDimensionColumnError))
+        msg = str(await _plan_fails(engine, _count(time_dimensions=[td("upper(status)")]), TimeDimensionFieldError))
         assert "upper_status" in msg or "upper(status)" in msg
         assert "TEXT" in msg.upper()
 
     async def test_undetermined_type_names_the_cast_remedy(self, engine) -> None:
         query = _count(time_dimensions=[td("CASE WHEN status = 'paid' THEN NULL END")])
-        msg = str(await _plan_fails(engine, query, TimeDimensionColumnError))
+        msg = str(await _plan_fails(engine, query, TimeDimensionFieldError))
         assert "CAST" in msg
 
     async def test_aggregate_inside_rejected(self, engine) -> None:
@@ -155,7 +155,7 @@ class TestTimePositions:
                                                              expected: dict) -> None:
         resp = await engine.execute(_count(
             time_dimensions=[td(dimension)], whole_periods_only=True,
-            filters=[f"'2025-01-15' <= {dimension}", f"{dimension} <= '2025-03-10'"],
+            filter=[f"'2025-01-15' <= {dimension}", f"{dimension} <= '2025-03-10'"],
         ))
         assert by_bucket(resp, key, "orders.v") == expected
 
@@ -173,7 +173,7 @@ class TestTimePositions:
     async def test_rolling_window_and_change_over_an_expression_axis(self, engine) -> None:
         resp = await engine.execute(q(
             time_dimensions=[td(EFF, date_range=["2025-02-01", "2025-04-30"])],
-            measures=[m("sum(amount)", "s"), m("sum(amount, window='3m')", "w"), m("change(sum(amount))", "c")],
+            metrics=[m("sum(amount)", "s"), m("sum(amount, window='3m')", "w"), m("change(sum(amount))", "c")],
         ))
         assert by_bucket(resp, KEY, "orders.s") == FEB_APR_SUM
         assert by_bucket(resp, KEY, "orders.w") == FEB_APR_WINDOW
@@ -181,8 +181,8 @@ class TestTimePositions:
 
     @pytest.mark.parametrize("bound", [f"{EFF} >= '2025-02'", f"date_trunc('month', {EFF}) >= '2025-02-01'"])
     async def test_filter_on_the_expression_is_a_frame_bound(self, engine, bound: str) -> None:
-        resp = await engine.execute(q(time_dimensions=[td(EFF)], filters=[bound],
-                                      measures=[m("sum(amount, window='3m')", "w")]))
+        resp = await engine.execute(q(time_dimensions=[td(EFF)], filter=[bound],
+                                      metrics=[m("sum(amount, window='3m')", "w")]))
         assert by_bucket(resp, KEY, "orders.w") == FEB_APR_WINDOW
 
     @pytest.mark.parametrize("measures", [
@@ -191,22 +191,22 @@ class TestTimePositions:
         [m("last(amount)", "l"), m("first(amount)", "f")],
     ], ids=["plain", "time-ordered", "ranked"])
     async def test_equal_to_a_column_holding_the_per_row_values(self, engine, measures: list) -> None:
-        by_expr = await engine.execute(q(time_dimensions=[td(EFF)], measures=measures))
-        by_col = await engine.execute(q(time_dimensions=[td("eff")], measures=measures))
+        by_expr = await engine.execute(q(time_dimensions=[td(EFF)], metrics=measures))
+        by_col = await engine.execute(q(time_dimensions=[td("eff")], metrics=measures))
         assert _rows(by_expr, key=KEY) == _rows(by_col, key="orders.eff")
 
 
 class TestStageBuckets:
     def _inner(self) -> SlayerQuery:
         return SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders", "time_dimensions": [td(EFF)],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "name": "s1", "population": "orders", "time_dimensions": [td(EFF)],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         })
 
     def _outer(self, granularity: str) -> SlayerQuery:
         return SlayerQuery.model_validate({
-            "source_model": "s1", "time_dimensions": [td(EFF_NAME, granularity)],
-            "measures": [{"formula": "sum(rev)", "name": "v"}],
+            "population": "s1", "time_dimensions": [td(EFF_NAME, granularity)],
+            "metrics": [{"expression": "sum(rev)", "name": "v"}],
         })
 
     async def test_coarser_rebucket_sums_the_monthly_sums(self, engine) -> None:
@@ -214,7 +214,7 @@ class TestStageBuckets:
         assert by_bucket(resp, f"s1.{EFF_NAME}", "s1.v", width=4) == {"2025": 210.0}
 
     async def test_finer_rebucket_rejected(self, engine) -> None:
-        msg = str(await _plan_fails(engine, [self._inner(), self._outer("day")], TimeDimensionColumnError))
+        msg = str(await _plan_fails(engine, [self._inner(), self._outer("day")], TimeDimensionFieldError))
         assert "month" in msg
         assert "day" in msg
 
@@ -222,12 +222,12 @@ class TestStageBuckets:
 class TestPerLeafRebucketing:
     def _monthly(self, dimension: str, granularity: str) -> SlayerQuery:
         return SlayerQuery.model_validate({
-            "source_model": "monthly", "time_dimensions": [td(dimension, granularity)],
-            "measures": [{"formula": "sum(rev)", "name": "v"}],
+            "population": "monthly", "time_dimensions": [td(dimension, granularity)],
+            "metrics": [{"expression": "sum(rev)", "name": "v"}],
         })
 
     async def test_cast_of_a_month_bucketed_column_at_day_rejected(self, engine) -> None:
-        msg = str(await _plan_fails(engine, self._monthly(CAST_DAY, "day"), TimeDimensionColumnError))
+        msg = str(await _plan_fails(engine, self._monthly(CAST_DAY, "day"), TimeDimensionFieldError))
         assert "created_at" in msg
         assert "month" in msg
         assert "day" in msg
@@ -243,20 +243,20 @@ class TestPerLeafRebucketing:
 
     async def test_bucketed_leaf_beside_an_unbucketed_one_binds_the_rule(self, engine) -> None:
         query = self._monthly("coalesce(created_at, refunded_at)", "day")
-        msg = str(await _plan_fails(engine, query, TimeDimensionColumnError))
+        msg = str(await _plan_fails(engine, query, TimeDimensionFieldError))
         assert "created_at" in msg
         assert "month" in msg
 
 
 class TestNamesAndKeys:
-    async def test_unnamed_expression_key(self, engine) -> None:
+    async def test_unnamed_expression_key(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF)]))
         assert resp.columns == [KEY, "orders.v"]
 
-    async def test_named_expression_key_and_main_time_dimension(self, engine) -> None:
+    async def test_named_expression_key_and_main_time_dimension(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             time_dimensions=[td("created_at"), td(EFF, name="effective_at")], main_time_dimension="effective_at",
-            measures=[m("cumsum(count(*))")],
+            metrics=[m("cumsum(count(*))")],
         ))
         assert set(resp.columns) == {"orders.created_at", "orders.effective_at", "orders.v"}
         got = {(bucket(r["orders.created_at"]), bucket(r["orders.effective_at"])): num(r["orders.v"])
@@ -266,25 +266,25 @@ class TestNamesAndKeys:
             ("2025-02", "2025-02"): 1, ("2025-02", "2025-03"): 2, ("2025-03", "2025-04"): 1,
         }
 
-    async def test_named_column_time_dimension(self, engine) -> None:
+    async def test_named_column_time_dimension(self, engine: SlayerQueryEngine) -> None:
         named = await engine.execute(_count(time_dimensions=[td("created_at", name="m")]))
         assert named.columns == ["orders.m", "orders.v"]
         assert by_bucket(named, "orders.m", "orders.v") == CREATED_MONTH_COUNT
 
-    async def test_named_time_dimension_never_carries_the_granularity_suffix(self, engine) -> None:
+    async def test_named_time_dimension_never_carries_the_granularity_suffix(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF, name="em"), td(EFF, "year", name="ey")]))
         assert set(resp.columns) == {"orders.em", "orders.ey", "orders.v"}
 
     async def test_partition_by_a_time_dimension_name(self, engine) -> None:
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=[td(EFF, name="effective_at")],
-            measures=[m("sum(amount, partition_by=effective_at)")],
+            metrics=[m("sum(amount, partition_by=effective_at)")],
         ))
         got = by_bucket(resp, "orders.effective_at", "orders.v", by=["orders.region"])
         assert got == {("EU", "2025-01"): 10.0, ("EU", "2025-02"): 50.0, ("EU", "2025-04"): 50.0,
                        ("US", "2025-02"): 50.0, ("US", "2025-03"): 100.0}
 
-    async def test_two_granularities_of_one_expression(self, engine) -> None:
+    async def test_two_granularities_of_one_expression(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(dimensions=[f"date_trunc('month', {EFF})", f"date_trunc('year', {EFF})"]))
         assert set(resp.columns) == {f"{KEY}.month", f"{KEY}.year", "orders.v"}
         got = {(bucket(r[f"{KEY}.month"]), bucket(r[f"{KEY}.year"], width=4)): num(r["orders.v"]) for r in resp.data}
@@ -296,7 +296,7 @@ class TestNamesAndKeys:
             _count(time_dimensions=tds)
 
     @pytest.mark.parametrize("extra", [{}, {"label": "a"}, {"name": "effective_at"}])
-    async def test_equivalent_spellings_with_agreeing_metadata_dedupe_at_binding(self, engine, extra: dict) -> None:
+    async def test_equivalent_spellings_with_agreeing_metadata_dedupe_at_binding(self, engine: SlayerQueryEngine, extra: dict) -> None:
         once = await engine.execute(_count(time_dimensions=[td(EFF, **extra)]))
         twice = await engine.execute(_count(time_dimensions=[td(EFF, **extra),
                                                              td("COALESCE(shipped_at,created_at)", **extra)]))
@@ -306,7 +306,7 @@ class TestNamesAndKeys:
     async def test_main_time_dimension_by_expression_name(self, engine) -> None:
         resp = await engine.execute(q(
             dimensions=["date_trunc('month', created_at)"], time_dimensions=[td(EFF, name="effective_at")],
-            main_time_dimension="effective_at", measures=[m("cumsum(count(*))")],
+            main_time_dimension="effective_at", metrics=[m("cumsum(count(*))")],
         ))
         got = {(bucket(r["orders.created_at"]), bucket(r["orders.effective_at"])): num(r["orders.v"])
                for r in resp.data}
@@ -317,12 +317,12 @@ class TestNamesAndKeys:
 class TestOrderKey:
     async def test_order_by_a_projected_expression_bucket(self, engine) -> None:
         resp = await engine.execute(_count(
-            dimensions=[f"date_trunc('month', {EFF})"], order=[{"column": f"date_trunc('month', {EFF})", "direction": "desc"}],
+            dimensions=[f"date_trunc('month', {EFF})"], order=[{"field": f"date_trunc('month', {EFF})", "direction": "desc"}],
         ))
         assert [bucket(r[KEY]) for r in resp.data] == ["2025-04", "2025-03", "2025-02", "2025-01"]
 
     async def test_order_by_an_unprojected_granularity_names_the_remedy(self, engine) -> None:
-        query = _count(dimensions=[f"date_trunc('year', {EFF})"], order=[{"column": f"date_trunc('month', {EFF})"}])
+        query = _count(dimensions=[f"date_trunc('year', {EFF})"], order=[{"field": f"date_trunc('month', {EFF})"}])
         msg = str(await _plan_fails(engine, query, GranularityCallError))
         assert "month" in msg
 

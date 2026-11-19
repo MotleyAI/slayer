@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from tests._dev1847_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     broadcast_warnings,
     chain_q,
     make_exec_engine,
@@ -44,8 +44,8 @@ class TestNestedPathKeySeed:
         broadcast warning (the previous rule broadcast them)."""
         resp = await exec_engine.execute(chain_q(
             dimensions=[dim],
-            measures=[ModelMeasure(
-                formula="avg(sum(amount, partition_by=customers.id))", name="a")]))
+            metrics=[DatasetMetric(
+                expression="avg(sum(amount, partition_by=customers.id))", name="a")]))
         by = rows_by(resp, col)
         for key, expected in oracle.items():
             assert float(by[(key,)]["corders.a"]) == pytest.approx(expected)
@@ -59,8 +59,8 @@ class TestForeignKeySeedsToOneTarget:
         so customers.regions.name is attributable exactly, no broadcast warning."""
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(
-                formula="avg(sum(amount, partition_by=customers.region_id))",
+            metrics=[DatasetMetric(
+                expression="avg(sum(amount, partition_by=customers.region_id))",
                 name="a")]))
         by = rows_by(resp, "corders.customers.regions.name")
         for name, expected in FK_SEED_AVG_BY_REGION_NAME.items():
@@ -77,8 +77,8 @@ class TestNestedPathNonKeyDoesNotSeed:
         the deliberate expansion — and is covered separately.)"""
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.id"],
-            measures=[ModelMeasure(
-                formula="avg(sum(amount, partition_by=customers.region_id))",
+            metrics=[DatasetMetric(
+                expression="avg(sum(amount, partition_by=customers.region_id))",
                 name="a")],
             to_many_handling="broadcast"))
         assert broadcast_warnings(resp)

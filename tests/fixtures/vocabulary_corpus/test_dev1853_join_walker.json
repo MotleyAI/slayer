@@ -1,0 +1,83 @@
+{
+ "source": "tests/test_dev1853_join_walker.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "b",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ],
+    "name": "c"
+   },
+   "new": {
+    "to": "b",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ],
+    "name": "c"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "c",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 193,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  }
+ ]
+}

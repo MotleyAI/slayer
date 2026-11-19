@@ -22,10 +22,10 @@ from slayer.cli import _CommandFailed, _run_memory
 from tests._cli_inprocess import run_cli_in_process
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -37,30 +37,30 @@ async def seeded_storage_path():
         await s.save_datasource(
             DatasourceConfig(name="mydb", type="postgres", host="x")
         )
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="orders",
                 data_source="mydb",
                 sql_table="orders",
-                columns=[
-                    Column(
+                fields=[
+                    DatasetField(
                         name="id",
                         sql="id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                         primary_key=True,
                     ),
-                    Column(
+                    DatasetField(
                         name="amount",
                         sql="amount",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                     ),
-                    Column(
+                    DatasetField(
                         name="status",
                         sql="status",
-                        type=DataType.TEXT,
+                        datatype=DataType.TEXT,
                     ),
                 ],
-                measures=[ModelMeasure(formula="sum(amount)", name="rev")],
+                metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
             )
         )
         await s.set_datasource_priority(["mydb"])
@@ -103,8 +103,8 @@ class TestMemorySaveSubcommand:
     def test_save_with_query_inline(self, seeded_storage_path, capsys):
         query_json = json.dumps(
             {
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
             }
         )
         _run_memory(
@@ -128,8 +128,8 @@ class TestMemorySaveSubcommand:
         f.write_text(
             json.dumps(
                 {
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                 }
             )
         )

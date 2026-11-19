@@ -14,6 +14,6 @@ from slayer.storage.migrations import register_migration
 
 
 @register_migration(entity="SlayerModel", source_version=8)
-def _model_v8_to_v9(data: dict) -> dict:
+def _dataset_v8_to_v9(data: dict) -> dict:
     """No-op forward. The legacy-``__`` rewrite runs in the load path."""
     return data

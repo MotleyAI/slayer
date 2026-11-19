@@ -1,0 +1,109 @@
+{
+ "source": "tests/integration/test_decimal_aggregate_precision.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='2d')",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount, window='2d')",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "day"
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "day"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=created_at)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=created_at)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "datatype": "DOUBLE"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(customers.amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(customers.amount)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 38,
+   "reason": "unclassifiable"
+  }
+ ]
+}

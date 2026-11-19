@@ -1,0 +1,229 @@
+{
+ "source": "tests/test_time_points_clock.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "dimensions": [
+     "id"
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "filters": [
+     "ts >= 'last 3 months'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "dimensions": [
+     "id"
+    ],
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "filter": [
+     "ts >= 'last 3 months'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "inner",
+    "source_model": "recent",
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "month",
+      "date_range": [
+       null,
+       "last month"
+      ]
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "filters": [
+     "ts < 'this month'"
+    ]
+   },
+   "new": {
+    "name": "inner",
+    "population": "recent",
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "month",
+      "date_range": [
+       null,
+       "last month"
+      ]
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)",
+      "name": "r"
+     }
+    ],
+    "filter": [
+     "ts < 'this month'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "inner",
+    "measures": [
+     {
+      "formula": "sum(r)",
+      "name": "total"
+     }
+    ],
+    "filters": [
+     "ts >= 'last 3 months'"
+    ]
+   },
+   "new": {
+    "population": "inner",
+    "metrics": [
+     {
+      "expression": "sum(r)",
+      "name": "total"
+     }
+    ],
+    "filter": [
+     "ts >= 'last 3 months'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "ts >= 'last 7 days'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filter": [
+     "ts >= 'last 7 days'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "ts = 'today'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "ts = 'today'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "ts >= 'last 7 days'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filter": [
+     "ts >= 'last 7 days'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "ts = 'today'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filter": [
+     "ts = 'today'"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

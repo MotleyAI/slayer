@@ -33,7 +33,7 @@ _DDL = (
     "CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, status TEXT, "
     "ordered_at TIMESTAMP, amount DOUBLE PRECISION)",
 )
-REGION_QUERY = {"source_model": "orders", "dimensions": ["customers.region"], "measures": ["sum(amount)"]}
+REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(amount)"]}
 
 
 @pytest.fixture
@@ -75,5 +75,5 @@ async def test_offset_date_range_returns_the_0_10_2_rows(tmp_path, shop_ds, date
     qb = query_backed_v10(name="rev_range", stages=[rev_query(time_dimensions=[year_td(date_range)])])
     storage = await raw_store(backend="yaml", base=str(tmp_path), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), qb])
-    resp = await run(storage, {"source_model": "rev_range", "measures": ["sum(rev)"]})
+    resp = await run(storage, {"population": "rev_range", "metrics": ["sum(rev)"]})
     assert measure_total(resp, measure="rev_sum") == expected

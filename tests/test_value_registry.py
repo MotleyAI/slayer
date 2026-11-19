@@ -14,13 +14,13 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    CanonicalAliasShadowsColumnError,
-    DuplicateMeasureNameError,
-    MeasureNameCollidesWithColumnError,
+    CanonicalAliasShadowsFieldError,
+    DuplicateMetricNameError,
+    MetricNameCollidesWithFieldError,
 )
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     Phase,
     StarKey,
@@ -38,7 +38,7 @@ class TestInterning:
     def test_intern_returns_stable_slot_id(self):
         r = ValueRegistry()
         sid = r.intern(
-            key=ColumnKey(path=(), leaf="status"),
+            key=FieldKey(path=(), leaf="status"),
             declared_name="status",
             phase=Phase.ROW,
         )
@@ -46,7 +46,7 @@ class TestInterning:
         assert sid
         # Re-intern with same key returns same id.
         sid2 = r.intern(
-            key=ColumnKey(path=(), leaf="status"),
+            key=FieldKey(path=(), leaf="status"),
             declared_name="status",
             phase=Phase.ROW,
         )
@@ -55,12 +55,12 @@ class TestInterning:
     def test_different_keys_different_slots(self):
         r = ValueRegistry()
         a = r.intern(
-            key=ColumnKey(path=(), leaf="status"),
+            key=FieldKey(path=(), leaf="status"),
             declared_name="status",
             phase=Phase.ROW,
         )
         b = r.intern(
-            key=ColumnKey(path=(), leaf="amount"),
+            key=FieldKey(path=(), leaf="amount"),
             declared_name="amount",
             phase=Phase.ROW,
         )
@@ -70,10 +70,10 @@ class TestInterning:
         # The same AggregateKey via two different bind paths shares a slot.
         r = ValueRegistry()
         key1 = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="sum",
+            source=FieldKey(path=(), leaf="amount"), agg="sum",
         )
         key2 = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="sum",
+            source=FieldKey(path=(), leaf="amount"), agg="sum",
         )
         a = r.intern(key=key1, declared_name="amount_sum", phase=Phase.AGGREGATE)
         b = r.intern(key=key2, declared_name="amount_sum", phase=Phase.AGGREGATE)
@@ -84,12 +84,12 @@ class TestInterning:
         # percentile(p=0.5) and percentile(p=0.50) intern.
         r = ValueRegistry()
         key1 = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"),
+            source=FieldKey(path=(), leaf="amount"),
             agg="percentile",
             kwargs=(("p", Decimal("0.5")),),
         )
         key2 = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"),
+            source=FieldKey(path=(), leaf="amount"),
             agg="percentile",
             kwargs=(("p", Decimal("0.50")),),
         )
@@ -108,7 +108,7 @@ class TestMultiAlias:
     @pytest.mark.parametrize("explicit_first", [False, True])
     def test_shared_integer_slot_preserves_explicit_cast_intent(self, explicit_first):
         r = ValueRegistry()
-        key = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
+        key = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
         for name, explicit in (("a", explicit_first), ("b", not explicit_first)):
             sid = r.intern(
                 key=key, declared_name=name, public_name=name,
@@ -123,7 +123,7 @@ class TestMultiAlias:
         # P4 / C13: same structural key declared with two different names.
         r = ValueRegistry()
         key = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"), agg="sum",
+            source=FieldKey(path=(), leaf="revenue"), agg="sum",
         )
         a = r.intern(
             key=key, declared_name="rev1", public_name="rev1",
@@ -143,7 +143,7 @@ class TestMultiAlias:
         # public.
         r = ValueRegistry()
         key = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"), agg="sum",
+            source=FieldKey(path=(), leaf="revenue"), agg="sum",
         )
         hid = r.intern(
             key=key, declared_name="revenue_sum",
@@ -171,14 +171,14 @@ class TestAliasCollisions:
         r = ValueRegistry()
         r.intern(
             key=AggregateKey(
-                source=ColumnKey(path=(), leaf="amount"), agg="sum",
+                source=FieldKey(path=(), leaf="amount"), agg="sum",
             ),
             declared_name="rev",
             public_name="rev",
             phase=Phase.AGGREGATE,
         )
-        key = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
-        with pytest.raises(DuplicateMeasureNameError):
+        key = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
+        with pytest.raises(DuplicateMetricNameError):
             r.intern(
                 key=key,
                 declared_name="rev",
@@ -188,9 +188,9 @@ class TestAliasCollisions:
 
     def test_name_collides_with_source_column_raises(self):
         # A declared name matching a column on the host model is rejected.
-        r = ValueRegistry(source_column_names=frozenset({"amount"}))
-        key = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
-        with pytest.raises(MeasureNameCollidesWithColumnError):
+        r = ValueRegistry(source_field_names=frozenset({"amount"}))
+        key = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
+        with pytest.raises(MetricNameCollidesWithFieldError):
             r.intern(
                 key=key,
                 declared_name="amount",
@@ -202,9 +202,9 @@ class TestAliasCollisions:
         # `sum(revenue)` canonicalises to `revenue_sum`. If the model has
         # a source column literally named `revenue_sum`, the canonical
         # alias collides — reject.
-        r = ValueRegistry(source_column_names=frozenset({"revenue_sum"}))
-        key = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
-        with pytest.raises(CanonicalAliasShadowsColumnError):
+        r = ValueRegistry(source_field_names=frozenset({"revenue_sum"}))
+        key = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
+        with pytest.raises(CanonicalAliasShadowsFieldError):
             r.intern(
                 key=key,
                 declared_name="revenue_sum",
@@ -223,7 +223,7 @@ class TestLookup:
     def test_get_by_slot_id(self):
         r = ValueRegistry()
         sid = r.intern(
-            key=ColumnKey(path=(), leaf="status"),
+            key=FieldKey(path=(), leaf="status"),
             declared_name="status",
             phase=Phase.ROW,
         )
@@ -281,13 +281,13 @@ class TestParameterizedKeyInterning:
         different slots — the join path is part of the structural key."""
         r = ValueRegistry()
         local = r.intern(
-            key=AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum"),
+            key=AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum"),
             declared_name="revenue_sum",
             phase=Phase.AGGREGATE,
         )
         cross = r.intern(
             key=AggregateKey(
-                source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
+                source=FieldKey(path=("customers",), leaf="revenue"), agg="sum",
             ),
             declared_name="cust_rev",
             phase=Phase.AGGREGATE,
@@ -299,7 +299,7 @@ class TestParameterizedKeyInterning:
         """``ntile(sum(x), n=3)`` and ``ntile(sum(x), n=4)`` intern to
         different slots."""
         r = ValueRegistry()
-        agg = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
+        agg = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
         t3 = r.intern(
             key=TransformKey(op="ntile", input=agg, kwargs=(("n", Decimal(3)),)),
             declared_name="r_ntile3",
@@ -319,7 +319,7 @@ class TestParameterizedKeyInterning:
         both ``granularity`` and ``periods``.
         """
         r = ValueRegistry()
-        agg = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
+        agg = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
         ta = r.intern(
             key=TransformKey(
                 op="time_shift", input=agg,
@@ -343,7 +343,7 @@ class TestParameterizedKeyInterning:
         """5 repeated intern calls of the same ``TransformKey`` return the
         same slot id."""
         r = ValueRegistry()
-        agg = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
+        agg = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
         ids = {
             r.intern(
                 key=TransformKey(op="ntile", input=agg, kwargs=(("n", Decimal(3)),)),

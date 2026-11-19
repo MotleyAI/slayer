@@ -1,12 +1,12 @@
 # Auto-Ingestion
 
-SLayer can introspect a database schema and automatically generate models with a unified `columns` list and **direct FK-based joins**. Aggregations are picked at query time (`sum(amount)`, `count(*)`); the model itself doesn't carry pre-baked aggregates.
+SLayer can introspect a database schema and automatically generate datasets with a unified `fields` list and **direct FK-based relationships**. Aggregations are picked at query time (`sum(amount)`, `count(*)`); the dataset itself doesn't carry pre-baked aggregates.
 
 SLayer has three ingestion paths:
 
-1. **Auto-ingest** (this page) — introspect a live database and generate visible models with direct FK-based joins.
-2. **dbt semantic layer import** — convert `semantic_models` and `metrics` from a dbt project into visible SLayer models. See [dbt Import](../dbt/dbt_import.md).
-3. **Hidden dbt-model import** — the `--include-hidden-models` variant of `import-dbt` adds every regular dbt model that isn't wrapped by a `semantic_model` as a **hidden** SlayerModel built via SQL introspection. Hidden models stay out of discovery/listing endpoints but remain queryable by name. See [Regular dbt Models (Hidden Import)](../dbt/dbt_import.md#regular-dbt-models-hidden-import).
+1. **Auto-ingest** (this page) — introspect a live database and generate visible datasets with direct FK-based relationships.
+2. **dbt semantic layer import** — convert `semantic_models` and `metrics` from a dbt project into visible SLayer datasets. See [dbt Import](../dbt/dbt_import.md).
+3. **Hidden dbt-model import** — the `--include-hidden-datasets` variant of `import-dbt` adds every regular dbt model that isn't wrapped by a `semantic_model` as a **hidden** SlayerDataset built via SQL introspection. Hidden datasets stay out of discovery/listing endpoints but remain queryable by name. See [Regular dbt Models (Hidden Import)](../dbt/dbt_import.md#regular-dbt-models-hidden-import).
 
 ## How It Works
 
@@ -20,53 +20,53 @@ SLayer introspects foreign key constraints and builds a directed dependency grap
 orders ──FK──→ customers ──FK──→ regions
 ```
 
-Every foreign key between two ingested tables of the same schema becomes a join, whatever cycles the graph contains (see [Cycle Handling](#cycle-handling) below); self-referencing FKs are skipped.
+Every foreign key between two ingested tables of the same schema becomes a relationship, whatever cycles the graph contains (see [Cycle Handling](#cycle-handling) below); self-referencing FKs are skipped.
 
-A key that cannot be read is listed under "Lost key reads" in the ingest output (`key_read_failures` in the REST response), and its table is ingested without it; a re-ingest that reads the key fills it, unless a stored column with a key column's name reads something else.
+A key that cannot be read is listed under "Lost key reads" in the ingest output (`key_read_failures` in the REST response), and its table is ingested without it; a re-ingest that reads the key fills it, unless a stored field with a key column's name reads something else.
 
-### Step 2: Build Direct Joins
+### Step 2: Build Direct Relationships
 
-Each model gets one join entry per foreign key **on its own table** — never multi-hop joins. For example, given `orders → customers → regions`:
+Each dataset gets one relationship entry per foreign key **on its own table** — never multi-hop relationships. For example, given `orders → customers → regions`:
 
-- The `orders` model gets a single join: `orders → customers` (on `customer_id = id`)
-- The `customers` model gets a single join: `customers → regions` (on `region_id = id`)
-- The `orders` model does **not** get a baked-in `orders → regions` join
+- The `orders` dataset gets a single relationship: `orders → customers` (on `customer_id = id`)
+- The `customers` dataset gets a single relationship: `customers → regions` (on `region_id = id`)
+- The `orders` dataset does **not** get a baked-in `orders → regions` relationship
 
-Each join stores the source/target column pair from the table's own FK. Multi-hop paths (e.g., `customers.regions.name` queried from `orders`) are resolved at query time by walking each intermediate model's joins.
+Each relationship stores the source/target column pair from the table's own FK. Multi-hop paths (e.g., `customers.regions.name` queried from `orders`) are resolved at query time by walking each intermediate dataset's relationships.
 
-- **Dotted column references**: `customers.name`, `customers.id`, `customers.regions.name`, `customers.regions.id` are reachable from `orders` via the join graph at query time — they live as columns on the target models, not on `orders`.
-- **Path-based SQL**: You reference joined columns with dotted paths (`customers.regions.name`); at query time SLayer emits them with `__`-delimited internal table aliases to disambiguate joined tables (e.g., `LEFT JOIN regions AS customers__regions`). The `__` alias is a generated-SQL detail, not something you write.
+- **Dotted field references**: `customers.name`, `customers.id`, `customers.regions.name`, `customers.regions.id` are reachable from `orders` via the relationship graph at query time — they live as fields on the target datasets, not on `orders`.
+- **Path-based SQL**: You reference joined fields with dotted paths (`customers.regions.name`); at query time SLayer emits them with `__`-delimited internal table aliases to disambiguate joined tables (e.g., `LEFT JOIN regions AS customers__regions`). The `__` alias is a generated-SQL detail, not something you write.
 
-Tables with no FK references use their plain table name with no joins.
+Tables with no FK references use their plain table name with no relationships.
 
-### Step 3: Introspect & Generate Model
+### Step 3: Introspect & Generate Dataset
 
-SLayer introspects each table's column types and generates a model:
+SLayer introspects each table's column types and generates a dataset:
 
-- **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`TEXT` / `INT` / `DOUBLE` / `BOOLEAN` / `DATE` / `TIMESTAMP`, or `UNKNOWN` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query; a [list column](queries.md#list-columns) has rules of its own.
-- **List columns** become `type: ARRAY` with their `element_type`: Postgres `T[]`, BigQuery `REPEATED T` / `ARRAY<T>`, DuckDB `T[]` / `LIST`, ClickHouse `Array(T)` (`Nullable` / `LowCardinality` unwrapped), Trino `array(T)` and Snowflake `ARRAY(T)`; a nested list or a list of records gets `element_type: UNKNOWN`, and a Snowflake `ARRAY` without a declared element type has it inferred from the stored elements.
-- **`db_type`** keeps the raw database type where `type` loses information (`UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps, lists); a native JSON column is read natively only when it is recorded, so a model written by hand without it reads the column as `TEXT`.
-- **Column and table comments** stored in the database become `Column.description` and `SlayerModel.description` (see [Comments and descriptions](#comments-and-descriptions) below).
-- **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — a sole `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during join-cardinality inference rather than being flattened onto individual columns.
+- **One `DatasetField`** per non-joined column on the source table — name, `datatype` inferred from the database (`TEXT` / `INT` / `DOUBLE` / `BOOLEAN` / `DATE` / `TIMESTAMP`, or `UNKNOWN` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each field is used as a group-by dimension or as an aggregation source is decided per query; a [list field](queries.md#list-fields) has rules of its own.
+- **List columns** become `datatype: ARRAY` with their `element_type`: Postgres `T[]`, BigQuery `REPEATED T` / `ARRAY<T>`, DuckDB `T[]` / `LIST`, ClickHouse `Array(T)` (`Nullable` / `LowCardinality` unwrapped), Trino `array(T)` and Snowflake `ARRAY(T)`; a nested list or a list of records gets `element_type: UNKNOWN`, and a Snowflake `ARRAY` without a declared element type has it inferred from the stored elements.
+- **`db_type`** keeps the raw database type where `datatype` loses information (`UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps, lists); a native JSON column is read natively only when it is recorded, so a dataset written by hand without it reads the field as `TEXT`.
+- **Column and table comments** stored in the database become `DatasetField.description` and `SlayerDataset.description` (see [Comments and descriptions](#comments-and-descriptions) below).
+- **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — a sole `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during relationship-cardinality inference rather than being flattened onto individual fields.
 - On DuckDB (1.1 or later), columns and keys (primary, foreign, `UNIQUE`, unique indexes over plain columns) are read from DuckDB's own catalog (`duckdb_columns()`, `duckdb_constraints()`, `duckdb_indexes()`); a key that cannot be read on any database is logged as a warning and the table is ingested without it.
 - **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(*)`.
-- **No auto-generated `measures`** — `SlayerModel.measures` is the named-formula library and stays empty after ingestion. You can add named formulas later via the API/MCP if you want bare-name shortcuts (`{"formula": "aov"}`).
-- **`count(*)`** is always available without any model definition.
-- The `allowed_aggregations` whitelist is left at the default for the column's data type. A sole PK column is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max`/`collect` automatically.
+- **No auto-generated `metrics`** — `SlayerDataset.metrics` is the named-expression library and stays empty after ingestion. You can add named expressions later via the API/MCP if you want bare-name shortcuts (`{"expression": "aov"}`).
+- **`count(*)`** is always available without any dataset definition.
+- The `allowed_aggregations` whitelist is left at the default for the field's data type. A sole PK field is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max`/`collect` automatically.
 
-FK columns from referenced tables are excluded from the source model to avoid redundancy — they're reachable via the join graph as `customers.id` etc.
+FK columns from referenced tables are excluded from the source dataset to avoid redundancy — they're reachable via the relationship graph as `customers.id` etc.
 
-All models use `sql_table` (the source table) plus `joins` (direct FK joins only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the join graph. A **composite** foreign key becomes a single join carrying all of its column pairs, not one join per column.
+All datasets use `sql_table` (the source table) plus `relationships` (direct FK relationships only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the relationship graph. A **composite** foreign key becomes a single relationship carrying all of its column pairs, not one relationship per column.
 
-Each FK join also gets a structural [`cardinality`](models.md#join-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-models --cardinality`.
+Each FK relationship also gets a structural [`cardinality`](models.md#relationship-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-datasets --cardinality`.
 
 ### Comments and descriptions
 
 Textual metadata stored in the database is imported during ingestion, so
 agents see the same documentation the DBA wrote:
 
-- **Column comments** → `Column.description`
-- **Table comments** → `SlayerModel.description`
+- **Column comments** → `DatasetField.description`
+- **Table comments** → `SlayerDataset.description`
 - **BigQuery dataset description** → the datasource's `description`
   (BigQuery only — no cross-database API exists for schema-level comments)
 
@@ -88,7 +88,7 @@ Per-database support:
 | SQLite | — (no such feature) | — |
 
 Comment fetching is best-effort: a database or driver that cannot surface
-comments simply yields models without descriptions, never a failed ingest.
+comments simply yields datasets without descriptions, never a failed ingest.
 
 ### SQLite affinity probing
 
@@ -101,11 +101,11 @@ The probe samples up to **`PROBE_SCAN_CAP + 1` rows** (100,001 by default; confi
 - **INT** when the entire sample is integer-shaped and the sample isn't saturated.
 - The SA-derived `INT` is kept (probe returns `None`) when the column is empty, all-NULL, the row sample saturates without enough evidence, or the probe itself errors. The probe logs a `WARNING` in the saturated / error cases.
 
-The probe is **idempotent re-ingest aware**: a persisted `Column.type = INT` is widened to `DOUBLE` / `TEXT` on the next `slayer ingest` if the live storage classes disagree. `Column.format = NumberFormat(INTEGER)` (the auto-ingested default) is flipped to `FLOAT` for `DOUBLE` or cleared for `TEXT`; user-set custom formats (currency, custom precision) are preserved verbatim with an `INFO` log noting the type change. The CLI prints `Updated: <model> (widened: <col>)` so the change is visible.
+The probe is **idempotent re-ingest aware**: a persisted `DatasetField.datatype = INT` is widened to `DOUBLE` / `TEXT` on the next `slayer ingest` if the live storage classes disagree. `DatasetField.format = NumberFormat(INTEGER)` (the auto-ingested default) is flipped to `FLOAT` for `DOUBLE` or cleared for `TEXT`; user-set custom formats (currency, custom precision) are preserved verbatim with an `INFO` log noting the type change. The CLI prints `Updated: <dataset> (widened: <col>)` so the change is visible.
 
 Non-SQLite datasources (Postgres, MySQL, DuckDB, ClickHouse, SQL Server) skip the probe entirely — their type systems are strict and this class of bug doesn't exist.
 
-Already-persisted v7 SQLite models with the wrong `INT` type are **not** auto-repaired on `storage.get_model()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
+Already-persisted v7 SQLite datasets with the wrong `INT` type are **not** auto-repaired on `storage.get_dataset()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
 
 ## Schema scope
 
@@ -124,23 +124,23 @@ schemas, pass their names or ask for all of them:
   rejected by the REST `IngestRequest` as a 422 and by the MCP tools as an
   error string).
 
-Object names with `__` are preserved as faithful model names — `a__b` and `a_b`
-are distinct models, and neither is sanitized. A name collision therefore only
+Object names with `__` are preserved as faithful dataset names — `a__b` and `a_b`
+are distinct datasets, and neither is sanitized. A name collision therefore only
 happens when two objects share the **same raw name** across different scanned
-schemas; exactly one wins the model name — the default schema beats a non-default
+schemas; exactly one wins the dataset name — the default schema beats a non-default
 one, then the lower schema name, then the lower object name — and the losers are
 reported under `skipped` (labelled `schema.table` when more than one schema was
 scanned). Columns, primary keys, and comments are always read from the winning
-table's own schema, never unioned across same-named twins. `sanitize_model_name`
+table's own schema, never unioned across same-named twins. `sanitize_dataset_name`
 survives only as a re-ingest fallback-matching spelling: a stored old-world
-sanitized model (`a_b`) whose `sql_table` points at the live `a__b` is still
+sanitized dataset (`a_b`) whose `sql_table` points at the live `a__b` is still
 matched to it, so re-ingest updates it in place (stored name wins).
 
 `datasources create --schema X` persists `X` as the datasource's
 `schema_name`, so later bare `slayer ingest` runs keep using it; `--all-schemas`
-persists no default schema. A model that was ingested before qualification
+persists no default schema. A dataset that was ingested before qualification
 existed (stored bare) is **self-healed** to its qualified `sql_table` on the
-next re-ingest when that is unambiguous — but a bare model that names a real
+next re-ingest when that is unambiguous — but a bare dataset that names a real
 default-schema table is never repointed at a non-default twin.
 
 ## Usage
@@ -177,10 +177,10 @@ async def main():
         )
     finally:
         await engine.aclose()  # release the client's resources on this event loop
-    # result.additions  — what was added (new models / columns / joins)
-    # result.to_delete  — pending validate_models drift entries
+    # result.additions  — what was added (new datasets / fields / relationships)
+    # result.to_delete  — pending validate_datasets drift entries
     # result.broken_dependents — stored definitions a list re-type broke
-    # result.errors     — per-model failures (best-effort, doesn't abort)
+    # result.errors     — per-dataset failures (best-effort, doesn't abort)
     return result
 
 asyncio.run(main())
@@ -190,10 +190,10 @@ asyncio.run(main())
 
 ```
 create_datasource(name="mydb", type="postgres", ...)
-ingest_datasource_models(datasource_name="mydb", schema_name="public")
+ingest_datasource(datasource_name="mydb", schema_name="public")
 # or, across schemas:
-ingest_datasource_models(datasource_name="mydb", schemas="public,analytics")
-ingest_datasource_models(datasource_name="mydb", all_schemas=True)
+ingest_datasource(datasource_name="mydb", schemas="public,analytics")
+ingest_datasource(datasource_name="mydb", all_schemas=True)
 ```
 
 ### REST API
@@ -206,31 +206,31 @@ curl -X POST http://localhost:5143/ingest \
 # or: {"datasource": "my_postgres", "all_schemas": true}
 ```
 
-## Querying Rolled-Up Models
+## Querying Rolled-Up Datasets
 
 After ingestion, you can query rolled-up dimensions directly:
 
 ```json
 {
-  "source_model": "orders",
-  "measures": ["count(*)", "sum(amount)"],
+  "population": "orders",
+  "metrics": ["count(*)", "sum(amount)"],
   "dimensions": ["customers.name"]
 }
 ```
 
-Or multi-hop dimensions (resolved at query time by walking each model's joins):
+Or multi-hop dimensions (resolved at query time by walking each dataset's relationships):
 
 ```json
 {
-  "source_model": "orders",
-  "measures": ["count(*)"],
+  "population": "orders",
+  "metrics": ["count(*)"],
   "dimensions": ["customers.regions.name"]
 }
 ```
 
-## Diamond Joins
+## Diamond Relationships
 
-When the same table is reachable via multiple FK paths (e.g., `orders → customers → regions` AND `orders → warehouses → regions`), each model only stores its own direct joins. The multi-hop paths are resolved at query time by walking intermediate models' joins. Each path gets a unique alias:
+When the same table is reachable via multiple FK paths (e.g., `orders → customers → regions` AND `orders → warehouses → regions`), each dataset only stores its own direct relationships. The multi-hop paths are resolved at query time by walking intermediate datasets' relationships. Each path gets a unique alias:
 
 - `customers.regions.name` → SQL alias `customers__regions`
 - `warehouses.regions.name` → SQL alias `warehouses__regions`
@@ -239,18 +239,18 @@ This avoids table alias collisions and allows querying both paths simultaneously
 
 ```json
 {
-  "source_model": "orders",
+  "population": "orders",
   "dimensions": [
     "customers.regions.name",
     "warehouses.regions.name"
   ],
-  "measures": ["count(*)"]
+  "metrics": ["count(*)"]
 }
 ```
 
 ## Cycle Handling
 
-FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more joins connect the same pair of models (a 2-cycle, or `billing_address_id` and `shipping_address_id` both referencing `addresses`) ingestion names each unnamed one after its FK column with a trailing `_id`/`_fk` removed (`billing_address`, `shipping_address`) — falling back to `<model>_<stem>`, then a numeric suffix, on a name clash, and never renaming a name you set — so you address them as `billing_address.city`.
+FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more relationships connect the same pair of datasets (a 2-cycle, or `billing_address_id` and `shipping_address_id` both referencing `addresses`) ingestion names each unnamed one after its FK column with a trailing `_id`/`_fk` removed (`billing_address`, `shipping_address`) — falling back to `<dataset>_<stem>`, then a numeric suffix, on a name clash, and never renaming a name you set — so you address them as `billing_address.city`.
 
 ## Ingesting at Startup
 
@@ -264,25 +264,25 @@ then the startup-ingest pass runs over every datasource including the
 freshly-created demo.
 
 Each per-datasource pass refreshes embeddings for the datasource doc,
-every visible model + its visible children, **and every memory whose
+every visible dataset + its visible children, **and every memory whose
 canonical entities are rooted at the datasource**. A stale
 `embeddings.db` (created without an `OPENAI_API_KEY`, or after a manual
 `memories/<id>.md` edit) is therefore repaired by the next
 `--ingest-on-startup` with no extra step. Per-memory embed failures
-surface as `IngestionError(model_name="memory:<id>", …)` in the
+surface as `IngestionError(dataset_name="memory:<id>", …)` in the
 result's `errors` list.
 
 ### Defense-in-depth dangling-ref cleanup
 
 The same per-datasource memory pass also walks each memory's
 `entities` list and probes every reference against storage. Refs
-that resolve to a definitive "not found" (deleted model, dropped
-column, vanished referenced memory) are stripped from the persisted
+that resolve to a definitive "not found" (deleted dataset, dropped
+field, vanished referenced memory) are stripped from the persisted
 list — three layers of defense keep entity tags clean as the
 underlying entities come and go:
 
-1. **Cascade-strip at delete (primary)** — `delete_model` /
-   `delete_datasource` / `forget_memory` / `edit_model_remove`
+1. **Cascade-strip at delete (primary)** — `delete_dataset` /
+   `delete_datasource` / `forget_memory` / `edit_dataset_remove`
    rewrite affected memories synchronously.
 2. **Retrieval-time in-memory filter (belt)** — `SearchService`
    filters each memory's `entities` against the live canonical set
@@ -298,7 +298,7 @@ never dropped on a maybe.
 For memories with an attached `Memory.query` (the inline example
 query stored alongside the learning), the cleanup pass attempts to
 re-extract entities from the query. On failure the pass emits an
-`IngestionError(model_name="memory:<id>", error="attached query has
+`IngestionError(dataset_name="memory:<id>", error="attached query has
 stale references: ...")` — the query itself is **not** rewritten.
 Agents reading the warning can re-save the memory to clean it.
 
@@ -327,7 +327,7 @@ app = create_app(storage=storage, ingest_on_startup=True)
 mcp = create_mcp_server(storage=storage, ingest_on_startup=True)
 ```
 
-Same "models are fresh by the time the constructor returns" guarantee the
+Same "datasets are fresh by the time the constructor returns" guarantee the
 CLI gets.
 
 ### Error semantics
@@ -342,7 +342,7 @@ CLI gets.
 `to_delete` entries from each per-datasource result are printed via the
 standard drift renderer and accumulated into the return value's
 `drift_pending` list, but **never auto-applied**. Destructive cleanup
-remains gated behind `slayer validate-models --force-clean [--yes]`. See
+remains gated behind `slayer validate-datasets --force-clean [--yes]`. See
 [Schema Drift](schema-drift.md).
 
 ### Output
@@ -365,21 +365,21 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 
 `slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
 
-- **No persisted model with that name** → ingest from scratch via the path above.
-- **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a join's `cardinality` is set only when it is currently unset (a value you chose is never replaced), a column's `unique` is only ever turned on, never off, a model with no primary key takes the live one (a key you set is never changed), and an **empty** `description` (column and model level) is filled from the live DB comment. Filling any of these is enough to trigger a save, so a re-ingest that adds no columns or joins still persists newly-discovered metadata. Filled descriptions are reported per model (`ModelAddition.described_columns`, `model_described`; the CLI prints `+descriptions: …`).
-- **Existing `sql`-mode or query-backed model with the matching name** → skipped by the merge, since those are user-authored; the only change re-ingestion makes to an `sql`-mode model is the list re-type below.
+- **No persisted dataset with that name** → ingest from scratch via the path above.
+- **Existing `sql_table`-mode dataset** → append new fields and relationships from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a relationship's `cardinality` is set only when it is currently unset (a value you chose is never replaced), a field's `unique` is only ever turned on, never off, a dataset with no primary key takes the live one (a key you set is never changed), and an **empty** `description` (field and dataset level) is filled from the live DB comment. Filling any of these is enough to trigger a save, so a re-ingest that adds no fields or relationships still persists newly-discovered metadata. Filled descriptions are reported per dataset (`DatasetAddition.described_fields`, `dataset_described`; the CLI prints `+descriptions: …`). Other metadata fills are reported as `metadata_changed` (`+key metadata`).
+- **Existing `sql`-mode or query-backed dataset with the matching name** → skipped by the merge, since those are user-authored; the only change re-ingestion makes to an `sql`-mode dataset is the list re-type below.
 
-With the default YAML storage, two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — model names collide as filenames on macOS / Windows, so the save is rejected (`IdCollisionError`). The first table wins; the second surfaces as a per-model entry in `IdempotentIngestResult.errors` (or a per-model message on the CLI / MCP paths) without aborting the rest of the ingest. SQLite storage persists both.
+With the default YAML storage, two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — dataset names collide as filenames on macOS / Windows, so the save is rejected (`IdCollisionError`). The first table wins; the second surfaces as a per-dataset entry in `IdempotentIngestResult.errors` (or a per-dataset message on the CLI / MCP paths) without aborting the rest of the ingest. SQLite storage persists both.
 
-After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type; the one exception is a non-list column whose live column is now a list, which re-ingestion re-types in place (keeping only `count` allowed) — in a stored `sql`-mode model too, whose column is matched to its query's result column. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
+After the additive pass, `validate_datasets` runs against the in-scope datasets and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing fields surfaces there — apply via `slayer validate-datasets --force-clean`, then re-ingest to pick up the new live type; the one exception is a non-list field whose live column is now a list, which re-ingestion re-types in place (keeping only `count` allowed) — in a stored `sql`-mode dataset too, whose field is matched to its query's result column. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
 
 ### Search side effects
 
 After validation, every ingest also refreshes the search corpus for the touched datasource:
 
-- **Sample values** (`Column.sampled`) — **not** re-profiled at ingest. A per-column full-table scan would dominate ingest wall-clock on wide datasources, so samples are populated lazily on the first `inspect` of a column (or explicitly via `slayer datasources refresh-samples`). See [Search](search.md#sample-value-cache).
-- **Embedding rows** — when the `advanced_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3-dense-embedding-similarity).
+- **Sample values** (`DatasetField.sampled`) — **not** re-profiled at ingest. A per-column full-table scan would dominate ingest wall-clock on wide datasources, so samples are populated lazily on the first `inspect` of a field (or explicitly via `slayer datasources refresh-samples`). See [Search](search.md#sample-value-cache).
+- **Embedding rows** — when the `advanced_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible dataset + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3-dense-embedding-similarity).
 
 Both refreshes are best-effort: per-entity runtime failures land in `IdempotentIngestResult.errors` as friendly strings, never aborting ingestion. When the `advanced_search` extra is not installed or no API key is configured for the active embedding model, the embedding pass is silently skipped — the user-visible signal lives on the next `search` response.
 
-`include_tables` / `exclude_tables` constrain the additive pass plus the `sql_table`-mode subset of validation: a `sql_table`-mode model whose table is excluded is left out of both. `sql`-mode and query-backed models in the same datasource are still passed through `validate_models` regardless of the table filter — they are not tied to a specific table name. Run `validate_models` directly (no `--include`/`--exclude`) to validate only those modes.
+`include_tables` / `exclude_tables` constrain the additive pass plus the `sql_table`-mode subset of validation: a `sql_table`-mode dataset whose table is excluded is left out of both. `sql`-mode and query-backed datasets in the same datasource are still passed through `validate_datasets` regardless of the table filter — they are not tied to a specific table name. Run `validate_datasets` directly (no `--include`/`--exclude`) to validate only those modes.

@@ -1,0 +1,105 @@
+{
+ "source": "tests/test_dev2177_conditional_branches.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "x"
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "x"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "s"
+     },
+     {
+      "expression": "amount",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "s"
+     },
+     {
+      "expression": "amount",
+      "name": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     {
+      "expression": "coalesce(s, n)",
+      "name": "x"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     {
+      "expression": "coalesce(s, n)",
+      "name": "x"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "max(greatest(status, amount))",
+      "name": "x"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "expression": "max(greatest(status, amount))",
+      "name": "x"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 219,
+   "reason": "unclassifiable"
+  }
+ ]
+}

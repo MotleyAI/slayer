@@ -1,0 +1,27 @@
+{
+ "source": "tests/test_stored_upgrade_join_keys.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}
