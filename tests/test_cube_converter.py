@@ -26,7 +26,7 @@ from tests._cube_helpers import DS, column, convert, metric, meta
 def _metric_field(dataset: SlayerDataset, metric_name: str) -> DatasetField:
     """Return the field an `<agg>(<col>)` metric expression aggregates."""
     m = metric(dataset, metric_name)
-    parsed = parse_expr(m.expression)
+    parsed = parse_expr(m.text)
     assert isinstance(parsed, AggCall), m.expression
     source = parsed.source
     assert isinstance(source, (Ref, DottedRef)), m.expression
@@ -108,7 +108,7 @@ def test_sum_measure_splits_column_and_modelmeasure_with_currency_format():
     models, _ = convert(project)
     orders = models["orders"]
     m = metric(orders, "total_revenue")
-    assert m.expression.startswith("sum(")
+    assert m.text.startswith("sum(")
     assert m.label == "Total Revenue"
     col = _metric_field(orders, "total_revenue")
     assert col.datatype == DataType.FLOAT
@@ -145,7 +145,7 @@ def test_count_distinct_approx_maps_to_count_distinct_approx():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    assert metric(models["orders"], "uniq_users").expression.startswith("count_distinct_approx(")
+    assert metric(models["orders"], "uniq_users").text.startswith("count_distinct_approx(")
     assert not any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
 
 
@@ -390,14 +390,14 @@ def _orders_with(metrics):
 def test_count_with_sql_counts_column():
     models, _ = convert(_orders_with(
         [CubeMeasure(name="paid_count", type="count", sql="{CUBE}.paid_id")]))
-    assert metric(models["orders"], "paid_count").expression.startswith("count(")
+    assert metric(models["orders"], "paid_count").text.startswith("count(")
     assert metric(models["orders"], "paid_count").expression != "count(*)"
 
 
 def test_count_distinct_exact():
     models, report = convert(_orders_with(
         [CubeMeasure(name="uniq", type="count_distinct", sql="{CUBE}.user_id")]))
-    assert metric(models["orders"], "uniq").expression.startswith("count_distinct(")
+    assert metric(models["orders"], "uniq").text.startswith("count_distinct(")
     assert not any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
 
 
@@ -406,7 +406,7 @@ def test_simple_aggregation_passthrough(agg):
     project = _orders_with([CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")])
     project.cubes[0].dimensions.append(CubeDimension(name="amount", sql="{CUBE}.amount", type="number"))
     models, _ = convert(project)
-    assert metric(models["orders"], f"m_{agg}").expression.startswith(f"{agg}(")
+    assert metric(models["orders"], f"m_{agg}").text.startswith(f"{agg}(")
 
 
 @pytest.mark.parametrize("cube_type,expected", [
@@ -467,7 +467,7 @@ def test_join_member_resolves_to_physical_column():
     assert models["orders"].relationships[0].column_pairs == [("customer_id", "id")]
     pk = column(models["customers"], "id")
     assert pk is not None
-    assert pk.sql == "cust_pk"
+    assert pk.expression == "cust_pk"
 
 
 def test_join_with_nontrivial_member_sql_is_unsupported():

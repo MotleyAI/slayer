@@ -97,7 +97,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 *_base_cols(),
                 DatasetField(name="big_order", sql="amount > 5", datatype=DataType.BOOLEAN),
             ],
-            filters=["big_order"],
+            filters=["orders_big.big_order"],
         )
     )
     # Derived field whose SQL crosses a relationship.
@@ -117,7 +117,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
-            filters=["eu_flag"],
+            filters=["orders_eu.eu_flag"],
         )
     )
     # Base-only dataset filter (regression guard).
@@ -144,7 +144,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                     datatype=DataType.INTEGER,
                 ),
             ],
-            filters=["ranked > 1"],
+            filters=["orders_win.ranked > 1"],
         ),
         _validate=False,
     )
@@ -156,7 +156,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             data_source="prod",
             fields=_base_cols(),
             metrics=[DatasetMetric(expression="sum(amount)", name="tot")],
-            filters=["tot > 100"],
+            filters=["orders_meas.tot > 100"],
         ),
         _validate=False,
     )

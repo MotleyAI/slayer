@@ -100,7 +100,7 @@ class TestModeASurfacesPreservedVerbatim:
         ]
         stored = await _save_and_reload(m)
         out_col = next(c for c in stored.fields if c.name == "region_name")
-        assert out_col.sql == "customers.regions.name"
+        assert out_col.definition_sql == "customers.regions.name"
 
     async def test_column_filter_surface_preserved(self):
         m = _orders_with_customers_join()

@@ -14,9 +14,11 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, JoinType, NUMERIC_DATATYPES, RelationshipCardinality, invert_cardinality
 from slayer.core.format import NumberFormat, NumberFormatType
+from slayer.core.field_expression import ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import render_probe_text
 from slayer.core.syntax import metric_dependency_problems
@@ -57,10 +59,17 @@ from slayer.importers.column_types import (
 )
 from slayer.importers.metrics import metric_problems, unreachable_fields
 from slayer.importers.physical import (
-    PhysicalIndex, UndecidableIdentifierCaseError, physical_identifier, root_physical_columns, unreadable_fields,
+    PhysicalIndex,
+    UndecidableIdentifierCaseError,
+    finished_field,
+    finished_fields,
+    physical_identifier,
+    raw_name,
+    unreadable_fields,
 )
 from slayer.database.client import SqlClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
+from slayer.sql.root_scope import respelled_qualifier, root_scope_field_ids
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +303,7 @@ class _CubeBuild(BaseModel):
     field_aggs: dict[str, list[str]] = Field(default_factory=lambda: defaultdict(list))
     sources: dict[str, list[tuple[str, str]]] = Field(default_factory=lambda: defaultdict(list))
     helpers: dict[tuple[str, str | None, Typed | None], str] = Field(default_factory=dict)
+    probes: dict[str, str | None] = Field(default_factory=dict)  # field -> its SQL with members bare, for probes
     fixed: set[str] = Field(default_factory=set)  # fields whose type no probe changes (segments, CASE labels)
     dimensions: set[str] = Field(default_factory=set)
     source: dict[str, str] = Field(default_factory=dict)
@@ -338,6 +348,7 @@ class CubeToSlayerConverter:
     def _use_dialect(self, dialect: SqlDialect | None) -> None:
         self._sql_dialect = dialect
         self._dialect = self._live.dialect = dialect.sqlglot_name if dialect is not None else None
+        self._token = self._dialect.upper() if self._dialect is not None else None
 
     async def collect_metadata(self, *, client: SqlClient) -> None:
         """Read every source and probe conversion asks for through ``client`` (in its datasource's dialect when none
@@ -448,6 +459,7 @@ class CubeToSlayerConverter:
         self._resolve_markers(build)
         self._type_fields(build, live=live, report=report)
         fields, metrics = self._validate_offline(build, report)
+        fields = finished_fields(fields, dataset=cube.name, token=self._token, dialect=self._dialect)
         self._pending_joins[cube.name] = self._join_keys(cube, report)
 
         if unmapped:
@@ -771,7 +783,7 @@ class CubeToSlayerConverter:
         if "type" in dim.model_fields_set:
             build.declared[name] = (declared, None)
         build.fields.append(DatasetField(
-            name=name, sql=sql, datatype=declared,
+            name=name, expression=sql, datatype=declared,
             primary_key=dim.primary_key, hidden=not dim.public,
             label=dim.title, description=dim.description, meta=dim.meta,
             format=_map_format(dim.format, report, cube=cube.name, member=dim.name),
@@ -793,7 +805,7 @@ class CubeToSlayerConverter:
         name = build.segment_names[seg.name]
         build.fixed.add(name)
         build.fields.append(DatasetField(
-            name=name, sql=self._mode_a(build, name, seg.sql),
+            name=name, expression=self._mode_a(build, name, seg.sql),
             datatype=DataType.BOOLEAN, hidden=not seg.public,
             label=seg.title, description=seg.description, meta=seg.meta))
         report.add(CubeConversionIssue(
@@ -912,11 +924,16 @@ class CubeToSlayerConverter:
         return name
 
     def _add_physical(self, build: _CubeBuild, physical: exp.Identifier, **field: Any) -> str:
-        """A new base field of ``build`` reading ``physical``, named after it when the name is free."""
-        name = build.names.take(physical.name) if physical.name not in build.names.used \
-            else build.names.take(f"{physical.name}_col")
+        """A new base field of ``build`` reading ``physical``, named after it when the name is free (hidden
+        ``<name>_raw`` when it is taken)."""
+        if physical.name in build.names.used:
+            name = raw_name(physical.name, taken=build.names.used)
+            field["hidden"] = True
+        else:
+            name = physical.name
+        build.names.reserve(name)
         sql = None if name == physical.name and not physical.quoted else physical.sql(dialect=self._dialect)
-        build.fields.append(DatasetField(name=name, sql=sql, **field))
+        build.fields.append(DatasetField(name=name, expression=sql, **field))
         return name
 
     def _resolve_foreign(self, build: _CubeBuild, builds: dict[str, _CubeBuild]) -> None:
@@ -958,7 +975,7 @@ class CubeToSlayerConverter:
         name = build.helpers.get(key)
         if name is None:
             name = build.helpers[key] = build.names.take(f"{metric}_col")
-            build.fields.append(DatasetField(name=name, sql=sql, filter=predicate, format=fmt, hidden=True,
+            build.fields.append(DatasetField(name=name, expression=sql, filter=predicate, format=fmt, hidden=True,
                                         datatype=implied[0] if implied else DataType.FLOAT))
         build.field_aggs[name].append(agg)
         return name
@@ -985,7 +1002,7 @@ class CubeToSlayerConverter:
                                       logical=frozenset([*build.markers, *build.foreign]), prepare=render_probe_text)
         problems.update({c: f"it references undeclared member(s) {sorted(set(m))}" for c, m in build.unknown.items()})
         problems.update({c.name: p for c in build.fields for mk, p in build.foreign_problems.items()
-                         if mk in f"{c.sql} {c.filter}"})
+                         if mk in f"{c.definition_sql} {c.filter}"})
         self._drop_foreign_metrics(build, report)
         member_of = {v: k for k, v in build.emitted.items()}
         while True:
@@ -993,7 +1010,8 @@ class CubeToSlayerConverter:
             more = {c.name: f"it reads the dropped member {member!r}" for c in build.fields
                     if c.name not in problems
                     for member in [next((build.markers[mk] for mk in build.markers
-                                         if mk in f"{c.sql} {c.filter}" and build.markers[mk] in dropped_members),
+                                         if mk in f"{c.definition_sql} {c.filter}"
+                                         and build.markers[mk] in dropped_members),
                                         None)]
                     if member is not None}
             if not more:
@@ -1009,7 +1027,7 @@ class CubeToSlayerConverter:
         """Drop the metrics reading a joined cube's physical column that cannot be read."""
         kept: list[DatasetMetric] = []
         for m in build.metrics:
-            problem = next((p for mk, p in build.foreign_problems.items() if mk in m.expression), None)
+            problem = next((p for mk, p in build.foreign_problems.items() if mk in m.text), None)
             if problem is None:
                 kept.append(m)
                 continue
@@ -1019,21 +1037,25 @@ class CubeToSlayerConverter:
         build.metrics = kept
 
     def _resolve_markers(self, build: _CubeBuild) -> None:
-        """Replace member markers with their members' emitted names, and joined cubes' physical columns."""
+        """Replace member markers with their members' emitted names (paths in a field), and joined cubes' physical
+        columns; each field's SQL with members bare is kept for typing probes."""
         found = CubeSql(text="", members=build.markers)
+        paths = {member: f"{build.cube.name}.{name}" for member, name in build.emitted.items()}
 
-        def resolve(text: str | None) -> str | None:
+        def resolve(text: str | None, emitted: dict[str, str]) -> str | None:
             if not text:
                 return text
-            out = found.model_copy(update={"text": text}).resolved(build.emitted)
+            out = found.model_copy(update={"text": text}).resolved(emitted)
             for marker, sql in build.foreign_sql.items():
                 out = out.replace(marker, sql)
             return out
 
         for col in build.fields:
-            col.sql, col.filter = resolve(col.sql), resolve(col.filter)
+            text = col.definition_sql
+            build.probes[col.name] = resolve(text, build.emitted)
+            col.expression, col.filter = resolve(text, paths), resolve(col.filter, paths)
         for m in build.metrics:
-            m.expression = resolve(m.expression) or m.expression
+            m.expression = resolve(m.text, build.emitted) or m.expression
 
     def _type_fields(self, build: _CubeBuild, *, live: LiveSource | None, report) -> None:
         """Type each field from the database, then the Cube dimension type, then its aggregations; drop the metrics
@@ -1051,7 +1073,7 @@ class CubeToSlayerConverter:
     def _type_field(self, build: _CubeBuild, index: PhysicalIndex, col: DatasetField, *, live: LiveSource | None,
                      report) -> bool:
         """Type ``col``; ``False`` when nothing types it."""
-        found = self._live_type(col, live=live)
+        found = self._live_type(build, col, live=live)
         declared = build.declared.get(col.name) or self._dimension_type(build, index, col)
         if found is not None and declared is not None and contradicts(declared, found):
             report.add(CubeConversionIssue(
@@ -1079,12 +1101,13 @@ class CubeToSlayerConverter:
                                            cube=build.cube.name, member=m.name, message=problem))
         return kept
 
-    def _live_type(self, col: DatasetField, *, live: LiveSource | None) -> Typed | None:
+    def _live_type(self, build: _CubeBuild, col: DatasetField, *, live: LiveSource | None) -> Typed | None:
         if live is None:
             return None
-        if col.is_base and col.filter is None:
+        if col.is_physical_reader:
             return live.field(physical_identifier(col, dialect=self._dialect))
-        return live.probe(render_probe_text(col.sql)) if col.sql else None
+        probe = build.probes.get(col.name)
+        return live.probe(render_probe_text(probe)) if probe else None
 
     @staticmethod
     def _dimension_type(build: _CubeBuild, index: PhysicalIndex, col: DatasetField) -> Typed | None:
@@ -1131,16 +1154,16 @@ class CubeToSlayerConverter:
                         message=f"Join target cube '{target_name}' is not available; dropped."))
                     continue
                 pairs = [(self._relationship_key(dataset, src), self._relationship_key(target, tgt)) for src, tgt in keys]
-                problem = next((p for pair in pairs for _, p in pair if p is not None), None)
+                problem = next((p for pair in pairs for _, p, _ in pair if p is not None), None)
                 if problem is not None:
                     report.add(CubeConversionIssue(
                         category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
                         cube=dataset.name, member=target_name,
                         message=f"Join ON '{on_sql}' dropped: {problem}."))
                     continue
-                for (src, _), (tgt, _) in pairs:
-                    self._declare_hidden_key(dataset, src)
-                    self._declare_hidden_key(target, tgt)
+                for (_, _, src_field), (_, _, tgt_field) in pairs:
+                    self._declare_hidden_key(dataset, src_field)
+                    self._declare_hidden_key(target, tgt_field)
                 cardinality = _map_relationship(relationship)
                 if cardinality is None:
                     report.add(CubeConversionIssue(
@@ -1149,15 +1172,21 @@ class CubeToSlayerConverter:
                         message=(f"Unrecognized join relationship {relationship!r}; "
                                  f"cardinality left unset (metrics crossing it broadcast).")))
                 dataset.relationships.append(DatasetRelationship(
-                    to=target_name, from_columns=[s for (s, _), _ in pairs], to_columns=[t for _, (t, _) in pairs],
+                    to=target_name, from_columns=[s for (s, _, _), _ in pairs], to_columns=[t for _, (t, _, _) in pairs],
                     join_type=JoinType.LEFT, cardinality=cardinality))
 
     def _drop_unreachable(self, datasets: list[SlayerDataset], report) -> None:
-        """Drop fields reading a path no join reaches, then those reading a dropped field."""
+        """Drop fields reading a path no join reaches (an inverse pair of joins counting once), then those reading a
+        dropped field."""
         dropped: dict[str, set[str]] = defaultdict(set)
-        while found := {m.name: p for m in datasets if (p := unreachable_fields(
-                m, datasets_by_name=self._datasets, dialect=self._dialect, dropped=frozenset(dropped[m.name]),
-                prepare=render_probe_text))}:
+        while True:
+            reach = {m.name: m.model_copy(update={"relationships": list(m.relationships)}) for m in datasets}
+            self._dedup_inverse_relationships(list(reach.values()))
+            found = {m.name: p for m in reach.values() if (p := unreachable_fields(
+                m, datasets_by_name={**self._datasets, **reach}, dialect=self._dialect,
+                dropped=frozenset(dropped[m.name]), prepare=render_probe_text))}
+            if not found:
+                return
             for dataset in datasets:
                 for name, problem in found.get(dataset.name, {}).items():
                     report.add(CubeConversionIssue(category=CubeIssueCategory.COMPLEX_SQL, severity="warning",
@@ -1166,29 +1195,32 @@ class CubeToSlayerConverter:
                     dropped[dataset.name].add(name)
                 dataset.fields = [c for c in dataset.fields if c.name not in dropped[dataset.name]]
 
-    def _relationship_key(self, dataset: SlayerDataset, side: JoinSide) -> tuple[str, str | None]:
-        """``(field name, problem)`` for one join key side of ``dataset``."""
+    def _relationship_key(self, dataset: SlayerDataset, side: JoinSide
+                          ) -> tuple[str, str | None, DatasetField | None]:
+        """``(field name, problem, hidden reader to declare)`` for one join key side of ``dataset``."""
         cube = self._cubes.get(dataset.name)
         if not side.physical and cube is not None and side.name in self._reserve_names(cube)[0]:
             col = dataset.get_field(self._reserve_names(cube)[0][side.name])
-            if col is None or not col.is_base or col.filter is not None:
-                return side.name, f"member {side.name!r} of {dataset.name!r} is not a base field"
-            return col.name, None
+            if col is None or not col.is_physical_reader:
+                return side.name, f"member {side.name!r} of {dataset.name!r} is not a base field", None
+            return col.name, None, None
         index = PhysicalIndex(dataset.fields, dialect=self._dialect)
         ident = exp.to_identifier(side.name)
         reader = index.reader(ident)
         if reader is not None:
-            return reader.name, None
+            return reader.name, None, None
         if (problem := index.problem(ident)) is not None:
-            return side.name, problem
-        if dataset.get_metric(side.name) is not None or not IDENTIFIER_RE.match(side.name):
-            return side.name, f"no field of {dataset.name!r} can read the physical column {side.name!r}"
-        return side.name, None
+            return side.name, problem, None
+        if not IDENTIFIER_RE.match(side.name):
+            return side.name, f"no field of {dataset.name!r} can read the physical column {side.name!r}", None
+        taken = {*(c.name for c in dataset.fields), *(m.name for m in dataset.metrics)}
+        name = raw_name(side.name, taken=taken) if side.name in taken else side.name
+        return name, None, DatasetField(name=name, expression=side.name if name != side.name else None, hidden=True)
 
     @staticmethod
-    def _declare_hidden_key(dataset: SlayerDataset, name: str) -> None:
-        if dataset.get_field(name) is None:
-            dataset.fields.append(DatasetField(name=name, hidden=True))
+    def _declare_hidden_key(dataset: SlayerDataset, field: DatasetField | None) -> None:
+        if field is not None and dataset.get_field(field.name) is None:
+            dataset.fields.append(field)
 
     def _dedup_inverse_relationships(self, datasets: list[SlayerDataset]) -> None:
         """Collapse each mutually-inverse declaration pair to its to-one edge."""
@@ -1211,20 +1243,21 @@ class CubeToSlayerConverter:
         good_cols = []
         dropped: set[str] = set()
         for col in fields:
-            if col.sql is None:
+            text = col.definition_sql
+            if text is None:
                 good_cols.append(col)
                 continue
             try:
                 # A field sql may carry {? ?} blocks / {var} placeholders;
                 # probe-render before the syntax-only parse.
-                sqlglot.parse_one(render_probe_text(col.sql))
+                sqlglot.parse_one(render_probe_text(text))
                 good_cols.append(col)
             except Exception:  # noqa: BLE001
                 dropped.add(col.name)
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.COMPLEX_SQL, severity="warning",
                     cube=cube_name, member=col.name,
-                    message=f"Field sql does not parse; dropped: {col.sql!r}"))
+                    message=f"Field sql does not parse; dropped: {text!r}"))
         return good_cols, dropped
 
     def _drop_metrics_over(self, *, cube_name, metrics: list[DatasetMetric], info, dropped, report) -> list[DatasetMetric]:
@@ -1248,7 +1281,7 @@ class CubeToSlayerConverter:
             problems = metric_problems(dataset.model_copy(update={"metrics": metrics}), datasets_by_name=self._datasets,
                                         dialect=self._sql_dialect)
         else:
-            problems = metric_dependency_problems([(m.name, m.expression) for m in metrics])
+            problems = metric_dependency_problems([(m.name, m.text) for m in metrics])
         for m, problem in zip(metrics, problems):
             if problem is not None:
                 report.add(CubeConversionIssue(
@@ -1305,7 +1338,7 @@ class CubeToSlayerConverter:
                 relationship=j, root_dataset=root_dataset, fields=fields, names=names,
                 view=view, report=report)
         ]
-        filters = self._view_default_filters(view, root_cube_name, report)
+        filters = self._view_default_filters(view, root_cube_name, fields, report)
         if unmapped:
             meta["cube_unmapped"] = unmapped
 
@@ -1330,8 +1363,8 @@ class CubeToSlayerConverter:
             root_col = root_dataset.get_field(src)
             if col is None and root_col is not None and src not in names.used:
                 names.reserve(src)
-                fields.append(DatasetField(name=src, sql=root_col.sql, datatype=root_col.datatype,
-                                      hidden=True))
+                fields.append(DatasetField(name=src, datatype=root_col.datatype, hidden=True).model_copy(
+                    update=self._facade_definition(root_col, cube=root_dataset.name, view=view.name)))
             elif col is None or not col.is_base or col.filter is not None:
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
@@ -1424,17 +1457,20 @@ class CubeToSlayerConverter:
         col = cube_dataset.get_field(dname)
         if col is None:
             return
-        if is_root:
-            sql = col.sql if col.sql else col.name
-            if not self._carry(cube_dataset=cube_dataset, sql=[col.sql], fields=fields, names=names,
-                               view=view, member=dname, report=report):
-                return
-        else:
-            sql = f"{cube.name}.{col.name}"
+        if is_root and not self._carry(cube_dataset=cube_dataset, pending=self._field_refs(col, cube=cube.name),
+                                       fields=fields, names=names, view=view, member=dname, report=report):
+            return
         exported = names.take(f"{prefix}{dname}")
-        fields.append(DatasetField(
-            name=exported, sql=sql, datatype=col.datatype, label=col.label,
-            description=col.description, format=col.format))
+        field = DatasetField(name=exported, datatype=col.datatype, label=col.label, description=col.description,
+                             format=col.format)
+        if not is_root:
+            fields.append(finished_field(field.model_copy(update={"expression": f"{cube.name}.{col.name}"}),
+                                         token=self._token))
+            return
+        definition = self._facade_definition(col, cube=cube.name, view=view.name)
+        if definition["expression"] is None and definition["sql"] is None and exported != col.name:
+            definition["expression"] = col.name
+        fields.append(field.model_copy(update={**definition, "filter": None}))
 
     def _facade_metric(self, view, cube_name, cube_dataset, mname, prefix, is_root,
                         fields, metrics, names, report) -> None:
@@ -1443,7 +1479,7 @@ class CubeToSlayerConverter:
             return
         exported = names.take(f"{prefix}{mname}", suffix="_measure")
         if is_root and info.kind == "agg" and info.underlying_col and not self._carry(
-                cube_dataset=cube_dataset, sql=[info.underlying_col], fields=fields, names=names,
+                cube_dataset=cube_dataset, pending=[info.underlying_col], fields=fields, names=names,
                 view=view, member=mname, report=report):
             return
         expression = self._facade_metric_expression(info=info, cube_name=cube_name, is_root=is_root)
@@ -1472,42 +1508,67 @@ class CubeToSlayerConverter:
         source = info.underlying_col if is_root else f"{cube_name}.{info.underlying_col}"
         return functional_agg_text(source=source, suffix=info.suffix)
 
-    def _carry(self, *, cube_dataset: SlayerDataset, sql: list[str | None], fields: list[DatasetField], names: _Names,
-               view, member: str, report) -> bool:
-        """Copy onto the facade, hidden, every cube field ``sql`` reads (transitively); ``False`` when one's name
-        is already taken there by a different field."""
-        pending = list(sql)
-        while pending:
-            text = pending.pop()
-            if not text:
-                continue
+    def _facade_definition(self, col: DatasetField, *, cube: str, view: str) -> dict[str, Any]:
+        """``col``'s ``expression``, ``sql`` and ``filter`` on facade ``view``: its paths through ``cube`` respelled."""
+        def respell(text: str | None) -> str | None:
+            return respelled_qualifier(text, old=cube, new=view, dialect=self._dialect) if text else text
+
+        expression = col.expression
+        if isinstance(expression, ExpressionObject) and expression.dialects:
+            expression = expression.model_copy(update={"dialects": [
+                e.model_copy(update={"expression": respell(e.expression)}) for e in expression.dialects]})
+        return {"expression": expression, "sql": respell(col.sql), "filter": respell(col.filter)}
+
+    def _field_refs(self, col: DatasetField, *, cube: str) -> list[str]:
+        """The fields of ``cube`` that ``col``'s native texts and filter read by path."""
+        out: list[str] = []
+        for text in (*col.native_texts, col.filter):
             try:
-                refs = root_physical_columns(sqlglot.parse_one(render_probe_text(text), read=self._dialect))
+                tree = sqlglot.parse_one(render_probe_text(text), read=self._dialect) if text else None
             except SqlglotError:
                 continue
-            for ref in refs:
-                col = cube_dataset.get_field(ref.name)
-                taken = next((c for c in fields if c.name == ref.name), None)
-                if col is None or (taken is not None and (taken.sql, taken.filter) == (col.sql, col.filter)):
-                    continue
-                if taken is not None:
-                    report.add(CubeConversionIssue(
-                        category=CubeIssueCategory.COMPLEX_SQL, severity="warning", view=view.name, member=member,
-                        message=f"'{member}' reads {cube_dataset.name}.{col.name}, whose name the view already "
-                                f"uses for another member; skipped."))
-                    return False
-                names.reserve(col.name)
-                fields.append(col.model_copy(update={"hidden": True}))
-                pending += [col.sql, col.filter]
+            if not isinstance(tree, Expression):
+                continue
+            root = root_scope_field_ids(parsed=tree)
+            out += [c.name for c in tree.find_all(exp.Column)
+                    if id(c) in root and c.table == cube and not c.args.get("db")]
+        return out
+
+    def _carry(self, *, cube_dataset: SlayerDataset, pending: list[str], fields: list[DatasetField], names: _Names,
+               view, member: str, report) -> bool:
+        """Copy onto the facade, hidden, each cube field named in ``pending`` and every one it reads (transitively);
+        ``False`` when one's name is already taken there by a different field."""
+        pending = list(pending)
+        while pending:
+            col = cube_dataset.get_field(pending.pop())
+            if col is None:
+                continue
+            copy = col.model_copy(update={
+                "hidden": True, **self._facade_definition(col, cube=cube_dataset.name, view=view.name)})
+            taken = next((c for c in fields if c.name == col.name), None)
+            if taken is not None and (taken.expression, taken.sql, taken.filter) == (
+                    copy.expression, copy.sql, copy.filter):
+                continue
+            if taken is not None:
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.COMPLEX_SQL, severity="warning", view=view.name, member=member,
+                    message=f"'{member}' reads {cube_dataset.name}.{col.name}, whose name the view already "
+                            f"uses for another member; skipped."))
+                return False
+            names.reserve(col.name)
+            fields.append(copy)
+            pending += self._field_refs(col, cube=cube_dataset.name)
         return True
 
-    def _view_default_filters(self, view, root_cube_name, report) -> list[str]:
+    def _view_default_filters(self, view, root_cube_name, fields: list[DatasetField], report) -> list[str]:
         filters: list[str] = []
         for df in view.default_filters or []:
             member = df.get("member", "")
             op = df.get("operator")
             values = df.get("values") or []
             col = self._resolve_view_member(member, root_cube_name)
+            if any(f.name == col for f in fields):
+                col = f"{view.name}.{col}"
             if op == "equals" and len(values) == 1:
                 filters.append(f"{col} = {_sql_str_literal(values[0])}")
             elif op in ("equals", "in") and values:

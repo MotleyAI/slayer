@@ -322,26 +322,18 @@ All code, old and new, MUST obey these.
    target model — a query stage by its name in its own query list, which precedes
    a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); a leading
    **root qualifier** — the root's own name, read before any hop — drops out (`r.x ≡ x` from
-   root `r`); keys, join aliases and result names carry only canonical paths.
+   root `r`), except inside a row definition (P3); keys, join aliases and result names carry only canonical paths.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
    [enforced: test:tests/test_dev2187_root_qualifier.py]
-2. **Two expression layers**: Mode A free SQL (`DatasetField.sql`, model `filters`)
-   vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
-   canonical function library, extended never forked. [review]
+2. **Two expression layers**: Mode A, the datasource's own SQL (a definition's entry for that dialect, `filter`, dataset `filters`), vs Mode B, a SQL-compatible grammar (a definition's portable `sql`, query fields) — one canonical function library, extended never forked. [review]
    - **2.1** Every Mode B construct means the same on every dialect.
      [enforced: test:tests/test_dev2120_library_matrix.py]
    - **2.2** A dialect without its own translation of a Mode B construct
      refuses it with a typed error; a base-class default is never another
      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
    - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
-3. **Logical names, physical once**: every model-level column reference —
-   query fields, `from_columns` / `to_columns`, unique-key sets — names a column by
-   `DatasetField.name`; the physical spelling (`DatasetField.physical_name`: a base
-   column's bare `sql`, else its name) is applied once, where a reference
-   becomes SQL or meets the live schema, and is never the key two references
-   are matched on.
-   [enforced: test:tests/test_dev1902_join_key_spelling.py]
+3. **Logical names, physical once**: inside a **row definition** — a field's `expression` or `filter`, a dataset's `filters` — a bare name is a source column and a path from the dataset (`d.f`) a field; inside a metric's `expression` a bare name is a field; in both, `source.x` is a source column unless a field is named `source`. Every other reference — query fields, relationship keys, unique-key sets — names a field. A source column's spelling is applied once, where a reference becomes SQL or meets the live schema, and is never the key two references are matched on. [enforced: test:tests/test_dev1902_join_key_spelling.py] [enforced: test:tests/test_dev2175_definition_names.py]
 
 ## 5. Notes
 

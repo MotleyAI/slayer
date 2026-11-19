@@ -185,9 +185,19 @@ def _without_fingerprint(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k != "fingerprint"}
 
 
-async def test_legacy_payloads_reexport_as_version_2(env) -> None:
+def _as_version_3(data: dict[str, Any]) -> dict[str, Any]:
+    """A version-2 payload at version 3: a field's bare-identifier ``sql`` becomes its shorthand ``expression``."""
+    out = {**data, "version": 3}
+    if out.get("kind") == "field" and "sql" in (out.get("field") or {}):
+        field = dict(out["field"])
+        field["expression"] = field.pop("sql")
+        out["field"] = field
+    return out
+
+
+async def test_legacy_payloads_reexport_as_version_3(env) -> None:
     legacy = yaml.safe_load(LEGACY_FIXTURE.read_text(encoding="utf-8"))
     imported, _ = await reimport(env, legacy)
     document = (await export(imported)).document
     assert [(e["name"], _without_fingerprint(payload(e))) for e in entities(document)] == [
-        (e["name"], _without_fingerprint(ext._version_2(_legacy_payload(e)))) for e in entities(legacy)]
+        (e["name"], _without_fingerprint(_as_version_3(ext._version_2(_legacy_payload(e))))) for e in entities(legacy)]

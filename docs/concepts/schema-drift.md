@@ -56,7 +56,7 @@ connected to, gets no verdict rather than a drop.
 
 A drop on `M.X` cascades through:
 
-1. **Derived fields on M.** Any `DatasetField.sql` on `M` that references `X`
+1. **Derived fields on M.** Any field expression on `M` that references `X`
    (via sqlglot AST walk) is dropped, transitively across chains of
    derived fields.
 2. **Metrics on M.** Any `DatasetMetric.expression` on `M` referencing `X`

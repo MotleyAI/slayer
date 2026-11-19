@@ -10,11 +10,10 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.models import DatasetField, SlayerDataset, is_base_field_sql
 from slayer.live_schema.schema_drift import (
     LiveTable,
     _CascadeState,
-    _field_is_base,
     _diff_sql_table_columns,
     _first_dropped_sql_column_ref,
     _is_bare_identifier,
@@ -46,16 +45,16 @@ def test_non_identifiers_rejected(value):
 # --- Group 2: the immediate caller -----------------------------------------
 
 def test_column_is_base_sql_none():
-    assert _field_is_base(None) is True
+    assert is_base_field_sql(None) is True
 
 
 def test_column_is_base_ascii_identifier():
-    assert _field_is_base("amount") is True
+    assert is_base_field_sql("amount") is True
 
 
 def test_column_is_base_non_ascii_leading_now_derived():
-    # Flipped: a bare non-ASCII-leading DatasetField.sql is no longer a base field.
-    assert _field_is_base("год") is False
+    # Flipped: a bare non-ASCII-leading field expression is no longer a base field.
+    assert is_base_field_sql("год") is False
 
 
 # --- Group 3: end-to-end drift diff (the shipped false-negative) -----------
@@ -85,7 +84,7 @@ def test_first_dropped_ref_scans_non_ascii_leading_alias():
         name="orders",
         data_source="db",
         sql_table="orders",
-        fields=[DatasetField(name="year", sql="год", datatype=DataType.INTEGER)],
+        fields=[DatasetField(name="year", sql="orders.год", datatype=DataType.INTEGER)],
     )
     state = _CascadeState(
         datasets_by_name={"orders": model},

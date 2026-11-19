@@ -179,7 +179,7 @@ def _column_shape(dataset: SlayerDataset) -> dict[str, tuple]:
 
 
 def _metric_shape(dataset: SlayerDataset) -> dict[str, tuple]:
-    return {m.name or m.expression: (m.expression, m.label, m.datatype, _meta(m.meta)) for m in dataset.metrics}
+    return {m.name or m.text: (m.expression, m.label, m.datatype, _meta(m.meta)) for m in dataset.metrics}
 
 
 def _join_shape(dataset: SlayerDataset) -> set[tuple]:
@@ -209,7 +209,7 @@ async def test_filtered_column_split_restored(trip: tuple[Env, Env]) -> None:
     _, imported = trip
     completed = (await stored(imported, "orders")).get_field("completed_amount")
     assert completed is not None
-    assert (completed.sql, completed.filter) == ("amount", "status = 'completed'")
+    assert (completed.expression, completed.filter) == ("amount", "status = 'completed'")
 
 
 async def test_formula_restored(trip: tuple[Env, Env]) -> None:

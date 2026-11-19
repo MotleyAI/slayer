@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasetField, DatasetMetric, DatasourceConfig, SlayerDataset
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiToSlayerConverter
 from tests._osi_helpers import by_name, documents, ds, f, flat, m, run_converter, unconverted, visible
@@ -52,3 +52,21 @@ def test_leaf_matching_two_live_columns_is_unconverted(pg: DatasourceConfig) -> 
     result = _import(pg, "twins", "SUM(source.Quantity)")
     assert unconverted(result, "units")
     assert [c.name for c in by_name(result)["twins"].fields] == ["order_id"]
+
+
+def _stored(datasource: DatasourceConfig, table: str, **metrics: str) -> SlayerDataset:
+    return SlayerDataset(name=table, sql_table=table, data_source=datasource.name, fields=[DatasetField(name="order_id")],
+                         metrics=[DatasetMetric(name=name, expression=sql) for name, sql in metrics.items()])
+
+
+async def test_stored_unquoted_leaf_folds(pg: DatasourceConfig, tmp_path: Path) -> None:
+    async with pg_query_engine(pg, base_dir=str(tmp_path), datasets=[_stored(pg, "orders", units="SUM(source.Quantity)")]) as engine:
+        rows = (await engine.execute({"population": "orders", "metrics": ["units"]})).data
+    assert rows[0]["orders.units"] == 5
+
+
+async def test_stored_quoted_and_unquoted_leaves_read_their_own_columns(pg: DatasourceConfig, tmp_path: Path) -> None:
+    twins = _stored(pg, "twins", exact='SUM(source."Quantity")', folded="SUM(source.Quantity)")
+    async with pg_query_engine(pg, base_dir=str(tmp_path), datasets=[twins]) as engine:
+        rows = (await engine.execute({"population": "twins", "metrics": ["exact", "folded"]})).data
+    assert (rows[0]["twins.exact"], rows[0]["twins.folded"]) == (20, 2)

@@ -1,0 +1,68 @@
+version: 0.3.0.dev0
+name: osids
+datasets:
+- name: orders
+  source: orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: o_orderkey
+    datatype: Integer
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 2
+        entity: id
+        fingerprint: 21d707a7fc971cd2e8e28436bb10a4965e11a710414732e23047914011bc1d4b
+        kind: field
+        field:
+          sql: o_orderkey
+          datatype: Integer
+          hidden: false
+  - name: amount
+    expression:
+      sql: amount
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 2
+        entity: amount
+        fingerprint: d65bdc6b3ce04678d4b1a20451a673196bd6dafee8db90eb59b9e29819072472
+        kind: field
+        field:
+          datatype: Float
+          hidden: false
+  - name: amount_x2
+    expression:
+      sql: amount * 2
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 2
+        entity: amount_x2
+        fingerprint: 4b9b27db164b7e57ddf1c59b0b40c1249f209a7cf2efab4bb6b733cc7c273409
+        kind: field
+        field:
+          sql: amount * 2
+          datatype: Float
+          hidden: false
+  nonportable_extensions:
+  - vendor_name: SLAYER
+    data:
+      version: 2
+      entity: orders
+      fingerprint: bcb067313bfe405129a2ce22398c3cab6a68cbae394e72625b7cdb633e87c440
+      kind: dataset
+      source:
+        sql_table: orders
+        query_variables: {}
+      hidden: false
+      access_tags: []
+      aggregations: []
+      fields: []
+      metrics: []
+

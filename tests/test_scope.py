@@ -229,7 +229,7 @@ class TestResolvePredicateParens:
 
     def test_derived_expansion_parenthesised_preserves_precedence(self) -> None:
         scope = _scope(self._derived_orders(), _customers(), _regions())
-        sql = scope.resolve_predicate_sql("total * 2 > 0")
+        sql = scope.resolve_predicate_sql("orders.total * 2 > 0")
         parsed = sqlglot.parse_one(sql, dialect="postgres")
         mul = parsed.find(exp.Mul)
         assert mul is not None, f"no multiplication in {sql!r}"
@@ -240,12 +240,12 @@ class TestResolvePredicateParens:
         )
 
     @pytest.mark.parametrize("predicate", [
-        "total > 0",                       # bare comparison
-        "amount > 1 AND total > 0",        # AND connector
-        "amount > 1 OR total > 0",         # OR connector
-        "NOT (total > 0)",                 # NOT
-        "total BETWEEN 1 AND 5",           # BETWEEN
-        "total IN (1, 2, 3)",              # IN
+        "orders.total > 0",                       # bare comparison
+        "amount > 1 AND orders.total > 0",        # AND connector
+        "amount > 1 OR orders.total > 0",         # OR connector
+        "NOT (orders.total > 0)",                 # NOT
+        "orders.total BETWEEN 1 AND 5",           # BETWEEN
+        "orders.total IN (1, 2, 3)",              # IN
     ])
     def test_multiterm_derived_expansion_is_parenthesised(self, predicate: str) -> None:
         # Wherever the multi-term derived ``total`` is substituted into a

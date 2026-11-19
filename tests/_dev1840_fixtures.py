@@ -196,7 +196,7 @@ def orders_dataset(*, customers_edge: bool = True) -> SlayerDataset:
             DatasetField(name="store_co", datatype=DataType.STRING),
             DatasetField(name="store_no", datatype=DataType.INTEGER),
             # Host-declared, target-reading: expanded-deps probe.
-            DatasetField(name="cust_tier", datatype=DataType.STRING, sql="customers.tier"),
+            DatasetField(name="cust_tier", datatype=DataType.STRING, expression="customers.tier"),
         ],
         relationships=joins,
     )

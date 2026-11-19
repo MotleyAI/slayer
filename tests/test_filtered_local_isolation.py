@@ -207,7 +207,7 @@ class TestCrossModelPlannerTriggerPredicate:
 
     def test_derived_ref_cross_model_filter_triggers_isolation(self):
         _, bundle = _orders_with_derived_eu_filter(
-            eu_amount_filter="is_eu = 1",
+            eu_amount_filter="orders.is_eu = 1",
         )
         q = SlayerQuery.model_validate({
             "population": "orders",
@@ -449,7 +449,7 @@ def _s5_orders() -> SlayerDataset:
             # Sibling derived chain: doubled_pop -> pop_helper -> crossing.
             DatasetField(name="pop_helper", sql="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
-            DatasetField(name="doubled_pop", sql="pop_helper * 2",
+            DatasetField(name="doubled_pop", sql="orders.pop_helper * 2",
                    datatype=DataType.FLOAT),
             # Derived TIME field crossing a relationship (explicit-arg use only).
             DatasetField(name="cross_time", sql="customers.signup_at",

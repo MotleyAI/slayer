@@ -327,7 +327,7 @@ class TestEveryPosition:
         formulas = {m.alias: m.metric for m in loaded.metrics or []}
         assert "iif(amount > 25, 'big', 'small')" in formulas["per_bucket"]
         assert "CAST(ordered_at AS TIMESTAMP)" in formulas["latest"]
-        [big_total] = [m.expression for e in loaded.extensions or [] for m in e.metrics or [] if m.name == "big_total"]
+        [big_total] = [m.text for e in loaded.extensions or [] for m in e.metrics or [] if m.name == "big_total"]
         assert "iif(amount > 25, 'big', 'small')" in big_total
         resp = await run(storage, loaded)
         keys = ("orders.status", "orders.bucket", "orders.per_bucket", "orders.latest", "orders.big_total")

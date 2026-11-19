@@ -473,7 +473,7 @@ def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
 
 def extension_variable_refs(query: "SlayerQuery") -> set[str]:
     """The variables ``query``'s extension metrics read."""
-    return {name for e in query.extensions or [] for m in e.metrics or [] for name in variable_names(m.expression)}
+    return {name for e in query.extensions or [] for m in e.metrics or [] for name in variable_names(m.text)}
 
 
 def mode_a_texts(dataset: SlayerDataset) -> list[tuple[str, str]]:
@@ -481,8 +481,8 @@ def mode_a_texts(dataset: SlayerDataset) -> list[tuple[str, str]]:
     out = [(f"Dataset {dataset.name!r} sql", dataset.sql)] if dataset.sql else []
     out += [(f"Dataset {dataset.name!r} filters[{i}]", f) for i, f in enumerate(dataset.filters or []) if f]
     for dataset_field in dataset.fields:
-        out += [(f"Field {dataset_field.name!r} {key}", text)
-                for key, text in (("sql", dataset_field.sql), ("filter", dataset_field.filter)) if text]
+        out += [(f"Field {dataset_field.name!r} expression", text) for text in dataset_field.native_texts if text]
+        out += [(f"Field {dataset_field.name!r} filter", dataset_field.filter)] if dataset_field.filter else []
     return out
 
 
@@ -495,8 +495,8 @@ def extract_dataset_variables(dataset: SlayerDataset) -> DatasetVariables:
         surfaces.append(dataset.sql)
     surfaces.extend(f for f in (dataset.filters or []) if f)
     for col in dataset.fields:
-        if col.sql:
-            surfaces.append(col.sql)
+        if col.definition_sql:
+            surfaces.append(col.definition_sql)
         if col.filter:
             surfaces.append(col.filter)
 
@@ -507,7 +507,7 @@ def extract_dataset_variables(dataset: SlayerDataset) -> DatasetVariables:
         bare |= s_bare
         blocked |= s_blocked
     for metric in dataset.metrics:
-        bare |= set(variable_names(metric.expression))
+        bare |= set(variable_names(metric.text))
 
     defaults = set(dataset.query_variables or {})
     required = {name for name in bare if name not in defaults}
@@ -1113,7 +1113,7 @@ def _metric_item(item: Any) -> Any:
         if spellings is not None:
             spellings.note("DatasetMetric in a query's metrics", "QueryMetric")
         extras = {k: getattr(item, k) for k in _DATASET_METRIC_EXTRAS if getattr(item, k) is not None}
-        return {"metric": item.expression, "alias": item.name, **extras}
+        return {"metric": item.text, "alias": item.name, **extras}
     return item
 
 

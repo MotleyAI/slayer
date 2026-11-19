@@ -169,8 +169,8 @@ def test_sum_boolean_wraps_case_when() -> None:
     )
     result = _convert(project)
     m = _metric(result, "paid_orders")
-    assert re.fullmatch(r"sum\(\w+\)", m.expression)
-    col = _column_for(result, m.expression)
+    assert re.fullmatch(r"sum\(\w+\)", m.text)
+    col = _column_for(result, m.text)
     assert col.sql is not None
     norm = col.sql.upper().replace(" ", "")
     assert "CASEWHEN" in norm
@@ -210,8 +210,8 @@ def test_offset_window_maps_to_time_shift() -> None:
     )
     result = _convert(project)
     growth = _metric(result, "revenue_growth")
-    norm = growth.expression.replace(" ", "")
-    assert "time_shift(" in growth.expression
+    norm = growth.text.replace(" ", "")
+    assert "time_shift(" in growth.text
     assert "-1" in norm
     assert "month" in norm.lower()
 
@@ -235,7 +235,7 @@ def test_negative_offset_window_shifts_forward() -> None:
             ),
         ],
     )
-    shifted = parse_expr(_metric(_convert(project), "revenue_lead").expression)
+    shifted = parse_expr(_metric(_convert(project), "revenue_lead").text)
     assert isinstance(shifted, TransformCall)
     assert shifted.args[0] == Literal(value=Decimal(1))
 
@@ -295,7 +295,7 @@ def test_metric_level_filter_pushes_into_leaf_column() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_revenue")
-    col = _column_for(result, m.expression)
+    col = _column_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -332,7 +332,7 @@ def test_ratio_per_input_filters_push_down_independently() -> None:
     assert any(f and "region" in f and "US" in f for f in filters)
     assert any(f and "dept" in f and "sales" in f for f in filters)
     # nullif guard preserved around the (now filtered) denominator
-    assert "nullif(" in _metric(result, "us_margin_ratio").expression
+    assert "nullif(" in _metric(result, "us_margin_ratio").text
 
 
 def test_filter_accepts_list_intersection() -> None:
@@ -358,7 +358,7 @@ def test_filter_accepts_list_intersection() -> None:
     )
     result = _convert(project)
     m = _metric(result, "scoped_revenue")
-    col = _column_for(result, m.expression)
+    col = _column_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "status" in col.filter
@@ -655,8 +655,8 @@ def test_offset_window_plural_granularity_normalized() -> None:
         ],
     )
     result = _convert(project)
-    f = _metric(result, "rev_2w").expression.replace(" ", "").lower()
-    assert "time_shift(" in _metric(result, "rev_2w").expression
+    f = _metric(result, "rev_2w").text.replace(" ", "").lower()
+    assert "time_shift(" in _metric(result, "rev_2w").text
     assert "-2" in f
     assert "week" in f
     assert "weeks" not in f
@@ -710,8 +710,8 @@ def test_same_measure_different_filters_make_distinct_columns() -> None:
         ],
     )
     result = _convert(project)
-    us_col = _column_for(result, _metric(result, "us_rev").expression)
-    eu_col = _column_for(result, _metric(result, "eu_rev").expression)
+    us_col = _column_for(result, _metric(result, "us_rev").text)
+    eu_col = _column_for(result, _metric(result, "eu_rev").text)
     assert us_col.name != eu_col.name
     assert "US" in (us_col.filter or "")
     assert "EU" in (eu_col.filter or "")
@@ -733,8 +733,8 @@ def test_same_measure_same_filter_reuses_one_column() -> None:
         ],
     )
     result = _convert(project)
-    a = _column_for(result, _metric(result, "us_rev_a").expression)
-    b = _column_for(result, _metric(result, "us_rev_b").expression)
+    a = _column_for(result, _metric(result, "us_rev_a").text)
+    b = _column_for(result, _metric(result, "us_rev_b").text)
     assert a.name == b.name
 
 
@@ -771,7 +771,7 @@ def test_cross_model_filter_pushes_down_when_join_reachable() -> None:
     )
     result = _convert(_orders_customers_project(metric))
     m = _metric(result, "us_revenue", dataset="orders")
-    col = _column_for(result, m.expression, dataset="orders")
+    col = _column_for(result, m.text, dataset="orders")
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -894,10 +894,10 @@ def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
     )
     result = _convert(project)
     # The derived expression references the filtered metric, not the bare base measure.
-    assert "web_revenue" in _metric(result, "web_rev_plus_one").expression
+    assert "web_revenue" in _metric(result, "web_rev_plus_one").text
     # And web_revenue itself materialized with a channel filter.
     web = _metric(result, "web_revenue")
-    col = _column_for(result, web.expression)
+    col = _column_for(result, web.text)
     assert col.filter is not None
     assert "channel" in col.filter
 
@@ -955,7 +955,7 @@ def test_derived_input_filter_over_fill_nulls_metric_converts() -> None:
     )
     result = _convert(project)
     measure = next(m for m in _dataset(result).metrics if m.name == "us_gap_rev")
-    assert measure.expression.replace(" ", "").startswith("coalesce(")
+    assert measure.text.replace(" ", "").startswith("coalesce(")
     assert any(c.filter and "region" in c.filter and "US" in c.filter for c in _dataset(result).fields)
 
 
@@ -985,7 +985,7 @@ def test_ratio_input_filter_over_fill_nulls_metric_keeps_the_fill() -> None:
     )
     result = _convert(project)
     measure = next(m for m in _dataset(result).metrics if m.name == "us_rev_per_order")
-    assert "coalesce(" in measure.expression.replace(" ", "")
+    assert "coalesce(" in measure.text.replace(" ", "")
 
 
 def test_input_filter_intersects_referenced_metric_filter() -> None:
@@ -1021,7 +1021,7 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_web_revenue")
-    col = _column_for(result, m.expression)
+    col = _column_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -1285,8 +1285,8 @@ def test_filtered_percentile_metric_preserves_p() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_latency_p95")
-    assert re.fullmatch(r"percentile\(\w+, p=0\.95\)", m.expression)
-    col = _column_for(result, m.expression)
+    assert re.fullmatch(r"percentile\(\w+, p=0\.95\)", m.text)
+    col = _column_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
 
@@ -1326,8 +1326,8 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_paid_orders")
-    assert re.fullmatch(r"sum\(\w+\)", m.expression)
-    col = _column_for(result, m.expression)
+    assert re.fullmatch(r"sum\(\w+\)", m.text)
+    col = _column_for(result, m.text)
     assert col.datatype == DataType.INTEGER
     norm = (col.sql or "").upper().replace(" ", "")
     assert "CASEWHEN" in norm
@@ -1435,7 +1435,7 @@ def test_offset_window_object_form_parses() -> None:
         ],
     )
     result = _convert(project)
-    f = _metric(result, "rev_obj_offset").expression.replace(" ", "").lower()
+    f = _metric(result, "rev_obj_offset").text.replace(" ", "").lower()
     assert "time_shift(" in f
     assert "-1" in f
     assert "month" in f

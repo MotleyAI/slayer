@@ -46,6 +46,7 @@ carve_outs:
   - {name: SourceModelOrigin, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
   - {name: agg_column_names, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
   - {name: awaits_columns, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: column, file: slayer/core/models.py, reason: "physical database or result-set column"}
   - {name: column_pairs, file: slayer/core/models.py, reason: "Ossie's own wire name"}
   - {name: columns, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
   - {name: formula, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
@@ -248,6 +249,7 @@ carve_outs:
   - {name: resolved_model, file: slayer/embeddings/client.py, reason: "embedding model"}
   - {name: truncate_text_for_model, file: slayer/embeddings/client.py, reason: "embedding model"}
   - {name: embedding_model_name, file: slayer/embeddings/models.py, reason: "embedding model"}
+  - {name: _source_column_key, file: slayer/engine/binding.py, reason: "physical database or result-set column"}
   - {name: column_pairs, file: slayer/engine/cardinality/inference.py, reason: "Ossie's own wire name"}
   - {name: _local_regroup_join_pairs, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
   - {name: _semi_join_filter, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
@@ -260,12 +262,22 @@ carve_outs:
   - {name: semi_join_names, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
   - {name: semi_joins, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
   - {name: _attach_join_keys, file: slayer/engine/compile/staging.py, reason: "SQL JOIN as an operation"}
+  - {name: ColumnTypes, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: _column_type, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: _metric_source_columns, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: portable_columns, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: _source_column_reads, file: slayer/engine/field_dependency.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/engine/field_dependency.py, reason: "physical database or result-set column"}
   - {name: _attach_semi_join_texts, file: slayer/engine/query_engine.py, reason: "SQL JOIN as an operation"}
   - {name: _collect_semi_join_pushed_warnings, file: slayer/engine/query_engine.py, reason: "SQL JOIN as an operation"}
   - {name: _column_presence_cache, file: slayer/engine/query_engine.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
   - {name: _column_present, file: slayer/engine/query_engine.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
   - {name: _has_column, file: slayer/engine/query_engine.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _live_column_types, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
   - {name: _semi_join_filter_texts, file: slayer/engine/query_engine.py, reason: "SQL JOIN as an operation"}
+  - {name: _source_column_types, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
   - {name: column, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
   - {name: columns, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
   - {name: create_model_from_query, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
@@ -322,6 +334,7 @@ carve_outs:
   - {name: column, file: slayer/importers/aggregates.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: _table_columns, file: slayer/importers/column_types.py, reason: "physical database or result-set column"}
   - {name: columns, file: slayer/importers/column_types.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/importers/physical.py, reason: "physical database or result-set column"}
   - {name: root_physical_columns, file: slayer/importers/physical.py, reason: "physical database or result-set column"}
   - {name: agg_columns, file: slayer/inspect/dataset_render.py, reason: "header columns of a rendered table"}
   - {name: col_columns, file: slayer/inspect/dataset_render.py, reason: "header columns of a rendered table"}
@@ -425,6 +438,7 @@ carve_outs:
   - {name: referred_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: reflect_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
+  - {name: reads_source_column, file: slayer/sql/field_expansion.py, reason: "physical database or result-set column"}
   - {name: _SemiJoinOps, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _apply_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _build_from_and_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
@@ -454,6 +468,9 @@ carve_outs:
   - {name: columns, file: slayer/sql/render/cte_assembly.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/render/row_expr.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/render/value_expr.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _root_columns, file: slayer/sql/root_scope.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/root_scope.py, reason: "physical database or result-set column"}
+  - {name: respelled_columns, file: slayer/sql/root_scope.py, reason: "physical database or result-set column"}
   - {name: column, file: slayer/sql/scope.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: joins, file: slayer/sql/scope_check.py, reason: "SQL JOIN as an operation"}
   - {name: HasColumn, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}

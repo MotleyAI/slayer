@@ -262,7 +262,7 @@ def render_metric_text(*, dataset: SlayerDataset, metric: DatasetMetric) -> str:
     name = metric.name or ""
     lines: list[str] = [
         f"Measure: {dataset.data_source}.{dataset.name}.{name}",
-        f"Formula: {metric.expression}",
+        f"Formula: {metric.text}",
     ]
     if metric.description:
         lines.append(f"Description: {metric.description}")

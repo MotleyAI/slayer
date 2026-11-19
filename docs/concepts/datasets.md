@@ -11,7 +11,7 @@ data_source: my_postgres
 fields:
   - {name: id, datatype: Integer, primary_key: true}
   - {name: status, datatype: String}
-  - {name: revenue, sql: amount, datatype: Decimal}
+  - {name: revenue, expression: amount, datatype: Decimal}
 metrics:
   - {name: aov, expression: "sum(revenue) / count(*)"}
 ```
@@ -66,7 +66,7 @@ Only the `__slayer_` prefix is reserved for SLayer-internal identifiers.
 
 ## Fields
 
-A field is the unit of structure on the dataset. The same field entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A [list field](queries.md#list-fields) is the exception. What the field *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect (`datatype`), and a handful of policy attributes (which aggregations are allowed, whether it's a primary key, whether it's hidden).
+A field is the unit of structure on the dataset. The same field entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A [list field](queries.md#list-fields) is the exception. What the field *carries* is its identity (name), how to compute it from the source (`expression`), what data type to expect (`datatype`), and a handful of policy attributes (which aggregations are allowed, whether it's a primary key, whether it's hidden).
 
 ### Attributes
 
@@ -75,7 +75,8 @@ A field is the unit of structure on the dataset. The same field entry can serve 
 | `name` | string | Yes | — | Unique within the dataset. Must not contain `.` or `:`; the `__slayer_` prefix is reserved. `__` is otherwise allowed |
 | `description` | string | No | — | Clarifies meaning for agents and users |
 | `label` | string | No | — | Display name; propagates into query result metadata |
-| `sql` | string | No | (bare field name) | SQL expression — defaults to the field's name |
+| `expression` | string or object | No | (the source column of the field's name) | The definition: portable SQL as a string (shorthand for `{sql: …}`), or Ossie's `{sql, dialects: [{dialect, expression}]}`. See [Field expressions](#field-expressions) |
+| `sql` | string | No | — | Deprecated spelling of `expression`, converted on load; removed in 3.0 |
 | `datatype` | string | No | `String` | One of the [data types](#data-types), matched by exact case |
 | `element_type` | string | With `Array` on a table-backed dataset | `Opaque` on an `sql`-mode dataset's `Array` | A list's element type (any data type but `Array`; `Opaque` for nested lists and records, which support only NULL tests and `count`); rejected on any other type |
 | `db_type` | string | No | — | The raw database type, recorded by ingestion where `datatype` loses information: `Opaque`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps and lists |
@@ -95,7 +96,7 @@ A list field is profiled over its non-NULL elements: `sampled_values` and `disti
 
 A JSON function reads a field over a native JSON column (Postgres `json` / `jsonb`, `JSON`, Snowflake `VARIANT`) in its native form only when its `db_type` is recorded; a field without one is read as text.
 
-A field's `sql` is rendered into the executed statement, which reaches the database verbatim — `:name` is never read as a bind parameter, nor `%` as a format directive — so regex literals (`(?:…)`) and date formats (`%Y-%m`) pass through unchanged.
+A field's entry for its datasource's dialect is rendered into the executed statement, which reaches the database verbatim — `:name` is never read as a bind parameter, nor `%` as a format directive — so regex literals (`(?:…)`) and date formats (`%Y-%m`) pass through unchanged.
 
 ### Data types
 
@@ -141,37 +142,52 @@ A field can carry a `filter` — a SQL condition applied as a `CASE WHEN` value 
 ```yaml
 fields:
   - name: active_revenue
-    sql: amount
+    expression: amount
     datatype: Float
     filter: "status = 'active'"
   - name: completed_count
-    sql: id
+    expression: id
     datatype: Integer
     filter: "status = 'completed'"
 ```
 
 `sum(active_revenue)` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
 
-Filters can reference joined fields via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered fields coexist freely in the same query and combine cleanly in arithmetic expressions (e.g. `"sum(active_revenue) / sum(total_revenue)"`).
+A bare name in a filter reads the source column and a path (`orders.status`, `categories.type`) reads a field. Filtered and unfiltered fields coexist freely in the same query and combine cleanly in arithmetic expressions (e.g. `"sum(active_revenue) / sum(total_revenue)"`).
 
-### Derived Fields Referencing Other Derived Fields
+### Field expressions
 
-A `DatasetField.sql` may reference any other field on the same dataset or on a joined dataset — including fields that are themselves *derived* (have their own `sql` expression rather than being a bare base-table column). The engine recursively inlines those references at query time, so chains stay DRY.
+A field's `expression` is Ossie's expression object, or a string standing for its portable `sql`:
+
+```yaml
+fields:
+  - {name: amount_usd, expression: "amount / 100.0"}
+  - name: amount_rounded
+    expression:
+      sql: "ROUND(amount, 2)"
+      dialects:
+        - {dialect: POSTGRES, expression: "round(amount::numeric, 2)"}
+```
+
+- **Which form runs**: the entry for the datasource's own dialect (its type's SQL dialect name, upper-cased: `POSTGRES`, `DUCKDB`, `SQLITE`, …), else the portable `sql`, else an `OSSIE_SQL_2026` entry. Entries for other dialects are kept and never run; a field with two entries for its datasource's dialect, or with no form that runs there, is refused at save.
+- **Portable `sql`** is read by SLayer's Mode B grammar with [Ossie's meaning](expressions.md); a dialect entry reaches the database verbatim.
+- **Names**: inside a field's `expression` or `filter`, and a dataset's `filters`, a bare name or `source.x` reads the dataset's **source column**, and a path from the dataset reads a **field** (`orders.gross`, `customers.region`). So a derived field may take a source column's name (`status: UPPER(status)` upper-cases the physical `status`).
+- **Physical reader**: a field whose running form is one bare source column and which has no `filter`; relationship keys, schema drift and live typing read only these.
+- The pre-2.0 `sql` converts to `expression`: one column becomes the shorthand, other text becomes the entry for the datasource's dialect with each sibling it read written as a path, so its results do not change.
+
+### Derived fields referencing other fields
+
+A field reads another field of its own dataset, or of a joined one, by path; the engine inlines the referenced definitions at query time, so chains stay DRY.
 
 ```yaml
 # Dataset: stations
 fields:
-  - name: foo_raw                 # base field
-    sql: "foo_raw"
-    datatype: Float
-  - name: foo_normalized          # derived on stations
-    sql: "foo_raw / 100.0"
-    datatype: Float
+  - {name: foo_raw, datatype: Float}
+  - {name: foo_normalized, expression: "foo_raw / 100.0", datatype: Float}   # foo_raw: the source column
 # Dataset: telescopes — joined to stations
 fields:
-  - name: aoi_ratio               # derived on telescopes, references the
-                                  # *derived* stations.foo_normalized
-    sql: "telescopes.aperture / stations.foo_normalized"
+  - name: aoi_ratio
+    expression: "aperture / stations.foo_normalized"
     datatype: Float
 relationships:
   - to: stations
@@ -179,36 +195,34 @@ relationships:
     to_columns: ["id"]
 ```
 
-At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to same-dataset chains (a field referencing another derived field on the same dataset) and to multi-hop relationship paths (use the dotted form, e.g., `B.C.x_derived`, when crossing more than one relationship).
+At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. A same-dataset field is read as `stations.foo_normalized` from `stations`; a multi-hop path is dotted (`B.C.x_derived`).
 
 A derived field whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [relationship cardinality](#relationship-cardinality) or primary key to prove the hop, or query it under the default (associating) or `broadcast` handling. A derived field whose definition reaches a to-many (or undeclared) target cannot be aggregated as a field of its dataset — aggregate the target field directly (`sum(line_items.qty)`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the dataset is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above. A definition whose relationship path **revisits** a dataset already on it (a cycle, e.g. `regions.customers.spend` declared on `customers`) is rejected at **save time** as a circular definition — reference the field on the revisited dataset directly, or aggregate on the dataset the hop leaves. A definition crossing an ambiguous hop (two or more edges between the pair and no edge name in the path) is also rejected at **save time** — spell that hop by an edge name.
 
-Same-dataset references may be written **bare** (just the field name) or qualified with the host alias — both forms expand the same way. So given `bucket.sql = "raw_a / 10"`, a sibling `rn.sql = "ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)"` correctly expands `bucket` to the inlined body. Bare references inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are NOT inlined — those identifiers belong to the inner rowset, not the host dataset — so `DatasetField.sql = "(SELECT MAX(score) FROM other) + score"` inlines the outer `score` but leaves the inner one alone.
+Names inside a nested scope of a dialect entry (sub-query, `UNION` branch, CTE, `VALUES`) belong to the inner rowset and are kept as written.
 
-Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are rejected at `save_dataset` time and raise `DatasetFieldCycleError` (which subclasses both `SlayerError` and `ValueError`) with the cycle path in the message — so a broken chain never reaches a query. The compile-time guard remains as defence in depth. Save-time validation stays within the dataset's `data_source`; unresolved cross-datasource refs are silently skipped. The same expansion is applied to filters and to aggregated metrics, so `"sum(B.foo_normalized)"` produces `SUM(B.foo_raw / 100.0)`.
+Cycles in the reference graph (e.g., `c1: "orders.c2 + 1"` and `c2: "orders.c1 - 1"`) are rejected at `save_dataset` time and raise `DatasetFieldCycleError` (which subclasses both `SlayerError` and `ValueError`) with the cycle path in the message. Save-time validation stays within the dataset's `data_source`; unresolved cross-datasource refs are silently skipped. The same expansion is applied to filters and to aggregated metrics, so `"sum(B.foo_normalized)"` produces `SUM(B.foo_raw / 100.0)`.
 
-### Window functions in `DatasetField.sql`
+### Window functions in a field's expression
 
-A field's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The field behaves like any other field when used in `dimensions` / SELECT.
+A field's expression may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The field behaves like any other field when used in `dimensions` / SELECT.
 
-> **Filtering on a windowed field is rejected.** A query filter naming a `DatasetField` whose `sql` contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [expressions.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
-
-### SQL expression conventions
-
-Bare field names auto-qualify against the dataset's own table — single references (`"amount"`) and arithmetic alike (`"amount * quantity"`). Explicit `dataset.field` works too but adds nothing. For joined fields inside a dataset's own `sql`, use the dotted relationship path (`customers.regions.name`) — see [Relationships](#relationships).
+> **Filtering on a windowed field is rejected.** A query filter naming a field whose expression contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field defined as `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [expressions.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
 
 ### SQLite JSON extraction
 
-`json_extract(col, '$.path')` in a `DatasetField.sql` is preserved verbatim on SQLite — SLayer does **not** rewrite it to `col -> '$.path'`. The `->` operator in SQLite returns the JSON-*quoted* form (`'"Owned"'`, with literal quotes), which silently breaks equality and `CASE WHEN` matches against bare-string literals. The function form returns the unquoted scalar.
+`json_extract(col, '$.path')` in a field's `SQLITE` entry is preserved verbatim — SLayer does **not** rewrite it to `col -> '$.path'`. The `->` operator in SQLite returns the JSON-*quoted* form (`'"Owned"'`, with literal quotes), which silently breaks equality and `CASE WHEN` matches against bare-string literals. The function form returns the unquoted scalar.
 
 ```yaml
 fields:
   - name: tier
     datatype: String
-    sql: "json_extract(payload, '$.tier')"
+    expression: {dialects: [{dialect: SQLITE, expression: "json_extract(payload, '$.tier')"}]}
   - name: is_gold
     datatype: Integer
-    sql: "CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END"
+    expression:
+      dialects:
+        - {dialect: SQLITE, expression: "CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END"}
 ```
 
 If you specifically want SQLite's JSON-scalar operator, write `->>` (`exp.JSONExtractScalar`) directly — SLayer leaves it untouched.
@@ -305,7 +319,7 @@ Aggregations are the operators that turn a field expression into a value: `sum`,
 
 ```yaml
 fields:
-  - {name: balance, sql: balance, datatype: Float}
+  - {name: balance, datatype: Float}
 ```
 
 `last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time field is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated field or expression → the dataset's `default_time_dimension` (its only DATE / TIMESTAMP field when unset). Whichever field wins is an input of the aggregation: if it, or a derived definition it names, crosses a relationship hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
@@ -350,7 +364,7 @@ relationships:
     to_columns: ["id"]
 ```
 
-`from_columns` and `to_columns` are equal-length, non-empty lists: the n-th entries form one key pair, and a composite key lists several in pair order, kept as written in storage, dumps, exports and the generated `ON` condition. Each entry names a base field (`sql` unset or a single column, no `filter`) declared on its side by the field's `name`, and the field's `sql` rename is applied when the join is emitted. The pre-2.0 `join_pairs: [["customer_id", "id"]]` still converts, with a deprecation; giving it beside either list is refused.
+`from_columns` and `to_columns` are equal-length, non-empty lists: the n-th entries form one key pair, and a composite key lists several in pair order, kept as written in storage, dumps, exports and the generated `ON` condition. Each entry names a physical reader (an `expression` unset or one source column, no `filter`) declared on its side by the field's `name`, and the column it reads is applied when the join is emitted. The pre-2.0 `join_pairs: [["customer_id", "id"]]` still converts, with a deprecation; giving it beside either list is refused.
 
 A relationship's `to` spells its dataset exactly: a save whose target matches a dataset only by case (`customers` for `Customers`), or whose name a stored relationship reaches only by case, fails naming the declared spelling.
 
@@ -430,7 +444,7 @@ filters:
 
 They apply wherever the dataset's rows are read — as a query's source, a relationship target, a cross-dataset aggregate or inside another dataset's filter — before any join, so a LEFT join with no passing match reads as NULL and an INNER join drops the row.
 
-These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-field references via dotted relationship paths (`customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `DatasetMetric.expression`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
+These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`; a bare name reads a source column and a path reads a field (`orders.status`, `customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `DatasetMetric.expression`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 
 ## Query-backed datasets
 
@@ -494,7 +508,7 @@ The four substituted surfaces are:
 | -- | -- |
 | `SlayerDataset.sql` | the raw SQL body of an `sql`-mode dataset (WHERE inside CTEs, projected scalars, anywhere) |
 | `SlayerDataset.filters` | dataset-level always-applied WHERE predicates |
-| `DatasetField.sql` | a field's row-level SQL expression |
+| a field's dialect entry | a field's row-level SQL in its datasource's dialect |
 | `DatasetField.filter` | a field's CASE-WHEN conditional (e.g. a windowed TY/LY sum with scalar bounds) |
 
 ```json
@@ -504,9 +518,9 @@ The four substituted surfaces are:
   "sql": "SELECT id, region, amount FROM orders WHERE amount >= {floor}",
   "query_variables": {"floor": 0},
   "fields": [
-    {"name": "id", "sql": "id", "datatype": "Integer", "primary_key": true},
-    {"name": "region", "sql": "region", "datatype": "String"},
-    {"name": "amount", "sql": "amount", "datatype": "Float"}
+    {"name": "id", "datatype": "Integer", "primary_key": true},
+    {"name": "region", "datatype": "String"},
+    {"name": "amount", "datatype": "Float"}
   ]
 }
 ```

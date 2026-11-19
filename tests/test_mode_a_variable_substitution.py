@@ -950,7 +950,7 @@ class TestSubstituteHelperScope:
         assert _literals(_col(out, "flt").filter) == ["US"]
         assert _literals(_col(out, "hid").sql) == [2]
         # Saved metric expressions substitute (Mode-B regime); Aggregation.expression never does:
-        assert _literals(out.metrics[0].expression) == [2]
+        assert _literals(out.metrics[0].text) == [2]
         assert out.aggregations[0].expression == "SUM({expr}) * {mult}"
         # Input dataset is NOT mutated — every Mode-A surface stays templated:
         assert model.sql == "SELECT * FROM t WHERE r = '{region}'"

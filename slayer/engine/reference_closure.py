@@ -186,7 +186,7 @@ def fragment_null_propagates(
             continue
         try:
             expanded = expand_derived_refs_sync(
-                sql=field.sql, dataset=dataset, alias_path=anchor_relation,
+                sql=field.definition_sql, dataset=dataset, alias_path=anchor_relation,
                 datasets_by_name=bundle.datasets_by_name, dialect=dialect,
             )
             nodes = list(sqlglot.parse_one(expanded or "", dialect=dialect).walk())
@@ -268,7 +268,7 @@ def _definition_fragments(col) -> List[str]:
     """The Mode-A fragments a field's definition reads: its non-trivial ``sql`` and its ``filter``."""
     return [
         sql for sql in (
-            col.sql if col.sql is not None and not is_trivial_base(field=col) else None,
+            col.definition_sql if not is_trivial_base(field=col) else None,
             col.filter,
         )
         if sql
@@ -512,7 +512,7 @@ def _unanalyzable_derived_name(
         return None
     owner_relation = "__".join(path) if path else anchor_relation
     for sql in (
-        col.sql if col.sql is not None and not is_trivial_base(field=col) else None,
+        col.definition_sql if not is_trivial_base(field=col) else None,
         col.filter,
     ):
         if sql and fragment_closure(

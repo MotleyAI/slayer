@@ -212,7 +212,7 @@ def _orders_dataset(*, data_source: str = "test") -> SlayerDataset:
             # resolver inlines the sibling; resolving the raw ``DatasetField.sql``
             # emits the bare name ``amount_x2``, which is not a database column
             # — so this is what tells the two render paths apart.
-            DatasetField(name="amount_x4", datatype=DataType.FLOAT, sql="amount_x2 * 2"),
+            DatasetField(name="amount_x4", datatype=DataType.FLOAT, sql="orders.amount_x2 * 2"),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),

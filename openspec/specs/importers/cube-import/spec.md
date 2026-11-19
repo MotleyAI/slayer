@@ -9,7 +9,7 @@ Scenarios use the `orders` table of `importers/meaning-preservation`: rows `(1, 
 
 ### Requirement: Cube reference forms
 
-In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, measure `sql` and `filters`, segments, join `ON`), `{CUBE}.x`, `{<own cube>}.x` and a bare `x` SHALL denote the physical column `x` of the cube's source; `{other}.x` SHALL denote the physical column `x` of the joined cube `other`'s source, and a construct naming a cube that is not joined SHALL be dropped with a report naming that cube; `{member}`, `{CUBE.member}` and `{<own cube>.member}` SHALL denote that member of the cube, under the name it was imported as; `{other.member}` SHALL denote the member of the joined cube `other`. The cube's own `sql` body SHALL be imported as written, its unquoted identifiers read with the datasource's identifier folding (importers/meaning-preservation).
+In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, measure `sql` and `filters`, segments, join `ON`), `{CUBE}.x`, `{<own cube>}.x` and a bare `x` SHALL denote the physical column `x` of the cube's source; `{other}.x` SHALL denote the physical column `x` of the joined cube `other`'s source, read through a physical reader of `other` (importers/meaning-preservation › One hidden reader per physical column), and a construct naming a cube that is not joined SHALL be dropped with a report naming that cube; `{member}`, `{CUBE.member}` and `{<own cube>.member}` SHALL denote that member of the cube, under the name it was imported as; `{other.member}` SHALL denote the member of the joined cube `other`. The cube's own `sql` body SHALL be imported as written, its unquoted identifiers read with the datasource's identifier folding (importers/meaning-preservation).
 
 #### Scenario: Same-cube dotted reference
 - **WHEN** cube `orders` declares measure `paid_sum` (`sum`, `sql: {CUBE}.amount`, filter `{CUBE}.status = 'paid'`) and calculated measures `a: {orders.paid_sum}` and `b: {CUBE.paid_sum}`
@@ -25,15 +25,15 @@ In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, me
 
 #### Scenario: Another cube's physical column, masked
 - **WHEN**, in addition, cube `customers` declares dimension `name` with `sql: {CUBE}.region`
-- **THEN** `cust_name` is dropped and the report names `name`
+- **THEN** `cust_name` imports, reading a hidden field of `customers` over the physical `name`, and grouping by `cust_name` returns `Ann` for 2 orders and `Bo` for 1
 
 ### Requirement: Calculated measures with raw SQL aggregates
 
-A Cube calculated measure (`type: number`, `string`, `time` or `boolean` with `sql`) whose SQL contains aggregate calls SHALL import as a SLayer measure computing the same value: each outermost `SUM`, `AVG`, `MIN`, `MAX`, `COUNT`, `COUNT(*)`, `COUNT(DISTINCT …)` or percentile aggregate (with an optional `FILTER (WHERE …)`) SHALL aggregate its operand over the cube's rows; an operand that is not a bare column SHALL be evaluated as Cube's SQL, verbatim apart from the identifier folding of "Imported SQL reads with the source's identifier folding" (`importers/meaning-preservation`), in the database's dialect; arithmetic over aggregates and over other measures SHALL be kept. A calculated measure using a construct outside that set, or a non-bare operand that reads another cube, SHALL be dropped with a report naming the measure and the construct. Division by zero SHALL yield NULL.
+A Cube calculated measure (`type: number`, `string`, `time` or `boolean` with `sql`) whose SQL contains aggregate calls SHALL import as a SLayer measure computing the same value: each outermost `SUM`, `AVG`, `MIN`, `MAX`, `COUNT`, `COUNT(*)`, `COUNT(DISTINCT …)` or percentile aggregate (with an optional `FILTER (WHERE …)`) SHALL aggregate its operand over the cube's rows; an operand that is not a bare column SHALL be evaluated as Cube's SQL, verbatim apart from the identifier folding of "Imported SQL reads with the source's identifier folding" (`importers/meaning-preservation`), in the database's dialect, its physical references reading the physical columns whatever members the cube declares; arithmetic over aggregates and over other measures SHALL be kept. A calculated measure using a construct outside that set, or a non-bare operand that reads another cube, SHALL be dropped with a report naming the measure and the construct. Division by zero SHALL yield NULL.
 
 #### Scenario: CASE inside an aggregate, with a colliding dimension
 - **WHEN** cube `orders` declares dimension `status` with `sql: {CUBE}.state` and calculated measure `paid_cnt: SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)`
-- **THEN** `paid_cnt` is dropped and the report names `status`
+- **THEN** `paid_cnt` imports and returns 2
 
 #### Scenario: A column the cube does not declare
 - **WHEN** cube `orders` declares no member over `status` and calculated measure `paid_amount: SUM(CASE WHEN {CUBE}.status = 'paid' THEN {CUBE}.amount END)`
@@ -61,11 +61,11 @@ A Cube calculated measure (`type: number`, `string`, `time` or `boolean` with `s
 
 ### Requirement: Cube join keys read physical columns
 
-A Cube join whose `ON` is an equality, or a conjunction of equalities, between columns of the two cubes SHALL import with join keys that read exactly the physical columns the `ON` names on each side, whichever members the cubes declare; a side whose physical column's name a different member holds SHALL drop the join with a report naming it. Any other `ON` SHALL drop the join with a report.
+A Cube join whose `ON` is an equality, or a conjunction of equalities, between columns of the two cubes SHALL import with join keys that read exactly the physical columns the `ON` names on each side, whichever members the cubes declare: each side SHALL be keyed on a physical reader of its column, added hidden when no unfiltered member reads the column bare (importers/meaning-preservation › One hidden reader per physical column). Any other `ON` SHALL drop the join with a report.
 
 #### Scenario: Key masked by a renamed dimension
 - **WHEN** cube `orders` declares dimension `customer_id` with `sql: {CUBE}.legacy_ref` and joins `customers` on `{CUBE}.customer_id = {customers}.id`
-- **THEN** the join is dropped and the report names `customer_id`
+- **THEN** the join imports keyed on a hidden field of `orders` reading the physical `customer_id`, and counting orders by `customers.name` returns `Ann` 2 and `Bo` 1
 
 ### Requirement: FILTER_PARAMS bodies read physical columns
 
@@ -73,7 +73,7 @@ The column references inside a FILTER_PARAMS pushdown body SHALL follow the same
 
 #### Scenario: Pushdown body over a masked column
 - **WHEN** a sql-mode cube's `sql` has `{FILTER_PARAMS.orders.status.filter('status')}`, and the cube declares dimension `status` with `sql: UPPER({CUBE}.status)`
-- **THEN** the self-named `status` dimension is dropped with a report, and querying with the pushdown variable set to `paid` keeps ids 1 and 2, and omitting the variable keeps all three rows
+- **THEN** the self-named `status` dimension imports, grouping by it returns `PAID` for 2 rows and `OPEN` for 1, querying with the pushdown variable set to `paid` keeps ids 1 and 2, and omitting the variable keeps all three rows
 
 ### Requirement: The datasource is used whenever it resolves
 

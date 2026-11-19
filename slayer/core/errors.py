@@ -124,14 +124,22 @@ class SchemaDriftError(SlayerError):
 
 
 class FieldSqlStatementError(SlayerError):
-    """A field's ``sql`` is a statement, or several, not one expression."""
+    """A field's native SQL is a statement, or several, not one expression."""
 
     def __init__(self, *, field: str, sql: str) -> None:
         self.field = field
         super().__init__(
-            f"Field {field!r}: sql must be one SQL expression, not a statement or several ({sql!r}); a "
+            f"Field {field!r}: its SQL must be one SQL expression, not a statement or several ({sql!r}); a "
             f"parenthesised scalar subquery is an expression."
         )
+
+
+class FieldExpressionError(SlayerError):
+    """A field's or metric's ``expression`` has no form it can run, or two entries for one dialect."""
+
+    def __init__(self, *, owner: str, reason: str, suggestion: str | None = None) -> None:
+        self.owner = owner
+        super().__init__(f"{owner}: {reason}" + (f" {suggestion}" if suggestion else ""))
 
 
 class DatasetFieldCycleError(SlayerError, ValueError):

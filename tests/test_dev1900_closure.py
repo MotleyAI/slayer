@@ -52,10 +52,10 @@ class TestFragmentClosure:
         assert self._frag("region_events.value") == (("region_events",),)
 
     def test_derived_crossing_is_expanded(self):
-        assert self._frag("bad_pop") == (("region_events",),)
+        assert self._frag("regions.bad_pop") == (("region_events",),)
 
     def test_chain_crossing_is_expanded(self):
-        assert self._frag("bad_pop * 2") == (("region_events",),)
+        assert self._frag("regions.bad_pop * 2") == (("region_events",),)
 
     def test_local_column_contributes_nothing(self):
         assert self._frag("pop") == ()

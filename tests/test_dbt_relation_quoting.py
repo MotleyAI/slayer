@@ -229,7 +229,7 @@ def test_metric_filter_with_a_mixed_case_logical_dimension_is_unchanged(tmp_path
     measure = orders.get_metric("paid_revenue")
     assert measure is not None
     assert measure.expression == "sum(revenue_filtered)"
-    assert column(orders, "revenue_filtered").filter == "Status = 'paid'"
+    assert column(orders, "revenue_filtered").filter == "orders.Status = 'paid'"
 
 
 def test_member_without_an_expr_reads_its_folded_name(tmp_path: Path) -> None:

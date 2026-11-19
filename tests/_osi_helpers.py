@@ -16,6 +16,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
+from slayer.osi.dialects import OSSIE_SQL, ossie_token
 from slayer.osi.models import OSIDocument
 from slayer.database import engine_factory
 from slayer.database.client import SqlClient
@@ -161,6 +162,23 @@ def by_name(result: ConversionResult) -> dict[str, SlayerDataset]:
 
 def cols(dataset: SlayerDataset) -> dict[str, DatasetField]:
     return {c.name: c for c in dataset.fields}
+
+
+def stored_expression(field: DatasetField) -> Any:
+    """``field``'s stored ``expression`` as dumped (shorthand string or object), else ``None``."""
+    return field.model_dump(mode="json", exclude_none=True).get("expression")
+
+
+def running_form(field: DatasetField | None, *, target: str) -> str | None:
+    """The text of ``field``'s expression that runs on a ``target``-typed datasource, else ``None``."""
+    expression = stored_expression(field) if field is not None else None
+    if isinstance(expression, str) or not isinstance(expression, dict):
+        return expression
+    entries: dict[str, str] = {}
+    for item in expression.get("dialects", []):
+        entries.setdefault(item["dialect"].upper(), item["expression"])
+    own = entries.get(ossie_token(target))
+    return own if own is not None else expression.get("sql", entries.get(OSSIE_SQL))
 
 
 def visible(dataset: SlayerDataset) -> set[str]:

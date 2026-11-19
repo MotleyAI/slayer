@@ -15,12 +15,12 @@ first two become the FROM clause at query time.
 Row-level SQL expressions; the role (group-by key or aggregation source) is decided
 per query. A list field (`datatype: ARRAY`) groups and compares as the set of its distinct elements and
 takes only `count` / `count_distinct`; aggregate its elements through `<field>.value` (e.g. `tags.value`).
-A field's `sql` is Mode-A SQL: any dialect expression, dotted relationship paths allowed, but no aggregations or {{product}} transforms. A field `filter` becomes
+A field's `expression` is portable SQL (or `{sql, dialects: [{dialect, expression}]}`, the entry for the datasource's dialect running first); a bare name reads the source column and `dataset.field` reads a field, with no aggregations or {{product}} transforms. A field `filter` becomes
 CASE WHEN inside aggregates — `sum(active_revenue)` counts only matching rows,
 without affecting sibling metrics. `allowed_aggregations` whitelists what may
 aggregate the field; a sole `primary_key: true` field is restricted to count / count_distinct / count_distinct_approx / min / max / collect.
 
-Advanced escape hatch: a `DatasetField.sql` MAY be a raw window expression
+Advanced escape hatch: a field's dialect entry MAY be a raw window expression
 (`row_number() over (...)`); filtering on such a field auto-promotes to a
 post-aggregation WHERE. Prefer the built-in rank-family transforms when they cover
 the need.

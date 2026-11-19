@@ -651,7 +651,7 @@ def validate_dataset_filter(*, mf: str, references: Iterable[Tuple[SlayerDataset
                 suggestion="Use query-level filters for metric conditions.",
             )
         field = owner.get_field(col)
-        if field is not None and field.sql and has_window_function(field.sql):
+        if field is not None and field.definition_sql and has_window_function(field.definition_sql):
             raise DatasetFilterError(
                 summary=f"The dataset filter references field {col!r} whose "
                 f"SQL contains a window function.",
@@ -1312,7 +1312,7 @@ def saved_date_only_notices(
     """The notices for ``dataset``'s saved metrics and field filters, typed through its relationships to ``datasets_by_name``."""
     datasets = {n: m for n, m in datasets_by_name.items() if m is not None}
     out: Dict[str, DateOnlyMidnightWarning] = {}
-    texts = [*(m.expression for m in dataset.metrics), *(c.filter for c in dataset.fields if c.filter)]
+    texts = [*(m.text for m in dataset.metrics), *(c.filter for c in dataset.fields if c.filter)]
     for text in texts:
         for site in scan_date_only(text).sites:
             if kind_of(_saved_field_type(dataset, parts=site.parts, datasets_by_name=datasets)) is not TypeKind.TIMESTAMP:

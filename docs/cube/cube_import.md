@@ -80,10 +80,12 @@ field.
 
 `{CUBE}.x` always reads the physical column `x`, `{customers}.x` reads the physical column `x` of the joined cube
 `customers` (a cube that is not joined drops the member with a report), and `{orders.member}` inside cube `orders`
-means `{member}`; a
-member whose SQL reads a physical column another member's name holds, or transforms the physical column of its own name
-(`status: UPPER({CUBE}.status)`), is dropped with a report, as is an unquoted reserved word (`{CUBE}.from`; write
-`{CUBE}."from"`).
+means `{member}`, written into the field as the path `orders.member`. A member's SQL becomes the field's entry for
+the datasource's dialect (one column becomes the `expression` shorthand), so it reads the physical columns whatever
+members the cube declares (`status: UPPER({CUBE}.status)` upper-cases the physical `status`). A measure, join key or
+other cube's reference that needs a physical column no member reads bare gets one hidden field reading it, named
+`<column>_raw` (`_raw_2`, … when taken). An unquoted reserved word (`{CUBE}.from`; write `{CUBE}."from"`) is dropped
+with a report.
 
 Field types come from the live datasource when `--datasource` resolves (a list column as a list of its element
 type), else from an explicit dimension `type` or the measure's aggregation; an aggregation SLayer refuses over a
@@ -98,7 +100,7 @@ import whose datasource is not configured is refused when its SQL holds an unquo
 ### Joins → relationships
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
-`from_columns` / `to_columns` naming the fields that read each side (a `{cube}.col` operand reads the physical column, through a hidden field when no member reads it; a `{cube.member}` operand names that member, which must be a base field; a physical column another member's name holds drops the join). Composite
+`from_columns` / `to_columns` naming the fields that read each side (a `{cube}.col` operand reads the physical column, through a hidden field when no member reads it; a `{cube.member}` operand names that member, which must read one column bare with no filter). Composite
 (`AND`-joined) keys are supported. All relationships emit as `LEFT`. When a Cube schema
 declares both directions of one relationship (`orders belongs_to customers` and
 `customers has_many orders` over the same columns), the importer keeps a single

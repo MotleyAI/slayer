@@ -1021,7 +1021,7 @@ class TestCountColumnRenameInJoinKeys:
         children = models["children"]
         col = children.get_field("count_col")
         assert col is not None
-        assert col.sql == "_count"
+        assert col.expression == "_count"
         (join,) = children.relationships
         assert join.column_pairs == [("count_col", "id")]
 

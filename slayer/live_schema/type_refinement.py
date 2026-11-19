@@ -16,6 +16,7 @@ import logging
 
 
 from slayer.core.enums import DataType, TypeKind, kind_of, stored_datatype
+from slayer.core.field_expression import stored_definition_text
 from slayer.core.models import DatasourceConfig, is_base_field_sql, physical_column_sql
 from slayer.live_schema.introspect_utils import table_location
 from slayer.live_schema.schema_scope import UNREACHABLE, schema_ref_from_token, sql_table_location, table_schema_ref
@@ -28,17 +29,12 @@ from slayer.sql.dialects.reflection import TableLocation
 logger = logging.getLogger(__name__)
 
 
-def _field_is_base(sql: object) -> bool:
-    """A field dict's ``sql`` claims a live column (see ``is_base_field_sql``)."""
-    return (sql is None or isinstance(sql, str)) and is_base_field_sql(sql)
-
-
 def _physical(col: dict) -> str | None:
-    """The live column a base field dict names, else ``None``."""
-    name, sql = col.get("name"), col.get("sql")
-    if not isinstance(name, str) or not _field_is_base(sql):
+    """The live column a physical-reader field dict reads (a bare source column, no ``filter``), else ``None``."""
+    name, text = col.get("name"), stored_definition_text(col)
+    if not isinstance(name, str) or col.get("filter") is not None or not (text is None or isinstance(text, str)):
         return None
-    return physical_column_sql(sql=sql, name=name)
+    return physical_column_sql(sql=text, name=name) if is_base_field_sql(text) else None
 
 
 def _is_sqlite_datasource(datasource: DatasourceConfig) -> bool:
@@ -81,7 +77,7 @@ def has_refineable_fields(d: dict) -> bool:
     return any(
         isinstance(c, dict)
         and _is_double(c.get("datatype"))
-        and _field_is_base(c.get("sql"))
+        and _physical(c) is not None
         for c in fields
     )
 
@@ -99,7 +95,7 @@ def has_sqlite_widenable_fields(d: dict) -> bool:
     return any(
         isinstance(c, dict)
         and stored_datatype(c.get("datatype")) is DataType.INTEGER
-        and _field_is_base(c.get("sql"))
+        and _physical(c) is not None
         for c in columns
     )
 
@@ -112,7 +108,7 @@ def _parse_sql_table_with_default_schema(
     return at.schema_name or datasource.schema_name or None, at.name
 
 
-async def _live_table_location(sql_table: str, datasource: DatasourceConfig,
+async def live_table_location(sql_table: str, datasource: DatasourceConfig,
                                client: SqlClient) -> TableLocation | None:
     """Where ``sql_table``'s live table is read; ``None`` for a catalog this connection cannot reach."""
     at = sql_table_location(sql_table, dialect=dialect_for_ds_type(datasource.type))
@@ -221,7 +217,7 @@ async def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig, clien
         c for c in columns
         if isinstance(c, dict)
         and (_is_double(c.get("datatype")) or stored_datatype(c.get("datatype")) is DataType.INTEGER)
-        and _field_is_base(c.get("sql"))
+        and _physical(c) is not None
     ]
     if not refineable:
         return False
@@ -256,12 +252,12 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
         c for c in columns
         if isinstance(c, dict)
         and _is_double(c.get("datatype"))
-        and _field_is_base(c.get("sql"))
+        and _physical(c) is not None
     ]
     if not refinable:
         return False
 
-    location = await _live_table_location(sql_table, datasource, client)
+    location = await live_table_location(sql_table, datasource, client)
     if location is None:
         return False  # a catalog this connection cannot reach keeps its persisted types
     try:

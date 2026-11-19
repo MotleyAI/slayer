@@ -93,7 +93,7 @@ def dev1900_datasets() -> List[SlayerDataset]:
     regions.fields.append(
         DatasetField(name="bad_pop", datatype=DataType.FLOAT, sql="pop + region_events.value"))
     regions.fields.append(
-        DatasetField(name="bad_pop2", datatype=DataType.FLOAT, sql="bad_pop * 2"))
+        DatasetField(name="bad_pop2", datatype=DataType.FLOAT, sql="regions.bad_pop * 2"))
     regions.fields.append(
         DatasetField(name="derived_pop", datatype=DataType.FLOAT, sql="pop * 2"))
     # A region-owned aggregation whose weight defaults to the BARE owner-local
@@ -145,7 +145,7 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
     regions.fields.append(
         DatasetField(name="unparseable", datatype=DataType.FLOAT, sql=")((( bad"))
     regions.fields.append(
-        DatasetField(name="cyc", datatype=DataType.FLOAT, sql="cyc + 1"))
+        DatasetField(name="cyc", datatype=DataType.FLOAT, sql="regions.cyc + 1"))
     customers = _customers(models)
     customers.aggregations.append(Aggregation(
         name="wunparse", expression="SUM({value} * {weight})",

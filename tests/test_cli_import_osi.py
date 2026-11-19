@@ -177,7 +177,7 @@ def test_dialect_option_defaults_to_unset() -> None:
     assert args.dialect is None
 
 
-def test_explicit_dialect_is_honoured_first(duck_store, tmp_path: Path) -> None:
+def test_explicit_dialect_is_ignored_when_a_form_runs(duck_store, tmp_path: Path) -> None:
     store, _ = duck_store
     doc = flat([ds("orders", fields=[f("order_id", "o_orderkey"),
                                      f_dialects("pick", ("SNOWFLAKE", "amount * 2"), sql="amount * 1")])])
@@ -187,4 +187,5 @@ def test_explicit_dialect_is_honoured_first(duck_store, tmp_path: Path) -> None:
     assert orders is not None
     pick = orders.get_field("pick")
     assert pick is not None
-    assert pick.sql == "amount * 2"
+    assert pick.model_dump(mode="json", exclude_none=True)["expression"] == {
+        "sql": "amount * 1", "dialects": [{"dialect": "SNOWFLAKE", "expression": "amount * 2"}]}

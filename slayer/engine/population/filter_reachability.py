@@ -120,7 +120,7 @@ def _derived_def_touches_anchor(
     )
     if dataset is None or col is None:
         return True  # nothing resolvable — a bare field name on the anchor
-    fragments = [frag for frag in (col.sql or col.name, col.filter) if frag]
+    fragments = [frag for frag in (col.definition_sql or col.name, col.filter) if frag]
     if not fragments:
         return True
     return any(

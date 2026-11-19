@@ -178,7 +178,7 @@ class TestReingest:
         assert first_seen.allowed_aggregations == ["count"]
         assert (first_seen.description, first_seen.label, first_seen.meta, first_seen.hidden) == (
             "Sightings", "Seen", {"owner": "ops"}, True)
-        assert (first_seen.sql, first_seen.primary_key, first_seen.unique) == ("seen", False, True)
+        assert (first_seen.expression, first_seen.primary_key, first_seen.unique) == ("seen", False, True)
         assert key.primary_key is True
         second_seen = second.get_field("seen")
         assert second_seen is not None

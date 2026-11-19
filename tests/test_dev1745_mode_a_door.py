@@ -189,7 +189,7 @@ class TestQualification:
         )
 
     def test_local_derived_column_is_inlined_and_qualified(self) -> None:
-        out = _sql_of(_scope().enter_expression("doubled"))
+        out = _sql_of(_scope().enter_expression("orders.doubled"))
         assert "doubled" not in out, f"derived name leaked: {out}"
         assert "orders.amount" in out, out
 

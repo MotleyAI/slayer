@@ -361,7 +361,7 @@ async def test_mutating_returned_model_does_not_poison_cache(storage: YAMLStorag
     second = await storage.get_dataset("m", data_source="ds")
     assert second.sql_table == "public.t"
     assert len(second.fields) == 1
-    assert second.fields[0].sql == "id"
+    assert second.fields[0].expression == "id"
 
 
 # ---- datasets: migration behavior & cache coherence -----------------------
@@ -549,7 +549,7 @@ async def test_factory_storage_hands_out_independent_copies() -> None:
         assert first is not second
         first.fields[0].sql = "MUTATED"
         third = await wrapped.get_dataset("m", data_source="ds")
-        assert third.fields[0].sql == "id"
+        assert third.fields[0].expression == "id"
 
 
 async def test_cache_is_per_instance() -> None:

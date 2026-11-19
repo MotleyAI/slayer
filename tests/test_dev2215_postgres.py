@@ -104,7 +104,7 @@ async def _ingest(engine: SlayerQueryEngine, ds: DatasourceConfig, table: str) -
 
 
 def _columns(dataset: SlayerDataset) -> list[tuple[str, str | None]]:
-    return [(c.name, c.sql) for c in dataset.fields]
+    return [(c.name, c.definition_sql) for c in dataset.fields]
 
 
 async def test_two_case_variants(pg: tuple[SlayerQueryEngine, Any]) -> None:

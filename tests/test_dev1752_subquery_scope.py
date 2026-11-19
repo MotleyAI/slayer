@@ -145,7 +145,7 @@ class TestRootScopeUnaffected:
         assert "orders.amount > 1" in out, out
 
     def test_top_level_derived_column_still_inlines(self) -> None:
-        out = _sql_of(_scope().enter_predicate("doubled > 1"))
+        out = _sql_of(_scope().enter_predicate("orders.doubled > 1"))
         # ``doubled`` derives to ``amount * 2`` and inlines, qualified to root.
         assert "orders.amount * 2" in out, out
 
