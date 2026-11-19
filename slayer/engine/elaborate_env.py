@@ -273,7 +273,7 @@ def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:
                 f"among the query dimensions).",
                 location=f"metric {dm.public_name!r}",
                 suggestion=f"Wrap it in an aggregation (e.g., 'sum({bare})', 'avg({bare})'), "
-                f"or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+                f"or add it to the query dimensions. For COUNT(*), use 'count(<dataset>.*)'.",
             )
         raise PositionTypingError(
             summary=f"This metric references row-level {names}, not available at the "

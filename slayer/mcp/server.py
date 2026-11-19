@@ -1763,7 +1763,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Examples:
         save_memory(learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned", linked_entities=["orders.is_returned"])
-        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": ["sum(amount)"], "filter": "status = 'paid'"}, id="kb.paid-revenue")
+        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": ["sum(orders.amount)"], "filter": "orders.status = 'paid'"}, id="kb.paid-revenue")
         """
         try:
             response = await memory_service.save_memory(

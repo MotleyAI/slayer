@@ -491,7 +491,7 @@ common workflows:
   slayer serve
 
   # 2. Query from the command line
-  slayer query '{"population": "orders", "metrics": ["count(*)"]}'
+  slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}'
 
   # 3. Start the MCP server for AI agents
   slayer mcp
@@ -593,13 +593,13 @@ examples:
         epilog="""\
 examples:
   # Inline JSON
-  slayer query '{"population": "orders", "metrics": ["count(*)"]}'
+  slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}'
 
   # From a file
   slayer query @query.json
 
   # Preview SQL without executing
-  slayer query '{"population": "orders", "metrics": ["count(*)"]}' --dry-run
+  slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}' --dry-run
 
   # Show execution plan
   slayer query @query.json --explain
@@ -608,7 +608,7 @@ examples:
   slayer query @query.json --format json
 
   # Run a saved query by name, refined with an extra dimension
-  slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
+  slayer query monthly_revenue --refine '{"dimensions": ["orders.status"]}'
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

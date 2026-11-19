@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from slayer.core.errors import UnqualifiableReferenceError
 from slayer.core.models import SlayerDataset
-from slayer.core.names import NAME_PATTERN, match_name, quoted_name
+from slayer.core.names import match_name, spelled_name
 from slayer.core.query import SlayerQuery, computed_dimension_name, declared_aliases
 from slayer.core.relationship_walker import canonical_path
 from slayer.core.syntax import (
@@ -31,9 +31,6 @@ from slayer.sql.naming import expression_text_alias
 __all__ = ["qualified_stages"]
 
 
-def _spelled(name: str) -> str:
-    return name if NAME_PATTERN.match(name) else quoted_name(name)
-
 
 def _same_chain(a: Sequence[Any], b: Sequence[Any]) -> bool:
     return len(a) == len(b) and all(x == y for x, y in zip(a, b))
@@ -47,7 +44,7 @@ class _Stage:
         population = query.population_name
         assert population is not None
         self.population = population
-        self.prefix = _spelled(host.spelling if host is not None else population)
+        self.prefix = spelled_name(host.spelling if host is not None else population)
         self.host = host
         self.stages = stages
         self.datasets = dict(datasets_by_name)
@@ -80,7 +77,7 @@ class _Stage:
         if isinstance(node, Ref):
             if self.aliases and match_name(name=node.name, declared=self.aliases, quoted=node.quoted) is not None:
                 return None
-            return f"{self.prefix}.{written or _spelled(node.name)}"
+            return f"{self.prefix}.{written or spelled_name(node.name)}"
         assert isinstance(node, DottedRef)
         text = written or ".".join(node.parts)
         if node.parts[0].casefold() == TIME_SPINE_DATASET:
@@ -112,7 +109,7 @@ class _Stage:
             raise UnqualifiableReferenceError(
                 reference=text, reason=f"reads a path from {self.population!r} that no qualified spelling names")
         leaf = node.parts[-1]
-        return ".".join((*explicit, leaf if leaf == "*" else _spelled(leaf)))
+        return ".".join((*explicit, leaf if leaf == "*" else spelled_name(leaf)))
 
 
 def _anchorless(anchors: List[str]) -> bool:

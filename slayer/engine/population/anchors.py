@@ -16,7 +16,7 @@ from slayer.core.errors import (
     UnresolvableDimensionRelationshipError,
 )
 from slayer.core.models import SlayerDataset
-from slayer.core.names import NAME_PATTERN, match_name, quoted_name
+from slayer.core.names import match_name, spelled_name
 from slayer.core.relationship_search import HopFilter, routes
 from slayer.core.relationship_walker import neighbors, walk_terminal
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
@@ -49,9 +49,6 @@ class Anchor(BaseModel):
     route: Tuple[str, ...] = ()
     unrelated: bool = False
 
-
-def _spelled(name: str) -> str:
-    return name if NAME_PATTERN.match(name) else quoted_name(name)
 
 
 def find_anchor(
@@ -123,7 +120,7 @@ def explicit_spellings(
                    cap=_SPELLINGS_CAP)
     if len(found) < 2:
         found = routes(root=reader, target=anchor.name, datasets_by_name=universe, cap=_SPELLINGS_CAP)
-    return [".".join((_spelled(reader.spelling), *r.tokens, *rest)) for r in found]
+    return [".".join((spelled_name(reader.spelling), *r.tokens, *rest)) for r in found]
 
 
 def edge_first_refusal(
@@ -138,7 +135,7 @@ def edge_first_refusal(
             owners.append(dataset.spelling)
     if not owners:
         return None
-    spellings = [".".join((_spelled(o), *parts)) for o in owners]
+    spellings = [".".join((spelled_name(o), *parts)) for o in owners]
     return UnknownReferenceError(
         name=".".join(parts), scope_kind="DatasetScope",
         scope_summary=f"{token!r} is a relationship name, not a dataset; a reference starts at a dataset",
@@ -160,7 +157,7 @@ def unknown_metric(name: str, *, datasets: Iterable[SlayerDataset]) -> UnknownMe
     hits: list[str] = []
     for dataset in sorted(datasets, key=lambda d: d.spelling):
         owned = [f.name for f in dataset.fields] + [m.name for m in dataset.metrics if m.name]
-        hits.extend(f"{_spelled(dataset.spelling)}.{_spelled(n)}" for n in owned if n.casefold() == folded)
+        hits.extend(f"{spelled_name(dataset.spelling)}.{spelled_name(n)}" for n in owned if n.casefold() == folded)
     hits = list(dict.fromkeys(hits))
     return UnknownMetricError(
         name=name, scope_kind="query",
@@ -173,7 +170,7 @@ def unknown_metric(name: str, *, datasets: Iterable[SlayerDataset]) -> UnknownMe
 def unqualified_count(dataset: Optional[str] = None) -> UnqualifiedRowCountError:
     """``count(*)`` with no population, suggesting ``count(<dataset>.*)`` for ``dataset`` when known."""
     return UnqualifiedRowCountError(suggestion=(
-        f"Write count({_spelled(dataset)}.*), or name the query's population." if dataset else None
+        f"Write count({spelled_name(dataset)}.*), or name the query's population." if dataset else None
     ))
 
 

@@ -7,19 +7,24 @@ In a query that names its population ``P``: a bare name that is no alias of the 
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.deprecation import deprecated_input
 from slayer.core.errors import AmbiguousReferenceError
-from slayer.core.names import NAME_PATTERN, match_name, quoted_name
+from slayer.core.names import match_name, spelled_name
 from slayer.core.query import QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension, declared_aliases
-from slayer.core.syntax import DottedRef, Ref, StarSource, reference_spans, walk_references
+from slayer.core.syntax import Ref, StarSource, reference_spans, walk_references
+from slayer.core.time_spine import TIME_SPINE_DATASET
 from slayer.core.warnings import DeprecatedInputWarning
+from slayer.storage.base import StorageBackend
 
-__all__ = ["AnchorNames", "Conversions", "convert_query", "convert_refinement", "convert_text"]
+__all__ = [
+    "AnchorNames", "Conversions", "anchor_names", "convert_query", "convert_refinement", "convert_text",
+    "population_relative", "qualified_input",
+]
 
 
 class AnchorNames(BaseModel):
@@ -37,22 +42,19 @@ class AnchorNames(BaseModel):
 
 
 class Conversions:
-    """The conversions of one input document: each distinct one reported once."""
+    """The conversions of one input document: each distinct one reported once (none when ``report`` is off)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, report: bool = True) -> None:
         self._reported: Dict[Tuple[str, str], DeprecatedInputWarning] = {}
+        self._report = report
 
     def note(self, old: str, new: str) -> None:
-        if (old, new) not in self._reported:
+        if self._report and (old, new) not in self._reported:
             self._reported[(old, new)] = deprecated_input(old, new, removal="3.0")
 
     @property
     def payloads(self) -> List[DeprecatedInputWarning]:
         return list(self._reported.values())
-
-
-def _spelling(name: str) -> str:
-    return name if NAME_PATTERN.match(name) else quoted_name(name)
 
 
 def convert_text(
@@ -61,7 +63,7 @@ def convert_text(
     """``text`` with each root-relative reference read from ``population``; each conversion is noted."""
     parsed, spans = reference_spans(text)
     declared = list(aliases)
-    prefix = _spelling(population)
+    prefix = spelled_name(population)
     edits: Dict[Tuple[int, int], str] = {}
     for node, aggregation in walk_references(parsed):
         span = spans.get(id(node))
@@ -184,3 +186,40 @@ def convert_refinement(
     converter.entries(data, refinement)
     data = {k: v for k, v in data.items() if k in refinement.model_fields_set}
     return _rebuilt(refinement, data)
+
+
+def population_relative(query: SlayerQuery) -> SlayerQuery:
+    """``query``, whose every reference is spelled from its population (an internal producer's spelling), as
+    qualified references with the same meaning; nothing is reported."""
+    return convert_query(query, anchors=AnchorNames(names=frozenset()), conversions=Conversions(report=False))
+
+
+async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], *,
+                       data_source: Optional[str]) -> AnchorNames:
+    """What a first segment of ``queries`` may anchor at: the datasets the caller sees in their populations'
+    datasources (``data_source`` when pinned), their stages and the spine."""
+    identities = await storage._list_all_dataset_identities()
+    stage_names = {q.name for q in queries if q.name}
+    if data_source is None:
+        sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
+                   for ds, n in identities if n == p}
+        chosen = sources or {ds for ds, _ in identities}
+    else:
+        chosen = {data_source}
+    names = {n for ds, n in identities if ds in chosen}
+    names |= stage_names | {q.population_name for q in queries if q.population_name}
+    return AnchorNames(names=frozenset({*names, TIME_SPINE_DATASET}))
+
+
+async def qualified_input(queries: List[Any], *, storage: StorageBackend, data_source: Optional[str],
+                          deprecations_out: List[DeprecatedInputWarning]) -> List[Any]:
+    """``queries`` (one input document) with their root-relative references qualified; deprecations to the list."""
+    stages = [q for q in queries if isinstance(q, SlayerQuery)]
+    if not any(q.population is not None for q in stages):
+        return queries
+    anchors = await anchor_names(storage, stages, data_source=data_source)
+    conversions = Conversions()
+    out = [convert_query(q, anchors=anchors, conversions=conversions) if isinstance(q, SlayerQuery) else q
+           for q in queries]
+    deprecations_out.extend(conversions.payloads)
+    return out

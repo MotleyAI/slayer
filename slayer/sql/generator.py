@@ -2454,7 +2454,7 @@ class SQLGenerator:
             if key.agg != "count":
                 raise ValueError(
                     f"Aggregation {key.agg!r} not allowed with metric "
-                    f"'*' — use 'count(*)' for COUNT(*)."
+                    f"'*' — use 'count(<dataset>.*)' for COUNT(*)."
                 )
             # ``count(*)`` takes no inputs but its own ``window=`` (plain-path guard);
             # a stray arg/kwarg would otherwise be projected and silently ignored.
@@ -2748,7 +2748,7 @@ class SQLGenerator:
         if isinstance(source, StarKey):
             raise ValueError(
                 f"Aggregation {key.agg!r} not allowed with metric "
-                f"'*' — use 'count(*)' for COUNT(*)."
+                f"'*' — use 'count(<dataset>.*)' for COUNT(*)."
             )
         if not isinstance(source, (FieldKey, FieldSqlKey)):
             # An expression (a mixed one's attached values row-attached in ``scope``).
@@ -5827,7 +5827,7 @@ class SQLGenerator:
             if key.agg != "count":
                 raise ValueError(
                     f"Aggregation {key.agg!r} not allowed with metric "
-                    f"'*' — use 'count(*)' for COUNT(*)."
+                    f"'*' — use 'count(<dataset>.*)' for COUNT(*)."
                 )
             owner = (
                 aggregation_owner(

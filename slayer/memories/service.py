@@ -31,6 +31,7 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
     resolve_entity,
 )
+from slayer.engine.legacy_references import qualified_input
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
@@ -133,6 +134,10 @@ class MemoryService:
                 warnings.extend(result.warnings)
         else:
             attached_query = _coerce_query(linked_entities)
+            conversions: list = []
+            [attached_query] = await qualified_input([attached_query], storage=self._storage, data_source=None,
+                                                     deprecations_out=conversions)
+            warnings.extend(p.human_message() for p in conversions)
             extraction = await extract_entities_from_query(
                 attached_query, storage=self._storage
             )

@@ -819,7 +819,7 @@ def check_relationship_key_lists(*, to: str, from_columns: Sequence[str], to_col
         raise RelationshipKeyError(
             summary=f"relationship to {to!r} has empty from_columns and to_columns",
             suggestion="to combine a dataset no relationship path reaches, drop the relationship and aggregate "
-                       "its fields in the query (e.g. count(events.id) / count(*))",
+                       "its fields in the query (e.g. count(events.id) / count(customers.*))",
         )
     if len(from_columns) != len(to_columns):
         raise RelationshipKeyError(
