@@ -1,0 +1,42 @@
+## Context
+
+See proposal.md › Why. Two structural causes, both reproduced on main (DuckDB, keyed and keyless `contractors`):
+
+- **Failure 1.** Association dedups a home by its entity keys; a keyless home is numbered by the relation door (`with_row_identity` in `slayer/sql/naming.py` + `_numbered_relation` in `slayer/sql/generator.py`). A list child home is keyless, but `_build_from_and_joins` reads it inside its parent's rows (parent through the door + the dialect's `list_relation`), so `_association_entity` (`slayer/engine/compile/stages.py`) keys on `__slayer_row_id` that nothing emits → `BinderException` on execution, `ScopeLeakError` under the scope check. Every association homed on a list child with an unattributable dimension across another to-many hop hits it, from either population.
+- **Failure 2.** `home_path_for` (`slayer/engine/population/home.py`) already resolves the right home from both populations (`(skills,)` from `contractors`, `(contractors, skills)` from `assignments`). Routing ignores it: `is_cross_dataset_agg` (`slayer/core/keys.py`), `combined_kind` (`slayer/engine/elaborate_env.py`), `crossing_local_root_predicate` (`slayer/engine/cardinality/relationship_safety.py`) and the routing helpers of `slayer/engine/compile/discovery.py` key on `source_anchor_path(agg.source)`. From `contractors` the anchor is `()`, so the aggregate takes the host-rooted local producer, whose forward-only input check (`_assert_local_producer_inputs_safe`) sees the list hop as fanning and refuses. Non-list shapes hit the same cause (`sum(rate * assignments.id)` from `contractors`).
+
+Principles that apply: semantics Axioms 2 (2.2, 2.4, 2.6, 2.8, 2.9), 3.2, 4, 6, 8; sql P1 (AST end to end), P2 (dialect quirks only in `dialects/`), P13 (one relation door); engine P10 (dependencies are closures); list-children › "Element access is emitted inside the parent's own rows". No principle wording changes.
+
+## Goals / Non-Goals
+
+**Goals:**
+- One identity for every list-child home; one routing predicate driven by the resolved home.
+
+**Non-Goals:**
+- Nested lists: a list's `element_type` is never Array (`check_element_type`), so a list child never has list children.
+- New association support for shapes refused today for other reasons (windowed / ranked association, DEV-1914): such shapes must refuse identically from every population, nothing more.
+- Removing the DEV-2277 branch's strict xfails: that branch is unmerged; whichever lands second removes them (tasks.md).
+
+## Decisions
+
+1. **D1 — Failure 2 outcome: both populations return 230.** Axioms 2.2/2.4/2.6 home the aggregation on the deepest dataset determining every input; the list child determines its parent (3.2). Refusing both contradicts the axioms. (default)
+2. **D2 — List-child identity = parent identity + element position.** The parent's identity is its primary key, else its per-query row identity minted by the relation door; the position is numbered inside the parent's own row. Rejected alternative: numbering the parent × element product as one derived table — it breaks the two-alias emission (parent alias + element alias) and re-reads the parent. (default)
+3. **D3 — Identity is a sequence of value keys in root coordinates** — the parent's identity keys reached over the child→parent back hop, then the position — not field names on one dataset; `_AssociationEntity.entity_fields`/`host_grain` move to keys. Nested lists need no recursion (Non-Goals). (codex, representation folded; nesting part rejected: lists never nest)
+4. **D4 — The augmented parent is what the door emits.** The planner's list-child identity returns, with the keys, the parent dataset augmented with its row identity when keyless; that augmented dataset is the one `_build_from_and_joins` passes to `_emit_relation`, so numbering happens after the parent's model filters and before any join. (codex)
+5. **D5 — Position emission per dialect, only when asked.** `list_relation` gains `positioned`: Postgres / Trino `WITH ORDINALITY`, BigQuery `WITH OFFSET`, Snowflake FLATTEN `INDEX`; DuckDB (floor `duckdb>=1.1`, no `WITH ORDINALITY` before 1.3) `ROW_NUMBER() OVER ()` inside the per-row element subquery; ClickHouse one array of `(position, value)` tuples built after the single NULL compaction, then one `ARRAY JOIN` (never a second independently expanded array). Position is assigned once per parent row after NULL removal and before any consumer filter. A distinct list relation never carries a position. Position is emitted only for a list-child association root, so existing goldens are unchanged. (default; ClickHouse and boundary wording: codex)
+6. **D6 — Route by an explicit home classification.** The elaborator classifies each aggregate's home as `host`, `physical_target(path)` (non-empty path below the host), `operand_dataset` (second-order) or `unresolved` (incl. hostless stage queries). Only `physical_target` takes the target-rooted producer; every other class keeps today's routing. One predicate replaces the anchor test in `is_cross_dataset_agg`, `crossing_local_root_predicate`, `combined_kind`, the discovery routing helpers and all their callers; the local producer then only sees host-homed aggregates and its forward-only safety check stays correct. (default, structural; classification: codex)
+7. **D7 — The home survives every substitution.** Home metadata is carried through compiler substitutions that rebuild `AggregateKey`s (e.g. `_strip_redundant_partitions`) or recomputed for the exact tree discovery receives; a missing home is an internal error, never a fallback to the anchor. (codex)
+8. **D8 — Non-list home-below-root shapes change from refused to computed** (`sum(rate * assignments.id)` from `contractors` → 460), as a consequence of D6. One spec scenario pins it. (default, flagged to and accepted by the user)
+9. **D9 — Spec placement.** List-child identity: MODIFIED `queries/list-children` › "Association across a list hop needs no key". Routing: ADDED `queries/semantics` › "The home, not the query root, decides where an aggregation is computed" rather than re-copying the long home requirement. Both capabilities are already mapped in the architecture model; no new spec attachment. (default)
+10. **D10 — Test coverage of risky routing branches.** Target-homed FILTER, ranked, first/last, windowed, attached-constituent and explicit-partition aggregates run from both populations: equal values or the same typed refusal. Where both refuse today, the test pins equal refusals, not new support. (codex)
+11. **D11 — Element-position boundary tests**: two FILTER aggregates over one list in one query, a parent model filter, repeated values, NULL elements, empty and NULL lists. (codex)
+12. **D12 — No arc42 wording change.** Axiom 8 ("a keyless home's rows told apart by a per-query row number") holds: (parent identity, position) is query-local and tells every element apart. (default)
+13. **D13 — arc42 enforcement tags** (user, approved wording): in `architecture/semantics.arc42.md`, append `   [enforced: test:tests/test_dev2367_list_elements_across_joins.py]` as a new line after `   [enforced: test:tests/test_dev2013_expression_attribution.py]` (Axiom 2's tag block), and on Axiom 8's line replace `[enforced: test:tests/test_dev2216_keyless_association.py]; broadcast (the` with `[enforced: test:tests/test_dev2216_keyless_association.py] [enforced: test:tests/test_dev2367_list_elements_across_joins.py]; broadcast (the`. Applied once the test file exists.
+14. **D14 — Docs**: one sentence in `docs/concepts/queries.md` after "Each source row counts separately, and copies made by a join count once.": "A list element is told apart by its parent row and its position in the list." (default)
+
+## Risks / Trade-offs
+
+- [Existing tests pin a refusal for a home-below-root shape that D6 now computes] → each is presented to the user for approval before alignment (stopping policy), never silently changed.
+- [Routing change touches many call sites] → one predicate, D7's internal error on a missing home, and D10's population-pair tests.
+- [Dialect ordinal semantics differ (0- vs 1-based, NULL handling)] → only distinctness within a parent row matters; NULLs are dropped before numbering (D5); render tests per dialect, execution on DuckDB and Postgres.
+- [DuckDB `ROW_NUMBER() OVER ()` order is unspecified] → identity needs distinctness only, never a stable order; numbered once per parent row inside the element subquery.
