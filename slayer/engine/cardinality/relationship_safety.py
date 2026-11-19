@@ -46,7 +46,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import DatasetRelationship, SlayerDataset, relationship_key_error
 from slayer.core.refs import key_display
-from slayer.core.scope import DatasetScope, StageSchema
+from slayer.core.scope import DatasetScope
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     field_default_key,
@@ -565,11 +565,10 @@ def broadcast_reason(
 
 def assert_partition_key_attributable(
     *, key: ValueKey, pk: ValueKey, label: str,
-    scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
     """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
-    # StageSchema binds flat stage outputs — no relationship graph, so no fanning closure exists.
-    host_m = scope.population if isinstance(scope, DatasetScope) else None
+    host_m = scope.population
     if host_m is None:
         return
     datasets_by_name = bundle.datasets_by_name
@@ -833,10 +832,10 @@ def _path_grain_determined(
 
 
 def crossing_local_root_predicate(
-    *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle, homes: AggregateHomes,
+    *, scope: DatasetScope, bundle: ResolvedSourceBundle, homes: AggregateHomes,
 ) -> Callable[[ValueKey], bool]:
     """Predicate for a LOCAL plain aggregate whose inputs cross a relationship (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
-    host_dataset = scope.population if isinstance(scope, DatasetScope) else None
+    host_dataset = scope.population
 
     def _pred(k: ValueKey) -> bool:
         return (

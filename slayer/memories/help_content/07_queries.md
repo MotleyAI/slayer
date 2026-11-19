@@ -21,7 +21,9 @@ source defines or an earlier stage returned.
 An outer stage sees the inner result's columns. Dotted paths flatten to `__`
 (`customers.regions.name` becomes `customers__regions__name`); metrics keep their names
 (`orders.total` is `total`). Select the columns the outer stage needs, display names
-included, in the inner stage.
+included, in the inner stage. A stage keeps the relationships of the keys it outputs
+unchanged: grouped by `customer_id`, a later stage reads `customers.region` with no
+relationship declared.
 
 ## Rows
 

@@ -118,7 +118,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.relationship_walker import walk_terminal
 from slayer.core.names import folded_collisions, match_name, match_path
 from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
-from slayer.core.scope import DatasetScope, StageSchema, peek_dataset_field
+from slayer.core.scope import peek_dataset_field
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_points import (
     TIME_POINT_FORMS, Instant, Period, TimePoint, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
@@ -137,16 +137,11 @@ from slayer.ir.terms import (
     Broadcast,
     DatasetT,
     StoredDataset,
-    StageDataset,
     Transform,
 )
 
-def home_dataset(
-    *, scope: DatasetScope | StageSchema, dataset: Optional[SlayerDataset],
-) -> Optional[DatasetT]:
-    """The query's root dataset: dataset-backed for a DatasetScope, stage-backed otherwise."""
-    if isinstance(scope, StageSchema):
-        return StageDataset(stage_name=scope.relation_name)
+def home_dataset(*, dataset: Optional[SlayerDataset]) -> Optional[DatasetT]:
+    """The query's root dataset."""
     if dataset is not None:
         return StoredDataset(data_source=dataset.data_source, dataset_name=dataset.name)
     return None

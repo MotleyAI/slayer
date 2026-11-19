@@ -44,7 +44,7 @@ def elaborate_query(
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: Optional[DatasetScope | StageSchema] = None,
+    scope: Optional[DatasetScope] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     prebound: Optional[PreboundQuery] = None,
 ) -> ElaboratedStage:
@@ -52,21 +52,15 @@ def elaborate_query(
     sub-phase. Splits host-rooted filter strings into per-conjunct masks."""
     stage_schemas = stage_schemas or {}
     if scope is None:
-        scope = resolve_scope(
-            query=query, bundle=bundle, stage_schemas=stage_schemas,
-        )
+        scope = resolve_scope(bundle=bundle)
     if prebound is None:
-        prebound = bind_query_inputs(
-            query=query, bundle=bundle, scope=scope,
-            stage_schemas=stage_schemas,
-        )
-    if isinstance(scope, DatasetScope) and scope.population is not None:
+        prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
+    if scope.population is not None:
         datasets = bundle.datasets_by_name
         with unobserved():
             for dataset in datasets_read_closure(query, host=scope.population, datasets=list(datasets.values())):
                 check_dataset_filters(dataset=dataset, reachable=datasets)
-    sides = ProductSides(host=scope.population, bundle=bundle) if isinstance(scope, DatasetScope) and (
-        scope.population is not None) else None
+    sides = ProductSides(host=scope.population, bundle=bundle) if scope.population is not None else None
     # Splitting conjuncts never rebuilds an aggregate, so the homes resolved here serve the split prebound too.
     homes = resolve_homes(prebound, bundle=bundle, scope=scope)
     crossing = crossing_local_root_predicate(scope=scope, bundle=bundle, homes=homes)
@@ -118,7 +112,7 @@ def elaborate_synthesized(
     prebound: PreboundQuery,
     *,
     bundle: ResolvedSourceBundle,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     stage_schemas: Dict[str, StageSchema],
     source_dataset: Optional[str] = None,
 ) -> ElaboratedProducer:
@@ -134,7 +128,7 @@ def elaborate_synthesized(
 
 
 def resolve_homes(
-    prebound: PreboundQuery, *, bundle: ResolvedSourceBundle, scope: DatasetScope | StageSchema,
+    prebound: PreboundQuery, *, bundle: ResolvedSourceBundle, scope: DatasetScope,
 ) -> AggregateHomes:
     """The home of every aggregate ``prebound`` reads."""
     dim_dms, td_dms, _ = partition_declared_metrics(
@@ -147,7 +141,7 @@ def resolve_homes(
             *(bf.value_key for bf in prebound.bound_filters),
             *(spec.bound.value_key for spec in prebound.order_specs),
         ],
-        host_dataset=scope.population if isinstance(scope, DatasetScope) else None,
+        host_dataset=scope.population,
         datasets_by_name=bundle.datasets_by_name, bundle=bundle,
         dim_keys=[dm.bound.value_key for dm in dim_dms],
         td_keys=[dm.bound.value_key for dm in td_dms],
@@ -160,16 +154,16 @@ def _environment_fields(
     *,
     filter_typings,
     bundle: ResolvedSourceBundle,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     stage_schemas: Dict[str, StageSchema],
     homes: Optional[AggregateHomes] = None,
 ) -> Dict[str, Any]:
     dim_keys, row_agg_set = position_typing_context(prebound)
-    dataset = scope.population if isinstance(scope, DatasetScope) else None
+    dataset = scope.population
     homes = homes if homes is not None else resolve_homes(prebound, bundle=bundle, scope=scope)
     env = build_environment(
         prebound=prebound,
-        home=home_dataset(scope=scope, dataset=dataset),
+        home=home_dataset(dataset=dataset),
         dim_keys=dim_keys,
         row_agg_set=row_agg_set,
         filter_typings=filter_typings,

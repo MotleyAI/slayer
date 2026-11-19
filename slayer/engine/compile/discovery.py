@@ -20,7 +20,7 @@ from slayer.core.keys import (
     restricts_own_rows,
     walk_consumer_positions,
 )
-from slayer.core.scope import DatasetScope, StageSchema
+from slayer.core.scope import DatasetScope
 from slayer.engine.compile.shift import _series_mode
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
@@ -94,7 +94,7 @@ class _Walker:
     """Classifies each walked node by consumer position; ``out`` in first-seen order."""
 
     def __init__(
-        self, *, prebound: PreboundQuery, scope: DatasetScope | StageSchema,
+        self, *, prebound: PreboundQuery, scope: DatasetScope,
         bundle: ResolvedSourceBundle, homes: AggregateHomes,
     ) -> None:
         self.out: List[RootDisposition] = []
@@ -103,7 +103,7 @@ class _Walker:
         self.classes = position_classes(prebound.declared_metrics, n_grain=n_grain)
         self.row_attach_names: Dict[ValueKey, List[str]] = {}
         self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle, homes=homes)
-        self.host = scope.population if isinstance(scope, DatasetScope) else None
+        self.host = scope.population
         self.bundle = bundle
         self.grain = [dm.bound.value_key for dm in prebound.declared_metrics[:n_grain]]
 
@@ -210,7 +210,7 @@ class _Walker:
 
 def discover_roots(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
-    scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle, homes: AggregateHomes,
+    scope: DatasetScope, bundle: ResolvedSourceBundle, homes: AggregateHomes,
 ) -> List[RootDisposition]:
     """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home."""
     w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes)

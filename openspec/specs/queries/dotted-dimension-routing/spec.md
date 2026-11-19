@@ -129,17 +129,21 @@ when every oriented hop is provably to-one.
 
 ### Requirement: Datasource-scoped and deferred past stage boundaries
 Route candidates SHALL be drawn only from the query root's datasource; a target in another datasource
-is never a candidate. Routing SHALL apply on a base model scope; a dotted reference in a downstream
-named-query stage (a flat stage schema) SHALL keep failing as an illegal cross-stage reference rather
-than routing.
+is never a candidate. Routing SHALL apply on every dataset scope, a later stage reading a stage included:
+its candidates are the stage's edges (`queries/multi-stage` › Stages inherit edges on pass-through keys)
+and the edges onward from their targets, and never a sibling stage the routing stage does not name.
 
 #### Scenario: Cross-datasource target is not a candidate
 - WHEN a same-named model exists in another datasource
 - THEN it is not considered a route candidate for the root's short forms
 
 #### Scenario: Downstream stage dotted reference stays illegal
-- WHEN a downstream stage references a dotted path across a stage boundary
-- THEN it fails as an illegal-scope reference, not as a routed dimension
+- WHEN a downstream stage references a dotted path across a stage boundary that no edge of the upstream stage reaches
+- THEN it fails as the same reference fails from a stored root, not as a routed dimension
+
+#### Scenario: Routing through an inherited edge
+- WHEN a stage reads a stage grouped by `orders.customer_id`, and `customers` relates to `regions`, and it selects the short form `regions.name`
+- THEN it resolves to `customers.regions.name` through the inherited edge, and the result key is that full path
 
 ### Requirement: Saved-measure short forms surface under their routed name and type
 A short-form dotted reference to a saved measure on a routable target SHALL resolve, surface (when
@@ -262,8 +266,9 @@ the flat name in that case. A stale respelling of a column SHALL match that colu
 canonical name, without recording a stale-spelling warning; a name matching several columns' respellings SHALL give
 no hint. A single-hop short form that routes is not a failure and is never pre-empted.
 
-In a downstream stage's flat scope, a dotted reference whose tokens joined with `__` name a stage column SHALL keep
-failing as an illegal-scope reference, its reason naming that flat column. When a row-level read of an unrelated
+A later stage reading a stage SHALL follow the same rules as a stored root (`queries/multi-stage` › A stage is read as
+the dataset its schema defines): a dotted reference that no edge or route resolves fails as it would from a stored root,
+its suggestion naming the stage's flat column when the tokens joined with `__` name one. When a row-level read of an unrelated
 dataset is refused and the reference's tokens joined with `__` name a column of the population, the suggestion SHALL
 name that column first, ahead of the aggregate alternative.
 
@@ -298,8 +303,8 @@ name that column first, ahead of the aggregate alternative.
 - **THEN** the reference fails with the walk's own error and no flat suggestion
 
 #### Scenario: A downstream stage's dotted spelling names the flat column
-- **WHEN** a stage over `s` selects `s.customers.name`
-- **THEN** it fails as an illegal-scope reference whose reason names `customers__name`
+- **WHEN** a stage over `s`, which projects `customers.name` but no key of `customers`, selects `s.customers.name`
+- **THEN** it fails as it would from a stored root, its suggestion naming `customers__name`; when `s` also projects `customers.customer_id`, the reference resolves through the inherited edge instead
 
 #### Scenario: An unrelated short form suggests the population's flat column
 - **WHEN** a stage over `s` selects the dimension `customers.name`, which routes to the unrelated stored `customers`

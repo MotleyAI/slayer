@@ -1,4 +1,4 @@
-"""Typed terms of the query algebra (DEV-1871, design D1–D3).
+"""Typed terms of the query algebra.
 
 Terms annotate keys, never replace them: each adds only what the key lacks —
 the resolved home dataset and the resolved total grain — and ``Aggregate.recipe``
@@ -32,7 +32,7 @@ class _Term(BaseModel, frozen=True):
 
 
 class StoredDataset(_Term, frozen=True):
-    """Backed by a stored dataset, identified by (datasource, dataset name)."""
+    """A dataset (stored, or a stage read as one), identified by (datasource, dataset name)."""
 
     data_source: str
     dataset_name: str
@@ -40,16 +40,6 @@ class StoredDataset(_Term, frozen=True):
     @property
     def kind(self) -> str:
         return "dataset"
-
-
-class StageDataset(_Term, frozen=True):
-    """Stage-backed dataset (a prior pipeline stage's output), by stage name."""
-
-    stage_name: str
-
-    @property
-    def kind(self) -> str:
-        return "stage"
 
 
 #: Where an aggregation is computed: the host, a dataset below it, its operand dataset (second-order), or nowhere
@@ -95,7 +85,7 @@ class AggregateHomes(BaseModel, frozen=True):
 
 
 #: Concrete datasets an ``Aggregate`` may aggregate over, or a ``Field`` live on.
-DatasetT = Union[StoredDataset, StageDataset, "Aggregate"]
+DatasetT = Union[StoredDataset, "Aggregate"]
 
 
 class Aggregate(_Term, frozen=True):
