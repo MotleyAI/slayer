@@ -209,7 +209,7 @@ class TestGatewayServesEveryFeature:
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
         created, described, models = twin.default
-        assert "Ingested" in created
+        assert "new model(s)" in created
         assert "Connection: OK" in described
         assert models
         assert twin.gateway == twin.default
