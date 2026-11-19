@@ -10,7 +10,7 @@ Many semantic layers achieve that via some sort of escape syntax, such as {} or 
 
 In SLayer, we chose a different path: the dataset defines the abstraction between the DSL and the underlying database, so the `sql` and `filter` properties of a dataset's `fields` (and the dataset-level `filters` list) only allow raw SQL. And the query underlying a `sql`-mode dataset can be any valid SQL SELECT expression at all.
 
-Any [transforms](../../concepts/formulas.md#transform-functions) from our DSL are then applied at query time inside a query's `metrics` list; the `filter` list of a query likewise only refers to DSL-side entities — field names, query-time aggregations, transforms, and named expressions from that query.
+Any [transforms](../../concepts/expressions.md#transform-functions) from our DSL are then applied at query time inside a query's `metrics` list; the `filter` list of a query likewise only refers to DSL-side entities — field names, query-time aggregations, transforms, and named expressions from that query.
 
 What if a query needs an expression the dataset doesn't define? Write it right where it is used, in the DSL: a query carries no raw SQL, so the expression uses SLayer's portable function library and the dataset's field names.
 
@@ -27,7 +27,7 @@ Here, `day_of_week(ordered_at) IN (6, 7)` keeps the weekend orders (ISO numberin
 
 What if you want to get fancy, and use expressions such as time-shift for defining derived metrics or dimensions?
 
-That is also doable — save the query as a [query-backed dataset](../../concepts/models.md#query-backed-datasets) (via `engine.create_dataset_from_query()` or the `create_dataset` MCP tool with a `query` argument). The result becomes a regular dataset you can query by name or use as `population` in other queries. See the [Multistage Queries tutorial](../06_multistage_queries/multistage_queries.md) for a worked example.
+That is also doable — save the query as a [query-backed dataset](../../concepts/datasets.md#query-backed-datasets) (via `engine.create_dataset_from_query()` or the `create_dataset` MCP tool with a `query` argument). The result becomes a regular dataset you can query by name or use as `population` in other queries. See the [Multistage Queries tutorial](../06_multistage_queries/multistage_queries.md) for a worked example.
 
 ---
 

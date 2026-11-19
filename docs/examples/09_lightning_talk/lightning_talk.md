@@ -76,7 +76,7 @@ Then ask Claude in any project: *"What stores are in jaffle_shop and which one h
 ## Links
 
 - [Notebook](lightning_talk_nb.ipynb) (runnable)
-- [Datasets concept](../../concepts/models.md)
+- [Datasets concept](../../concepts/datasets.md)
 - [Queries concept](../../concepts/queries.md)
 - [Memories concept](../../concepts/memories.md)
 - [Search concept](../../concepts/search.md)

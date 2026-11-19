@@ -9,7 +9,7 @@ A `SlayerQuery` specifies what data to retrieve from a dataset.
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
 | `population` | string | No | The population (query root): a stored dataset or stage name. Omit it to infer the population — see [Population](#population). |
 | `extensions` | list[DatasetExtension] | No | Query-scoped metrics and relationships added to any dataset the query reads — see [Query extensions](#query-extensions). |
-| `metrics` | list[str \| QueryMetric] | No | Computed/aggregated values — expressions, arithmetic, transforms. Aggregations are function calls (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) — see [Expressions](formulas.md) and [Aggregation syntax](references.md#aggregation-syntax). |
+| `metrics` | list[str \| QueryMetric] | No | Computed/aggregated values — expressions, arithmetic, transforms. Aggregations are function calls (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) — see [Expressions](expressions.md) and [Aggregation syntax](references.md#aggregation-syntax). |
 | `dimensions` | list[str \| QueryDimension] | No | Fields to group by — bare strings (`"status"`), dotted names for joined datasets (`customers.name`), row-level expressions, or `{"field": …, "alias": …, "label": …}` for a result name or label (a [computed expression](#expression-dimensions)). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
@@ -85,7 +85,7 @@ crosses a threshold, then group by `(region, band)`:
 ```
 
 The aggregate inside the expression **must** carry
-[`partition_by=`](formulas.md#aggregate-at-a-coarser-grain-partition_by), which
+[`partition_by=`](expressions.md#aggregate-at-a-coarser-grain-partition_by), which
 names the grain it aggregates over (here, `city`). SLayer computes that
 aggregate in a synthesized internal stage, attaches it to the raw rows on the
 partition grain, evaluates the expression per row, then regroups by the query's
@@ -127,7 +127,7 @@ broadcast semantics.
 
 An aggregate partitioned by another computed dimension — even one carrying an
 attached aggregate — compiles as a nested producer
-([re-aggregation](formulas.md#re-aggregation-aggregate-over-an-attached-value)).
+([re-aggregation](expressions.md#re-aggregation-aggregate-over-an-attached-value)).
 
 Ill-typed shapes (raise a clear error naming the remedy, by design): a bare
 aggregate without `partition_by=` — the ungrained default would include the
@@ -252,7 +252,7 @@ Transform and composite order targets accept the full expression syntax, so
 `{"field": "sum(revenue) / sum(cnt)"}` and `{"field": "change(sum(revenue))"}` both
 work without declaring a metric, and their operands may also be the names of metrics declared in the same query (`{"field": "rev / cnt"}`), as in filters.
 
-Windowed metrics work in declared composites and transforms too — see [expressions](formulas.md#windowed-aggregations).
+Windowed metrics work in declared composites and transforms too — see [expressions](expressions.md#windowed-aggregations).
 
 ## Response
 
@@ -441,7 +441,7 @@ A negated condition on a joined dataset does not mean "has none": `not orders.st
 
 ### List fields
 
-A list field `skills` (datatype `ARRAY`, see [Data types](models.md#data-types)) is also a relationship hop to its elements: one row per non-NULL element, with the single field `skills.value`. So `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, and `count(*)` by `skills.value` is the number of contractors per skill (no key needed). Every `skills.value` condition in one query reads the same element, so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`; absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
+A list field `skills` (datatype `ARRAY`, see [Data types](datasets.md#data-types)) is also a relationship hop to its elements: one row per non-NULL element, with the single field `skills.value`. So `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, and `count(*)` by `skills.value` is the number of contractors per skill (no key needed). Every `skills.value` condition in one query reads the same element, so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`; absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
 
 ```json
 {"population": "contractors", "dimensions": ["skills.value"], "metrics": ["count(*)"]}
@@ -454,7 +454,7 @@ A whole list groups (a dimension or `partition_by=`), compares (`=`, `<>`, `IS [
 What a list can't do, each a typed error naming the remedy:
 
 - be compared with a scalar (use `contains` / `contains_any`, or compare `skills.value`), or ordered (`<`, `>`, `BETWEEN`, an `order` key); `IS NULL` / `IS NOT NULL` work;
-- take an aggregation that [Aggregation eligibility](models.md#aggregation-eligibility) does not allow a list, `collect` and custom aggregations included;
+- take an aggregation that [Aggregation eligibility](datasets.md#aggregation-eligibility) does not allow a list, `collect` and custom aggregations included;
 - hold a NULL element in a list literal (`['go', NULL]`);
 - have `Opaque` elements and still be grouped, compared, counted distinctly, measured by `length` or read element by element: such a list supports only NULL tests and `count`.
 
@@ -514,7 +514,7 @@ This produces the filter `status = 'completed' AND amount > 100`.
     An empty list there raises, and a literal `x IN []` is rejected; an empty list binds only as a list-function argument (`contains_all(tags, {wanted})`).
 - `{{` and `}}` produce literal `{` and `}`; a brace pair holding only digits, commas and spaces (`'{1,2}'`, `'{}'`, `'[0-9]{3}'`) is literal text in any string
 - Undefined variables raise an error
-- The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a dataset — see [Variables in dataset SQL](models.md#variables-in-dataset-sql).
+- The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a dataset — see [Variables in dataset SQL](datasets.md#variables-in-dataset-sql).
 
 !!! note "Literals only"
     A query carries no raw SQL: every value it supplies, in query fields and in a dataset's raw-SQL (Mode A) surfaces alike, binds as a literal, and a value that would change the SQL's structure is rejected.
@@ -618,7 +618,7 @@ rec.population          # "orders"  (the only dataset that determines both to-on
 
 A root is valid when it **determines** every requested field along provably to-one relationship paths; saved metrics and aggregation-suffixed items are attachments that only need to be reachable and never steer the choice (each `ItemPath` flags `attachment`). Among valid roots, the one with the fewest total relationship hops wins — the same rule as population inference, so the two surfaces cannot disagree. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`), each hop spelled by its edge name when it has one (`customers.hr.name` for an edge named `hr`); aggregation suffixes are preserved (`sum(revenue)`). With at least one field item, an attachment on a dataset no relationship path reaches never blocks a root: it comes back spelled from the root (`count(events.id)`) and flagged `unrelated`.
 
-When no single dataset reaches everything, `population` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](models.md#query-backed-datasets) query.
+When no single dataset reaches everything, `population` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](datasets.md#query-backed-datasets) query.
 
 ### Forcing a root with `root_hint`
 
@@ -729,7 +729,7 @@ See [database-support.md](../database-support.md#aggregation-support) for the pe
 
 `partition_by=` on an aggregation computes it over a subset of the query's
 dimensions and repeats the value across the finer rows — the share-of-parent /
-percent-of-total shape. See [Expressions](formulas.md#aggregate-at-a-coarser-grain-partition_by).
+percent-of-total shape. See [Expressions](expressions.md#aggregate-at-a-coarser-grain-partition_by).
 
 ```json
 {
@@ -753,7 +753,7 @@ A `partition_by` element may also be a time bucket the query groups by, so with 
 
 ### Cross-dataset metrics
 
-When datasets have [relationships](models.md#relationships), you can reference metrics from joined datasets using a dotted path inside the aggregation — `aggregation(dataset_name.metric_name)`:
+When datasets have [relationships](datasets.md#relationships), you can reference metrics from joined datasets using a dotted path inside the aggregation — `aggregation(dataset_name.metric_name)`:
 
 ```json
 {
@@ -776,7 +776,7 @@ The method-call spelling `order_items.count(*)` or `order_items.sum(price * qty)
 The sub-query groups by the subset of your dimensions the engine can **prove
 safe** — those reachable from the metric's dataset over relationship hops that are
 provably many-to-one (a primary key on the far side, or a declared
-[relationship `cardinality`](models.md#relationship-cardinality)). Each remaining dimension is
+[relationship `cardinality`](datasets.md#relationship-cardinality)). Each remaining dimension is
 **associated**: each cell aggregates over the distinct rows of the metric's dataset
 reaching it, and the response carries a `warnings` entry (`kind: "associated"`)
 because the cells may overlap and are not additive. Declare the missing relationship
@@ -788,7 +788,7 @@ the metric counts exactly the target rows related to at least one row passing
 the filter (each row once, never multiplied through the join), surfaced as an
 informational `kind: "semi_join_pushed"` entry in `.warnings` (never an error,
 in any mode). The correlation path resolves through the same
-[bidirectional traversal](models.md#bidirectional-traversal) as every other hop
+[bidirectional traversal](datasets.md#bidirectional-traversal) as every other hop
 — no declared reverse relationship is needed, and a hop spanned by two or more edges
 fails the whole query with the ambiguous-hop error (in every mode) rather than
 guessing. Pushdown is total over the conjunct's boolean shape: a row survives
@@ -829,7 +829,7 @@ Cross-dataset aggregates also support `window=`, `partition_by=`, and `first` /
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 
-An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-dataset fields (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the relationship hop's cardinality decides exact grain vs association exactly as for a single cross-dataset metric.
+An [aggregated expression](expressions.md#expression-aggregation) may mix host and joined-dataset fields (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the relationship hop's cardinality decides exact grain vs association exactly as for a single cross-dataset metric.
 
 A cross-dataset **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target field do not collide:
 
@@ -886,7 +886,7 @@ You can also join named queries to datasets:
 ]
 ```
 
-The main query's `extensions` entry adds a relationship from `orders` to the named sub-query. Queries can also be saved as permanent datasets — see [Query-backed datasets](models.md#query-backed-datasets). `population` names a stored dataset or stage; an inline dataset is rejected — write a query-backed dataset's queries as named stages of the list instead.
+The main query's `extensions` entry adds a relationship from `orders` to the named sub-query. Queries can also be saved as permanent datasets — see [Query-backed datasets](datasets.md#query-backed-datasets). `population` names a stored dataset or stage; an inline dataset is rejected — write a query-backed dataset's queries as named stages of the list instead.
 
 Sibling stages can also reference each other — any non-final stage may use a *prior* named stage as `population` or as `relationships.to`, so a query list forms a DAG, not just a chain. For example, two parallel rollups feeding a single final stage:
 
@@ -968,7 +968,7 @@ Dimensions from joined datasets can be referenced with dotted paths. SLayer auto
 
 This walks `orders → customers → regions` via the relationship graph and resolves `name` from the `regions` dataset. Works with both ingested rollup datasets and explicit relationships.
 
-A dotted reference may target a *derived* field on the joined dataset — i.e., a field whose own `sql` is an expression rather than a base table column. The engine recursively inlines the derivation at query time, and the same chaining works whether the reference appears in a query's `dimensions` / `metrics` / `filter` or inside another dataset's `DatasetField.sql`. The planner also walks the chain to discover the joins each derived field's SQL implies, so a filter that names only a bare local derived field (no dimension entry) still triggers the right LEFT JOINs. See [Datasets → Derived Fields Referencing Other Derived Fields](models.md#derived-fields-referencing-other-derived-fields) and [Filters and Auto-Joins](#filters-and-auto-joins).
+A dotted reference may target a *derived* field on the joined dataset — i.e., a field whose own `sql` is an expression rather than a base table column. The engine recursively inlines the derivation at query time, and the same chaining works whether the reference appears in a query's `dimensions` / `metrics` / `filter` or inside another dataset's `DatasetField.sql`. The planner also walks the chain to discover the joins each derived field's SQL implies, so a filter that names only a bare local derived field (no dimension entry) still triggers the right LEFT JOINs. See [Datasets → Derived Fields Referencing Other Derived Fields](datasets.md#derived-fields-referencing-other-derived-fields) and [Filters and Auto-Joins](#filters-and-auto-joins).
 
 SQL dimensions can be mixed with regular dimensions. The expression goes directly into SELECT and GROUP BY.
 

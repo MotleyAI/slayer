@@ -191,7 +191,7 @@ Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`
 
 A field's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The field behaves like any other field when used in `dimensions` / SELECT.
 
-> **Filtering on a windowed field is rejected.** A query filter naming a `DatasetField` whose `sql` contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [formulas.md](formulas.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
+> **Filtering on a windowed field is rejected.** A query filter naming a `DatasetField` whose `sql` contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [formulas.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
 
 ### SQL expression conventions
 
@@ -271,7 +271,7 @@ A saved expression produces the same SQL as writing it out longhand. Cycles (`a 
 
 A dotted `"customers.aov"` reuses a saved metric from the joined `customers` dataset as if its expression were written inline, and a query-backed dataset cannot declare `metrics` directly. A saved metric whose expression crosses back to a dataset already on the path (e.g. `customers.order_total` defined as `sum(customer.amount)`, used from `orders`) evaluates over its own occurrence of that dataset rather than failing.
 
-See [formulas.md](formulas.md) for the full expression grammar — operators, transforms, time-shifted forms, and the `Mode B` DSL rules.
+See [formulas.md](expressions.md) for the full expression grammar — operators, transforms, time-shifted forms, and the `Mode B` DSL rules.
 
 ## Aggregations
 
@@ -310,7 +310,7 @@ fields:
 
 `last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time field is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated field or expression → the dataset's `default_time_dimension` (its only DATE / TIMESTAMP field when unset). Whichever field wins is an input of the aggregation: if it, or a derived definition it names, crosses a relationship hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
 
-Not to be confused with the [`last()` expression function](formulas.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
+Not to be confused with the [`last()` expression function](expressions.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
 ## Custom aggregations
 

@@ -311,11 +311,11 @@ All three forms below — bare name, transform, arithmetic — work as query met
 ]
 ```
 
-A saved metric reused by name — bare `aov` or another dataset's `customers.aov` — expands to the same SQL as its longhand expression and is legal only in a metric expression or computed-dimension expression (see [Datasets → Reusing another dataset's saved metric](models.md#reusing-another-datasets-saved-metric-customersaov)).
+A saved metric reused by name — bare `aov` or another dataset's `customers.aov` — expands to the same SQL as its longhand expression and is legal only in a metric expression or computed-dimension expression (see [Datasets → Reusing another dataset's saved metric](datasets.md#reusing-another-datasets-saved-metric-customersaov)).
 
 Transforms work on cross-dataset metrics: `"cumsum(avg(customers.score))"`, `"first(avg(customers.score))"`, `"last(avg(customers.score))"`. The cross-dataset metric is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
-Inside any expression or `DatasetField.sql`, dotted references to fields on joined datasets can target *derived* fields (fields whose own `sql` is itself an expression). The engine recursively inlines those references at query time, so `"sum(B.foo_normalized)"` — where `B.foo_normalized.sql = "foo_raw / 100.0"` — emits `SUM(B.foo_raw / 100.0)`. See [Datasets → Derived Fields Referencing Other Derived Fields](models.md#derived-fields-referencing-other-derived-fields) for the full chaining behaviour and cycle-detection semantics.
+Inside any expression or `DatasetField.sql`, dotted references to fields on joined datasets can target *derived* fields (fields whose own `sql` is itself an expression). The engine recursively inlines those references at query time, so `"sum(B.foo_normalized)"` — where `B.foo_normalized.sql = "foo_raw / 100.0"` — emits `SUM(B.foo_raw / 100.0)`. See [Datasets → Derived Fields Referencing Other Derived Fields](datasets.md#derived-fields-referencing-other-derived-fields) for the full chaining behaviour and cycle-detection semantics.
 
 ### Transform Functions
 
@@ -490,7 +490,7 @@ This returns monthly revenue with extra columns showing the first and last month
 
 Both `first()` and `last()` require a time dimension with granularity in the query (same resolution as `time_shift`).
 
-Not to be confused with the [`first`/`last` aggregation types](models.md#the-first-and-last-aggregations), which are per-group aggregates returning the earliest/latest *record's* value within each bucket.
+Not to be confused with the [`first`/`last` aggregation types](datasets.md#the-first-and-last-aggregations), which are per-group aggregates returning the earliest/latest *record's* value within each bucket.
 
 ---
 

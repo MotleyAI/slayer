@@ -203,7 +203,7 @@ SLayer's conceptual help is not a tool: it ships as a predefined set of **help m
 | Topic id | Covers |
 |----------|--------|
 | `memory:help.intro` | What SLayer is, the judgment calls queries require, and the deep-dive topics (the query syntax itself is on the `query` tool's schema fields) |
-| `memory:help.datasets` | Authoring [datasets](../concepts/models.md): source, fields, saved metrics, custom aggregations, relationships, dataset filters, result keys, query-backed datasets |
+| `memory:help.datasets` | Authoring [datasets](../concepts/datasets.md): source, fields, saved metrics, custom aggregations, relationships, dataset filters, result keys, query-backed datasets |
 | `memory:help.workflow` | Discovery, query method, filter literals, building and verifying a result, common-error decoder, connecting a database |
 | `memory:help.aggregations` | Every aggregation, expressions and booleans, empty-input values, result names, `partition_by`, `window`, nesting |
 | `memory:help.transforms` | Every transform, the time axis, ranking, limits |

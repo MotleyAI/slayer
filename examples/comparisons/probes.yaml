@@ -7,7 +7,7 @@
 #   compare       keys, values (engine output column names; SLayer and Cube also match a '.name' suffix),
 #                 tolerance (default 1e-6), ordered (default false), columns_exact (output has only keys+values)
 #   slayer:       query (dict, or list of stages) or run_by_name (a saved query) + refine, options {to_many_handling,
-#                 policy}, extra_datasets (files in slayer/extra_models/), create_dataset_from_query, keys/values overrides,
+#                 policy}, extra_datasets (files in slayer/extra_datasets/), create_dataset_from_query, keys/values overrides,
 #                 expect: match | {error} | {warning} | {known_bug, buggy_rows, buggy_row_count, buggy_error};
 #                 or steps (MCP tool calls {tool, args} and {sql} edits on a private database copy; "{db_path}" in
 #                 args is that copy) with setup: datasets | datasource | empty, and expect: match (last step a json

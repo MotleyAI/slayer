@@ -128,7 +128,7 @@ be no-ops once the dataset is gone).
   report and the applied deletes. Unlike the engine method, an unscoped CLI
   run validates each datasource explicitly and exits 1 if any of them fails,
   rather than dropping it from the result. `--cardinality` adds an opt-in
-  [relationship-arity profiling](models.md#relationship-cardinality) pass, which runs after
+  [relationship-arity profiling](datasets.md#relationship-cardinality) pass, which runs after
   any `--force-clean` apply. See the
   [CLI reference](../reference/cli.md#slayer-validate-datasets).
 
@@ -185,5 +185,5 @@ from FK relationships — define relationships manually via `edit_dataset`.
 
 ## Related
 
-* [Datasets](models.md) — `SlayerDataset` source modes, fields, metrics.
+* [Datasets](datasets.md) — `SlayerDataset` source modes, fields, metrics.
 * [Ingestion](ingestion.md) — auto-ingestion details, FK rollups.

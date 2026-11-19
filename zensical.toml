@@ -27,9 +27,9 @@ nav = [
   { "Upgrading to 2.0" = "upgrading/2.0.md" },
   { "Concepts" = [
     { "Terminology" = "concepts/terminology.md" },
-    { "Models" = "concepts/models.md" },
+    { "Datasets" = "concepts/datasets.md" },
     { "Queries" = "concepts/queries.md" },
-    { "Formulas" = "concepts/formulas.md" },
+    { "Expressions" = "concepts/expressions.md" },
     { "Time" = "concepts/time.md" },
     { "References (SQL vs DSL)" = "concepts/references.md" },
     { "Auto-Ingestion" = "concepts/ingestion.md" },
@@ -77,13 +77,13 @@ nav = [
       "examples/04_time/time.md",
       { "Notebook" = "examples/04_time/time_nb.ipynb" },
     ]},
-    { "Joins" = [
-      "examples/05_joins/joins.md",
-      { "Notebook" = "examples/05_joins/joins_nb.ipynb" },
+    { "Relationships" = [
+      "examples/05_relationships/relationships.md",
+      { "Notebook" = "examples/05_relationships/relationships_nb.ipynb" },
     ]},
-    { "Joined Measures" = [
-      "examples/05_joined_measures/joined_measures.md",
-      { "Notebook" = "examples/05_joined_measures/joined_measures_nb.ipynb" },
+    { "Joined Metrics" = [
+      "examples/05_joined_metrics/joined_metrics.md",
+      { "Notebook" = "examples/05_joined_metrics/joined_metrics_nb.ipynb" },
     ]},
     { "Multistage Queries" = [
       "examples/06_multistage_queries/multistage_queries.md",
@@ -122,9 +122,9 @@ nav = [
       { "Notebook (Python)" = "examples/15_duckdb/duckdb_python_nb.ipynb" },
       { "Notebook (CLI)" = "examples/15_duckdb/duckdb_cli_nb.ipynb" },
     ]},
-    { "List Columns" = [
-      "examples/16_list_columns/list_columns.md",
-      { "Notebook" = "examples/16_list_columns/list_columns_nb.ipynb" },
+    { "List Fields" = [
+      "examples/16_list_fields/list_fields.md",
+      { "Notebook" = "examples/16_list_fields/list_fields_nb.ipynb" },
     ]},
     { "Cube Import" = [
       "examples/17_cube_import/cube_import.md",
@@ -139,6 +139,14 @@ nav = [
   ]},
   { "Development" = "development.md" },
 ]
+
+# Old URLs of pages moved off the 1.x vocabulary.
+[project.plugins.redirects.redirect_maps]
+"concepts/models.md" = "concepts/datasets.md"
+"concepts/formulas.md" = "concepts/expressions.md"
+"examples/05_joins/joins.md" = "examples/05_relationships/relationships.md"
+"examples/05_joined_measures/joined_measures.md" = "examples/05_joined_metrics/joined_metrics.md"
+"examples/16_list_columns/list_columns.md" = "examples/16_list_fields/list_fields.md"
 
 [project.theme]
 features = [

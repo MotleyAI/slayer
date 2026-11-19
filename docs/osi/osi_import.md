@@ -24,7 +24,7 @@ Spec versions `1.0`, `0.1.0`, `0.1.1`, `0.2.0.dev0` and `0.3.0.dev0` parse silen
 | dataset `source` (`db.schema.table`) | `sql_table` + `schema`; a query source → `sql` mode |
 | dataset `fields[]` | the dataset's fields (see [Fields](#fields)) |
 | dataset `primary_key` | `DatasetField.primary_key = true` |
-| `relationships[]` (`from` → `to`) | a LEFT `DatasetRelationship` on the `from` dataset, [`cardinality`](../concepts/models.md#relationship-cardinality) `many_to_one` (`from` = many, `to` = one) |
+| `relationships[]` (`from` → `to`) | a LEFT `DatasetRelationship` on the `from` dataset, [`cardinality`](../concepts/datasets.md#relationship-cardinality) `many_to_one` (`from` = many, `to` = one) |
 | `datasets[].metrics[]` | a `DatasetMetric` on that dataset |
 | `metrics[]` | a `DatasetMetric` on an anchor dataset (see [Metrics](#metrics)) |
 | `ai_context` (instructions + synonyms) | entity `description` + `meta["osi_ai_context"]` |

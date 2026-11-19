@@ -66,7 +66,7 @@ relationships:
 
 An entity's `expr` names a physical column, so each join key names the field that reads it: a dimension whose `expr` is that column, otherwise a new (hidden, for a foreign entity) field; if the name is taken by a field reading something else, the relationship is skipped with a warning.
 
-Each generated relationship carries a [`cardinality`](../concepts/models.md#relationship-cardinality) read source→target: a foreign→primary entity reference is `many_to_one`, while a **peer** relationship (two datasets sharing the same primary/unique entity) is `one_to_one` and is declared once per pair — every edge traverses [in both directions](../concepts/models.md#bidirectional-traversal) automatically.
+Each generated relationship carries a [`cardinality`](../concepts/datasets.md#relationship-cardinality) read source→target: a foreign→primary entity reference is `many_to_one`, while a **peer** relationship (two datasets sharing the same primary/unique entity) is `one_to_one` and is declared once per pair — every edge traverses [in both directions](../concepts/datasets.md#bidirectional-traversal) automatically.
 
 ### Measures — DatasetField + DatasetMetric Split
 

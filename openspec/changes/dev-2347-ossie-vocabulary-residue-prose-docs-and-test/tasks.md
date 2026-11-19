@@ -8,14 +8,14 @@
 
 - [x] 2.1 Implement the binding-name extractor and the guard. The allowlist is parsed into a Pydantic model (`carve_outs: [{name, file, reason}]`, `stragglers: [{name, file}]`), with the reasons listed in decision 2. Verify that 1.1 passes.
 - [x] 2.2 Build `tests/fixtures/vocabulary_identifier_allowlist.yaml` from the extractor's hits on `slayer/`. Judge each hit as a carve-out (with its reason) or a straggler, using DEV-2364's candidate list as a first cut. Show the owner the exact `x-vocabulary-stragglers: {baseline: N}` line for `architecture/index.yaml` and add it after the OK (decision 15). Verify that 1.2 passes and `la-arch-check` is green.
-- [ ] 2.3 Post a comment on DEV-2364 saying the guard's `stragglers` list (path and count) is now its authoritative work list.
+- [x] 2.3 Post a comment on DEV-2364 saying the guard's `stragglers` list (path and count) is now its authoritative work list.
 
 ## 3. Doc page and example path renames
 
-- [ ] 3.1 Move the seven paths in proposal.md. Rename `docs/examples/05_joins/joins_utils.py` → `05_relationships/relationships_utils.py` with `dr-refactor` so its imports follow. Leave inner `models/` storage folders as they are. Verify that the moved files exist and the old ones are gone.
-- [ ] 3.2 Rewrite references by resolving each one to its target (design decision 5): Markdown links in `docs/`, `README.md` and `examples/`; `zensical.toml` nav; notebook and test paths (the notebook harness, `tests/test_cube_import_example.py`, `tests/test_docs_dev_1560.py` and any other); `README.md`'s absolute docs URLs. Add a `redirect_maps` entry under `[project.plugins.redirects.redirect_maps]` in `zensical.toml` for each moved page. Verify that 1.3 passes.
-- [ ] 3.3 Sweep every tracked file for each old path fragment (`concepts/models`, `concepts/formulas`, `05_joins`, `05_joined_measures`, `16_list_columns`, `slayer_models`, `extra_models`) and classify every hit (design decision 17). Verify that only `redirect_maps` and archived OpenSpec changes keep one.
-- [ ] 3.4 Fix any link 1.3 found broken on today's tree. Verify that 1.3 passes.
+- [x] 3.1 Move the seven paths in proposal.md. Rename `docs/examples/05_joins/joins_utils.py` → `05_relationships/relationships_utils.py` with `dr-refactor` so its imports follow. Leave inner `models/` storage folders as they are. Verify that the moved files exist and the old ones are gone.
+- [x] 3.2 Rewrite references by resolving each one to its target (design decision 5): Markdown links in `docs/`, `README.md` and `examples/`; `zensical.toml` nav; notebook and test paths (the notebook harness, `tests/test_cube_import_example.py`, `tests/test_docs_dev_1560.py` and any other); `README.md`'s absolute docs URLs. Add a `redirect_maps` entry under `[project.plugins.redirects.redirect_maps]` in `zensical.toml` for each moved page. Verify that 1.3 passes.
+- [x] 3.3 Sweep every tracked file for each old path fragment (`concepts/models`, `concepts/formulas`, `05_joins`, `05_joined_measures`, `16_list_columns`, `slayer_models`, `extra_models`) and classify every hit (design decision 17). Verify that only `redirect_maps` and archived OpenSpec changes keep one.
+- [x] 3.4 Fix any link 1.3 found broken on today's tree. Verify that 1.3 passes.
 
 ## 4. Prose respell (per-hit judgement, never regex replace; design decision 6)
 

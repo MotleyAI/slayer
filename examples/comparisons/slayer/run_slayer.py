@@ -142,7 +142,7 @@ class SlayerBlock(BaseModel):
     setup: Literal["datasets", "datasource", "empty"] = "datasets"
     refine: Optional[Dict[str, Any]] = None
     options: Dict[str, Any] = Field(default_factory=dict)
-    # Files in slayer/extra_models/ saved for this probe only (they would otherwise add relationship cycles).
+    # Files in slayer/extra_datasets/ saved for this probe only (they would otherwise add relationship cycles).
     extra_datasets: List[str] = Field(default_factory=list)
     create_dataset_from_query: Optional[SetupDataset] = None
     keys: Optional[List[str]] = None
@@ -324,7 +324,7 @@ def project(resp: SlayerResponse, keys: List[str], values: List[str]) -> List[Li
 
 def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[SlayerResponse], Optional[Exception]]:
     handling = block.options.get("to_many_handling")
-    extras = [SlayerDataset.model_validate(yaml.safe_load((HERE / "extra_models" / f).read_text()))
+    extras = [SlayerDataset.model_validate(yaml.safe_load((HERE / "extra_datasets" / f).read_text()))
               for f in block.extra_datasets]
     saved: List[SlayerDataset] = []
     try:
