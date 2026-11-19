@@ -83,6 +83,18 @@ class TestExecution:
         assert by(resp, key="customers.region", value="total") == REVENUE_BY_REGION
 
     @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_filtered_saved_relation_restricts_what_is_reached_through_it(self, dialect: str) -> None:
+        saved = _raw_saved("filtered_revenue", {"population": "orders", "dimensions": ["customer_id"],
+                                                "metrics": [m("sum(amount)", "revenue")], "filter": ["amount > 25"]})
+        async with shop(dialect) as engine:
+            await engine.save_dataset(saved)
+            resp = await engine.execute(over("filtered_revenue", dimensions=[], metric="count(customers.id)"))
+            grouped = await engine.execute(over("filtered_revenue", dimensions=["customers.tier"],
+                                                metric="count(customers.id)"))
+        assert [float(v) for v in resp.data[0].values()] == [2.0]
+        assert by(grouped, key="customers.tier", value="total") == {"silver": 1.0, "bronze": 1.0}
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_a_reverse_declaration_absorbs_the_inherited_edge(self, dialect: str) -> None:
         back = customers()
         back = back.model_copy(update={"relationships": [*back.relationships, DatasetRelationship(

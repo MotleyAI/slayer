@@ -4406,6 +4406,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
         upstream=_upstream_respellings(scope),
+        restricted=_stage_restricts(prebound=typed_prebound, population=render_source_dataset, bundle=bundle),
     )
 
     frame_bound_fields = _frame_bound_fields(grain=grain, registry=projection.registry)
@@ -4529,13 +4530,14 @@ def _host_membership(
 
 
 def _restricted_dataset(dataset: Optional[SlayerDataset], *, bundle: ResolvedSourceBundle) -> bool:
-    """Whether reading ``dataset`` reads only some of its rows: it, or the parent a list child reads, has filters."""
+    """Whether reading ``dataset`` reads only some of its rows: it, or the parent a list child reads, has filters
+    or is a stage whose rows restrict its population."""
     if dataset is None:
         return False
     if dataset.list_of is not None:
         parent = bundle.datasets_by_name.get(dataset.list_of[0])
-        return parent is not None and bool(parent.filters)
-    return bool(dataset.filters)
+        return parent is not None and (bool(parent.filters) or parent.restricts_rows)
+    return bool(dataset.filters) or dataset.restricts_rows
 
 
 def _plan_empty_base_grain(
@@ -4713,6 +4715,7 @@ def _emit_stage_schema(
     datasets_by_name: Dict[str, SlayerDataset],
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
+    restricted: bool = False,
 ) -> StageSchema:
     """Each grain slot's first public field names the schema grain; ``None`` in raw-row mode."""
     fields: List[StageField] = []
@@ -4747,7 +4750,17 @@ def _emit_stage_schema(
         grain=grain_names,
         default_time_dimension=_surviving_default(projection=projection, fields=fields, root=root),
         inherited_edges=inherited_edges(fields=fields, grain=grain_names, root=root, datasets_by_name=datasets_by_name),
+        restricted=restricted,
     )
+
+
+def _stage_restricts(
+    *, prebound: PreboundQuery, population: Optional[SlayerDataset], bundle: ResolvedSourceBundle,
+) -> bool:
+    """Whether a stage's rows restrict its population: it filters (date bounds and metric filters included) or
+    trims rows, or reads a restricted population."""
+    trimmed = prebound.limit is not None or bool(prebound.offset)
+    return bool(prebound.bound_filters) or trimmed or _restricted_dataset(population, bundle=bundle)
 
 
 def _surviving_default(*, projection, fields: List[StageField], root: Optional[SlayerDataset]) -> Optional[str]:

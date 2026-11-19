@@ -163,6 +163,37 @@ class TestFilters:
         assert by(through_stage, key="customers.tier", value="total") == expected
 
 
+class TestRestrictedStages:
+    _FILTERED: dict[str, Any] = {"filter": ["amount > 25"]}
+
+    @pytest.mark.parametrize("filtered", [True, False])
+    async def test_an_ungrouped_aggregate_reached_through_a_stage_counts_like_a_stored_root(
+            self, engine, filtered: bool) -> None:
+        kw: dict[str, Any] = self._FILTERED if filtered else {}
+        through_stage = await engine.execute([per_customer(**kw), over("per_customer", dimensions=[],
+                                                                       metric="count(customers.id)")])
+        direct = await engine.execute(over("orders", dimensions=[], metric="count(customers.id)", **kw))
+        expected = [float(v) for v in direct.data[0].values()]
+        assert expected == ([2.0] if filtered else [5.0])
+        assert [float(v) for v in through_stage.data[0].values()] == expected
+
+    async def test_a_grouped_aggregate_reached_through_a_filtered_stage_counts_like_a_stored_root(self, engine) -> None:
+        through_stage = await engine.execute([per_customer(**self._FILTERED), over(
+            "per_customer", dimensions=["customers.tier"], metric="count(customers.id)")])
+        direct = await engine.execute(over("orders", dimensions=["customers.tier"], metric="count(customers.id)",
+                                           **self._FILTERED))
+        expected = by(direct, key="customers.tier", value="total")
+        assert expected == {"silver": 1.0, "bronze": 1.0}
+        assert by(through_stage, key="customers.tier", value="total") == expected
+
+    async def test_an_upstream_restriction_carries_through_a_stage_chain(self, engine) -> None:
+        relay = q(name="relay", population="per_customer", dimensions=["customer_id"],
+                  metrics=[m("sum(revenue)", "relayed")])
+        resp = await engine.execute([per_customer(**self._FILTERED), relay,
+                                     over("relay", dimensions=[], metric="count(customers.id)")])
+        assert [float(v) for v in resp.data[0].values()] == [2.0]
+
+
 # --------------------------------------------------------------------------- #
 # Cardinality.
 # --------------------------------------------------------------------------- #

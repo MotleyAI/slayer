@@ -1128,6 +1128,8 @@ class SlayerDataset(DatasetPart):
         default_factory=dict)
     # Runtime-only: the field and metric names a query extension added.
     _query_local: frozenset[str] = PrivateAttr(default=frozenset())
+    # Runtime-only: a stage's dataset whose rows restrict its population.
+    _restricts_rows: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -1291,6 +1293,16 @@ class SlayerDataset(DatasetPart):
     def with_spelling(self, spelling: str | None) -> "SlayerDataset":
         out = self.model_copy()
         out._spelling = spelling
+        return out
+
+    @property
+    def restricts_rows(self) -> bool:
+        """A stage's dataset whose rows restrict its population: reached datasets count only associated rows."""
+        return self._restricts_rows
+
+    def with_restricted_rows(self, restricts: bool) -> "SlayerDataset":
+        out = self.model_copy()
+        out._restricts_rows = restricts
         return out
 
     @property

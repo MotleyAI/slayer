@@ -4,10 +4,12 @@
 A multi-stage query list SHALL be ordered so each stage follows every sibling it
 references — as its `population`, as an extension's `dataset`, as the `to` of one
 of its extensions' relationships, or as a dataset named by any reference in any of its
-expressions (dimensions, metrics, filters, order) — regardless of the order or the
+expressions (dimensions, metrics, filters, order), except a reference whose first segment
+spells a relationship of its population or of its extensions — regardless of the order or the
 names of the non-root stages. The last entry SHALL stay the root. A stage's join graph
-SHALL contain exactly the sibling stages it references in one of these ways, so no
-route passes through or into a sibling the stage does not name. Duplicate stage names,
+SHALL contain exactly the sibling stages it references in one of these ways and the siblings
+its inherited edges target, so no route passes through or into a sibling the stage neither
+names nor reaches by an inherited edge. Duplicate stage names,
 an unnamed non-root stage, a self-reference, a non-root stage referencing the root, and
 a cycle SHALL each be rejected with an error naming the offending stages.
 
@@ -39,6 +41,14 @@ a cycle SHALL each be rejected with an error naming the offending stages.
 - **WHEN** a non-root stage `a_reader` (population `customers`) measures `max(z_ev.ne)` of a sibling `z_ev` (population `events`, metric `count(*)` aliased `ne`) that it reaches by no relationship, and the same list is run again with the stages named `z_reader` and `a_ev`
 - **THEN** both lists execute and return the same hand-computed value
 
+#### Scenario: A relationship named like a sibling is not a sibling reference
+- **WHEN** stage `a` (population `orders`) groups by `ship_region.name` through `orders`' relationship `ship_region`, and a sibling stage named `ship_region` reads `a`
+- **THEN** the list executes, and `a` is not ordered after `ship_region`
+
+#### Scenario: An inherited edge reaches its sibling target
+- **WHEN** stage `keyed` inherits its extension's relationship `totals_link` to sibling `totals`, and the root reads `totals_link.total` from `keyed` without naming `totals`
+- **THEN** the root returns the hand-computed values
+
 #### Scenario: Routing never passes through an unnamed sibling
 - **WHEN** a sibling stage inherits edges to `customers` and `regions`, and a later stage over `customers` that never names that sibling selects the short form `regions.name`
 - **THEN** the sibling is not a route candidate: the reference resolves as it would without the sibling
@@ -66,7 +76,10 @@ An inherited edge SHALL keep the source edge's name and target dataset (never re
 to a same-named stage), keep a stored edge's join type, and be a LEFT edge when inherited
 from a query-declared relationship. Filters SHALL NOT affect inheritance: neither the
 stage's filters nor its population's model filters remove an edge, and the target's model
-filters apply on the inherited hop as on any hop. Inherited edges SHALL apply to ordinary
+filters apply on the inherited hop as on any hop. An aggregate over a dataset reached through a stage SHALL count only the rows associated
+with a stage row when the stage restricts its population — by a filter (a metric filter
+included), or by reading a restricted population or upstream stage — exactly as for a
+filtered stored dataset; an unrestricted stage restricts nothing. Inherited edges SHALL apply to ordinary
 stages wherever a later stage reads them (as its population, as an extension target, as a
 relationship target, or through routing) and to the final stage of a saved query-backed
 model wherever it is consumed. They are derived on every read and never stored.
@@ -114,6 +127,10 @@ model wherever it is consumed. They are derived on every read and never stored.
 #### Scenario: Filters do not remove an inherited edge
 - **WHEN** the stage has a filter on `status`, and `orders` carries a model filter
 - **THEN** the edge to `customers` is inherited; a model filter on `customers` applies on the inherited hop
+
+#### Scenario: A filtered stage restricts what is reached through it
+- **WHEN** stage `pc` (population `orders`, filter `amount > 25`) groups by `customer_id`, and the next stage measures `count(customers.id)` with no dimension
+- **THEN** it counts the 2 customers `pc` keeps, as the same filter on a stored `orders` root does; without the filter it counts as from an unfiltered `orders` root
 
 #### Scenario: A stored target is never re-resolved to a same-named stage
 - **WHEN** a list has a stage named `customers` and another stage grouped by `orders.customer_id` passes the key on

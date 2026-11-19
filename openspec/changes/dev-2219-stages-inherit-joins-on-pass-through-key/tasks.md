@@ -39,3 +39,8 @@
 - [x] 7.1 Apply the approved `architecture/python.engine.arc42.md` P5 and §4 rationale wording verbatim (design decisions 5–6) (verify: `la-arch-check` green)
 - [x] 7.2 Docs: inherited edges in `docs/concepts/queries.md` (multi-stage) and `docs/concepts/models.md` (query-backed models), the inspect output in `docs/reference/mcp.md`, the stage help memories, and a Part 1 entry in `docs/upgrading/2.0.md` for the unrelated → joined change (verify: every changed page reachable from `zensical.toml` nav)
 - [x] 7.3 Enforcement bundle and lint: `la-arch-check`, LikeC4 validation, `la-typecheck`, `ruff check slayer/ tests/` (verify: all green)
+
+## 8. Review follow-ups
+
+- [x] 8.1 Restricted stages (decision 21): the stage schema carries whether the stage restricts its population, and an aggregate reached through a restricted stage or saved query-backed model counts only associated rows (verify: the "A filtered stage restricts what is reached through it" scenario passes, ungrouped and grouped, on a stage and a saved model)
+- [x] 8.2 Edge-aware sibling extractor (decision 14): a first segment spelling a relationship of the population or its extensions is no sibling read; the join graph adds the siblings inherited edges target, transitively (verify: the two new ordering scenarios pass)

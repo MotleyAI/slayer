@@ -297,7 +297,8 @@ def dataset_from_stage_schema(
         "default_time_dimension": default_time_dimension or schema.default_time_dimension,
         "relationships": [*declared, *(e.as_relationship() for e in schema.inherited_edges)],
         "filters": list(saved.filters) if saved is not None else [],
-    }).with_spelling(schema.display_name if schema.display_name != name else None)
+    }).with_spelling(schema.display_name if schema.display_name != name else None).with_restricted_rows(
+        schema.restricted)
     return absorb_inherited({name: out})[name] if schema.inherited_edges else out
 
 

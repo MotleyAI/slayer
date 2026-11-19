@@ -982,8 +982,9 @@ class SlayerQueryEngine:
         cls,
         queries: List["SlayerQuery"],
     ) -> List["SlayerQuery"]:
-        """Shim delegating to :func:`topologically_order_stages`."""
-        return topologically_order_stages(queries)
+        """Shim delegating to :func:`topologically_order_stages`; reads populations and extensions only — the planner,
+        with the datasets, orders by expressions too."""
+        return topologically_order_stages(queries, expressions=False)
 
     async def aclose(self) -> None:
         """Release every client's loop-bound resources; the clients stay cached and usable."""
@@ -1171,7 +1172,7 @@ class SlayerQueryEngine:
         """A query-backed dataset's stages as ``(main_query, named_queries)``, variables layered."""
         # Stored ``source_queries`` may be non-topological for
         # ``relationships[].to`` deps; topo-sort to match save-time semantics.
-        stages = topologically_order_stages(list(dataset.source_queries or []))
+        stages = topologically_order_stages(list(dataset.source_queries or []), expressions=False)
         if not stages:
             raise ValueError(f"Dataset {dataset.name!r} has no source_queries")
         main_query = stages[-1]
@@ -3354,7 +3355,7 @@ class SlayerQueryEngine:
         stages: List[SlayerQuery] = list(dataset.source_queries or [])
         if all(stage.population is not None for stage in stages):
             return dataset
-        ordered = topologically_order_stages(stages)
+        ordered = topologically_order_stages(stages, expressions=False)
         localized, displays = localize_stages(ordered)
         localized, _ = await self._respell_spine(
             queries=localized, stage_names={d.name for d in displays.values()}, data_source=prefer_data_source,

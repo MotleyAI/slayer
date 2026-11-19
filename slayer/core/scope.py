@@ -139,6 +139,8 @@ class StageSchema(BaseModel):
     # A spliced query-backed dataset's final stage keeps its source's default time dimension.
     default_time_dimension: Optional[str] = None
     inherited_edges: Tuple[InheritedEdge, ...] = ()
+    # The stage's rows restrict its population: a filter, or a restricted population.
+    restricted: bool = False
     # Why inherited edges could not be derived (inspect only); ``None`` when they were.
     inherited_edges_error: Optional[str] = None
 

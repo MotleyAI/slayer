@@ -6,10 +6,12 @@ Spec: openspec …/specs/queries/multi-stage — "Stages are ordered by every si
 from __future__ import annotations
 
 import itertools
+from typing import Any
 
 import pytest
 
 from slayer.core.query import SlayerQuery
+from slayer.engine import query_engine as query_engine_module
 from slayer.engine.stage_ordering import stage_sibling_reads, topologically_order_stages
 
 from tests._dev2219_fixtures import (
@@ -17,6 +19,8 @@ from tests._dev2219_fixtures import (
     EVENT_COUNT,
     by,
     customers,
+    ext,
+    join,
     m,
     orders,
     outcome,
@@ -120,3 +124,42 @@ class TestJoinGraphMembership:
         got = {(r["customers.name"], r["customers.sib.ship_region.name"]) for r in resp.data}
         assert got == {("Ann", "North"), ("Ann", "South"), ("Bob", "South"), ("Cid", "North"),
                        ("Dee", "East"), ("Eve", None)}
+
+
+class TestEdgeAwareExtractor:
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_relationship_named_like_a_sibling_is_not_a_sibling_reference(self, dialect: str) -> None:
+        a = q(name="a", population="orders", dimensions=["ship_region.name"], metrics=[m("count(*)", "n")])
+        sibling = q(name="ship_region", population="a", dimensions=["ship_region__name"], metrics=[m("sum(n)", "nn")])
+        root = q(population="ship_region", metrics=[m("sum(nn)", "t")])
+        async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
+            resp = await engine.execute([a, sibling, root])
+        assert [float(v) for v in resp.data[0].values()] == [7.0]
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_an_inherited_edge_reaches_its_sibling_target(self, dialect: str) -> None:
+        totals = q(name="totals", population="orders", dimensions=["region_id"], metrics=[m("sum(amount)", "total")])
+        keyed = q(name="keyed", population="orders", dimensions=["region_id"], metrics=[m("count(*)", "n")],
+                  extensions=[ext("orders", join("totals", [("region_id", "region_id")], name="totals_link"))])
+        root = q(population="keyed", dimensions=["region_id", "totals_link.total"], metrics=[m("sum(n)", "nn")])
+        async with shop(dialect) as engine:
+            resp = await engine.execute([totals, keyed, root])
+        assert by(resp, key="region_id", value="totals_link.total") == {1: 22.0, 2: 50.0, 3: 40.0, None: None}
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_relationship_named_like_a_planned_sibling_is_no_recorded_read(
+            self, dialect: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        planned: list[Any] = []
+        real = query_engine_module.plan_stages
+
+        def spy(*, queries, bundle):
+            planned[:] = real(queries=queries, bundle=bundle)
+            return planned
+
+        monkeypatch.setattr(query_engine_module, "plan_stages", spy)
+        sibling = q(name="ship_region", population="customers", metrics=[m("count(*)", "nc")])
+        z = q(name="z", population="orders", dimensions=["ship_region.name"], metrics=[m("count(*)", "n")])
+        async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
+            await engine.execute([sibling, z, q(population="z", metrics=[m("sum(n)", "t")])], dry_run=True)
+        (reader,) = [p for p in planned if p.stage_schema is not None and p.stage_schema.relation_name.endswith("_z")]
+        assert reader.stage_reads == []
