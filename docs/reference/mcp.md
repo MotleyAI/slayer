@@ -73,7 +73,7 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `create_datasource` | Create a DB connection, test it, and auto-ingest models (set `auto_ingest=false` to skip). |
+| `create_datasource` | Create a DB connection, test it, and auto-ingest models (set `auto_ingest=false` to skip). The ingest is the idempotent one of `ingest_datasource_models`: re-creating a datasource merges into its stored models and never overwrites them. |
 | `list_datasources` | List configured datasources (no credentials shown). |
 | `describe_datasource` | Show details, test connection, list available schemas, and (by default) list tables in the given or default schema. Params: `name`, `list_tables` (default `true`), `schema_name` (empty = dialect default). |
 | `edit_datasource` | Edit an existing datasource config. |

@@ -139,7 +139,7 @@ POST /query                   FastAPI's own span, only with FastAPI instrumentat
 
 | Span | What it covers |
 |---|---|
-| `slayer.request` | one request from the CLI (`query`, `ingest`), REST, MCP, Flight SQL or the Postgres facade |
+| `slayer.request` | one request from the CLI (`query`, `ingest`, `datasources.create`), REST, MCP, Flight SQL or the Postgres facade |
 | `slayer.query` | one query |
 | `slayer.query.normalize`, `.prepare`, `.policy`, `.run` | the phases of a query |
 | `slayer.query.cache.get`, `.put` | the result cache, which library callers can turn on |

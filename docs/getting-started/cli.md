@@ -75,9 +75,9 @@ slayer datasources test myapp
 
 ```bash
 slayer ingest --datasource myapp
-# Ingested: orders (6 dims, 12 measures)
-# Ingested: customers (4 dims, 5 measures)
-# Ingested: regions (3 dims, 2 measures)
+# Created: orders (6 columns)
+# Created: customers (4 columns)
+# Created: regions (3 columns)
 ```
 
 Optionally filter tables:

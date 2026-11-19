@@ -70,7 +70,8 @@ def test_surfaces_ingest_only_through_the_idempotent_pass() -> None:
 def test_every_package_exists() -> None:
     for package in PACKAGES:
         paths = _package_paths(package)
-        assert paths and all(path.exists() for path in paths), package
+        assert paths, package
+        assert all(path.exists() for path in paths), package
 
 
 def test_the_scanner_sees_every_kind_of_bypass() -> None:

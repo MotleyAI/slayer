@@ -358,7 +358,7 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 
 ## Idempotent Re-Ingestion
 
-`slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
+`slayer ingest` (and every other ingesting entry point: `slayer datasources create --ingest`, MCP `ingest_datasource_models` and `create_datasource`, REST `/ingest`, the startup ingest) is idempotent by default — re-runs are safe. For each in-scope live table:
 
 - **No persisted model with that name** → ingest from scratch via the path above.
 - **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a join's `cardinality` is set only when it is currently unset (a value you chose is never replaced), a column's `unique` is only ever turned on, never off, a model with no primary key takes the live one (a key you set is never changed), and an **empty** `description` (column and model level) is filled from the live DB comment. Filling any of these is enough to trigger a save, so a re-ingest that adds no columns or joins still persists newly-discovered metadata. Filled descriptions are reported per model (`ModelAddition.described_columns`, `model_described`; the CLI prints `+descriptions: …`). Other metadata fills are reported as `ModelAddition.metadata_changed` (`+key metadata`).

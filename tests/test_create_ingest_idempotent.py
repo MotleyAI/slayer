@@ -8,6 +8,7 @@ from typing import Any
 
 import duckdb
 import pytest
+from mcp.types import TextContent
 
 from slayer.cli import _confirm as real_confirm
 from slayer.core.models import DatasourceConfig
@@ -207,7 +208,9 @@ async def _mcp_create(storage: YAMLStorage, db: str) -> str:
     server = create_mcp_server(storage=storage, _seed_help=False)
     blocks, _ = await server.call_tool(name="create_datasource",
                                        arguments={"name": "app", "type": "sqlite", "database": db})
-    return blocks[0].text
+    block = next(iter(blocks))
+    assert isinstance(block, TextContent), block
+    return block.text
 
 
 class TestMcpCreate:
@@ -236,7 +239,7 @@ class TestMcpCreate:
         storage = YAMLStorage(base_dir=_store(tmp_path))
         text = await _mcp_create(storage, _sqlite(tmp_path, "a"))
         lines = text.splitlines()
-        assert (lines[0].startswith("Datasource 'app' created"), "Auto-ingestion failed: database went away" in text,
+        assert (lines[0].startswith("Datasource 'app' created"), "Auto-ingestion failed: Database error: database went away" in text,
                 await storage.get_datasource("app") is not None) == (True, True, True), text
 
     async def test_a_non_database_failure_during_ingest_propagates(
@@ -244,5 +247,6 @@ class TestMcpCreate:
     ) -> None:
         _patch_idempotent(monkeypatch, RuntimeError("ingest bug"))
         storage = YAMLStorage(base_dir=_store(tmp_path))
+        db = _sqlite(tmp_path, "a")
         with pytest.raises(Exception, match="ingest bug"):
-            await _mcp_create(storage, _sqlite(tmp_path, "a"))
+            await _mcp_create(storage, db)

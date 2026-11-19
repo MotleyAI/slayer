@@ -8,17 +8,17 @@
 
 ## 2. Implementation
 
-- [ ] 2.1 Add one full-shape emptiness check beside the renderers in `slayer/engine/ingestion.py` (design decision 10) and use it in `_ingest_workflow` (`slayer ingest`); exit codes unchanged. Verify: 1.2's empty-result tests pass.
-- [ ] 2.2 Rewrite `_create_ingest_and_report` in `slayer/cli.py` to run `engine.ingest_idempotent` with the same scope, render via `_print_ingest_addition` + `_print_ingest_drift_and_errors` (empty → `_empty_ingest_message`), exit 0 on reported issues, keep `Ingestion failed:` + exit 1 on a raise; delete `_persist_ingested_models` and the separate description save. Verify: 1.2 CLI create tests pass.
-- [ ] 2.3 Decorate the `datasources create` handler with `@otel.request(surface="cli", token="datasources.create")`. Verify: 1.1 CLI request-span assertion passes and the usage-reporting tests still pass.
-- [ ] 2.4 Rewrite `create_datasource`'s auto-ingest in `slayer/mcp/server.py` to run `engine_ingestion.ingest_datasource_idempotent(datasource=ds, storage=storage, client=client, …)` with the same scope, append `_render_ingest_result` output, keep the explore hint when models were created and the "Auto-ingestion failed:" handling. Verify: 1.3 and 1.1 MCP tests pass.
-- [ ] 2.5 Apply the approved `architecture/system.arc42.md` §3.14 clause verbatim (design decision 4). Verify: `poetry run la-arch-check` passes.
-- [ ] 2.6 Verify the law test (1.4) and every OTel test (1.1) pass.
+- [x] 2.1 Add one full-shape emptiness check beside the renderers in `slayer/engine/ingestion.py` (design decision 10) and use it in `_ingest_workflow` (`slayer ingest`); exit codes unchanged. Verify: 1.2's empty-result tests pass.
+- [x] 2.2 Rewrite `_create_ingest_and_report` in `slayer/cli.py` to run `engine.ingest_idempotent` with the same scope, render via `_print_ingest_addition` + `_print_ingest_drift_and_errors` (empty → `_empty_ingest_message`), exit 0 on reported issues, keep `Ingestion failed:` + exit 1 on a raise; delete `_persist_ingested_models` and the separate description save. Verify: 1.2 CLI create tests pass.
+- [x] 2.3 Decorate the `datasources create` handler with `@otel.request(surface="cli", token="datasources.create")`. Verify: 1.1 CLI request-span assertion passes and the usage-reporting tests still pass.
+- [x] 2.4 Rewrite `create_datasource`'s auto-ingest in `slayer/mcp/server.py` to run `engine_ingestion.ingest_datasource_idempotent(datasource=ds, storage=storage, client=client, …)` with the same scope, append `_render_ingest_result` output, keep the explore hint when models were created and the "Auto-ingestion failed:" handling. Verify: 1.3 and 1.1 MCP tests pass.
+- [x] 2.5 Apply the approved `architecture/system.arc42.md` §3.14 clause verbatim (design decision 4). Verify: `poetry run la-arch-check` passes.
+- [x] 2.6 Verify the law test (1.4) and every OTel test (1.1) pass.
 
 ## 3. Docs
 
-- [ ] 3.1 `docs/reference/cli.md` (`datasources create --ingest`: idempotent and additive like `slayer ingest`, re-create merges), `docs/reference/mcp.md` (`create_datasource` row), `docs/concepts/ingestion.md` (create paths run the idempotent ingest), `docs/reference/opentelemetry.md` (line ~142: CLI request spans now `query`, `ingest`, `datasources.create`). Verify: grep docs for "will be overwritten" and the old `Ingested:` create output finds nothing stale.
+- [x] 3.1 `docs/reference/cli.md` (`datasources create --ingest`: idempotent and additive like `slayer ingest`, re-create merges), `docs/reference/mcp.md` (`create_datasource` row), `docs/concepts/ingestion.md` (create paths run the idempotent ingest), `docs/reference/opentelemetry.md` (line ~142: CLI request spans now `query`, `ingest`, `datasources.create`). Verify: grep docs for "will be overwritten" and the old `Ingested:` create output finds nothing stale.
 
 ## 4. Gates
 
-- [ ] 4.1 Run the local test scope (`la-affected-tests --base 1.x` plus the files above), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture`. Verify: all green.
+- [x] 4.1 Run the local test scope (`la-affected-tests --base 1.x` plus the files above), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture`. Verify: all green.

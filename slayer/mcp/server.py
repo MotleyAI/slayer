@@ -1353,60 +1353,23 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if not auto_ingest:
             return "\n".join(lines)
 
-        # Auto-ingest models
         try:
             # Via the module so tests can monkeypatch the seam.
-            ingest_output = await engine_ingestion.ingest_datasource_report_async(
+            result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
+                storage=storage,
                 client=client,
                 schema=schema_name or None,
                 schemas=schemas_list,
                 all_schemas=all_schemas,
             )
-        except Exception as e:
-            if isinstance(e, _DB_FAILURES):
-                lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
-                return "\n".join(lines)
-            raise
-        models = ingest_output.models
+        except _DB_FAILURES as e:
+            lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
+            return "\n".join(lines)
 
-        if ingest_output.schema_description and not ds.description:
-            try:
-                ds = ds.model_copy(
-                    update={"description": ingest_output.schema_description}
-                )
-                await storage.save_datasource(ds)
-                lines.append("Datasource description imported.")
-            except Exception as exc:  # noqa: BLE001 — best-effort
-                lines.append(f"Could not save datasource description: {exc}")
-
-        save_errors: list[str] = []
-        saved_models = []
-        for model in models:
-            try:
-                await storage.save_model(model)
-                saved_models.append(model)
-            except ValueError as exc:
-                # e.g. quoted case-variant tables — report and continue.
-                save_errors.append(f"- {model.name}: {exc}")
-        models = saved_models
-
-        if not models and not save_errors:
-            lines.append("No tables found to ingest.")
-            available = await _get_schemas(client)
-            if available:
-                lines.append(f"Available schemas: {', '.join(available)}")
-        elif models:
-            lines.append(f"Ingested {len(models)} model(s):")
-            for m in models:
-                lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
-            lines.append("")
-            lines.append("Use models_summary and inspect to explore, then query to fetch data.")
-
-        if save_errors:
-            lines.append(f"Failed to save {len(save_errors)} model(s):")
-            lines.extend(save_errors)
-
+        lines.append(await _render_ingest_result(result, schema_name=schema_name or "", ds=ds, client=client))
+        if any(a.created for a in result.additions):
+            lines.extend(["", "Use models_summary and inspect to explore, then query to fetch data."])
         return "\n".join(lines)
 
     @tool()
