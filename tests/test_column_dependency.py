@@ -165,7 +165,7 @@ async def test_save_model_rejects_self_referential_derived(tmp_path) -> None:
         sql_table="A",
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="c1", sql="c1 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c1", sql="A.c1 + 1", datatype=DataType.FLOAT),
         ],
     )
     with pytest.raises(DatasetFieldCycleError) as exc_info:

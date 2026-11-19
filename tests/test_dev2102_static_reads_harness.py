@@ -263,7 +263,7 @@ async def test_a_stored_derived_column_closes_over_its_own_definition_beside_ano
     stages: list[SlayerQuery | dict],
 ) -> None:
     labelled = customers(DatasetRelationship(to="regions", from_columns=[p[0] for p in _REGION_PAIRS], to_columns=[p[1] for p in _REGION_PAIRS])).model_copy(update={"fields": [
-        *customers().fields, DatasetField(name="label", sql="upper(name)", datatype=DataType.STRING)]})
+        *customers().fields, DatasetField(name="label", sql="upper(customers.name)", datatype=DataType.STRING)]})
     async with shop("sqlite", [labelled if m.name == "customers" else m for m in _datasets()] + [_LABELS]) as engine:
         _, reads = await _planned(engine, stages)
     assert {("customers", "label"), ("customers", "name")} <= reads.fields

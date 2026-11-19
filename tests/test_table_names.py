@@ -347,5 +347,5 @@ async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality
 def test_ingested_quoted_column_reads_itself_exactly() -> None:
     model = _fields_to_dataset(name="t", data_source=DS, sql_table="t", fields=[
         IntrospectedColumn(name="foo", type=DataType.INTEGER, quoted=True), IntrospectedColumn(name="bar", type=DataType.INTEGER)])
-    assert [(c.name, c.sql, c.physical_name, c.physical_quoted) for c in model.fields] == [
+    assert [(c.name, c.expression, c.physical_name, c.physical_quoted) for c in model.fields] == [
         ("foo", '"foo"', "foo", True), ("bar", "bar", "bar", False)]

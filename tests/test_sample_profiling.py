@@ -648,7 +648,7 @@ async def test_retry_after_column_edit(env: tuple[SlayerQueryEngine, StorageBack
     reloaded = await storage.get_dataset("orders", data_source=DS)
     assert reloaded is not None
     fixed = await _save(storage, reloaded.model_copy(update={"fields": [
-        c.model_copy(update={"sql": "channel"}) if c.name == "bad" else c for c in reloaded.fields
+        c.model_copy(update={"expression": "channel"}) if c.name == "bad" else c for c in reloaded.fields
     ]}))
     log = _record(engine=engine, monkeypatch=monkeypatch)
     await _profile(engine=engine, storage=storage, dataset=fixed)

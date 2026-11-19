@@ -100,6 +100,8 @@ _MCP_ROW_CAP = 20
 _CAP_HINT = "pass a higher 'limit' to get more rows"
 _DS_LOAD_FAILED = "Failed to load datasource '%s': %s"
 _NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
+#: A definition and its deprecated twin: an upsert spelling one replaces the other.
+_DEFINITION_TWINS = (frozenset({"sql", "expression"}), frozenset({"formula", "expression"}))
 
 # Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
@@ -889,6 +891,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         existing = next((e for e in entity_list if getattr(e, id_field) == entity_id), None)
         if existing is not None:
             merged = existing.model_dump()
+            for twins in _DEFINITION_TWINS:
+                if twins & spec.keys():
+                    for k in twins - spec.keys():
+                        merged.pop(k, None)
             for k, v in spec.items():
                 merged[k] = v
             try:

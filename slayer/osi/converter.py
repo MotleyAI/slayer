@@ -26,7 +26,12 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, RelationshipCardinality, finer_datatype
 from slayer.core.field_expression import OSSIE_SQL, DialectEntry, ExpressionObject, portable_text, unquoted_identifier
 from slayer.core.field_expression import Expression as FieldExpression
-from slayer.core.errors import AmbiguousRelationshipPathError, UnsupportedServerFunctionError
+from slayer.core.errors import (
+    AmbiguousRelationshipPathError,
+    UnknownReferenceError,
+    UnresolvableDimensionRelationshipError,
+    UnsupportedServerFunctionError,
+)
 from slayer.core.syntax import parse_expr
 from slayer.core.relationship_walker import resolve_hop
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset, relationship_key_error
@@ -749,6 +754,8 @@ class OsiToSlayerConverter:
         host = SlayerDataset(name=ds.name, sql_table=ds.name, data_source=self.data_source)
         try:
             return portable_native(text, field=field.name, dataset=host, datasets=[], ds_type=self._target, live=live)
+        except (UnresolvableDimensionRelationshipError, UnknownReferenceError):
+            return text.strip()  # its paths are validated once every dataset is built
         except Exception:  # noqa: BLE001 — anything SLayer cannot read is translated instead
             return None
 
