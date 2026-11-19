@@ -119,7 +119,7 @@ class TestOrderColumnNormalization:
 
     def test_plain_name_unchanged(self) -> None:
         item = OrderItem(field="revenue_sum", direction="desc")
-        assert item.ref.name == "revenue_sum"
+        assert item.field == "revenue_sum"
         assert item.raw_expression is None
 
     def test_parameterized_agg_preserved(self) -> None:

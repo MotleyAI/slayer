@@ -28,7 +28,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "status",
+      "expression": "status",
       "name": "status"
      }
     ],
@@ -67,7 +67,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "status",
+      "expression": "status",
       "name": "status"
      }
     ],

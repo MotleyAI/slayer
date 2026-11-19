@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ModelWrapValidatorHandler, model_validator
 
 from slayer.core.enums import RelationshipCardinality, JoinType, invert_cardinality
 from slayer.core.errors import QueryExtensionError
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, orient_relationship
+from slayer.core import vocabulary
 from slayer.core.models import DatasetRelationship, SlayerDataset, _check_relationship_keys, _validate_dataset_name
 
 __all__ = [
@@ -34,31 +36,42 @@ class RelationshipEdgeRef(BaseModel):
 
     to: str
     name: str | None = None
-    join_pairs: list[list[str]]
+    from_columns: list[str]
+    to_columns: list[str]
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler[RelationshipEdgeRef]) -> RelationshipEdgeRef:
+        return vocabulary.converted_input(data, handler, vocabulary.relationship, stored=False)
+
+    @property
+    def column_pairs(self) -> list[tuple[str, str]]:
+        return list(zip(self.from_columns, self.to_columns))
 
     @classmethod
     def of(cls, relationship: DatasetRelationship) -> RelationshipEdgeRef:
-        return cls(to=relationship.to, name=relationship.name, join_pairs=[list(p) for p in relationship.join_pairs])
+        return cls(to=relationship.to, name=relationship.name, from_columns=list(relationship.from_columns),
+                   to_columns=list(relationship.to_columns))
 
     def matches(self, relationship: DatasetRelationship) -> bool:
         return (
             relationship.to == self.to
-            and _pair_set(relationship.join_pairs) == _pair_set(self.join_pairs)
+            and _pair_set(relationship.column_pairs) == _pair_set(self.column_pairs)
             and (self.name is None or relationship.name == self.name)
         )
 
     def matches_hop(self, edge: OrientedRelationship) -> bool:
         """Whether ``edge`` walks this declaration, in either direction."""
         forward = edge.source_dataset == edge.declaring_dataset
-        pairs = edge.join_pairs if forward else [[t, s] for s, t in edge.join_pairs]
+        pairs = edge.column_pairs if forward else [(t, s) for s, t in edge.column_pairs]
         return (
             (edge.to if forward else edge.source_dataset) == self.to
-            and _pair_set(pairs) == _pair_set(self.join_pairs)
+            and _pair_set(pairs) == _pair_set(self.column_pairs)
             and (self.name is None or edge.name == self.name)
         )
 
 
-def _pair_set(pairs: list[list[str]]) -> frozenset[tuple[str, str]]:
+def _pair_set(pairs: Iterable[Sequence[str]]) -> frozenset[tuple[str, str]]:
     return frozenset((p[0], p[1]) for p in pairs)
 
 
@@ -117,7 +130,7 @@ class EdgeMerge:
         if relationship.to == declaring:
             raise QueryExtensionError(f"The {label} connects the dataset to itself.")
         candidates = self._candidates(source=source, target_name=relationship.to)
-        pairs = _pair_set(relationship.join_pairs)
+        pairs = _pair_set(relationship.column_pairs)
         named = [c for c in candidates if relationship.name is not None and c.relationship.name == relationship.name]
         _check_unique(named, label=label)
         if named:
@@ -125,7 +138,7 @@ class EdgeMerge:
             if match.pairs != pairs:
                 raise QueryExtensionError(
                     f"The {label} is named like the edge {relationship.name!r}, which joins on "
-                    f"{sorted(match.pairs)}; use another name or the edge's join_pairs."
+                    f"{sorted(match.pairs)}; use another name or the edge's from_columns and to_columns."
                 )
             return self._reuse(match, relationship=relationship, extended=declaring, label=label, alias=None)
         matches = [c for c in candidates if c.pairs == pairs]
@@ -138,14 +151,14 @@ class EdgeMerge:
 
     def _candidates(self, *, source: SlayerDataset, target_name: str) -> list[_Candidate]:
         out = [
-            _Candidate(declaring=source.name, index=i, relationship=j, pairs=_pair_set(j.join_pairs), cardinality=j.cardinality)
+            _Candidate(declaring=source.name, index=i, relationship=j, pairs=_pair_set(j.column_pairs), cardinality=j.cardinality)
             for i, j in enumerate(source.relationships) if j.to == target_name
         ]
         target = self.datasets.get(target_name)
         for i, j in enumerate(target.relationships if target is not None else []):
             if j.to == source.name:
                 out.append(_Candidate(
-                    declaring=target_name, index=i, relationship=j, pairs=frozenset((t, s) for s, t in _pair_set(j.join_pairs)),
+                    declaring=target_name, index=i, relationship=j, pairs=frozenset((t, s) for s, t in _pair_set(j.column_pairs)),
                     cardinality=invert_cardinality(j.cardinality),
                 ))
         return out
@@ -251,14 +264,16 @@ def is_valid_edge_name(name: str) -> bool:
 
 def _describe(relationship: DatasetRelationship) -> str:
     label = f" '{relationship.name}'" if relationship.name else ""
-    return f"relationship{label} to '{relationship.to}' on {relationship.join_pairs}"
+    return (f"relationship{label} to '{relationship.to}' on from_columns {relationship.from_columns} and to_columns "
+            f"{relationship.to_columns}")
 
 
 def resolve_relationship_ref(*, dataset: SlayerDataset, ref: str | RelationshipEdgeRef) -> DatasetRelationship:
     """The one relationship of ``dataset`` that ``ref`` addresses; raises ``ValueError`` on none or several."""
     if isinstance(ref, RelationshipEdgeRef):
         hits = [j for j in dataset.relationships if ref.matches(j)]
-        label = f"{ref.to!r} on {ref.join_pairs}" + (f" named {ref.name!r}" if ref.name else "")
+        label = (f"{ref.to!r} on from_columns {ref.from_columns} and to_columns {ref.to_columns}"
+                 + (f" named {ref.name!r}" if ref.name else ""))
     else:
         hits = [j for j in dataset.relationships if j.name == ref] or _relationships_to(dataset, ref)
         label = repr(ref)
@@ -268,7 +283,7 @@ def resolve_relationship_ref(*, dataset: SlayerDataset, ref: str | RelationshipE
         candidates = "; ".join(_describe(j) for j in hits)
         raise ValueError(
             f"Relationship {label} on dataset '{dataset.name}' matches {len(hits)} relationships ({candidates}); "
-            f"address one by its edge name or by its exact target and join_pairs."
+            f"address one by its edge name or by its exact target, from_columns and to_columns."
         )
     return hits[0]
 
@@ -290,7 +305,7 @@ def without_relationships(*, dataset: SlayerDataset, relationships: list[Dataset
 
 def relationship_signature(*, dataset_name: str, relationship: DatasetRelationship) -> RelationshipSignature:
     """Name- and orientation-insensitive identity of the relationship ``relationship`` declares."""
-    forward = _pair_set(relationship.join_pairs)
+    forward = _pair_set(relationship.column_pairs)
     backward = frozenset((t, s) for s, t in forward)
     if dataset_name < relationship.to:
         return (dataset_name, relationship.to, forward)

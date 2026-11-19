@@ -9,11 +9,11 @@ A `SlayerQuery` specifies what data to retrieve from a dataset.
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
 | `population` | string | No | The population (query root): a stored dataset or stage name. Omit it to infer the population — see [Population](#population). |
 | `extensions` | list[DatasetExtension] | No | Query-scoped metrics and relationships added to any dataset the query reads — see [Query extensions](#query-extensions). |
-| `metrics` | list[DatasetMetric] | No | Computed/aggregated values — expressions, arithmetic, transforms. Aggregations are function calls (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) — see [Expressions](formulas.md) and [Aggregation syntax](references.md#aggregation-syntax). |
-| `dimensions` | list[str \| FieldRef \| ComputedDimension] | No | Fields to group by — bare strings (`"status"`) or `{"name": "status"}` dicts, dotted names for joined datasets (`customers.name`), or `{"expression": …, "name": …}` for a [computed expression](#expression-dimensions). |
+| `metrics` | list[str \| QueryMetric] | No | Computed/aggregated values — expressions, arithmetic, transforms. Aggregations are function calls (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) — see [Expressions](formulas.md) and [Aggregation syntax](references.md#aggregation-syntax). |
+| `dimensions` | list[str \| QueryDimension] | No | Fields to group by — bare strings (`"status"`), dotted names for joined datasets (`customers.name`), row-level expressions, or `{"field": …, "alias": …, "label": …}` for a result name or label (a [computed expression](#expression-dimensions)). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
-| `filter` | list[str] | No | Conditions as expression strings. Supports `{variable}` placeholders. See [Filters](#filters). |
+| `filter` | str \| list[str] | No | A condition, or a list of conditions all of which must hold. Supports `{variable}` placeholders. See [Filters](#filters). |
 | `variables` | dict[str, Any] | No | Values for `{variable}` placeholders. See [Variables](#variables). |
 | `order` | list[OrderItem] | No | Sort specifications |
 | `limit` | int | No | Maximum rows to return |
@@ -27,33 +27,33 @@ A query carries no tenant scoping of its own. To force every query through an en
 
 ## Dimensions
 
-Each entry in `dimensions` is either a bare string (the canonical short form for a field without a custom label) or a `FieldRef` dict with `name` and optional `label`. Both styles support dotted paths for joined datasets, auto-resolved via the relationship graph.
+Each entry in `dimensions` is either a string (a field reference or an expression) or an object with `field` and an optional `alias` and `label`. Both styles support dotted paths for joined datasets, auto-resolved via the relationship graph. An entry without `alias` or `label` serializes as its string.
 
 ```json
 "dimensions": [
   "status",
   "customers.name",
   "customers.regions.name",
-  {"name": "status", "label": "Order Status"}
+  {"field": "status", "label": "Order Status"}
 ]
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Field name. Supports dotted paths for joined datasets. |
+| `field` | string | A field reference (dotted paths for joined datasets) or a row-level expression. A double-quoted segment (`"\"Revenue\""`, `orders."status"`) matches its declared name exactly. |
+| `alias` | string | Optional result key |
 | `label` | string | Optional human-readable display name |
-| `quoted` | list[bool] | Optional, one flag per path segment: a flagged segment matches its declared name exactly. A double-quoted string (`"\"Revenue\""`, `orders."status"`) is read as this field reference, named like its unquoted spelling. |
 
 ### Expression dimensions
 
-To group by a computed expression (rather than a bare field), give a dict with
-an `expression` and an optional `name`:
+To group by a computed expression (rather than a bare field), give its text as
+`field`, with an optional `alias`:
 
 ```json
 "dimensions": [
   "region",
-  {"expression": "lower(city)", "name": "city_lc"},
-  {"expression": "CASE WHEN amount > 2000 THEN 'big' ELSE 'small' END", "name": "size"}
+  {"field": "lower(city)", "alias": "city_lc"},
+  {"field": "CASE WHEN amount > 2000 THEN 'big' ELSE 'small' END", "alias": "size"}
 ]
 ```
 
@@ -61,10 +61,10 @@ The expression is a [Mode-B expression](references.md) (scalar functions,
 arithmetic, `CASE` / `iif`) over the dataset's fields; it is projected **and**
 grouped. A bare-string entry that is not a valid identifier / dotted path is
 also parsed as an expression (`"round(amount)"`), auto-named from its text —
-name it to control the result key (`dataset.<name>`). A name that collides with an
-existing field or metric is rejected. The name is resolvable from `filter`
-and `order`. The name keys the result even when the expression is a bare joined
-path: `{"expression": "customers.region_id", "name": "region_id"}` returns
+alias it to control the result key (`dataset.<alias>`). An alias that collides with an
+existing field or metric is rejected. The alias is resolvable from `filter`
+and `order`. The alias keys the result even when the field is a bare joined
+path: `{"field": "customers.region_id", "alias": "region_id"}` returns
 `orders.region_id`, and a downstream stage reads it as `region_id`.
 
 #### Grouping by an expression over an aggregate
@@ -78,9 +78,9 @@ crosses a threshold, then group by `(region, band)`:
   "population": "orders",
   "dimensions": [
     "region",
-    {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END", "name": "band"}
+    {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END", "alias": "band"}
   ],
-  "metrics": [{"expression": "sum(amount)", "name": "band_total"}]
+  "metrics": [{"metric": "sum(amount)", "alias": "band_total"}]
 }
 ```
 
@@ -174,9 +174,9 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 ## TimeDimension
 
-A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time field without truncation, add it as a regular dimension instead. The field may also be given under the older keys `dimension` or `column`; the object always serializes with `field` as a string, and the legacy object form `{"name": "created_at", "model": "orders"}` is read as `orders.created_at`.
+A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time field without truncation, add it as a regular dimension instead. `field` is text; an object there is refused.
 
-`field` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `date_trunc('month', coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension). Names are unique across a query's dimensions and time dimensions. A named time dimension's key never carries a granularity suffix; unnamed time dimensions sharing one source at different granularities get one each (`orders.created_at.month`, `orders.created_at.year`).
+`field` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `date_trunc('month', coalesce(shipped_at, created_at))`), and an optional `alias` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unaliased expression is named like a computed dimension). Names are unique across a query's dimensions and time dimensions. An aliased time dimension's key never carries a granularity suffix; unaliased time dimensions sharing one source at different granularities get one each (`orders.created_at.month`, `orders.created_at.year`).
 
 ```json
 {
@@ -199,7 +199,7 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 
 ## OrderItem
 
-A sort specification: `field` names a dimension (`status`), a declared metric's short alias (`revenue_sum`), or an expression (`count(*)`); `direction` is `asc` or `desc`.
+A sort specification: `field` is text naming a dimension (`status`, `customers.region`), a declared metric's short alias (`revenue_sum`), or an expression (`count(*)`); `direction` is `asc` or `desc`.
 An optional `nulls` (`first` or `last`) places NULL values first or last on every dialect; without it the database's default placement applies.
 
 ```json
@@ -210,14 +210,12 @@ Via MCP: `{"field": "count(*)", "direction": "desc"}`
 
 A query (or the final stage of a query list) with no `order` that projects dimensions is ordered by its dimensions and time dimensions ascending, in result-column order, exactly as if it listed them in `order`; raw-row queries and inner stages are left unordered.
 
-The object form `{"field": {"name": "sum(amount)"}}` with an expression as its only key is the same as the string form `{"field": "sum(amount)"}`.
-
 ### Ordering by something you don't project
 
 `order` may reference a field or aggregate that is **not** declared as a dimension/metric — the classic "top-N by metric X, display only Y, Z" pattern:
 
 ```json
-{"population": "orders", "dimensions": ["status"], "metrics": [{"expression": "count(*)"}],
+{"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"],
  "order": [{"field": "sum(amount)", "direction": "desc"}], "limit": 10}
 ```
 
@@ -301,10 +299,11 @@ An ill-typed query fails with a `QueryTypeError` subclass (a `ValueError`, e.g. 
 
 ## Filters
 
-Filter expressions define conditions for the query. They go in the `filter` parameter as plain strings:
+Filter expressions define conditions for the query. `filter` is one condition string, or a list of them, all of which must hold; it is serialized in the shape written, and omitted, `null` and `[]` all mean no filter:
 
 ```json
-"filter": ["status = 'active'", "amount > 100"]
+{"filter": "status = 'active'"}
+{"filter": ["status = 'active'", "amount > 100"]}
 ```
 
 ### Comparison Operators
@@ -396,15 +395,15 @@ functions outside the library (`initcap`, `to_date`, …) belong in `DatasetFiel
 
 Filters can reference names of computed metrics — transforms and arithmetic expressions defined in `metrics`. These are applied as post-filters on the outer query, after all transforms are computed. In a query with any transform, a plain aggregate filter such as `sum(amount) > 200` is applied there too, so it never changes the series a transform reads.
 
-When a query metric is renamed via `{"expression": "agg(col)", "name": "alias"}`, the filter in the same node may reference EITHER form — the raw aggregation expression `agg(col)` OR the user alias `alias`. Both resolve to the user alias, and an aggregation filter is classified as HAVING on the underlying aggregate. Renaming never changes the legal filter form. Two enrichment-time validations apply: (1) a query metric `name` that collides with a source field on the population is rejected (alias-form filters would otherwise silently bind to the source field); (2) a rename whose canonical alias literally shadows a source field on the same dataset is also rejected (the aggregation filter would otherwise be ambiguous).
+When a query metric is renamed via `{"metric": "agg(col)", "alias": "alias"}`, the filter in the same node may reference EITHER form — the raw aggregation expression `agg(col)` OR the user alias `alias`. Both resolve to the user alias, and an aggregation filter is classified as HAVING on the underlying aggregate. Renaming never changes the legal filter form. Two enrichment-time validations apply: (1) a query metric `alias` that collides with a source field on the population is rejected (alias-form filters would otherwise silently bind to the source field); (2) a rename whose canonical alias literally shadows a source field on the same dataset is also rejected (the aggregation filter would otherwise be ambiguous).
 
-Renaming also works for *cross-dataset* aggregated metrics (`{"expression": "sum(customers.revenue)", "name": "cust_rev"}`). The result-column key is `<dataset>.<name>` (`orders.cust_rev`), however many hops the metric crosses. In any *downstream* stage of a multi-stage query list, the column is exposed under the BARE user name — type `max(cust_rev)` (or `max(region_pop)`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-dataset metric in the SAME stage resolve in both forms — the bare user alias (`filter=["cust_rev > 100"]`) and the raw aggregation form (`"sum(customers.revenue) > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"field": "cust_rev"}]`).
+Renaming also works for *cross-dataset* aggregated metrics (`{"metric": "sum(customers.revenue)", "alias": "cust_rev"}`). The result-column key is `<dataset>.<alias>` (`orders.cust_rev`), however many hops the metric crosses. In any *downstream* stage of a multi-stage query list, the column is exposed under the BARE user name — type `max(cust_rev)` (or `max(region_pop)`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-dataset metric in the SAME stage resolve in both forms — the bare user alias (`filter=["cust_rev > 100"]`) and the raw aggregation form (`"sum(customers.revenue) > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"field": "cust_rev"}]`).
 
 ```json
 {
   "metrics": [
     "sum(revenue)",
-    {"expression": "change(sum(revenue))", "name": "rev_change"}
+    {"metric": "change(sum(revenue))", "alias": "rev_change"}
   ],
   "filter": ["rev_change < 0"]
 }
@@ -457,13 +456,13 @@ What a list can't do, each a typed error naming the remedy:
 - be compared with a scalar (use `contains` / `contains_any`, or compare `skills.value`), or ordered (`<`, `>`, `BETWEEN`, an `order` key); `IS NULL` / `IS NOT NULL` work;
 - take an aggregation that [Aggregation eligibility](models.md#aggregation-eligibility) does not allow a list, `collect` and custom aggregations included;
 - hold a NULL element in a list literal (`['go', NULL]`);
-- have `UNKNOWN` elements and still be grouped, compared, counted distinctly, measured by `length` or read element by element: such a list supports only NULL tests and `count`.
+- have `Opaque` elements and still be grouped, compared, counted distinctly, measured by `length` or read element by element: such a list supports only NULL tests and `count`.
 
 A text value against a numeric list is converted like any mixed-type comparison, so `contains(scores, '5')` tests for the element `5`.
 
 Element access composes like any relationship hop: through a to-one relationship (`contractors.skills.value` from a dataset joined to `contractors`), on a derived list field, and on a list column of a query stage, including a stage's `collect` result. One query may aggregate the parent's rows (`count(*)`) and the elements (`count(skills.value)`), each over its own rows. Saving a dataset whose list field has the name of a hop reachable from it (an edge or joined-dataset name) fails.
 
-`inspect`, `search` and `datasets_summary` show a list field's datatype as `ARRAY<TEXT>` with its operations, and its element samples once profiled.
+`inspect`, `search` and `datasets_summary` show a list field's datatype as `Array<String>` with its operations, and its element samples once profiled.
 
 `collect(x)` goes the other way: the distinct non-NULL values of `x` in each cell, sorted, and `[]` for a cell with none. `x` is a field, a list's elements or an expression, of the query's dataset or a joined one (`collect(orders.status)` by customer is each customer's order statuses), and a collected list stays a list in a later stage, with the same functions and elements.
 
@@ -538,7 +537,7 @@ slayer query monthly_revenue --variables region=EU
 
 ```json
 // REST POST /query
-{"population": "orders", "metrics": [{"expression": "count(*)"}], "variables": {"region": "EU"}}
+{"population": "orders", "metrics": ["count(*)"], "variables": {"region": "EU"}}
 {"name": "monthly_revenue", "variables": {"region": "EU"}}  // run-by-name
 ```
 
@@ -573,16 +572,16 @@ MCP equivalent: `query(query="<dataset>", refine={...}, variables={...}, dry_run
 
 ```python
 await engine.execute("monthly_revenue", refine={"dimensions": ["region"]})         # extra group-by
-await engine.execute("monthly_revenue", refine={"filter": ["amount >= 50"]})      # ANDed with the saved filters
+await engine.execute("monthly_revenue", refine={"filter": "amount >= 50"})        # ANDed with the saved filter
 await engine.execute("monthly_revenue", refine={"order": [{"field": "revenue", "direction": "desc"}], "limit": 1})
 ```
 
 - `dimensions` and `metrics` are appended; an entry identical to a saved one (`region` ≡ `orders.region`) collapses, and a same-named entry that differs raises `RefinementConflictError`.
 - `time_dimensions` merge per (field, granularity): a refinement may add a `date_range` or `label` the saved one lacks, but a different value conflicts — narrow a saved window with a filter on the time field instead.
-- `filter` ANDs with the saved filters; `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit; a null `to_many_handling` keeps the saved mode).
+- `filter` conditions are appended to the saved ones, skipping any the saved filter already has (the merged filter is then a list); `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit; a null `to_many_handling` keeps the saved mode).
 - `population`, `name` and `variables` are not refinable; `refine` with a query object or list is an error.
 
-For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"population": "per_customer", "metrics": [{"expression": "avg(revenue)", "name": "avg_revenue"}]}]` with `{"dimensions": ["region"]}` averages per region, provided `per_customer` projects `region`.
+For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"population": "per_customer", "metrics": [{"metric": "avg(revenue)", "alias": "avg_revenue"}]}]` with `{"dimensions": ["region"]}` averages per region, provided `per_customer` projects `region`.
 
 Adding a second granularity of a saved time field (`{"time_dimensions": ["date_trunc('year', ordered_at)"]}` on a monthly query) renames the saved key `orders.ordered_at` to `orders.ordered_at.month`, as in any query with two granularities. A saved query's population is fixed when it is saved (see [Population](#population)), so a refinement never changes it.
 
@@ -593,7 +592,7 @@ Adding a second granularity of a saved time field (`{"time_dimensions": ["date_t
 `population` declares the query's **population** — the dataset whose rows the result is quantified over (one result row per distinct combination of its dimensions). It is optional: omit it and the population is inferred as the smallest dataset (fewest relationship hops) that **determines every queried dimension** along provably to-one relationship paths, read from the dimensions and field-typed (aggregate-free) filters **only — never metrics**. Adding or removing a metric therefore never changes which rows come back.
 
 ```json
-{"dimensions": ["customers.region"], "metrics": [{"expression": "sum(orders.amount)"}]}
+{"dimensions": ["customers.region"], "metrics": ["sum(orders.amount)"]}
 ```
 
 infers population `customers` (one row per region present among customers, order totals attached, NULL where a region has no orders) — not "regions that happen to have orders". The Python client and REST responses always carry the effective population as `population` and whether it was inferred as `population_inferred`; MCP output reports them only when the population was inferred.
@@ -694,9 +693,9 @@ Surfaces: MCP `recommend_population(items, data_source=None, root_hint=None, for
   "metrics": [
     "count(*)",
     "sum(revenue)",
-    {"expression": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"},
-    {"expression": "cumsum(sum(revenue))", "name": "running"},
-    {"expression": "change(sum(revenue))", "name": "mom_change"}
+    {"metric": "sum(revenue) / count(*)", "alias": "aov", "label": "Average Order Value"},
+    {"metric": "cumsum(sum(revenue))", "alias": "running"},
+    {"metric": "change(sum(revenue))", "alias": "mom_change"}
   ],
   "time_dimensions": [{"field": "created_at", "granularity": "month"}]
 }
@@ -710,12 +709,12 @@ The `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, an
 {
   "population": "orders",
   "metrics": [
-    {"expression": "stddev_samp(latency)", "name": "latency_sd"},
-    {"expression": "var_pop(latency)", "name": "latency_var_pop"},
-    {"expression": "corr(price, other=quantity)", "name": "price_qty_corr"},
-    {"expression": "covar_samp(price, other=quantity)", "name": "price_qty_cov"}
+    {"metric": "stddev_samp(latency)", "alias": "latency_sd"},
+    {"metric": "var_pop(latency)", "alias": "latency_var_pop"},
+    {"metric": "corr(price, other=quantity)", "alias": "price_qty_corr"},
+    {"metric": "covar_samp(price, other=quantity)", "alias": "price_qty_cov"}
   ],
-  "dimensions": [{"name": "status"}]
+  "dimensions": ["status"]
 }
 ```
 
@@ -735,11 +734,11 @@ percent-of-total shape. See [Expressions](formulas.md#aggregate-at-a-coarser-gra
 ```json
 {
   "population": "orders",
-  "dimensions": [{"name": "region"}, {"name": "city"}],
+  "dimensions": ["region", "city"],
   "metrics": [
-    {"expression": "sum(revenue)", "name": "city_rev"},
-    {"expression": "sum(revenue) / sum(revenue, partition_by=region)", "name": "share_of_region"},
-    {"expression": "sum(revenue) / sum(revenue, partition_by=[])", "name": "share_of_total"}
+    {"metric": "sum(revenue)", "alias": "city_rev"},
+    {"metric": "sum(revenue) / sum(revenue, partition_by=region)", "alias": "share_of_region"},
+    {"metric": "sum(revenue) / sum(revenue, partition_by=[])", "alias": "share_of_total"}
   ]
 }
 ```
@@ -809,7 +808,7 @@ repeated across the dimension, with a `kind: "broadcast"` warning naming the
 metric and each broadcast dimension with the reason), or `error` (refuse) — where
 a stored query saved with the old `"broadcast"` default loads with the mode
 omitted, and a semi-join-pushed filter is applied, never erroring, in every mode.
-Example: `{"population": "orders", "dimensions": ["status"], "metrics": [{"expression": "sum(customers.spend)"}]}` gives each status the spend of the distinct customers with an order in it.
+Example: `{"population": "orders", "dimensions": ["status"], "metrics": ["sum(customers.spend)"]}` gives each status the spend of the distinct customers with an order in it.
 
 Association serves every plain scalar aggregate. A dataset without a primary key uses a
 per-query row identity. This includes datasets with a standalone unique field that may
@@ -819,7 +818,7 @@ contain NULLs. Each source row counts separately, and copies made by a join coun
 
 Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its field-level `filter=` — is traced recursively through derived-field definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
 
-A dataset (or query stage) that no relationship path reaches is read only through aggregates: rooted at `customers`, `{"expression": "count(events.id) / count(*)"}` computes `count(events.id)` over every event, repeats it on every row (per bucket of a `time_spine` time dimension) with a `kind: "unrelated_dataset"` warning, and a filter on it restricts its rows, while grouping, ordering or filtering by its fields alongside other datasets' is a typed error.
+A dataset (or query stage) that no relationship path reaches is read only through aggregates: rooted at `customers`, `"count(events.id) / count(*)"` computes `count(events.id)` over every event, repeats it on every row (per bucket of a `time_spine` time dimension) with a `kind: "unrelated_dataset"` warning, and a filter on it restricts its rows, while grouping, ordering or filtering by its fields alongside other datasets' is a typed error.
 
 A filter **on** the cross-dataset value itself (`"avg(customers.score) > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that
@@ -880,7 +879,7 @@ You can also join named queries to datasets:
   },
   {
     "population": "orders",
-    "extensions": [{"source_name": "orders", "relationships": [{"to": "customer_scores", "join_pairs": [["customer_id", "id"]]}]}],
+    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
     "metrics": ["count(*)", "avg(customer_scores.score_avg)"],
     "time_dimensions": [{"field": "created_at", "granularity": "month"}]
   }
@@ -902,7 +901,7 @@ Sibling stages can also reference each other — any non-final stage may use a *
   {
     "name": "tagged_orders",
     "population": "orders",
-    "extensions": [{"source_name": "orders", "relationships": [{"to": "customer_scores", "join_pairs": [["customer_id", "id"]]}]}],
+    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
     "dimensions": ["customer_scores.score_avg"],
     "metrics": ["count(*)"]
   },
@@ -935,21 +934,21 @@ A grouped stage is unique on its dimensions, so a relationship onto a sibling st
   "population": "orders",
   "extensions": [
     {
-      "source_name": "orders",
-      "relationships": [{"to": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
+      "dataset": "orders",
+      "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["id"]}]
     },
-    {"source_name": "customers", "metrics": [{"name": "credit_total", "expression": "sum(credit)"}]}
+    {"dataset": "customers", "metrics": [{"name": "credit_total", "expression": "sum(credit)"}]}
   ],
-  "dimensions": [{"expression": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "name": "tier"}],
+  "dimensions": [{"field": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "alias": "tier"}],
   "metrics": ["count(*)", "customers.credit_total"]
 }
 ```
 
-Each entry's keys are `source_name` (required — the dataset or stage to extend), `metrics` and `relationships` (both optional — merged with the dataset's own); any other key, or a second entry for one dataset, is rejected when the query is constructed. A per-query field is an expression in the position that uses it (a computed dimension, a filter, an aggregation's argument); `fields` is rejected.
+Each entry's keys are `dataset` (required — the dataset or stage to extend; `source_name` is its pre-2.0 spelling), `metrics` and `relationships` (both optional — merged with the dataset's own); any other key, or a second entry for one dataset, is rejected when the query is constructed. A per-query field is an expression in the position that uses it (a computed dimension, a filter, an aggregation's argument); `fields` is rejected.
 
 An extension is visible only in the query object that declares it: other stages see that stage's output, and stored relationships, fields, metrics and query-backed datasets never see it.
 
-A relationship repeating an edge between its two datasets — declared on either dataset, with the same `join_pairs` in either direction — is that edge, and its `name` becomes a local alias; a name, pairs or cardinality that conflicts with an existing edge is an error.
+A relationship repeating an edge between its two datasets — declared on either dataset, with the same key pairs (`from_columns` / `to_columns`) in either direction, whatever their order — is that edge, and its `name` becomes a local alias; a name, pairs or cardinality that conflicts with an existing edge is an error.
 
 `"join_type": "inner"` keeps only the population rows with a match along the extended dataset's path, without multiplying rows; a `left` join (the default) never restricts, and a new edge is always traversed as LEFT.
 

@@ -7,7 +7,6 @@ is reported (entity, reason, workaround), never silently dropped.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterator
 from typing import Any, Literal, cast
 
@@ -18,7 +17,7 @@ from sqlglot.errors import ErrorLevel, SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.errors import SlayerError
-from slayer.core.enums import RANKED_AGGREGATIONS, DataType, RelationshipCardinality
+from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
 from slayer.core.relationship_walker import aggregation_owner, dataset_field_type, terminal_dataset, walk
 from slayer.core.time_points import parse_temporal_value
 from slayer.core.keys import (
@@ -61,9 +60,6 @@ from slayer.sql.render.value_expr import AliasFacilities, CompositeFacilities, R
 
 OSSIE_VERSION = "0.3.0.dev0"
 _SELF = "__slayer_self"
-_EXACT_NUMERIC = re.compile(r"^\s*(DECIMAL|NUMERIC|NUMBER|DEC|MONEY|SMALLMONEY|BIGNUMERIC|BIGDECIMAL)\b", re.I)
-_WITH_TZ = re.compile(r"WITH\s+(LOCAL\s+)?TIME\s+ZONE|TIMESTAMPTZ|TIMESTAMP_TZ|TIMESTAMP_LTZ|DATETIMEOFFSET", re.I)
-_WITHOUT_TZ = re.compile(r"WITHOUT\s+TIME\s+ZONE", re.I)
 # Aggregations with no Ossie metric form: ranked picks and list collection.
 _SLAYER_ONLY_AGGREGATIONS = frozenset(RANKED_AGGREGATIONS) | {"collect"}
 _EXCLUDED_FIELD_FIELDS = {"sampled", "sampled_values", "distinct_count"}
@@ -164,23 +160,15 @@ def _strip_self(tree: exp.Expr) -> exp.Expr:
 
 
 def _datatype(field: DatasetField) -> str | None:
-    recorded = (field.meta or {}).get("osi_datatype")
-    if isinstance(recorded, str) and OSSIE_DATATYPES.get(recorded) is field.datatype:
-        return recorded
-    db_type = field.db_type or ""
-    if field.datatype is DataType.DOUBLE:
-        return "Decimal" if _EXACT_NUMERIC.match(db_type) else "Float"
-    if field.datatype is DataType.TIMESTAMP:
-        return "DateTimeTz" if _WITH_TZ.search(db_type) and not _WITHOUT_TZ.search(db_type) else "DateTime"
-    return {DataType.TEXT: "String", DataType.INT: "Integer", DataType.BOOLEAN: "Boolean",
-            DataType.DATE: "Date"}.get(field.datatype)
+    """The field's datatype as Ossie writes it; a list has none."""
+    return field.datatype.value if field.datatype.value in OSSIE_DATATYPES else None
 
 
 def _time_role(field: DatasetField) -> bool:
     recorded = (field.meta or {}).get("osi_is_time")
     if isinstance(recorded, bool):
         return recorded
-    return field.datatype in (DataType.DATE, DataType.TIMESTAMP)
+    return field.datatype.is_temporal
 
 
 _AGGREGATE_MARK = "slayer_rendered_aggregate"
@@ -343,7 +331,7 @@ class _Exporter:
                 source_queries=[q.model_dump(mode="json", exclude_none=True) for q in dataset.source_queries],
                 query_variables=dict(dataset.query_variables),
             )
-        structure = ext.SourceStructure(sql_table=dataset.sql_table, sql=dataset.sql, filters=list(dataset.filters))
+        structure = ext.SourceStructure(sql_table=dataset.sql_table, sql=dataset.sql, filters=list(dataset.filters) or None)
         base = dataset.sql_table or dataset.sql
         if base is None:
             raise _Refused("has no source", "Give the dataset a table or SQL.")
@@ -537,8 +525,8 @@ class _Exporter:
                          severity="dropped", category="relationship", dataset=name,
                          suggestion="Model the bridge as its own dataset with many-to-one relationships to both sides.")
             return
-        sources = [p[0] for p in relationship.join_pairs]
-        targets = [p[1] for p in relationship.join_pairs]
+        sources = [p[0] for p in relationship.column_pairs]
+        targets = [p[1] for p in relationship.column_pairs]
         bad = self._bad_keys(name, target, sources) + self._bad_keys(target, name, targets)
         if bad:
             self._report(f"{label} keys on {bad}; not exported.", severity="dropped", category="relationship",
@@ -778,8 +766,8 @@ class _Exporter:
         description = explicit_description(slayer_metric.description, meta.get("osi_ai_context"))
         if description:
             entity["description"] = description
-        if isinstance(meta.get("osi_datatype"), str):
-            entity["datatype"] = meta["osi_datatype"]
+        if slayer_metric.datatype is not None and slayer_metric.datatype.value in OSSIE_DATATYPES:
+            entity["datatype"] = slayer_metric.datatype.value
         if meta.get("osi_ai_context"):
             entity["ai_context"] = meta["osi_ai_context"]
         payload = ext.MetricPayload(entity=metric.name, dataset=metric.home, metric=slayer_metric.model_copy(

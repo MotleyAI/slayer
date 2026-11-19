@@ -160,7 +160,7 @@ class TestKeptAsWritten:
             "Integer", "Decimal", "DateTimeTz", "Time"]
 
     async def test_ossie_types_survive_export(self, tmp_path: Path) -> None:
-        env = await make_env(tmp_path, statements=["CREATE TABLE t (id INTEGER, amount DOUBLE, at TIMESTAMP, "
+        env = await make_env(tmp_path, statements=["CREATE TABLE t (id INTEGER, amount DOUBLE, \"at\" TIMESTAMP, "
                                                    "tod VARCHAR)"])
         dataset = SlayerDataset.model_validate({"name": "t", "sql_table": "t", "data_source": env.datasource, "fields": [
             {"name": "id", "datatype": "Integer", "primary_key": True}, {"name": "amount", "datatype": "Decimal"},
@@ -203,7 +203,7 @@ async def test_ingestion_assigns_the_finer_type(tmp_path: Path) -> None:
     con = duckdb.connect(path)
     try:
         con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, price DECIMAL(10, 2), ratio DOUBLE, "
-                    "at TIMESTAMPTZ, ts TIMESTAMP, d DATE)")
+                    "\"at\" TIMESTAMPTZ, ts TIMESTAMP, d DATE)")
     finally:
         con.close()
     async with owned_query_engine(storage=YAMLStorage(base_dir=str(tmp_path / "store"))) as engine:
@@ -211,3 +211,26 @@ async def test_ingestion_assigns_the_finer_type(tmp_path: Path) -> None:
     types = {f.name: f.datatype.value for f in dataset.fields}
     assert types == {"id": "Integer", "price": "Decimal", "ratio": "Float", "at": "DateTimeTz", "ts": "DateTime",
                      "d": "Date"}
+
+
+async def test_drift_reports_the_finer_live_type(tmp_path: Path) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    path = str(tmp_path / "t.duckdb")
+    con = duckdb.connect(path)
+    try:
+        con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, price DECIMAL(10, 2), \"at\" TIMESTAMPTZ)")
+    finally:
+        con.close()
+    stale = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+             DatasetField(name="price", sql="price", datatype=DataType.STRING),
+             DatasetField(name="at", sql="at", datatype=DataType.STRING)]
+    async with owned_query_engine(storage=YAMLStorage(base_dir=str(tmp_path / "store"))) as engine:
+        await engine.storage.save_datasource(DatasourceConfig(name="d", type="duckdb", database=path))
+        await engine.storage.save_dataset(SlayerDataset(name="t", sql_table="t", data_source="d", fields=stale))
+        await engine.storage.save_dataset(SlayerDataset(
+            name="q", sql='SELECT id, price, "at" FROM t', data_source="d", fields=stale))
+        entries = await engine.validate_datasets(data_source="d")
+    found = {(d["dataset_name"], d["field"]): d["live_type"] for e in entries
+             if (d := e.model_dump(mode="json")).get("finding") == "retype"}
+    assert found == {("t", "price"): "Decimal", ("t", "at"): "DateTimeTz",
+                     ("q", "price"): "Decimal", ("q", "at"): "DateTimeTz"}

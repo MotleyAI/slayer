@@ -130,8 +130,8 @@ class TestBranchTypingThroughPlanning:
         with pytest.raises(ValueError) as ei:
             await gen(q)
         msg = str(ei.value).upper()
-        assert "String" in msg
-        assert "Integer" in msg
+        assert "STRING" in msg
+        assert "INTEGER" in msg
 
     async def test_numeric_widened_branches_execute(self, exec_engine) -> None:
         # INT / DOUBLE branches widen to DOUBLE and execute cleanly.

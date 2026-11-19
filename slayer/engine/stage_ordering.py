@@ -51,8 +51,8 @@ def _respell_spec(spec: SourceSpec | None, rename: Dict[str, str]) -> SourceSpec
 
 def _respell_extension(extension: DatasetExtension, rename: Dict[str, str]) -> DatasetExtension:
     update: Dict[str, Any] = {}
-    if _respelled(extension.source_name, rename) != extension.source_name:
-        update["source_name"] = _respelled(extension.source_name, rename)
+    if _respelled(extension.dataset, rename) != extension.dataset:
+        update["dataset"] = _respelled(extension.dataset, rename)
     if any(_respelled(j.to, rename) != j.to for j in extension.relationships or []):
         update["relationships"] = _respell_relationships(list(extension.relationships or []), rename)
     return extension.model_copy(update=update) if update else extension

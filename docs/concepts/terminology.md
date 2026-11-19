@@ -6,13 +6,13 @@ Key terms used throughout SLayer documentation and code.
 
 **Dataset** — A semantic layer definition that maps a database table, SQL subquery, or saved query to queryable fields. Defined as YAML files or auto-generated via ingestion.
 
-**Field** — The unified row-level building block of a dataset (`SlayerDataset.fields`). Each field has a `name`, `sql` expression, and `datatype` (`TEXT`/`INT`/`DOUBLE`/`BOOLEAN`/`DATE`/`TIMESTAMP`/`UNKNOWN`, or `ARRAY` with an `element_type`). At query time a field can be used as a group-by key (a dimension), as the input to an aggregation (a metric), or both; a list field has rules of its own, see [List fields](queries.md#list-fields). Fields can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal field is already truncated to), `format`, `label`, and `meta`. `DatasetMetric` (named expression) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
+**Field** — The unified row-level building block of a dataset (`SlayerDataset.fields`). Each field has a `name`, `sql` expression, and `datatype` (one of Ossie's datatype names — `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` — or `Array` with an `element_type`). At query time a field can be used as a group-by key (a dimension), as the input to an aggregation (a metric), or both; a list field has rules of its own, see [List fields](queries.md#list-fields). Fields can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal field is already truncated to), `format`, `label`, and `meta`. `DatasetMetric` (named expression) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
 
 **Dimension** — How a field is *used* in a query when it's a GROUP BY key. The field itself isn't a dimension or metric intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the fields to group/filter by.
 
-**Metric (in a query)** — An expression entry in `SlayerQuery.metrics`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"expression": "sum(revenue) / count(*)", "name": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
+**Metric (in a query)** — An expression entry in `SlayerQuery.metrics`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"metric": "sum(revenue) / count(*)", "alias": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
 
-**Metric (named expression)** — A saved expression stored on a dataset (`SlayerDataset.metrics: List[DatasetMetric]`). Shape `{expression, name, label, description}` — same as a query's inline `metrics` entry. Queries reference saved metrics by bare name in any expression context (`{"expression": "aov"}`).
+**Metric (named expression)** — A saved expression stored on a dataset (`SlayerDataset.metrics: List[DatasetMetric]`). Shape `{name, expression, label, description, datatype, meta}`; a query's inline `metrics` entry is `{metric, alias, label, description, datatype, meta}`. Queries reference saved metrics by bare name in any expression context (`"aov"`).
 
 **Aggregation** — How a field is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`, `collect`. Custom aggregations can be defined at dataset level. Applied at query time as a function call: `sum(revenue)`, `count(*)`, `weighted_avg(price, weight=quantity)`, `corr(price, other=quantity)`.
 
@@ -30,9 +30,9 @@ Key terms used throughout SLayer documentation and code.
 
 ## Queries
 
-**Metric entry** — An expression entry in `SlayerQuery.metrics`. Defined by an expression string. Examples: aggregated field reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated metrics (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-expression reference (`{"expression": "aov"}`). Supports an optional `label` for human-readable display. See [Expressions](formulas.md).
+**Metric entry** — An expression entry in `SlayerQuery.metrics`. Defined by an expression string. Examples: aggregated field reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated metrics (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-expression reference (`"aov"`). Supports an optional `label` for human-readable display. See [Expressions](formulas.md).
 
-**Label** — An optional human-readable display name for a metric entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"expression": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}`.
+**Label** — An optional human-readable display name for a metric entry, dimension, or time dimension. Separate from the technical `alias`, which is used as the result column key. Example: `{"metric": "sum(revenue) / count(*)", "alias": "aov", "label": "Average Order Value"}`.
 
 **Filter** — A condition that restricts which rows are included. Defined as an expression string: `"status = 'completed'"`, `"amount > 100"`. See [Filters](queries.md#filters).
 

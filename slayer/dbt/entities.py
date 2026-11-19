@@ -110,7 +110,7 @@ class EntityRegistry:
 
                 relationships.append(DatasetRelationship(
                     to=target_model_name,
-                    join_pairs=[[foreign_expr, primary_expr]],
+                    from_columns=[foreign_expr], to_columns=[primary_expr],
                     join_type=JoinType.INNER,
                     # foreign -> primary: many source rows, one target row.
                     cardinality=RelationshipCardinality.MANY_TO_ONE,
@@ -136,7 +136,7 @@ class EntityRegistry:
                 seen_peer_signatures.add(peer_signature)
                 relationships.append(DatasetRelationship(
                     to=peer_model_name,
-                    join_pairs=[[local_expr, peer_expr]],
+                    from_columns=[local_expr], to_columns=[peer_expr],
                     join_type=JoinType.INNER,
                     # Both sides are a primary/unique entity: one-to-one.
                     cardinality=RelationshipCardinality.ONE_TO_ONE,

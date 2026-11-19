@@ -173,12 +173,13 @@ class TestRewrite:
 def _query_dict(version: Any = 4) -> dict:
     """A query stored at ``version`` (fresh when ``None``), spelled as that version stores it."""
     k = keys_for(entity="SlayerQuery", version=version or mig.CURRENT_VERSIONS["SlayerQuery"])
+    alias = "name" if k.query_metric_text == "formula" else "alias"
     data: dict = {
         k.population: "sales",
-        "dimensions": ["region", {"field": "rank(sum(amount, partition_by=region))", "alias": "rk"}],
+        "dimensions": ["region", {k.dimension_text: "rank(sum(amount, partition_by=region))", alias: "rk"}],
         k.query_metrics: [
             "rank(sum(amount)) + 1",
-            {k.expression: "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", "name": "top"},
+            {k.query_metric_text: "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", alias: "top"},
         ],
         k.query_filter: ["rank(sum(amount, partition_by=region)) <= 3 and city <> 'rank('"],
         "order": [{k.order_field: "abs(rank(sum(amount)))", "direction": "asc"}],
@@ -193,7 +194,7 @@ def _assert_query_filled(q: SlayerQuery) -> None:
     raw = _query_dict()
     dims = q.dimensions or []
     expr = next(d for d in dims if getattr(d, "name", None) == "rk")
-    _assert_only_direction_added(before=raw["dimensions"][1]["expression"], after=getattr(expr, "expression"))
+    _assert_only_direction_added(before=raw["dimensions"][1]["expression"], after=expr.field)
     measures = q.metrics or []
     _assert_only_direction_added(before=raw["measures"][0], after=measures[0].metric)
     _assert_only_direction_added(before=raw["measures"][1]["formula"], after=measures[1].metric)

@@ -94,9 +94,9 @@ SLayer handles all of these inline in a single query:
 ```json
 "metrics": [
   "sum(revenue)",
-  {"expression": "sum(revenue) / count(*)", "name": "aov"},
-  {"expression": "cumsum(sum(revenue))", "name": "running"},
-  {"expression": "change_pct(sum(revenue))", "name": "growth"}
+  {"metric": "sum(revenue) / count(*)", "alias": "aov"},
+  {"metric": "cumsum(sum(revenue))", "alias": "running"},
+  {"metric": "change_pct(sum(revenue))", "alias": "growth"}
 ]
 ```
 

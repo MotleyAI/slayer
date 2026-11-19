@@ -156,8 +156,8 @@ class TestParityWithMaterialisedAggregate:
         _assert_cells(n, case["source"][1])
 
 
-SPEND = {"expression": "sum(customers.spend)", "name": "c"}
-AMOUNT = {"expression": "sum(amount)", "name": "a"}
+SPEND = {"metric": "sum(customers.spend)", "alias": "c"}
+AMOUNT = {"metric": "sum(amount)", "alias": "a"}
 
 
 def _orders_assoc(**kw) -> dict:

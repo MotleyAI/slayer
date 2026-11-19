@@ -366,11 +366,11 @@ async def test_memory_node_learning_property(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_column_node_data_type_property(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:DatasetField {data_type: 'DOUBLE'}) RETURN c.id AS id",
+        "MATCH (c:DatasetField {data_type: 'Float'}) RETURN c.id AS id",
         rich_storage,
     )
     assert "shop.orders.amount" in ids
-    assert "shop.orders.status" not in ids  # TEXT, not DOUBLE
+    assert "shop.orders.status" not in ids  # String, not Float
 
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")

@@ -232,4 +232,4 @@ async def dataset_store(*models: SlayerDataset) -> AsyncGenerator[YAMLStorage]:
 async def stored_joins(storage: YAMLStorage, dataset: str = "orders") -> list[tuple[str | None, list[list[str]]]]:
     stored = await storage.get_dataset(dataset, data_source=DS)
     assert stored is not None
-    return [(j.name, j.column_pairs) for j in stored.relationships]
+    return [(j.name, [list(p) for p in j.column_pairs]) for j in stored.relationships]

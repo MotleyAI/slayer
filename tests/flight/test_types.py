@@ -8,7 +8,7 @@ import decimal
 import pyarrow as pa
 import pytest
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, canonical_datatype
 from slayer.flight.types import (
     SUPPORTED_DATATYPES,
     arrow_to_datatype,
@@ -91,7 +91,7 @@ def test_forward_then_reverse_round_trip() -> None:
         if dt.is_opaque or dt is DataType.ARRAY:
             continue
         round_tripped = arrow_to_datatype(datatype_to_arrow(dt))
-        assert round_tripped == dt, f"{dt} did not round-trip cleanly"
+        assert round_tripped == canonical_datatype(dt), f"{dt} did not round-trip cleanly"
 
 
 def test_opaque_datatype_maps_to_utf8() -> None:

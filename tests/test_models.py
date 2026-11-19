@@ -113,7 +113,7 @@ class TestOrderItem:
     def test_plain_column_no_raw_formula(self) -> None:
         """A plain column reference has no raw_formula."""
         item = OrderItem(field="status", direction="asc")
-        assert item.ref.name == "status"
+        assert item.field == "status"
         assert item.raw_expression is None
 
 
@@ -132,13 +132,13 @@ class TestOrderShorthandHealing:
         q = SlayerQuery(population="orders", order=[{"avg_processing_time_days": "desc"}])
         assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].ref.name == "avg_processing_time_days"
+        assert q.order[0].field == "avg_processing_time_days"
         assert q.order[0].direction == "desc"
 
     def test_shorthand_asc(self) -> None:
         q = SlayerQuery(population="orders", order=[{"status": "asc"}])
         assert q.order is not None
-        assert q.order[0].ref.name == "status"
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "asc"
 
     def test_shorthand_equals_canonical(self) -> None:
@@ -187,11 +187,11 @@ class TestOrderShorthandHealing:
 
     def test_multikey_expands_in_order(self) -> None:
         q = SlayerQuery(population="orders", order=[{"a": "desc", "b": "asc"}])
-        assert [(o.ref.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+        assert [(o.field, o.direction) for o in q.order or []] == [("a", "desc"), ("b", "asc")]
 
     def test_multikey_synonyms_and_case(self) -> None:
         q = SlayerQuery(population="orders", order=[{"a": "ASCENDING", "b": "Desc"}])
-        assert [(o.ref.name, o.direction) for o in q.order] == [("a", "asc"), ("b", "desc")]
+        assert [(o.field, o.direction) for o in q.order or []] == [("a", "asc"), ("b", "desc")]
 
     def test_multikey_partial_non_direction_raises(self) -> None:
         # Not every value is a direction -> not shorthand -> canonical validation rejects.
@@ -204,26 +204,26 @@ class TestOrderShorthandHealing:
         q = SlayerQuery(population="orders", order={"status": "desc"})
         assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].ref.name == "status"
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "desc"
 
     def test_bare_canonical_dict_wrapped(self) -> None:
         q = SlayerQuery(population="orders", order={"field": "status", "direction": "asc"})  # pyright: ignore[reportArgumentType] — a bare dict on purpose: the coercion under test
         assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].ref.name == "status"
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "asc"
 
     def test_bare_multikey_dict_wrapped(self) -> None:
         q = SlayerQuery(population="orders", order={"a": "desc", "b": "asc"})
-        assert [(o.ref.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+        assert [(o.field, o.direction) for o in q.order or []] == [("a", "desc"), ("b", "asc")]
 
     def test_bare_orderitem_wrapped(self) -> None:
         item = OrderItem(field="status", direction="desc")
         q = SlayerQuery(population="orders", order=item)
         assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].ref.name == "status"
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "desc"
 
     # --- canonical preserved; latent uppercase-direction bug fixed ---
@@ -231,7 +231,7 @@ class TestOrderShorthandHealing:
     def test_canonical_unchanged(self) -> None:
         q = SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "direction": "desc"}]})
         assert q.order is not None
-        assert q.order[0].ref.name == "status"
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "desc"
 
     def test_canonical_uppercase_direction_normalized(self) -> None:
@@ -246,7 +246,7 @@ class TestOrderShorthandHealing:
         with recorded():
             q = SlayerQuery.model_validate({"population": "orders", "order": [{"column": "desc"}]})
         assert q.order is not None
-        assert q.order[0].ref.name == "desc"
+        assert q.order[0].field == "desc"
         assert q.order[0].direction == "asc"
         assert [(p.old, p.new) for p in q.deprecated_inputs] == [("column", "field")]
 
@@ -255,7 +255,7 @@ class TestOrderShorthandHealing:
         # stays canonical (order by a column literally named "desc").
         q = SlayerQuery.model_validate({"population": "orders", "order": [{"field": "desc"}]})
         assert q.order is not None
-        assert q.order[0].ref.name == "desc"
+        assert q.order[0].field == "desc"
         assert q.order[0].direction == "asc"
 
     # --- rejections: malformed / ambiguous never silently mangled ---
@@ -310,7 +310,7 @@ class TestOrderShorthandHealing:
                 {"c": "asc", "d": "desc"},
             ],
         )
-        assert [(o.ref.name, o.direction) for o in q.order] == [
+        assert [(o.field, o.direction) for o in q.order or []] == [
             ("a", "desc"),
             ("b", "asc"),
             ("c", "asc"),
@@ -328,7 +328,7 @@ class TestOrderShorthandHealing:
             "population": "orders",
             "order": ({"a": "desc"}, {"field": "b", "direction": "asc"}),
         })
-        assert [(o.ref.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+        assert [(o.field, o.direction) for o in q.order or []] == [("a", "desc"), ("b", "asc")]
 
     def test_non_string_key_not_healed_raises(self) -> None:
         # A non-string key means the dict is not treated as shorthand; it falls
@@ -626,15 +626,11 @@ class TestWithinListDuplicateNames:
 
     def test_unnamed_model_measure_rejected(self) -> None:
         """A dataset metric must have a name."""
-        columns = [DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)]
+        raw = {"name": "orders", "sql_table": "t", "data_source": "test",
+               "fields": [{"name": "amount", "sql": "amount", "datatype": "Float"}],
+               "metrics": [{"expression": "sum(amount)"}]}
         with pytest.raises(ValueError, match="must have a name"):
-            SlayerDataset(
-                name="orders",
-                sql_table="t",
-                data_source="test",
-                fields=columns,
-                metrics=[DatasetMetric(expression="sum(amount)")],
-            )
+            SlayerDataset.model_validate(raw)
 
     def test_unique_names_accepted(self) -> None:
         model = SlayerDataset(
@@ -1451,10 +1447,10 @@ class TestStringCoercion:
         assert query.metrics[1] == QueryMetric(metric="sum(revenue) / count(*)", alias="aov")
 
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
-        query = SlayerQuery(
-            population="orders",
-            dimensions=["status", {"field": "customers.name", "label": "Customer"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "dimensions": ["status", {"field": "customers.name", "label": "Customer"}],
+        })
         assert query.dimensions is not None
         assert len(query.dimensions) == 2
         assert query.dimensions[1].ref is not None
@@ -1476,14 +1472,14 @@ class TestStringCoercion:
         assert query.dimensions is None
 
     def test_order_column_string(self) -> None:
-        item = OrderItem(field="revenue_sum", direction="desc")
-        assert item.ref.name == "revenue_sum"
-        assert item.ref.dataset is None
+        ref = OrderItem(field="revenue_sum", direction="desc").ref
+        assert ref is not None
+        assert (ref.dataset, ref.name) == (None, "revenue_sum")
 
     def test_order_column_dotted_string(self) -> None:
-        item = OrderItem(field="customers._count", direction="asc")
-        assert item.ref.name == "_count"
-        assert item.ref.dataset == "customers"
+        ref = OrderItem(field="customers._count", direction="asc").ref
+        assert ref is not None
+        assert (ref.dataset, ref.name) == ("customers", "_count")
 
     def test_time_dimension_string(self) -> None:
         td = TimeDimension(field="created_at", granularity="month")
@@ -1507,7 +1503,7 @@ class TestStringCoercion:
         assert query.time_dimensions is not None
         assert query.time_dimensions[0].field == "created_at"
         assert query.order is not None
-        assert query.order[0].ref.name == "_count"
+        assert query.order[0].field == "_count"
         assert query.order[0].direction == "desc"
 
 
@@ -1945,11 +1941,11 @@ class TestModelMeasureType:
 
     def test_legacy_string_value_absorbed(self) -> None:
         # Lenient validator on ModelMeasure.datatype mirrors Column.datatype.
-        m = DatasetMetric.model_validate({"expression": "count(*)", "datatype": "number"})
+        m = DatasetMetric.model_validate({"name": "m", "expression": "count(*)", "datatype": "number"})
         assert m.datatype == DataType.FLOAT
 
     def test_pseudo_type_drops_to_none(self) -> None:
-        m = DatasetMetric.model_validate({"expression": "count(*)", "datatype": "count"})
+        m = DatasetMetric.model_validate({"name": "m", "expression": "count(*)", "datatype": "count"})
         assert m.datatype is None  # default
 
     def test_query_inline_measure_accepts_type(self) -> None:

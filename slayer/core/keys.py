@@ -39,15 +39,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import (
     AXIS_COLLAPSING_TRANSFORMS,
-    INTEGER_AGGREGATIONS,
-    LIST_AGGREGATIONS,
-    NUMERIC_ONLY_AGGREGATIONS,
     DataType,
     DatePart,
-    RANK_FAMILY_TRANSFORMS,
+    INTEGER_AGGREGATIONS,
+    LIST_AGGREGATIONS,
+    NUMERIC_DATATYPES,
+    NUMERIC_ONLY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
+    RANK_FAMILY_TRANSFORMS,
     SUB_DAY_GRANULARITIES,
+    TEMPORAL_DATATYPES,
     TimeGranularity,
+    TypeKind,
+    kind_of,
 )
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, Granularity
@@ -78,7 +82,7 @@ def _spec(
     return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql, result=result, numeric=numeric)
 
 
-_TEXT, _BOOL, _INT, _DOUBLE = DataType.TEXT, DataType.BOOLEAN, DataType.INT, DataType.DOUBLE
+_TEXT, _BOOL, _INT, _DOUBLE = DataType.STRING, DataType.BOOLEAN, DataType.INTEGER, DataType.FLOAT
 
 
 def _library(low: int, high: Optional[int], *, result: Optional[DataType] = None, numeric: bool = False) -> ScalarSpec:
@@ -140,7 +144,7 @@ SCALAR_SPELLINGS: frozenset[str] = frozenset({
     "jsonb_extract_path_text",
 })
 RESERVED_SCALAR_NAMES: frozenset[str] = SCALAR_FUNCTIONS | SCALAR_SPELLINGS
-TEXT_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.TEXT)
+TEXT_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.STRING)
 BOOLEAN_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.BOOLEAN)
 # Scalars that read every argument as a number.
 NUMERIC_ARG_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.numeric)
@@ -1334,7 +1338,7 @@ def substitute_value_keys(
 
 
 # Conditional branch typing — Postgres CASE semantics.
-_NUMERIC_TYPES = frozenset({DataType.INT, DataType.DOUBLE})
+_NUMERIC_TYPES = NUMERIC_DATATYPES
 
 
 def join_conditional_branch_types(
@@ -1365,16 +1369,16 @@ def _joined_known_types(a: DataType, b: DataType) -> Optional[DataType]:
     if a == b:
         return a
     if a in _NUMERIC_TYPES and b in _NUMERIC_TYPES:
-        return DataType.DOUBLE
+        return DataType.FLOAT
     if {a, b} <= _NUMERIC_TYPES | {DataType.BOOLEAN}:
         # A boolean beside a number is its integer.
         return b if a is DataType.BOOLEAN else a
     if a in TEMPORAL_TYPES and b in TEMPORAL_TYPES:
-        return DataType.TIMESTAMP
+        return DataType.DATETIME
     return None
 
 
-TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP})
+TEMPORAL_TYPES = TEMPORAL_DATATYPES
 # Aggregations whose value is one of their inputs, so they keep a temporal type.
 _TEMPORAL_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 # Scalars returning one of their value arguments: name → value-argument positions (None = all).
@@ -1423,7 +1427,7 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
     if isinstance(key, LiteralKey):
         key = key.value
     if isinstance(key, datetime):
-        return DataType.TIMESTAMP
+        return DataType.DATETIME
     if isinstance(key, date):
         return DataType.DATE
     if isinstance(key, AggregateKey):
@@ -1437,7 +1441,7 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
 
 
 _CLOCK_TYPES: Mapping[str, DataType] = MappingProxyType({
-    "now": DataType.TIMESTAMP, "current_date": DataType.DATE,
+    "now": DataType.DATETIME, "current_date": DataType.DATE,
 })
 
 
@@ -1454,7 +1458,8 @@ def _scalar_temporal_type(key: ScalarCallKey, *, field_type: FieldTypeFn) -> Opt
     # NULLIF returns its first argument (or NULL); the second is only compared.
     if key.name == "nullif" and not _is_null_arg(key.args[0]):
         return types[0]
-    return DataType.TIMESTAMP if DataType.TIMESTAMP in types else DataType.DATE
+    stamps = {t for t in types if kind_of(t) is TypeKind.TIMESTAMP}
+    return (stamps.pop() if len(stamps) == 1 else DataType.DATETIME) if stamps else DataType.DATE
 
 
 # Aggregations whose value is one of their (boolean) inputs.
@@ -1561,9 +1566,9 @@ def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     if _is_int_literal(key) or boolean_valued(key, field_type=field_type):
         return True
     if isinstance(key, (FieldKey, FieldSqlKey)):
-        return field_type(key) is DataType.INT
+        return field_type(key) is DataType.INTEGER
     if isinstance(key, CastKey):
-        return key.data_type is DataType.INT
+        return key.data_type is DataType.INTEGER
     if isinstance(key, ArithmeticKey):
         return key.op in _INT_OPS and all(integer_valued(o, field_type=field_type) for o in key.operands)
     if isinstance(key, AggregateKey):
@@ -1610,7 +1615,7 @@ def _aggregate_integer_valued(key: AggregateKey, *, field_type: FieldTypeFn) -> 
 
 def _scalar_integer_valued(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bool:
     spec = SCALAR_SPECS.get(key.name)
-    if spec is not None and spec.result is DataType.INT:
+    if spec is not None and spec.result is DataType.INTEGER:
         return True
     if key.name not in _INT_SCALARS and key.name not in _VALUE_ARG_SCALARS:
         return False
@@ -1688,7 +1693,7 @@ def aggregation_source_type(source: object, *, field_type: FieldTypeFn) -> Optio
     if boolean_valued(source, field_type=field_type):
         return DataType.BOOLEAN
     if _boolean_int_expression(source, field_type=field_type):
-        return DataType.INT
+        return DataType.INTEGER
     if isinstance(source, (FieldKey, FieldSqlKey, CastKey)) or (
             isinstance(source, ScalarCallKey) and source.name in CONDITIONAL_SCALARS):
         return value_type(source, field_type=field_type)
@@ -1721,7 +1726,7 @@ def _fold_branch_types(
     joined: Optional[DataType] = None
     for arg in _returned_args(key):
         t = value_type(arg, field_type=field_type)
-        if t is None or t is DataType.UNKNOWN:
+        if t is None or t.is_opaque:
             continue
         if joined is not None:
             shared = _joined_known_types(joined, t)
@@ -1768,13 +1773,13 @@ def is_list_call(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bool:
 
 def elements_as_numbers(values: "ValueKey", *, text: bool) -> CastKey:
     """``values``' elements read one at a time as numbers (``text``: TEXT elements, through ``TRY_CAST``)."""
-    return CastKey(source=values, type_text="DOUBLE", data_type=DataType.DOUBLE, try_=text)
+    return CastKey(source=values, type_text="DOUBLE", data_type=DataType.FLOAT, try_=text)
 
 
 def numbers_read_list(key: ScalarCallKey, *, field_type: FieldTypeFn) -> Optional[CastKey]:
     """The second list of a ``contains_any`` / ``contains_all`` built by ``elements_as_numbers``, else ``None``."""
     other = key.args[1] if key.name in LIST_ONLY_FUNCTIONS and len(key.args) == 2 else None
-    if isinstance(other, CastKey) and other.data_type is DataType.DOUBLE and list_valued(
+    if isinstance(other, CastKey) and other.data_type is DataType.FLOAT and list_valued(
             other.source, field_type=field_type):
         return other
     return None
@@ -1785,11 +1790,11 @@ def literal_type(value: object) -> Optional[DataType]:
     if isinstance(value, bool):
         return DataType.BOOLEAN
     if isinstance(value, Decimal):
-        return DataType.INT if value == value.to_integral_value() else DataType.DOUBLE
+        return DataType.INTEGER if value == value.to_integral_value() else DataType.FLOAT
     if isinstance(value, str):
-        return DataType.TEXT
+        return DataType.STRING
     if isinstance(value, datetime):
-        return DataType.TIMESTAMP
+        return DataType.DATETIME
     if isinstance(value, date):
         return DataType.DATE
     return None
@@ -1804,7 +1809,7 @@ def value_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     if list_valued(key, field_type=field_type):
         return DataType.ARRAY
     if isinstance(key, CastKey):
-        return None if key.data_type is DataType.UNKNOWN else key.data_type
+        return None if kind_of(key.data_type) is TypeKind.UNKNOWN else key.data_type
     if isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS:
         return _fold_branch_types(key, field_type=field_type)[0]
     if boolean_valued(key, field_type=field_type):
@@ -1813,9 +1818,9 @@ def value_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     if temporal is not None:
         return temporal
     if integer_valued(key, field_type=field_type):
-        return DataType.INT
+        return DataType.INTEGER
     if numeric_valued(key, field_type=field_type):
-        return DataType.DOUBLE
+        return DataType.FLOAT
     if isinstance(key, ScalarCallKey):
         return _scalar_value_type(key, field_type=field_type)
     if isinstance(key, AggregateKey) and key.agg.lower() in _TEMPORAL_PRESERVING_AGGS:
@@ -1865,7 +1870,7 @@ def unit_word(arg: object) -> str:
 
 def date_add_type(base: DataType, unit: TimeGranularity) -> DataType:
     """``date_add``'s result type: a DATE stays a DATE for day-or-coarser units."""
-    return DataType.DATE if base is DataType.DATE and unit not in SUB_DAY_GRANULARITIES else DataType.TIMESTAMP
+    return DataType.DATE if base is DataType.DATE and unit not in SUB_DAY_GRANULARITIES else DataType.DATETIME
 
 
 def conditional_number_format(

@@ -337,18 +337,18 @@ def test_cube_expression_probe_over_a_reserved_word_table(live: Live) -> None:
 
 def test_osi_expression_probe_over_a_reserved_word_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("orders", source=RESERVED, fields=[f("id"), f("doubled", "amount * 2", datatype="String")])]))
-    assert _typed(models["orders"], "doubled") is _probed(live)
+    assert _typed(models["orders"], "doubled") is DataType.STRING
 
 
 def test_osi_expression_probe_over_a_mixed_case_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("items", source=live.mixed, fields=[f("qty"), f("doubled", "qty * 2", datatype="String")])]))
-    assert _typed(models["items"], "doubled") is _probed(live)
+    assert _typed(models["items"], "doubled") is DataType.STRING
 
 
 def test_osi_sql_source_selecting_from_a_reserved_word_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("orders", source='SELECT id, amount FROM "order"',
                                     fields=[f("id"), f("amount"), f("doubled", "amount * 2", datatype="String")])]))
-    assert _typed(models["orders"], "doubled") is _probed(live)
+    assert _typed(models["orders"], "doubled") is DataType.STRING
 
 
 @pytest.mark.parametrize("source_sql", [

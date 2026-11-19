@@ -57,11 +57,11 @@ async def test_measure_does_not_requantify(chain_engine: SlayerQueryEngine, labe
         ))
         _law(resp.population == population,
              detail=f"{label}: population moved to {resp.population!r} "
-                    f"with measures={[m['name'] for m in measures]}")
+                    f"with measures={[m['alias'] for m in measures]}")
         _law(resp.population_inferred is True,
              detail=f"{label}: population not flagged inferred")
         rows = {tuple(r[c] for c in dim_cols) for r in resp.data}
         _law(rows == base_rows,
              detail=f"{label}: dimension row set changed with "
-                    f"measures={[m['name'] for m in measures]}: "
+                    f"measures={[m['alias'] for m in measures]}: "
                     f"{rows ^ base_rows}")

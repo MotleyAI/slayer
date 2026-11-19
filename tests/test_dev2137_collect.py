@@ -66,7 +66,7 @@ class TestEligibility:
         assert "collect" in BUILTIN_AGGREGATIONS
         assert Aggregation(name="collect").expression is None
 
-    @pytest.mark.parametrize("type_", ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"])
+    @pytest.mark.parametrize("type_", ["String", "Integer", "Float", "Boolean", "Date", "DateTime"])
     async def test_eligible_on_scalar_columns(self, type_: str) -> None:
         await emit_contractors(query(dimensions=["team"], metrics=[metric("collect(x)", "c")]),
                                dialect="duckdb", datasets=[_typed_dataset(DataType(type_))])

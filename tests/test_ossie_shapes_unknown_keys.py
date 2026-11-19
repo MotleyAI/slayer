@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import warnings
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -67,11 +68,17 @@ def current(doc: dict[str, Any]) -> dict[str, Any]:
     return {"version": CURRENT_VERSIONS["SlayerModel"], **doc}
 
 
+def _placed(slot: str, build: Callable[[], Any]) -> SlayerDataset:
+    """A fresh dataset holding ``build()``'s object in ``slot`` (building either may refuse)."""
+    return SlayerDataset.model_validate({"name": "orders", "sql_table": "orders", "data_source": DS, slot: [build()]})
+
+
 class TestFresh:
     @pytest.mark.parametrize("location", sorted(LOCATIONS))
     def test_a_stray_key_is_refused_naming_its_path(self, location: str) -> None:
+        raw = with_stray(orders(), location)
         with pytest.raises(ValidationError) as info:
-            SlayerDataset.model_validate(with_stray(orders(), location))
+            SlayerDataset.model_validate(raw)
         err = unknown_key(info.value)
         assert (err.key, err.path, err.dataset) == ("stray", LOCATIONS[location][1], "orders")
         for part in ("stray", LOCATIONS[location][1], "orders"):
@@ -79,8 +86,9 @@ class TestFresh:
 
     @pytest.mark.parametrize("key", ["ai_context", "unique_keys", "nonportable_extensions"])
     def test_an_ossie_key_slayer_does_not_read_yet_is_refused(self, key: str) -> None:
+        raw = {**orders(), key: []}
         with pytest.raises(ValidationError) as info:
-            SlayerDataset.model_validate({**orders(), key: []})
+            SlayerDataset.model_validate(raw)
         assert unknown_key(info.value).key == key
 
     def test_a_1x_key_converts_before_the_check(self) -> None:
@@ -92,19 +100,19 @@ class TestFresh:
         assert dataset.fields[0].name == "order_id"
 
     @pytest.mark.parametrize(("slot", "build"), [
-        pytest.param("fields", lambda: DatasetField(name="x", datatype="Integer", stray=1), id="field"),
-        pytest.param("metrics", lambda: DatasetMetric(name="m", expression="count(*)", stray=1), id="metric"),
+        pytest.param("fields", lambda: DatasetField(name="x", datatype="Integer", stray=1), id="field"),  # pyright: ignore[reportCallIssue]  # deliberate stray key
+        pytest.param("metrics", lambda: DatasetMetric(name="m", expression="count(*)", stray=1), id="metric"),  # pyright: ignore[reportCallIssue]  # deliberate stray key
         pytest.param("relationships", lambda: DatasetRelationship(
-            to="customers", from_columns=["customer_id"], to_columns=["id"], stray=1), id="relationship"),
-        pytest.param("aggregations", lambda: Aggregation(name="a", expression="SUM({value})", stray=1),
+            to="customers", from_columns=["customer_id"], to_columns=["id"], stray=1), id="relationship"),  # pyright: ignore[reportCallIssue]  # deliberate stray key
+        pytest.param("aggregations", lambda: Aggregation(name="a", expression="SUM({value})", stray=1),  # pyright: ignore[reportCallIssue]  # deliberate stray key
                      id="aggregation"),
         pytest.param("aggregations", lambda: Aggregation(name="a", expression="SUM({value}) * {k}",
-                                                         params=[AggregationParam(name="k", sql="2", stray=1)]),
+                                                         params=[AggregationParam(name="k", sql="2", stray=1)]),  # pyright: ignore[reportCallIssue]  # deliberate stray key
                      id="aggregation_parameter"),
     ])
     def test_a_prebuilt_nested_object_keeps_its_stray_key_for_the_refusal(self, slot: str, build: Any) -> None:
         with pytest.raises((ValidationError, UnknownKeyError)) as info:
-            SlayerDataset(name="orders", sql_table="orders", data_source=DS, **{slot: [build()]})
+            _placed(slot, build)
         assert unknown_key(info.value).key == "stray"
 
 
@@ -135,8 +143,9 @@ class TestFreshSurfaces:
 
     async def test_the_python_client_refuses(self, tmp_path: Path) -> None:
         storage = await shop_store(backend="yaml", base=str(tmp_path))
+        client, bad = SlayerClient(storage=storage), self.bad_orders()
         with pytest.raises((ValidationError, UnknownKeyError)) as info:
-            await SlayerClient(storage=storage).create_dataset(self.bad_orders())
+            await client.create_dataset(bad)
         err = unknown_key(info.value)
         assert (err.key, err.path, err.dataset) == ("primaryKey", "fields[0].primaryKey", "orders")
 

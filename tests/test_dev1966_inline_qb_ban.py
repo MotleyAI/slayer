@@ -23,6 +23,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1966_fixtures import (
     CUST_REV,
     dev1966_engine,
+    ext_m,
     m,
     query,
     rev_by_status_dataset,
@@ -135,7 +136,7 @@ class TestOtherInlineSourcesRejected:
 
 class TestExtensionsAccepted:
     async def test_extension_over_a_stored_query_backed_model(self, engine) -> None:
-        ext = {"dataset": "cust_rev", "metrics": [m("sum(rev * 2)", "r2")]}
+        ext = {"dataset": "cust_rev", "metrics": [ext_m("sum(rev * 2)", "r2")]}
         resp = await engine.execute(query(
             population="cust_rev", extensions=[ext], dimensions=["customer_id"], metrics=["r2"]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {

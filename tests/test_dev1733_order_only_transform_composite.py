@@ -254,8 +254,9 @@ class TestOrderItemEntryPoint:
         assert [r["orders.status"] for r in resp.data] == expected
 
     def test_plain_column_and_dotted_ref_unaffected(self) -> None:
-        assert OrderItem(field="status").ref.name == "status"
+        assert OrderItem(field="status").field == "status"
         dotted = OrderItem(field="customers.region").ref
+        assert dotted is not None
         assert (dotted.dataset, dotted.name) == ("customers", "region")
         agg = OrderItem.model_validate({"field": "sum(amount)"})
         assert (agg.ref, agg.raw_expression) == (None, "sum(amount)")

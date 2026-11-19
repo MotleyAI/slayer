@@ -33,11 +33,11 @@ Drift is computed per source mode:
   live columns, types, primary keys, and foreign keys. Compare against
   `dataset.fields` and `dataset.relationships`. Live types are mapped through SLayer's
   coarse buckets (`number` / `string` / `boolean` / `temporal`):
-  `INTEGER` and `FLOAT` collapse to `number`, `DATE` and `TIMESTAMP`
+  `Integer`, `Decimal` and `Float` collapse to `number`, `Date`, `DateTime` and `DateTimeTz`
   collapse to `temporal`. A bucket change on a field that still exists is a
   [re-type finding](#re-type-findings), never a delete — switching `BIGINT` ↔
   `FLOAT` is *not* drift, but `NUMBER` ↔ `STRING` is. On SQLite, which stores
-  dates as text, a `DATE` or `TIMESTAMP` field over a live `TEXT` column is not drift.
+  dates as text, a `Date`, `DateTime` or `DateTimeTz` field over a live text column is not drift.
 * **`sql`** — trial-execute `SELECT * FROM (<dataset.sql>) AS _sd_validate
   WHERE 1=0`. Successful execution exposes cursor metadata (column names
   and types), which goes through the same field-level diff. A failed
@@ -62,7 +62,7 @@ A drop on `M.X` cascades through:
 2. **Metrics on M.** Any `DatasetMetric.expression` on `M` referencing `X`
    or any other dropped metric on `M` is dropped.
 3. **Relationships.** Any relationship on `M` with `X` as a local FK field drops; any
-   relationship from `K` whose `to == M` and whose `join_pairs` target `X`
+   relationship from `K` whose `to == M` and whose `to_columns` name `X`
    drops.
 4. **Filters.** Dataset-level filter strings on `M` referencing `X` are
    moved to `remove_filters`.
@@ -102,7 +102,7 @@ either:
   remove: {fields, metrics, aggregations, relationships, relationship_edges}, remove_filters,
   reasons}`. Replays directly as an `edit_dataset` call; `relationships` lists each
   dropped relationship by its target (its edge name when several relationships share that
-  target) and `relationship_edges` addresses each exactly as `{to, name, join_pairs}`.
+  target) and `relationship_edges` addresses each exactly as `{to, name, from_columns, to_columns}`.
 * `WholeDatasetDelete` — `{tool: "delete_dataset", dataset_name, data_source,
   reasons}`. Replays directly as a `delete_dataset` call.
 
@@ -166,7 +166,7 @@ and the validator — excluded tables are not touched in either direction.
 
 On SQLite, `validate_datasets` additionally runs the value-level affinity
 probe (see [Ingestion → SQLite affinity probing](ingestion.md#sqlite-affinity-probing))
-against every persisted base field with `datatype = INT`. When the probe
+against every persisted base field with `datatype = Integer`. When the probe
 disagrees with the persisted type — the live storage class is `REAL`,
 non-coercible `TEXT`, `BLOB`, or otherwise non-integral numeric evidence —
 `validate_datasets` reports a re-type finding with the probe's verdict as

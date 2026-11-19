@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, finer_datatype
 from slayer.core.errors import ForcedFilterError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig
@@ -282,7 +282,9 @@ class TestReflectedMetadataUsesSlayerTypes:
             engine.close()
             engine_factory.invalidate_engine(ds)
         (model,) = report.datasets
-        assert {c.name: (c.datatype, c.format, c.db_type) for c in model.fields} == expected
+        # Ingestion narrows an exact numeric or zoned timestamp by its db_type; raw reflection keeps the coarse type.
+        assert {c.name: (c.datatype, c.format, c.db_type) for c in model.fields} == {
+            name: (finer_datatype(t, d), f, d) for name, (t, f, d) in expected.items()}
         assert all(isinstance(c.type, DataType) for c in reflected)
         assert {c.name: c.type for c in reflected} == {name: t for name, (t, _f, _d) in expected.items()}
 

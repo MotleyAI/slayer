@@ -495,7 +495,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Compare lists of one element type, or cast one list's elements (CAST(x AS …[])).",
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_known_elements', exc='ListTypeError',
-         message='`…` holds opaque (UNKNOWN) elements, which cannot be ….'
+         message='`…` holds opaque (Opaque) elements, which cannot be ….'
          + SUGGEST + "Declare the field's element_type.",
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_in', exc='ListTypeError',
@@ -511,7 +511,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + 'Give the empty list a typed operand.',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_call', exc='ListTypeError',
-         message='`…` holds opaque (UNKNOWN) elements, which …() cannot read.'
+         message='`…` holds opaque (Opaque) elements, which …() cannot read.'
          + SUGGEST + "Declare the field's element_type.",
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_call', exc='ListTypeError',
@@ -527,7 +527,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + '…',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_aggregation', exc='ListTypeError',
-         message='…() cannot collect the opaque (UNKNOWN) values of `…`.'
+         message='…() cannot collect the opaque (Opaque) values of `…`.'
          + SUGGEST + 'Collect a field with a scalar type.',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='check_list_dimension', exc='ListTypeError',

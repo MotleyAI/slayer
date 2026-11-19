@@ -120,7 +120,7 @@ class TestFunctionMatrix:
             await engine.execute(dimension_query(expression))
             assert inferred_type(as_dimension(expression), dialect=dialect) is DataType.FLOAT
         else:
-            await assert_branch_mismatch(engine, dimension_query(expression), "TEXT", "INT", call=names)
+            await assert_branch_mismatch(engine, dimension_query(expression), "String", "Integer", call=names)
 
     @pytest.mark.parametrize("function", list(FUNCTIONS))
     async def test_non_numeric_text_literal_rejected(self, engine: SlayerQueryEngine, function: str) -> None:
@@ -130,13 +130,13 @@ class TestFunctionMatrix:
             with pytest.raises(ScalarOperandTypeError):
                 await engine.execute(query)
         else:
-            await assert_branch_mismatch(engine, query, "TEXT", "INT", call=names)
+            await assert_branch_mismatch(engine, query, "String", "Integer", call=names)
 
     @pytest.mark.parametrize("function", list(FUNCTIONS))
     async def test_date_beside_a_number_rejected(self, engine: SlayerQueryEngine, function: str) -> None:
         template, names = FUNCTIONS[function]
         await assert_branch_mismatch(
-            engine, dimension_query(template.format(a="order_date", b="amount")), "DATE", "INT", call=names,
+            engine, dimension_query(template.format(a="order_date", b="amount")), "Date", "Integer", call=names,
         )
 
 
@@ -146,23 +146,23 @@ class TestScenarios:
 
     async def test_joined_column_branch(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(
-            engine, dimension_query("CASE WHEN amount > 1 THEN customers.name ELSE amount END"), "TEXT", "INT",
+            engine, dimension_query("CASE WHEN amount > 1 THEN customers.name ELSE amount END"), "String", "Integer",
         )
 
     async def test_arithmetic_branch(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(
-            engine, dimension_query("CASE WHEN amount > 1 THEN status ELSE amount + 1 END"), "TEXT", "INT",
+            engine, dimension_query("CASE WHEN amount > 1 THEN status ELSE amount + 1 END"), "String", "Integer",
         )
 
     async def test_conditional_inside_an_aggregation(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(
-            engine, q(metrics=[m("max(CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END)")]), "TEXT", "INT",
+            engine, q(metrics=[m("max(CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END)")]), "String", "Integer",
         )
 
     @pytest.mark.parametrize(("expression", "types", "call"), [
-        (MIXED, ("TEXT", "INT"), ("coalesce",)),
-        ("ifnull(status, amount)", ("TEXT", "INT"), ("ifnull", "coalesce")),
-        ("greatest(order_date, amount)", ("DATE", "INT"), ("greatest",)),
+        (MIXED, ("String", "Integer"), ("coalesce",)),
+        ("ifnull(status, amount)", ("String", "Integer"), ("ifnull", "coalesce")),
+        ("greatest(order_date, amount)", ("Date", "Integer"), ("greatest",)),
     ])
     async def test_null_handling_and_scalar_min_max(self, engine: SlayerQueryEngine, expression: str,
                                                     types: tuple[str, ...], call: tuple[str, ...]) -> None:
@@ -191,24 +191,24 @@ class TestScenarios:
             {"name": "s1", "population": "orders",
              "dimensions": [{"field": "status", "alias": "s"}, {"field": "amount", "alias": "n"}]},
             {"population": "s1", "dimensions": [{"field": "coalesce(s, n)", "alias": "x"}]},
-        ], "TEXT", "INT", call=("coalesce",))
+        ], "String", "Integer", call=("coalesce",))
 
 
 class TestEveryPosition:
     @pytest.mark.parametrize(("query", "types"), [
-        pytest.param(dimension_query(MIXED), ("TEXT", "INT"), id="dimension"),
-        pytest.param(q(metrics=[m(f"max({MIXED})")]), ("TEXT", "INT"), id="aggregate-input"),
-        pytest.param(q(metrics=[m("coalesce(sum(amount), max(status))")]), ("TEXT", "INT"), id="over-aggregates"),
-        pytest.param(q(time_dimensions=MONTH, metrics=[m(f"time_shift(max({MIXED}), -1)")]), ("TEXT", "INT"),
+        pytest.param(dimension_query(MIXED), ("String", "Integer"), id="dimension"),
+        pytest.param(q(metrics=[m(f"max({MIXED})")]), ("String", "Integer"), id="aggregate-input"),
+        pytest.param(q(metrics=[m("coalesce(sum(amount), max(status))")]), ("String", "Integer"), id="over-aggregates"),
+        pytest.param(q(time_dimensions=MONTH, metrics=[m(f"time_shift(max({MIXED}), -1)")]), ("String", "Integer"),
                      id="transform"),
-        pytest.param(q(metrics=[m(f"count(*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("TEXT", "INT"),
+        pytest.param(q(metrics=[m(f"count(*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("String", "Integer"),
                      id="filter-clause"),
-        pytest.param(q(metrics=["count(*)"], filter=[f"{MIXED} IS NOT NULL"]), ("TEXT", "INT"), id="row-filter"),
+        pytest.param(q(metrics=["count(*)"], filter=[f"{MIXED} IS NOT NULL"]), ("String", "Integer"), id="row-filter"),
         pytest.param(q(dimensions=["status"], metrics=["count(*)"],
-                       filter=["coalesce(max(status), sum(amount)) IS NOT NULL"]), ("TEXT", "INT"),
+                       filter=["coalesce(max(status), sum(amount)) IS NOT NULL"]), ("String", "Integer"),
                      id="post-aggregation-filter"),
         pytest.param(q(dimensions=["id"], distinct_dimension_values=False, order=[{"field": MIXED}]),
-                     ("TEXT", "INT"), id="order"),
+                     ("String", "Integer"), id="order"),
     ])
     async def test_rejected_at_plan_time(self, engine: SlayerQueryEngine, query: SlayerQuery,
                                          types: tuple[str, ...]) -> None:
@@ -221,7 +221,7 @@ class TestEveryPosition:
         with pytest.raises(DateOperandTypeError) as info:
             await engine.execute(query)
         message = str(info.value)
-        for part in ("greatest", "DATE", "INT", "CAST"):
+        for part in ("greatest", "Date", "Integer", "CAST"):
             assert part in message, message
 
 

@@ -440,7 +440,7 @@ def _contractors(**body: Any) -> SlayerQuery:
 
 
 def _count(name: str = "n") -> dict[str, str]:
-    return {"expression": "count(*)", "name": name}
+    return {"metric": "count(*)", "alias": name}
 
 
 class ListCase(BaseModel):

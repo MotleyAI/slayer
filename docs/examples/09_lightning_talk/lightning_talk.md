@@ -33,9 +33,9 @@ The notebook covers each one in two or three cells.
 {
   "population": "orders",
   "metrics": [
-    {"expression": "sum(order_total)", "name": "revenue"},
-    {"expression": "change_pct(sum(order_total))", "name": "mom_growth"},
-    {"expression": "sum(order_total) / time_shift(sum(order_total), -1, 'year') - 1", "name": "yoy_growth"}
+    {"metric": "sum(order_total)", "alias": "revenue"},
+    {"metric": "change_pct(sum(order_total))", "alias": "mom_growth"},
+    {"metric": "sum(order_total) / time_shift(sum(order_total), -1, 'year') - 1", "alias": "yoy_growth"}
   ],
   "dimensions": ["stores.name"],
   "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],

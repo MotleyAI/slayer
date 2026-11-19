@@ -321,11 +321,11 @@ class TestYamlStorageRefinementOnLoad:
             raw = yaml.safe_load(f)
         assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         types_by_name = {c["name"]: c["datatype"] for c in raw["fields"]}
-        assert types_by_name["id"] == "INT"
-        assert types_by_name["qty"] == "INT"
-        assert types_by_name["amount"] == "DOUBLE"
-        assert types_by_name["name"] == "TEXT"
-        assert types_by_name["double_amount"] == "DOUBLE"
+        assert types_by_name["id"] == "Integer"
+        assert types_by_name["qty"] == "Integer"
+        assert types_by_name["amount"] == "Float"
+        assert types_by_name["name"] == "String"
+        assert types_by_name["double_amount"] == "Float"
 
     async def test_second_load_does_not_introspect(self, storage_with_v4_model: V4Store) -> None:
         """After write-back, the on-disk dict is v5 with refined types. The
@@ -898,8 +898,8 @@ class TestCliMigrateTypes:
             raw = yaml.safe_load(f)
         assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         types_by_name = {c["name"]: c["datatype"] for c in raw["fields"]}
-        assert types_by_name["id"] == "INT"
-        assert types_by_name["qty"] == "INT"
+        assert types_by_name["id"] == "Integer"
+        assert types_by_name["qty"] == "Integer"
 
     async def test_missing_datasource_raises_for_refineable_model(self, tmp_path) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
         """Mirror of the ABC's raise: the CLI must fail loudly rather than

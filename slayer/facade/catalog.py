@@ -22,10 +22,11 @@ from slayer.core.relationship_search import paths_from, unaddressable_pairs
 from slayer.core.relationship_walker import OrientedRelationship, OrientedLike, neighbors
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
-    PRIMARY_KEY_AGGREGATIONS,
     DataType,
-    RelationshipCardinality,
     JoinType,
+    PRIMARY_KEY_AGGREGATIONS,
+    RelationshipCardinality,
+    TEMPORAL_DATATYPES,
 )
 from slayer.core.models import (
     Aggregation,
@@ -81,7 +82,7 @@ class FacadeRelationship(BaseModel):
     exposed, mirroring the BFS dim/metric filter.
     """
     to: str
-    join_pairs: list[list[str]]
+    column_pairs: list[tuple[str, str]]
     join_type: JoinType = JoinType.LEFT
     cardinality: RelationshipCardinality | None = None
     name: str | None = None
@@ -347,7 +348,7 @@ def _facade_relationships_for(
     out: list[FacadeRelationship] = []
     for edge in neighbors(dataset=dataset, datasets_by_name=datasets_by_name):
         target = datasets_by_name.get(edge.to)
-        if target is None or target.hidden or not edge.join_pairs:
+        if target is None or target.hidden or not edge.column_pairs:
             continue
         out.append(_facade_relationship_from(relationship=edge))
     return out
@@ -356,7 +357,7 @@ def _facade_relationships_for(
 def _facade_relationship_from(*, relationship: OrientedLike) -> FacadeRelationship:
     return FacadeRelationship(
         to=relationship.to,
-        join_pairs=[list(pair) for pair in relationship.join_pairs],
+        column_pairs=list(relationship.column_pairs),
         join_type=relationship.join_type,
         cardinality=relationship.cardinality,
         name=relationship.name,
@@ -500,7 +501,7 @@ def _synthetic_row_count(dataset: SlayerDataset) -> FacadeMetric:
     return FacadeMetric(
         name=name,
         description=f"Row count of {dataset.name}",
-        data_type=DataType.INT,
+        data_type=DataType.INTEGER,
         metric_expression="count(*)",
     )
 
@@ -578,7 +579,7 @@ def _local_dimensions_for(*, dataset: SlayerDataset) -> list[FacadeDimension]:
             description=col.description,
             label=col.label,
             data_type=col.datatype,
-            is_time=col.datatype in {DataType.DATE, DataType.TIMESTAMP},
+            is_time=col.datatype in TEMPORAL_DATATYPES,
             dimension_ref=col.name,
         ))
     return out
@@ -617,7 +618,7 @@ def _dimension_expansion(
                 description=col.description,
                 label=col.label,
                 data_type=col.datatype,
-                is_time=col.datatype in {DataType.DATE, DataType.TIMESTAMP},
+                is_time=col.datatype in TEMPORAL_DATATYPES,
                 dimension_ref=col.name,
             )
         )
@@ -633,7 +634,7 @@ def _dimension_expansion(
                     description=col.description,
                     label=col.label,
                     data_type=col.datatype,
-                    is_time=col.datatype in {DataType.DATE, DataType.TIMESTAMP},
+                    is_time=col.datatype in TEMPORAL_DATATYPES,
                     dimension_ref=ref,
                     row_preserving=row_preserving,
                 )

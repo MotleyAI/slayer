@@ -1119,7 +1119,7 @@ class SQLGenerator:
         self, expr: Expression, *, count: int, unit: TimeGranularity, operand: Optional[DataType],
     ) -> Expression:
         """``expr`` moved by ``count`` ``unit``s through the dialect's one date-arithmetic primitive."""
-        typed = DataType.TIMESTAMP if operand is None or operand not in TEMPORAL_TYPES else operand
+        typed = DataType.DATETIME if operand is None or operand not in TEMPORAL_TYPES else operand
         return self._dialect.build_date_add(
             expr=expr, count=exp.Literal.number(count), unit=unit, operand=typed,
         )
@@ -2540,7 +2540,7 @@ class SQLGenerator:
         # Calendar parts apply one by one in written order, clamping like date_add.
         assert wtd_slot is not None
         time_type = temporal_type(wtd_slot.key.source, field_type=src_scope.field_type)
-        operand = DataType.DATE if time_type is DataType.DATE else DataType.TIMESTAMP
+        operand = DataType.DATE if time_type is DataType.DATE else DataType.DATETIME
         unit, step, _ = granularity_parts(plan.window_granularity)
         bucket_end = self._date_offset(_base_col(wtd_alias), count=step, unit=unit, operand=operand)
         lower_bound, operand = bucket_end, date_add_type(operand, unit)
@@ -5449,12 +5449,12 @@ class SQLGenerator:
         d = self._dialect
         base, multiple, _ = granularity_parts(factor.granularity)
         first = d.build_bucket(
-            col_expr=d.build_temporal_literal(value=factor.lower, dt=DataType.TIMESTAMP),
+            col_expr=d.build_temporal_literal(value=factor.lower, dt=DataType.DATETIME),
             granularity=factor.granularity,
         )
 
         def at(count: Expression) -> Expression:
-            return d.build_date_add(expr=first, count=count, unit=base, operand=DataType.TIMESTAMP)
+            return d.build_date_add(expr=first, count=count, unit=base, operand=DataType.DATETIME)
 
         def steps(n: Expression) -> Expression:
             return n if multiple == 1 else exp.Mul(this=exp.Paren(this=n), expression=exp.Literal.number(multiple))

@@ -72,7 +72,7 @@ class TestDimensionsRewrite:
             metrics=[{"metric": "count(*)"}],
         )
         dump = q.model_dump()
-        assert not dump["dimensions"]
+        assert not dump.get("dimensions")
         assert [
             (td["field"], td["granularity"])
             for td in dump["time_dimensions"]

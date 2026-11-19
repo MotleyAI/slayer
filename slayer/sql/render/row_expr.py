@@ -293,7 +293,7 @@ def render_cast(
     if not key.try_:
         return dialect.build_cast(value, to)
     value.meta[CONSTANT_INPUT] = reads_no_rows(source)
-    if key.data_type is DataType.INT:
+    if key.data_type is DataType.INTEGER:
         return dialect.build_integer_try_cast(value, to, source=key.numeric_source)
     return dialect.build_try_cast(value, to)
 
@@ -410,7 +410,7 @@ def render_scalar_key(
     if is_list_fn(key.name) and is_list_call(key, field_type=field_type):
         numbers = numbers_read_list(key, field_type=field_type)
         if numbers is not None:
-            each = DataType.TEXT if numbers.try_ else DataType.DOUBLE
+            each = DataType.STRING if numbers.try_ else DataType.FLOAT
             return dialect.rewrite_target_ast(
                 dialect.build_list_call(key.name, (args[0], part(numbers.source)), each=each))
         element = _shared_element(key, field_type=field_type, field_element=field_element or _no_element)
@@ -467,7 +467,7 @@ def render_date_call(
         start, end = args[1], args[2]
         operand = types[1]
         if types[1] is not types[2]:
-            operand = DataType.TIMESTAMP
+            operand = DataType.DATETIME
             start = dialect.promote_to_timestamp(start) if types[1] is DataType.DATE else start
             end = dialect.promote_to_timestamp(end) if types[2] is DataType.DATE else end
         return dialect.build_date_diff(
@@ -495,7 +495,7 @@ def _operand_type(key: ScalarCallKey, pos: int, *, field_type: FieldTypeFn) -> D
 
 def data_type_target(dt: DataType) -> exp.DataType:
     """The CAST target for SLayer type ``dt``; INT is 64-bit."""
-    return exp.DataType(this=exp.DataType.Type.BIGINT if dt is DataType.INT else exp.DataType.Type(dt.value))
+    return exp.DataType(this=exp.DataType.Type.BIGINT if dt is DataType.INTEGER else exp.DataType.Type(dt.kind.value))
 
 
 def int_value(value: Expression) -> Expression:

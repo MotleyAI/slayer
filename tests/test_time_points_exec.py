@@ -374,9 +374,9 @@ class TestGranularityCalls:
         assert f"`{column}` is not one" in str(ei.value), str(ei.value)
 
     @pytest.mark.parametrize(("formula", "kind"), [
-        ("sum(date_trunc('month', ts))", "TIMESTAMP"),
-        ("avg(date_trunc('month', d))", "DATE"),
-        ("sum(date_add(ts, 1, 'day'))", "TIMESTAMP"),
+        ("sum(date_trunc('month', ts))", "DateTime"),
+        ("avg(date_trunc('month', d))", "Date"),
+        ("sum(date_add(ts, 1, 'day'))", "DateTime"),
     ])
     async def test_numeric_aggregation_of_temporal_expression_rejected(self, engine, formula, kind) -> None:
         query = SlayerQuery.model_validate({"population": "ev", "metrics": [{"metric": formula, "alias": "m"}]})

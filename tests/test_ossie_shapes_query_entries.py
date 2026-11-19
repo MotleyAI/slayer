@@ -173,7 +173,8 @@ class TestOneXEntries:
 
     def test_a_metric_object_converts(self) -> None:
         with recorded() as caught:
-            query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)", name="total")])
+            query = SlayerQuery.model_validate(
+                {"population": "orders", "metrics": [DatasetMetric(expression="sum(amount)", name="total")]})
         [metric] = query.metrics or []
         assert isinstance(metric, QueryMetric)
         assert (metric.metric, metric.alias) == ("sum(amount)", "total")
@@ -264,9 +265,9 @@ class TestExecution:
     async def test_an_alias_equal_to_the_default_name_changes_nothing(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
         aliased = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
-                                          "dimensions": [{"field": "customers.region", "alias": "region"}]})
+                                          "dimensions": [{"field": "status", "alias": "status"}]})
         plain = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
-                                        "dimensions": ["customers.region"]})
+                                        "dimensions": ["status"]})
         assert list(aliased.columns) == list(plain.columns)
         assert sorted_rows(aliased) == sorted_rows(plain)
 

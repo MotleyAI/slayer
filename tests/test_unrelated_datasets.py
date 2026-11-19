@@ -542,11 +542,11 @@ class TestNoExplosion:
     @pytest.mark.parametrize("mode", ["broadcast", "associate"])
     async def test_three_unrelated_datasets_grouped(self, backend, mode: str) -> None:
         measures = wide_metrics()
-        names = [x["name"] for x in measures]
+        names = [x["alias"] for x in measures]
         async with wide_engine(backend) as eng:
             resp = await eng.execute(query(dimensions=["city"], metrics=measures, to_many_handling=mode))
             alone = {
-                x["name"]: rows(await eng.execute(query(dimensions=["city"], metrics=[x], to_many_handling=mode)), x["name"])
+                x["alias"]: rows(await eng.execute(query(dimensions=["city"], metrics=[x], to_many_handling=mode)), x["alias"])
                 for x in measures
             }
         assert len(resp.data) == len(WIDE_CITIES)
@@ -559,10 +559,10 @@ class TestNoExplosion:
     @pytest.mark.parametrize("mode", ["broadcast", "associate", "error"])
     async def test_three_unrelated_datasets_dimensionless(self, backend, mode: str) -> None:
         measures = wide_metrics()
-        names = [x["name"] for x in measures]
+        names = [x["alias"] for x in measures]
         async with wide_engine(backend) as eng:
             resp = await eng.execute(query(metrics=measures, to_many_handling=mode))
-            alone = [only_row(await eng.execute(query(metrics=[x], to_many_handling=mode)), x["name"])[0]
+            alone = [only_row(await eng.execute(query(metrics=[x], to_many_handling=mode)), x["alias"])[0]
                      for x in measures]
         got = only_row(resp, *names)
         assert got == tuple(_wide_row(200.0)[name] for name in names)

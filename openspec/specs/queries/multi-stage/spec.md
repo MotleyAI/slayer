@@ -8,7 +8,7 @@ is ordered and validated so every stage can read the siblings it references.
 
 ### Requirement: Stages are ordered by every sibling reference
 A multi-stage query list SHALL be ordered so each stage follows every sibling it
-references — as its `population`, as an extension's `source_name`, or as a
+references — as its `population`, as an extension's `dataset`, or as a
 `relationships[].to` of one of its extensions —
 regardless of the order the non-root stages were supplied in. The last entry SHALL stay
 the root. Duplicate stage names, an unnamed non-root stage, a self-reference, a non-root
@@ -41,7 +41,7 @@ naming the offending stages.
 
 ### Requirement: Stage names are query-local
 A stage name SHALL be visible only within its own query list, where a name the
-query writes (`population`, an extension's `source_name`, the `relationships[].to`
+query writes (`population`, an extension's `dataset`, the `relationships[].to`
 of an extension) SHALL resolve to the stage in preference to a
 same-named model. A stored definition — a stored model's joins, a stored
 query-backed model's `source_queries` — SHALL never see a stage name: its

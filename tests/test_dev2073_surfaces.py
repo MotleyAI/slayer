@@ -79,7 +79,7 @@ def _table(catalog: FacadeCatalog, name: str) -> FacadeTable:
 
 
 def _facade_edges(table: FacadeTable) -> set[tuple]:
-    return {(j.name, j.to, str(j.column_pairs)) for j in table.relationships}
+    return {(j.name, j.to, str([list(p) for p in j.column_pairs])) for j in table.relationships}
 
 
 class TestFacadeCatalogExposesBothOrientations:

@@ -633,7 +633,7 @@ class TestTypeAndOpaque:
         assert DataType.STRING in short.values()
 
     async def test_opaque_routed_dimension_rejected(self, tmp_path) -> None:
-        """A routed dimension onto an opaque (UNKNOWN) column is rejected for
+        """A routed dimension onto an opaque (Opaque) column is rejected for
         GROUP BY, exactly as the full path would be."""
         engine = await _chain_engine(tmp_path)
         q = _q(dimensions=["Consumer.geo"])

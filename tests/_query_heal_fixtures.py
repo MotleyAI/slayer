@@ -165,13 +165,16 @@ def table(resp: SlayerResponse, *, ordered: bool) -> list[tuple]:
 
 
 async def assert_equivalent(
-    engine: SlayerQueryEngine, healed: Any, canonical: Any, *, ordered: bool = False, **execute_kw: Any,
+    engine: SlayerQueryEngine, healed: Any, canonical: Any, *, ordered: bool = False, deprecated: bool = False,
+    **execute_kw: Any,
 ) -> SlayerResponse:
-    """``healed`` returns the same columns, rows, SQL and warnings as ``canonical``."""
+    """``healed`` returns the same columns, rows, SQL and warnings as ``canonical`` (plus deprecations when
+    ``deprecated``: a 1.x form)."""
     expected = await engine.execute(canonical, **execute_kw)
     actual = await engine.execute(healed, **execute_kw)
     assert actual.columns == expected.columns
     assert table(actual, ordered=ordered) == table(expected, ordered=ordered)
     assert actual.sql == expected.sql
-    assert [w.human_message() for w in actual.warnings] == [w.human_message() for w in expected.warnings]
+    kept = [w for w in actual.warnings if not (deprecated and w.kind == "deprecated_input")]
+    assert [w.human_message() for w in kept] == [w.human_message() for w in expected.warnings]
     return actual

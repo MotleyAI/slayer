@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import QueryMetric, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 
 from tests._dev1740_fixtures import (
     BAND_AVG,
@@ -273,9 +273,8 @@ class TestSiblingStageSource:
         stage2 = SlayerQuery(
             population="per_city",
             dimensions=[
-                "region",
-                {"field": "CASE WHEN sum(amt, partition_by=city) > 5000 "
-                               "THEN 1 ELSE 0 END", "alias": "band"},
+                QueryDimension(field="region"),
+                QueryDimension(field="CASE WHEN sum(amt, partition_by=city) > 5000 THEN 1 ELSE 0 END", alias="band"),
             ],
             metrics=[QueryMetric(metric="sum(amt)", alias="band_total")],
         )

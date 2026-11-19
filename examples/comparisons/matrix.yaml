@@ -332,7 +332,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`\"population\": {\"source_name\": \"orders\", \"fields\": [...], \"relationships\": [...]}`"
+    how: "`\"population\": {\"dataset\": \"orders\", \"fields\": [...], \"relationships\": [...]}`"
   malloy:
     verdict: 'yes'
     how: "`extend: { join_one: ...; measure: ... }`"

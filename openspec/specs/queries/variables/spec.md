@@ -16,7 +16,7 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 
 #### Scenario: Computed dimension in string and object form
 
-- **WHEN** a query has dimension `"amount * {k}"`, or dimension `{"expression": "amount * {k}"}`, with `variables={"k": 10}`
+- **WHEN** a query has dimension `"amount * {k}"`, or dimension `{"field": "amount * {k}"}`, with `variables={"k": 10}`
 - **THEN** both construct and group by `amount * 10`
 
 #### Scenario: Order expression in colon and call form

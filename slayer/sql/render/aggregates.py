@@ -19,6 +19,8 @@ from slayer.core.enums import (
     BOOLEAN_RESTORED_AGGREGATIONS,
     BUILTIN_AGGREGATIONS,
     DataType,
+    TypeKind,
+    kind_of,
 )
 from slayer.core.models import VALUE_PLACEHOLDER, reserved_value_param_message
 from slayer.sql.dialects.base import SqlDialect, is_stat_agg1, is_stat_agg2
@@ -139,7 +141,7 @@ def apply_aggregate(
         return entry.node_class(this=exp.Distinct(expressions=[keyed]))
     read = aggregate_input(value=value, aggregation=entry.name, input_type=input_type)
     # A DOUBLE input is already fractional (and may be an exact decimal whose precision is kept).
-    if entry.name == "avg" and dialect.integer_avg and input_type is not DataType.DOUBLE:
+    if entry.name == "avg" and dialect.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE:
         read = exp.Cast(this=read, to=exp.DataType.build("FLOAT"))
     aggregate = entry.node_class(this=read)
     restored = dialect.declared_cast_type(DataType.BOOLEAN)

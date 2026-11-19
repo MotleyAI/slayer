@@ -68,7 +68,7 @@ MCP tool errors that prefix an error with its class name SHALL not repeat the pr
 When a query measure's declared name equals a source column of the query's source model, the `MetricNameCollidesWithFieldError` SHALL carry a `suggestion:` naming a free alternative: the formula's derived (canonical) name when that name is neither a source column nor already used in the query, otherwise the first `<name>_<n>` (n = 2, 3, …) that is neither.
 
 #### Scenario: The derived name is free
-- **WHEN** a query rooted at a model with a column `credit` measures `{"expression": "sum(credit)", "name": "credit"}`
+- **WHEN** a query rooted at a model with a column `credit` measures `{"metric": "sum(credit)", "alias": "credit"}`
 - **THEN** the query fails with `MetricNameCollidesWithFieldError` whose `suggestion` names `credit_sum`
 
 #### Scenario: The derived name is taken

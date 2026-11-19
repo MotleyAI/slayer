@@ -1196,7 +1196,7 @@ class TestValidateModelsSqliteProbe:
         result = await engine.validate_datasets(data_source="ds")
         assert _delete_for("sensordata", result) is None, result
         finding = _retype_for(result, "tempstabidx")
-        assert (finding["stored_type"], finding["live_type"]) == ("INT", "DOUBLE"), finding
+        assert (finding["stored_type"], finding["live_type"]) == ("Integer", "Float"), finding
         assert "slayer ingest" in finding["remedy"], finding
 
     async def test_reports_a_retype_when_storage_widens_to_text(
@@ -1217,7 +1217,7 @@ class TestValidateModelsSqliteProbe:
         result = await engine.validate_datasets(data_source="ds")
         assert _delete_for("sensordata", result) is None, result
         finding = _retype_for(result, "tempstabidx")
-        assert (finding["stored_type"], finding["live_type"]) == ("INT", "TEXT"), finding
+        assert (finding["stored_type"], finding["live_type"]) == ("Integer", "String"), finding
         assert "slayer ingest" in finding["remedy"], finding
 
     async def test_no_drift_when_probe_agrees(

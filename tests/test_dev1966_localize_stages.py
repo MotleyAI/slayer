@@ -6,7 +6,7 @@ from slayer.core.query import DatasetExtension
 from slayer.core.scope import StageDisplay
 from slayer.engine.stage_ordering import localize_stages
 
-from tests._dev1966_fixtures import m, query
+from tests._dev1966_fixtures import ext_m, m, query
 
 USER_X = "__slayer_stage_x"
 
@@ -25,10 +25,10 @@ class TestUserScope:
         root = query(population="x", dimensions=["x.status"], metrics=[m("sum(a)", "t")])
         stages, _ = localize_stages([_x(), root])
         assert stages[-1].population == USER_X
-        assert [d.field for d in stages[-1].dimensions or []] == ["status"]
+        assert [d.name for d in stages[-1].dimensions or []] == ["status"]
 
     def test_extension_base_is_respelled(self) -> None:
-        root = query(population="x", extensions=[{"dataset": "x", "metrics": [m("sum(a * 2)", "t")]}],
+        root = query(population="x", extensions=[{"dataset": "x", "metrics": [ext_m("sum(a * 2)", "t")]}],
                      metrics=["t"])
         stages, _ = localize_stages([_x(), root])
         assert stages[-1].population == USER_X

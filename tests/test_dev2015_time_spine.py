@@ -319,7 +319,7 @@ class TestPopulation:
         def cells(resp, by=()):
             return sorted((*(value(r, d) for d in by), bucket_key(r["time_spine.timestamp"])) for r in resp.data)
 
-        edit = (lambda ms: [x for x in ms if x["name"] != "r"]) if variant == "drop" else (
+        edit = (lambda ms: [x for x in ms if x["alias"] != "r"]) if variant == "drop" else (
             lambda ms: [*ms, m("avg(orders.amount)", "a")])
         base = await engine.execute(spine_query(metrics=TWO_FACTS))
         other = await engine.execute(spine_query(metrics=edit(TWO_FACTS)))

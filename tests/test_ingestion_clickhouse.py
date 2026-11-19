@@ -238,9 +238,9 @@ class TestWrappedDbTypeCapture:
                 ch_types.Nullable(ch_types.Decimal(10, 4))
             )},
         ])
-        assert by_name["amount"].type is DataType.FLOAT
+        assert by_name["amount"].type is DataType.DECIMAL
         assert by_name["amount"].db_type == "Decimal(18, 2)"
-        assert by_name["rate"].type is DataType.FLOAT
+        assert by_name["rate"].type is DataType.DECIMAL
         assert by_name["rate"].db_type == "Decimal(10, 4)"
 
     async def test_wrapped_opaque_stores_unwrapped_string(self):

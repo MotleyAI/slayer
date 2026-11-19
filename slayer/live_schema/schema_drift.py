@@ -23,7 +23,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 from typing_extensions import deprecated
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, NUMERIC_DATATYPES, TEMPORAL_DATATYPES, pre_2_0_datatype, stored_datatype
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -33,7 +33,7 @@ from slayer.core.models import (
     is_base_field_sql,
     physical_column_sql,
 )
-from slayer.core.query import ComputedDimension, SlayerQuery, extension_dataset_names
+from slayer.core.query import QueryDimension, SlayerQuery, extension_dataset_names
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.core.vocabulary import name_twins
 from slayer.core.warnings import BrokenDependentWarning
@@ -172,6 +172,10 @@ class RetypeFinding(BaseModel):
             return data
         data = {_PRE_2_0_FINDING_KEYS.get(k, k) if _PRE_2_0_FINDING_KEYS.get(k, k) not in data else k: v
                 for k, v in data.items()}
+        for key, db_type in (("stored_type", None), ("live_type", data.get("live_db_type"))):
+            value = data.get(key)
+            if isinstance(value, str) and stored_datatype(value) is not None and value not in DataType:
+                data = {**data, key: pre_2_0_datatype(value, db_type=db_type)}
         if "remedy_kind" in data:
             return data
         remedy = data.get("remedy")
@@ -224,7 +228,7 @@ def touches(reads: StatementReads, entry: Any) -> bool:
 
 
 def _reads_edge(relationships: Iterable[RelationshipRead], *, dataset: str, edge: RelationshipEdgeRef) -> bool:
-    pairs = frozenset((p[0], p[1]) for p in edge.join_pairs)
+    pairs = frozenset((p[0], p[1]) for p in edge.column_pairs)
     return any(
         declaring == dataset and target == edge.to and read_pairs == pairs
         and (edge.name is None or name == edge.name)
@@ -363,13 +367,13 @@ class LiveTable(BaseModel):
 
 def data_type_bucket(dt: DataType) -> str:
     """Coarse bucket for comparing types; INT/DOUBLE → "number", DATE/TIMESTAMP → "temporal" so driver variance isn't drift."""
-    if dt in (DataType.INT, DataType.DOUBLE):
+    if dt in NUMERIC_DATATYPES:
         return "number"
-    if dt == DataType.TEXT:
+    if dt == DataType.STRING:
         return "string"
     if dt == DataType.BOOLEAN:
         return "boolean"
-    if dt in (DataType.DATE, DataType.TIMESTAMP):
+    if dt in TEMPORAL_DATATYPES:
         return "temporal"
     return str(dt)
 
@@ -378,7 +382,7 @@ def _type_buckets_conflict(*, persisted: DataType, live: DataType, temporal_text
     """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP over live TEXT is the dialect's own date storage."""
     if live is DataType.ARRAY and persisted is not DataType.ARRAY:
         return False
-    if temporal_text and live is DataType.TEXT and persisted in (DataType.DATE, DataType.TIMESTAMP):
+    if temporal_text and live is DataType.STRING and persisted in TEMPORAL_DATATYPES:
         return False
     if live.is_opaque:
         return not persisted.is_opaque
@@ -475,7 +479,7 @@ def _diff_sql_table_relationships(
     dropped: list[DatasetRelationship] = []
     reasons: list[DeleteReason] = []
     for relationship in dataset.relationships:
-        local_cols = [pair[0] for pair in relationship.join_pairs]
+        local_cols = [pair[0] for pair in relationship.column_pairs]
         missing_locals = [
             lc for lc in local_cols
             if (col := dataset.get_field(lc)) is None
@@ -894,17 +898,19 @@ def _ref_edges(*, ref: str, scope: QueryScope, root: str | None = None) -> list[
 def _stage_refs(stage: SlayerQuery) -> list[str]:
     """Every field reference of one stage: metrics, dimensions, time dimensions, filters."""
     refs = [
-        ref for m in stage.metrics or [] if (expression := getattr(m, "expression", None))
-        for ref in _metric_expression_refs(expression)
+        ref for m in stage.metrics or [] if m.metric
+        for ref in _metric_expression_refs(m.metric)
     ]
-    refs += [
-        ref for d in stage.dimensions or []
-        for ref in (sorted(_metric_expression_refs(d.expression)) if isinstance(d, ComputedDimension) else [d.full_name])
-    ]
+    refs += [ref for d in stage.dimensions or [] for ref in _dimension_refs(d)]
     refs += [ref for td in stage.time_dimensions or [] for ref in _metric_expression_refs(td.field)]
     # Mode-B (DSL) filters: use the DSL parser so aggregations/transforms surface.
-    refs += [col for f in stage.filter or [] for col in _filter_refs_dsl(f)]
+    refs += [col for f in stage.filter_conditions for col in _filter_refs_dsl(f)]
     return refs
+
+
+def _dimension_refs(dimension: QueryDimension) -> list[str]:
+    ref = dimension.ref
+    return sorted(_metric_expression_refs(dimension.field)) if dimension.is_computed or ref is None else [ref.full_name]
 
 
 def _definition_refs(field: DatasetField | DatasetMetric) -> list[str]:
@@ -963,7 +969,7 @@ def _check_stage_against_base(
     state: _CascadeState,
 ) -> set[str]:
     """Dropped field (PKs excluded — rule 7) and extension-metric names on ``base_name`` the stage's ``refs`` read."""
-    own_metrics = {m.name for e in stage.extensions or [] if e.source_name == base_name for m in e.metrics or []}
+    own_metrics = {m.name for e in stage.extensions or [] if e.dataset == base_name for m in e.metrics or []}
     cascadable = state.cascadable(base_name) | (state.dropped_metrics.get(base_name, set()) & own_metrics)
     if not cascadable:
         return set()
@@ -1058,7 +1064,7 @@ def _stage_cascade_state(*, stage: SlayerQuery, scope: QueryScope, state: _Casca
         dropped_relationships={name: list(refs) for name, refs in state.dropped_relationships.items()},
         pk_per_dataset=state.pk_per_dataset,
     )
-    extended = [scope.datasets[e.source_name] for e in stage.extensions if e.source_name in scope.datasets]
+    extended = [scope.datasets[e.dataset] for e in stage.extensions if e.dataset in scope.datasets]
     changed = True
     while changed:
         changed = False
@@ -1266,7 +1272,7 @@ def _cascade_relationships(*, dataset: SlayerDataset, state: _CascadeState) -> b
             continue
         # Raw dropped_cols: a dropped local PK key invalidates the relationship too.
         local_missing = [
-            pair[0] for pair in relationship.join_pairs
+            pair[0] for pair in relationship.column_pairs
             if pair[0] in state.dropped_cols.get(dataset.name, set())
         ]
         if local_missing:
@@ -1283,7 +1289,7 @@ def _cascade_relationships(*, dataset: SlayerDataset, state: _CascadeState) -> b
             continue
         # Raw dropped_cols, not cascadable: a target PK drop still invalidates the relationship.
         foreign_missing = [
-            pair[1] for pair in relationship.join_pairs
+            pair[1] for pair in relationship.column_pairs
             if pair[1] in state.dropped_cols.get(tgt.name, set())
         ]
         if not foreign_missing:
@@ -1905,7 +1911,7 @@ async def _introspect_one_table(*, client: SqlClient, table_name: str, ref: Sche
     """One table's live columns via the reflection door; ``ref`` keeps the read catalog-scoped."""
     cols = await reflect_columns(client=client, table_name=table_name, ref=ref)
     return LiveTable(
-        columns={c.name: c.type for c in cols},
+        columns={c.name: c.narrowed_type for c in cols},
         db_types={c.name: c.type_name for c in cols if c.type_name},
     )
 
@@ -2178,13 +2184,13 @@ async def _sqlite_probe_int_drift_for_dataset(
     drifts: list[RetypeFinding] = []
     for col in dataset.fields:
         physical = physical_column_sql(sql=col.sql, name=col.name)
-        if col.datatype is not DataType.INT or not _field_is_base(col.sql) or live.columns.get(physical) is not DataType.INT:
+        if col.datatype is not DataType.INTEGER or not _field_is_base(col.sql) or live.columns.get(physical) is not DataType.INTEGER:
             continue
         verdict = await _probe_validate_datasets_field(
             client=client, dataset=dataset, col=col, physical=physical,
             table_name=table_name, schema_name=schema_name,
         )
-        if verdict is None or verdict is DataType.INT:
+        if verdict is None or verdict is DataType.INTEGER:
             continue
         drifts.append(RetypeFinding.of(dataset=dataset, field=col, live_type=verdict, live_db_type=None,
                                        remedy_kind="reingest"))

@@ -16,7 +16,7 @@ from slayer.engine.plan import plan_stages
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
-from slayer.core.query import QueryMetric
+from slayer.core.query import QueryDimension, QueryMetric
 
 from tests._dev1739_fixtures import (
     SlayerQuery,
@@ -219,13 +219,8 @@ class TestReservedPrefixAcrossStages:
         root = SlayerQuery(
             population="stage1",
             dimensions=[
-                "region",
-                {
-                    "field":
-                        "CASE WHEN sum(total, partition_by=region) > 5 "
-                        "THEN 1 ELSE 0 END",
-                    "alias": "band",
-                },
+                QueryDimension(field="region"),
+                QueryDimension(field="CASE WHEN sum(total, partition_by=region) > 5 THEN 1 ELSE 0 END", alias="band"),
             ],
             metrics=[QueryMetric(metric="sum(total)", alias="s")],
         )

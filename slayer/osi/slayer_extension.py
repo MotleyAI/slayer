@@ -20,9 +20,8 @@ from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import GranularitySpec
 from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, DatasetMetric
-from slayer.core.vocabulary import (
-    AGGREGATION_KEYS, DATASET_KEYS, FIELD_KEYS, METRIC_KEYS, RELATIONSHIP_KEYS, Spellings,
-)
+from slayer.core import vocabulary
+from slayer.core.vocabulary import Spellings
 from slayer.osi.dialects import PORTABLE_READER, reader_for
 from slayer.osi.models import OSIExpression, OSINonportableExtension
 
@@ -89,7 +88,7 @@ class SourceStructure(BaseModel):
 
     sql_table: str | None = None
     sql: str | None = None
-    filters: list[str] = []
+    filters: list[str] | None = None
     source_queries: list[dict[str, Any]] | None = None
     query_variables: dict[str, Any] = {}
 
@@ -157,34 +156,34 @@ def encode(payload: _Payload, *, ossie: Any) -> dict[str, Any]:
     return {"vendor_name": VENDOR, "data": stamped.model_dump(mode="json", exclude_none=True)}
 
 
-def _renamed_each(items: Any, table: dict[str, str], spellings: Spellings) -> Any:
-    return [spellings.rename(i, table) if isinstance(i, dict) else i for i in items] if isinstance(items, list) else items
+def _converted_each(items: Any, convert: Any, spellings: Spellings) -> Any:
+    return [convert(i, spellings) for i in items] if isinstance(items, list) else items
 
 
 def _version_2(data: dict[str, Any]) -> dict[str, Any]:
-    """A version-1 payload in the version-2 (Ossie) vocabulary."""
+    """A version-1 payload in the version-2 (Ossie) vocabulary and shapes."""
     spellings = Spellings(stored=True)
     out = {**data, "version": 2}
     kind = out.get("kind")
     if kind == "field":
         out = spellings.rename(out, {"column": "field"})
-        if isinstance(out.get("field"), dict):
-            out["field"] = spellings.rename(out["field"], FIELD_KEYS)
+        out["field"] = vocabulary.field(out.get("field"), spellings)
     elif kind == "metric":
         out = spellings.rename(out, {"model": "dataset", "measure": "metric"})
-        if isinstance(out.get("metric"), dict):
-            out["metric"] = spellings.rename(out["metric"], METRIC_KEYS)
+        out["metric"] = vocabulary.metric(out.get("metric"), spellings)
     elif kind == "relationship" and isinstance(out.get("declarations"), list):
-        declarations = _renamed_each(out["declarations"], {"model": "dataset", "join": "relationship"}, spellings)
+        declarations = [spellings.rename(d, {"model": "dataset", "join": "relationship"}) if isinstance(d, dict) else d
+                        for d in out["declarations"]]
         out["declarations"] = [
-            {**d, "relationship": spellings.rename(d["relationship"], RELATIONSHIP_KEYS)}
+            {**d, "relationship": vocabulary.relationship(d["relationship"], spellings)}
             if isinstance(d, dict) and isinstance(d.get("relationship"), dict) else d for d in declarations
         ]
     elif kind == "dataset":
-        out = spellings.rename(out, DATASET_KEYS)
-        out["fields"] = _renamed_each(out.get("fields"), FIELD_KEYS, spellings)
-        out["metrics"] = _renamed_each(out.get("metrics"), METRIC_KEYS, spellings)
-        out["aggregations"] = _renamed_each(out.get("aggregations"), AGGREGATION_KEYS, spellings)
+        out = vocabulary.dataset(out, spellings)
+        if isinstance(out.get("source"), dict):
+            source = {**out["source"], "source_queries": _converted_each(
+                out["source"].get("source_queries"), vocabulary.query, spellings)}
+            out["source"] = {k: v for k, v in source.items() if v is not None and not (k == "filters" and v == [])}
         out = {k: v for k, v in out.items() if v is not None}
     return out
 

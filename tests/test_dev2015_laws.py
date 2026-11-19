@@ -49,7 +49,7 @@ def _cells(resp, *, by: list[str]) -> dict[tuple, dict[str, Any]]:
     out: dict[tuple, dict[str, Any]] = {}
     for row in resp.data:
         cell = (*(value(row, d) for d in by), bucket_key(row["time_spine.timestamp"]))
-        out[cell] = {k.rsplit(".", 1)[-1]: v for k, v in row.items() if k.rsplit(".", 1)[-1] in {x["name"] for x in POOL}}
+        out[cell] = {k.rsplit(".", 1)[-1]: v for k, v in row.items() if k.rsplit(".", 1)[-1] in {x["alias"] for x in POOL}}
     return out
 
 

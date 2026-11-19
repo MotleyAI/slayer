@@ -164,14 +164,14 @@ _DATATYPES = [
     pytest.param("status", DataType.STRING, None, "String", id="text"),
     pytest.param("quantity", DataType.INTEGER, None, "Integer", id="int"),
     pytest.param("amount", DataType.FLOAT, None, "Float", id="double"),
-    pytest.param("o_totalprice", DataType.FLOAT, "DECIMAL(18,2)", "Decimal", id="decimal"),
-    pytest.param("o_totalprice", DataType.FLOAT, "NUMERIC(10, 2)", "Decimal", id="numeric"),
+    pytest.param("o_totalprice", DataType.DECIMAL, "DECIMAL(18,2)", "Decimal", id="decimal"),
+    pytest.param("o_totalprice", DataType.DECIMAL, "NUMERIC(10, 2)", "Decimal", id="numeric"),
     pytest.param("is_paid", DataType.BOOLEAN, None, "Boolean", id="boolean"),
     pytest.param("ordered_on", DataType.DATE, None, "Date", id="date"),
     pytest.param("ordered_at", DataType.DATETIME, None, "DateTime", id="timestamp"),
-    pytest.param("ordered_at", DataType.DATETIME, "TIMESTAMP WITH TIME ZONE", "DateTimeTz", id="timestamptz"),
-    pytest.param("ordered_at", DataType.DATETIME, "TIMESTAMPTZ", "DateTimeTz", id="timestamptz-short"),
-    pytest.param("note", DataType.OPAQUE, "JSON", None, id="unknown"),
+    pytest.param("ordered_at", DataType.DATETIME_TZ, "TIMESTAMP WITH TIME ZONE", "DateTimeTz", id="timestamptz"),
+    pytest.param("ordered_at", DataType.DATETIME_TZ, "TIMESTAMPTZ", "DateTimeTz", id="timestamptz-short"),
+    pytest.param("note", DataType.OPAQUE, "JSON", "Opaque", id="unknown"),
 ]
 
 
@@ -188,13 +188,6 @@ async def test_field_datatype(env, physical: str, type_: DataType, db_type: str 
     v = field(dataset(result.document, "orders"), "v")
     assert v is not None
     assert v.get("datatype") == datatype
-
-
-async def test_recorded_ossie_datatype_used_when_consistent(env) -> None:
-    column = col("v", DataType.DATETIME, "ordered_at", meta={"osi_datatype": "DateTimeTz"})
-    v = field(dataset((await export_datasets(env, _one_column_orders(column))).document, "orders"), "v")
-    assert v is not None
-    assert v["datatype"] == "DateTimeTz"
 
 
 async def test_recorded_ossie_datatype_ignored_when_inconsistent(env) -> None:

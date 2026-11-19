@@ -388,10 +388,7 @@ class TestHttpBodyShape:
         client.query_sync(payload)
         body = cap.last_body
         assert body is not None
-        # Each measure landed as a dict, not a bare string.
-        for m in body["metrics"]:
-            assert isinstance(m, dict)
-            assert m.get("expression") == "sum(amount)"
+        assert body["metrics"] == ["sum(amount)"]
 
     # --- SlayerQuery --------------------------------------------------- #
 

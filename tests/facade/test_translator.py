@@ -11,7 +11,7 @@ import time
 import pytest
 from pydantic import BaseModel
 
-from slayer.core.enums import DataType, JoinType, TimeGranularity
+from slayer.core.enums import DataType, JoinType, PRE_2_0_DATATYPES, TimeGranularity
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import DatasetExtension
 from slayer.core.syntax import Cmp, Ref, parse_expr
@@ -37,6 +37,13 @@ from slayer.facade.translator import (
 def dialect(request):
     """Both the dialect-less (Flight) and Postgres parse modes — mapping must match."""
     return request.param
+
+
+def _shown(old: str) -> str:
+    """The display name of a pre-2.0 datatype value."""
+    datatype = PRE_2_0_DATATYPES[old]
+    assert datatype is not None
+    return datatype.value
 
 
 def _catalog() -> FacadeCatalog:
@@ -610,7 +617,7 @@ def test_simple_metric_and_dimension(dialect) -> None:
     assert len(result.query.metrics) == 1
     assert result.query.metrics[0].metric == "sum(revenue)"
     assert result.query.dimensions is not None
-    assert [d.full_name for d in result.query.dimensions] == ["status"]
+    assert [d.field for d in result.query.dimensions] == ["status"]
     mapping = dict(result.field_name_mapping)
     assert mapping == {
         "orders.revenue_sum": "revenue_sum",
@@ -640,7 +647,7 @@ def test_cross_model_dotted_dimension(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
-    assert [d.full_name for d in result.query.dimensions] == ["customers.region"]
+    assert [d.field for d in result.query.dimensions] == ["customers.region"]
     mapping = dict(result.field_name_mapping)
     assert mapping["orders.customers.region"] == "customers.region"
 
@@ -789,7 +796,7 @@ def test_order_by_aggregate_expression_resolves(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].ref.name == "revenue_sum"
+    assert result.query.order[0].field == "revenue_sum"
     assert result.query.order[0].direction == "desc"
 
 
@@ -849,7 +856,7 @@ def test_order_by_aggregate_alias_for_count_star(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].ref.name == "count"
+    assert result.query.order[0].field == "count"
     assert result.query.order[0].direction == "desc"
 
 
@@ -861,7 +868,7 @@ def test_order_by_aggregate_call_with_alias_uses_projected_name(dialect) -> None
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].ref.name == "rev"
+    assert result.query.order[0].field == "rev"
     assert result.query.order[0].direction == "desc"
 
 
@@ -1393,7 +1400,7 @@ def test_order_by_by_projected_metric_name(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].ref.name == "revenue_sum"
+    assert result.query.order[0].field == "revenue_sum"
     assert result.query.order[0].direction == "desc"
 
 
@@ -1433,7 +1440,7 @@ def test_cast_column_projection_admits_date_to_timestamp(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
-    assert [d.full_name for d in result.query.dimensions] == ["delivered_at"]
+    assert [d.field for d in result.query.dimensions] == ["delivered_at"]
     assert result.projection_types == [DataType.DATETIME]
     assert dict(result.field_name_mapping) == {
         "orders.delivered_at": "delivered_at",
@@ -1469,7 +1476,7 @@ def test_cast_joined_column_projection(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
-    assert [d.full_name for d in result.query.dimensions] == ["customers.region"]
+    assert [d.field for d in result.query.dimensions] == ["customers.region"]
     assert result.projection_types == [DataType.STRING]
 
 
@@ -1548,7 +1555,7 @@ def test_cast_identity_pair_admitted_for_every_type(col: str, target: str, diale
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.projection_types == [DataType(target)]
+    assert result.projection_types == [PRE_2_0_DATATYPES[target]]
 
 
 @pytest.mark.parametrize(
@@ -1651,7 +1658,7 @@ def test_cast_order_by_via_alias_works(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].ref.name == "delivered_at"
+    assert result.query.order[0].field == "delivered_at"
     assert result.query.order[0].direction == "asc"
     assert result.projection_types == [DataType.DATETIME]
 
@@ -1813,7 +1820,7 @@ def test_cast_aliased_projection_order_by_via_alias_works(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].ref.name == "delivered_at"
+    assert result.query.order[0].field == "delivered_at"
     assert result.query.order[0].direction == "asc"
 
 
@@ -1891,8 +1898,8 @@ def test_cast_alias_group_by_lossy_pair_rejected(
     msg = str(exc_info.value)
     assert "GROUP BY on CAST projection" in msg
     assert "lossy pair" in msg
-    assert expected_source in msg
-    assert expected_target in msg
+    assert _shown(expected_source) in msg
+    assert _shown(expected_target) in msg
 
 
 @pytest.mark.parametrize(
@@ -1917,7 +1924,7 @@ def test_cast_alias_order_by_safe_pair_admitted(
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
     assert result.query.order[0].direction == "asc"
-    assert result.projection_types == [DataType(target)]
+    assert result.projection_types == [PRE_2_0_DATATYPES[target]]
 
 
 @pytest.mark.parametrize(
@@ -1964,8 +1971,8 @@ def test_cast_implicit_grouping_lossy_pair_rejected(
     msg = str(exc_info.value)
     assert "GROUP BY on CAST projection" in msg
     assert "lossy pair" in msg
-    assert expected_source in msg
-    assert expected_target in msg
+    assert _shown(expected_source) in msg
+    assert _shown(expected_target) in msg
 
 
 @pytest.mark.parametrize(
@@ -1989,7 +1996,7 @@ def test_cast_alias_group_by_safe_pair_admitted(
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.projection_types[0] == DataType(target)
+    assert result.projection_types[0] == PRE_2_0_DATATYPES[target]
 
 
 def test_cast_order_by_bare_column_does_not_shadow_cast_projection(dialect) -> None:
@@ -2001,7 +2008,7 @@ def test_cast_order_by_bare_column_does_not_shadow_cast_projection(dialect) -> N
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].ref.name == "id"
+    assert result.query.order[0].field == "id"
     assert result.query.order[0].direction == "asc"
     assert result.projection_types == [DataType.INTEGER, DataType.STRING]
 
@@ -2029,7 +2036,7 @@ def test_cast_joined_column_metabase_alias_resolves(dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
     assert result.projection_types == [DataType.STRING]
 
 
@@ -2192,7 +2199,7 @@ def test_left_join_subquery_projects_joined_column(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
     assert result.query.dimensions is not None
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
     assert dict(result.field_name_mapping) == {"orders.stores.name": "Stores__name"}
     assert result.query.limit == 5
 
@@ -2206,7 +2213,7 @@ def test_left_join_subquery_inverted_on_accepted(dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
 
 
 def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
@@ -2323,7 +2330,7 @@ def test_left_join_subquery_group_by_joined_col(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
     # The joined-col projection registers stores.name as a derived dim.
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
     mapping = dict(result.field_name_mapping)
     assert mapping["orders.stores.name"] == "Stores__name"
 
@@ -2362,7 +2369,7 @@ def test_left_join_parent_qualifier_bare_table_accepted(dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
 
 
 def test_left_join_uses_configured_join_emits_no_warning(dialect, caplog) -> None:
@@ -2384,7 +2391,7 @@ def test_left_join_on_hidden_fk_column_succeeds(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
 
 
 def test_left_join_on_column_case_insensitive(dialect) -> None:
@@ -2397,7 +2404,7 @@ def test_left_join_on_column_case_insensitive(dialect) -> None:
     assert isinstance(result, QueryResult)
     # Canonical-case lookup happens before the (target_model, join_pairs) check.
     assert result.query.population == "orders"
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
 
 
 def test_left_join_on_column_case_ambiguity_rejected(dialect) -> None:
@@ -2436,7 +2443,7 @@ def test_left_join_alias_different_from_target_name(dialect) -> None:
     )
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
 
 
 # --- Positive: dynamic-join fallback + WARN ----------------------------------
@@ -2459,7 +2466,7 @@ def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) ->
     assert j.to == "stores"
     assert j.column_pairs == [("store_id", "id")]
     assert j.join_type == JoinType.LEFT
-    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["stores.name"]
     assert dict(result.field_name_mapping) == {"orders.stores.name": "Stores__name"}
     warns = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("dynamic join" in m and "orders" in m and "stores" in m for m in warns)

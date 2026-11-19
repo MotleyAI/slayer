@@ -46,8 +46,8 @@ from slayer.core.keys import (
 from slayer.core.models import DatasetMetric, SlayerDataset
 from slayer.core.granularity import Granularity, nests_into, resolve_granularity
 from slayer.core.query import (
-    ComputedDimension,
-    ORDER_PLACEHOLDER_NAMES,
+    QueryDimension,
+    QueryMetric,
     SlayerQuery,
     TimeDimension,
     call_callee,
@@ -228,7 +228,7 @@ def _reject_metric_refs_in_filters(
     *, query: SlayerQuery, metric_names: FrozenSet[str], scope,
     bundle: ResolvedSourceBundle,
 ) -> None:
-    for f in (query.filter or []):
+    for f in (query.filter_conditions):
         if not isinstance(f, str):
             continue
         try:
@@ -258,7 +258,7 @@ def _reject_metric_refs_in_order(
     bundle: ResolvedSourceBundle,
 ) -> None:
     for item in (query.order or []):
-        raw = getattr(item, "raw_expression", None)
+        raw = item.raw_expression
         if raw:
             parsed = _parse_order_expression(raw)
             check_raw_rows_order_metric_ref(
@@ -266,13 +266,14 @@ def _reject_metric_refs_in_order(
                     parsed, metric_names=metric_names, scope=scope, bundle=bundle,
                 ) else None,
             )
-        name = getattr(getattr(item, "field", None), "name", None)
+        ref = item.ref
+        name = ref.name if ref is not None else None
         check_raw_rows_order_metric_ref(
             saved_name=name if name and name in metric_names else None,
             source_name=source_name,
         )
         # A dotted ORDER BY field whose leaf is a saved metric on the terminal dataset is a metric ref too.
-        full = getattr(getattr(item, "field", None), "full_name", None)
+        full = ref.full_name if ref is not None else None
         check_raw_rows_order_metric_ref(
             saved_dotted=full if full and "." in full and _resolve_saved_metric_ref(
                 scope=scope, bundle=bundle, expression=full,
@@ -397,9 +398,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         if dm.is_dimension and dm.public_name is not None:
             filter_alias_map.setdefault(dm.public_name, dm.bound.value_key)
     # ...and resolvable inside a filter/order ``partition_by=``.
-    _computed_names = frozenset(
-        d.name for d in (query.dimensions or []) if isinstance(d, ComputedDimension)
-    )
+    _computed_names = frozenset(d.name for d in (query.dimensions or []) if d.is_computed)
     dim_alias_map: Dict[str, ValueKey] = {
         dm.public_name: dm.bound.value_key
         for dm in declared_metrics
@@ -435,7 +434,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # 3. user query filters (Mode-B DSL). Dedupe by bound key (first wins) so the
     #    alias and aggregate-expression forms of a ref don't duplicate the HAVING clause.
-    for i, f in enumerate(query.filter or []):
+    for i, f in enumerate(query.filter_conditions):
         with stale_spelling_position(f"filter[{i}]"):
             if not isinstance(f, str):
                 continue
@@ -465,8 +464,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     for i, o in enumerate(query.order or []):
         # An implied (default) order item was never written: it records no spelling.
         with stale_spelling_position(None if o.implied else f"order[{i}]"):
-            col_name = o.field.name
-            full_name = o.field.full_name
+            order_ref = o.ref
+            col_name = order_ref.name if order_ref is not None else o.field
+            full_name = order_ref.full_name if order_ref is not None else o.field
             # A ``date_trunc('<unit>', expr)`` order key sorts by the projected time
             # dimension's bucket — resolved to its field binding.
             gran_parts = granularity_call_parts(o.raw_expression) if o.raw_expression else None
@@ -497,8 +497,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     nulls=o.nulls or "default",
                 ))
                 continue
-            # A placeholder FieldRef means the item is an EXPRESSION: bind raw_expression, skip alias lookups.
-            if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_expression:
+            # An expression item binds its raw_expression, skipping alias lookups.
+            if order_ref is None and o.raw_expression:
                 order_specs.append(OrderSpec(
                     bound=bind_expr(
                         parsed=parse_bound_expr(o.raw_expression, query.bound_variables),
@@ -530,7 +530,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     ))
                     continue
             # A FOREIGN-qualified order ref must not resolve to a same-named local field via the bare-leaf shortcut.
-            _order_qualifier = getattr(o.field, "dataset", None)
+            _order_qualifier = order_ref.dataset if order_ref is not None else None
             _order_host_local = (
                 _order_qualifier is None or _order_qualifier == _order_host_name
             )
@@ -554,9 +554,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     dimension_alias_map=dim_alias_map,
                 )
             else:
-                # Bind the FULL reference — a dotted ORDER FieldRef would otherwise rebind as the wrong host field.
+                # Bind the FULL reference — a dotted order reference would otherwise rebind as the wrong host field.
                 bo = bind_expr(
-                    parsed=parse_expr(o.field.spelling),
+                    parsed=parse_expr(order_ref.spelling if order_ref is not None else o.field),
                     scope=scope,
                     bundle=bundle,
                 )
@@ -1098,13 +1098,13 @@ def _reject_computed_dim_name_collision(
         name=name,
         dataset_name=dataset_collision,
         query_metric_collision=any(
-            m.name == name for m in (query.metrics or [])
+            m.alias == name for m in (query.metrics or [])
         ),
     )
 
 
 def _declared_computed_dimension(
-    d: ComputedDimension,
+    d: QueryDimension,
     *,
     query: SlayerQuery,
     scope: DatasetScope | StageSchema,
@@ -1112,9 +1112,8 @@ def _declared_computed_dimension(
     dim_alias_map: Optional[Dict[str, ValueKey]] = None,
 ) -> DeclaredMetric:
     name = d.name
-    assert name is not None  # _fill_name auto-names from the expression
     _reject_computed_dim_name_collision(name=name, query=query, scope=scope)
-    parsed = parse_bound_expr(d.expression, query.bound_variables)
+    parsed = parse_bound_expr(d.field, query.bound_variables)
     bound = bind_expr(
         parsed=parsed, scope=scope, bundle=bundle, allow_metrics=True,
         dimension_alias_map=dim_alias_map,
@@ -1131,6 +1130,7 @@ def _declared_computed_dimension(
         bound=bound,
         declared_name=name,
         public_name=name,
+        label=d.label,
         name_is_explicit=name != computed_dimension_name(d.template),
         datatype=dim_type,
         element_type=key_element_type(bound.value_key, scope=scope, bundle=bundle),
@@ -1161,7 +1161,8 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
     dim_alias_map: Dict[str, ValueKey] = {}
     for i, d in enumerate(query.dimensions or []):
         with stale_spelling_position(f"dimensions[{i}]"):
-            if isinstance(d, ComputedDimension):
+            ref = d.ref
+            if d.is_computed or ref is None:
                 dm = _declared_computed_dimension(
                     d, query=query, scope=scope, bundle=bundle,
                     dim_alias_map=dim_alias_map,
@@ -1173,12 +1174,12 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 declared.append(dm)
                 dim_alias_map[dm.declared_name] = dm.bound.value_key
                 continue
-            full = d.full_name
+            full = ref.full_name
             # Bind first: a short-form dotted dim auto-routes, and its full routed
             # path (``bound.routed_dotted``) — not the short form typed — drives the
             # result key, type, opaque guard, and description.
             bound = bind_expr(
-                parsed=parse_expr(d.spelling),
+                parsed=parse_expr(ref.spelling),
                 scope=scope,
                 bundle=bundle,
             )
@@ -1231,7 +1232,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
         assert isinstance(bound.value_key, TimeTruncKey)
         public = (
             f"{base_flat}.{bound.value_key.granularity}"
-            if td.name is None and _td_source_counts[bound.value_key.source] > 1 else base_flat
+            if td.alias is None and _td_source_counts[bound.value_key.source] > 1 else base_flat
         )
         _guard_flatten(flat_name=_flatten_dotted(public), origin=canonical)
         declared.append(DeclaredMetric(
@@ -1241,11 +1242,11 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             label=td.label,
             datatype=td_type,
         ))
-    seen_metric_keys: Dict[str, Tuple[str, ValueKey, DatasetMetric]] = {}
+    seen_metric_keys: Dict[str, Tuple[str, ValueKey, QueryMetric]] = {}
     for i, m in enumerate(query.metrics or []):
         with stale_spelling_position(f"metrics[{i}]"):
-            expression = m.expression
-            explicit_name = m.name
+            expression = m.metric
+            explicit_name = m.alias
             parsed = parse_bound_expr(expression, query.bound_variables)
             bound = bind_expr(
                 parsed=parsed, scope=scope, bundle=bundle, allow_metrics=True,
@@ -1305,8 +1306,9 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 datatype=m_type,
                 element_type=key_element_type(bound.value_key, scope=scope, bundle=bundle),
                 type_is_explicit=explicit_type is not None,
+                # A declared Decimal is exact: it keeps the source's native decimal values.
                 preserve_native_type=(
-                    explicit_type is None
+                    explicit_type in (None, DataType.DECIMAL)
                     and isinstance(scope, DatasetScope)
                     and scope.population is not None
                     and metric_key_preserves_native_type(
@@ -1385,8 +1387,8 @@ def _check_field_granularities(*, bundle: ResolvedSourceBundle) -> None:
 def _check_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> None:
     """An unnamed single-field call naming no aggregation or granularity fails."""
     for item in query.dimensions or []:
-        if isinstance(item, ComputedDimension) and item.name == computed_dimension_name(item.template):
-            _check_dimension_call(item.expression, bundle=bundle)
+        if item.ref is None and item.alias is None:
+            _check_dimension_call(item.field, bundle=bundle)
 
 
 def _dedupe_equivalent_time_dimensions(
@@ -1556,7 +1558,7 @@ def _assert_equivalent_tds_agree(
     seen: Dict[ValueKey, TimeDimension] = {}
     for td, bound, _ in bound_tds:
         prior = seen.setdefault(bound.value_key, td)
-        if prior is not td and (prior.date_range, prior.name, prior.label) != (td.date_range, td.name, td.label):
+        if prior is not td and (prior.date_range, prior.alias, prior.label) != (td.date_range, td.alias, td.label):
             raise GranularityCallError(
                 f"Conflicting time dimensions on {td.field!r} at "
                 f"{td.granularity} granularity: equivalent spellings must not "

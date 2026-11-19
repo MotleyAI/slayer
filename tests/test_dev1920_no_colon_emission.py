@@ -152,7 +152,7 @@ class TestFacade:
 
     def test_order_by_aggregate(self) -> None:
         result = _translated("SELECT status, SUM(revenue) FROM orders GROUP BY status ORDER BY SUM(revenue) DESC")
-        assert [(o.ref.name, o.raw_expression) for o in result.query.order or []] == [("revenue_sum", None)]
+        assert [(o.field, o.raw_expression) for o in result.query.order or []] == [("revenue_sum", None)]
         assert [m.metric for m in result.query.metrics or []] == ["sum(revenue)"]
 
     @pytest.mark.parametrize("configured", [True, False], ids=["configured-join", "dynamic-join"])

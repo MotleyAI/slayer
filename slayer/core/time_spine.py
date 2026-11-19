@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from slayer.core.enums import RelationshipCardinality, JoinType
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, ComputedDimension, DatasetExtension, OrderItem, SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import DatasetExtension, OrderItem, QueryDimension, QueryMetric, SlayerQuery, map_filter
 from slayer.core.spine_names import TIME_SPINE_FIELD, TIME_SPINE_FIELD_TYPE, TIME_SPINE_DATASET
 from slayer.core.syntax import respell_path_heads, text_paths
 from slayer.core.warnings import NameCollisionWarning
@@ -26,7 +26,7 @@ def spine_dataset(*, data_source: str, wired: Optional[Sequence[SlayerDataset]] 
             f"inspect(reference='{data_source}.{TIME_SPINE_DATASET}', entity_type='dataset')."
         )
     else:
-        axes = [f"{m.name} via {j.join_pairs[0][0]}" for m in wired if (j := axis_relationship(m)) is not None]
+        axes = [f"{m.name} via {j.column_pairs[0][0]}" for m in wired if (j := axis_relationship(m)) is not None]
         details = (
             " Needs a lower bound (a date_range or a >= filter on the timestamp); the upper bound defaults to "
             "the current bucket. Each dataset is attributed through its axis — its default_time_dimension, "
@@ -74,30 +74,24 @@ class _SpineRespeller:
     def text(self, text: str) -> str:
         return respell_path_heads(text, respell=self.name)
 
-    def ref(self, ref: FieldRef) -> FieldRef:
-        new = self.name(ref.parts[0]) if len(ref.parts) > 1 and not ref.quoted_parts[0] else None
-        return ref if new is None else ref.model_copy(update={"dataset": ".".join([new, *ref.parts[1:-1]])})
-
     def relationships(self, relationships: List[DatasetRelationship]) -> List[DatasetRelationship]:
         return [j.model_copy(update={"to": self.name(j.to) or j.to}) for j in relationships]
 
     def extension(self, ext: DatasetExtension) -> DatasetExtension:
         return ext.model_copy(update={
-            "source_name": self.name(ext.source_name) or ext.source_name,
+            "dataset": self.name(ext.dataset) or ext.dataset,
             "relationships": self.relationships(ext.relationships) if ext.relationships is not None else None,
         })
 
-    def dimension(self, dim: FieldRef | ComputedDimension) -> FieldRef | ComputedDimension:
-        if isinstance(dim, FieldRef):
-            return self.ref(dim)
-        return dim.model_copy(update={"expression": self.text(dim.expression)})
+    def dimension(self, dim: QueryDimension) -> QueryDimension:
+        return dim.model_copy(update={"field": self.text(dim.field)})
 
-    def metric(self, metric: DatasetMetric) -> DatasetMetric:
-        return metric.model_copy(update={"expression": self.text(metric.expression)})
+    def metric(self, metric: QueryMetric) -> QueryMetric:
+        return metric.model_copy(update={"metric": self.text(metric.metric)})
 
     def order(self, item: OrderItem) -> OrderItem:
         raw = self.text(item.raw_expression) if item.raw_expression is not None else None
-        return item.model_copy(update={"field": self.ref(item.field), "raw_expression": raw})
+        return item.model_copy(update={"field": self.text(item.field), "raw_expression": raw})
 
 
 def respell_spine(query: SlayerQuery, *, keep: Callable[[str], bool]) -> Tuple[SlayerQuery, frozenset[str]]:
@@ -117,7 +111,7 @@ def respell_spine(query: SlayerQuery, *, keep: Callable[[str], bool]) -> Tuple[S
     if query.metrics is not None:
         update["metrics"] = [r.metric(m) for m in query.metrics]
     if query.filter is not None:
-        update["filter"] = [r.text(f) for f in query.filter]
+        update["filter"] = map_filter(query.filter, r.text)
     if query.order is not None:
         update["order"] = [r.order(o) for o in query.order]
     if query.main_time_dimension is not None:
@@ -137,7 +131,7 @@ def axis_relationship(dataset: SlayerDataset) -> Optional[DatasetRelationship]:
     if axis is None:
         return None
     return DatasetRelationship(
-        to=TIME_SPINE_DATASET, join_pairs=[[axis, TIME_SPINE_FIELD]],
+        to=TIME_SPINE_DATASET, from_columns=[axis], to_columns=[TIME_SPINE_FIELD],
         cardinality=RelationshipCardinality.MANY_TO_ONE,
     )
 
@@ -165,11 +159,11 @@ def reads_spine(text: str, *, root: Optional[str]) -> bool:
 
 def is_spine_query(query: SlayerQuery) -> bool:
     """A query rooted at the spine, or reading it in a time dimension, dimension or filter."""
-    dims = [getattr(d, "expression", None) or getattr(d, "full_name", "") for d in query.dimensions or []]
+    dims = [d.field for d in query.dimensions or []]
     tds = [td.field for td in query.time_dimensions or []]
     root = query.population_name
     return root == TIME_SPINE_DATASET or any(
-        reads_spine(t, root=root) for t in [*dims, *tds, *(query.filter or [])]
+        reads_spine(t, root=root) for t in [*dims, *tds, *(query.filter_conditions)]
     )
 
 

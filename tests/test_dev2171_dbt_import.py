@@ -103,8 +103,8 @@ class TestDeclaredDataType:
         assert (col.datatype, col.element_type) == (DataType.ARRAY, element)
 
     @pytest.mark.parametrize(("data_type", "expected"), [
-        ("bigint", DataType.INTEGER), ("numeric(10,2)", DataType.FLOAT), ("varchar(255)", DataType.STRING),
-        ("boolean", DataType.BOOLEAN), ("date", DataType.DATE), ("timestamp with time zone", DataType.DATETIME),
+        ("bigint", DataType.INTEGER), ("numeric(10,2)", DataType.DECIMAL), ("varchar(255)", DataType.STRING),
+        ("boolean", DataType.BOOLEAN), ("date", DataType.DATE), ("timestamp with time zone", DataType.DATETIME_TZ),
     ])
     def test_scalar_data_types(self, data_type: str, expected: DataType) -> None:
         result = import_dbt([sm(dimensions=[dim("note")])], regular_datasets=typed(("note", data_type)))
@@ -120,7 +120,7 @@ class TestDeclaredDataType:
                             regular_datasets=typed(("id", "bigint"), ("amount", "numeric(10,2)"), ("tags", "text[]")))
         model = datasets_of(result)["orders"]
         assert column(model, "id").datatype == DataType.INTEGER
-        assert source_column(model, "total").datatype == DataType.FLOAT
+        assert source_column(model, "total").datatype == DataType.DECIMAL
         tags = source_column(model, "tag_cnt")
         assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.STRING)
 

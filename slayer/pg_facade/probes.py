@@ -62,7 +62,7 @@ SHOW_ALIASES = {
 }
 
 
-def _single(name: str, value: str | None, dtype: DataType = DataType.TEXT) -> RowBatch:
+def _single(name: str, value: str | None, dtype: DataType = DataType.STRING) -> RowBatch:
     return RowBatch(
         columns=[FacadeColumn(name=name, type=dtype)],
         rows=[{name: value}],

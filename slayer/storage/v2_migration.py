@@ -11,7 +11,7 @@ inputs without touching the live class schema.
 """
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
-from slayer.storage.migrations import register_migration
+from slayer.storage.migrations import is_legacy_root_extension, register_migration
 
 
 def _migrate_dataset_extension_v1_to_v2(ext: dict) -> dict:
@@ -62,8 +62,8 @@ def _migrate_metric_dict(col: dict, *, fields_key: str) -> dict:
 
     - Drop the deprecated ``type: sum/avg/...`` alias; preserve user intent by
       seeding ``allowed_aggregations`` if not already present.
-    - Default the type to ``number`` if absent (v1 Measures had no DataType), under the key of ``fields_key``'s
-      vocabulary.
+    - Default the type to a number if absent (v1 Measures had no DataType), in ``fields_key``'s vocabulary
+      (``number`` before 2.0, ``Float`` after).
     - Force ``primary_key`` to False (v1 Measures could not be PKs).
     """
     legacy_type = col.get("type")
@@ -71,7 +71,10 @@ def _migrate_metric_dict(col: dict, *, fields_key: str) -> dict:
         col.pop("type")
         col.setdefault("allowed_aggregations", [legacy_type.lower()])
     if "type" not in col and "datatype" not in col:
-        col["datatype" if fields_key == "fields" else "type"] = "number"
+        if fields_key == "fields":
+            col["datatype"] = "Float"
+        else:
+            col["type"] = "number"
     col["primary_key"] = False
     return col
 
@@ -184,7 +187,7 @@ def _query_v1_to_v2(data: dict) -> dict:
         data["measures"] = data.pop("fields")
 
     sm = data.get("source_model")
-    if isinstance(sm, dict) and "source_name" in sm and (
+    if is_legacy_root_extension(sm) and (
         "dimensions" in sm or "measures" in sm
     ):
         # Inline ModelExtension — no version of its own; piggyback this query's

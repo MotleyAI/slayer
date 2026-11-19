@@ -516,8 +516,8 @@ class TestRefusals:
         assert _names_the_list_type(str(info.value)), str(info.value)
 
     @pytest.mark.parametrize(("filter_", "types"), [
-        ("skills = [DATE '2025-01-01']", ("TEXT", "DATE")), ("skills = scores", ("TEXT", "INT")),
-        ("skills IN (['go'], [1])", ("TEXT", "INT")),
+        ("skills = [DATE '2025-01-01']", ("String", "Date")), ("skills = scores", ("String", "Integer")),
+        ("skills IN (['go'], [1])", ("String", "Integer")),
     ])
     async def test_lists_of_different_element_types(self, duck: SlayerQueryEngine, filter_: str,
                                                     types: tuple[str, str]) -> None:

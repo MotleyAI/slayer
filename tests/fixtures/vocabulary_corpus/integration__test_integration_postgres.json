@@ -265,9 +265,7 @@
     ],
     "time_dimensions": [
      {
-      "field": {
-       "name": "created_at"
-      },
+      "field": "created_at",
       "granularity": "month"
      }
     ]
@@ -304,9 +302,7 @@
     ],
     "time_dimensions": [
      {
-      "field": {
-       "name": "created_at"
-      },
+      "field": "created_at",
       "granularity": "month",
       "date_range": [
        "2024-01-01",

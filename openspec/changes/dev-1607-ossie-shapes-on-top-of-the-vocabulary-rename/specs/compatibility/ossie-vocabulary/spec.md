@@ -107,7 +107,7 @@ The public Python names SHALL follow the vocabulary, among them `SlayerDataset`,
 
 ### Requirement: Stored documents migrate to the new vocabulary
 
-A document is stored when it carries a `version` key or is nested in a stored document; any other input is fresh. A stored dataset, saved query or memory written by a pre-2.0 release SHALL load in its Ossie form, shapes and datatype values included, with no deprecation warning, including queries nested in a dataset's `source_queries` or in a memory, whether or not the nested query carries a version of its own. A migrated stored document SHALL be persisted as every other migrated document of its kind is. A stored embedding row of kind `model`, `column` or `measure` SHALL become kind `dataset`, `field` or `metric` without being re-embedded and with its content hash unchanged, in both storage backends, and SHALL stay so across restarts.
+A document is stored when it carries a `version` key or is nested in a stored document; any other input is fresh. A stored dataset, saved query or memory written by a pre-2.0 release SHALL load in its Ossie form, shapes and datatype values included, with no deprecation warning, including queries nested in a dataset's `source_queries` or in a memory, whether or not the nested query carries a version of its own. A migrated stored document SHALL be persisted as every other migrated document of its kind is. A stored embedding row of kind `model`, `column` or `measure` SHALL become kind `dataset`, `field` or `metric` in place, in both storage backends, and SHALL stay so across restarts; a row SHALL be re-embedded only when its rendered text changed (a field's datatype now reads by its Ossie name).
 
 #### Scenario: A pre-2.0 dataset loads
 - **WHEN** a store holding a dataset with `columns`, `measures`, `joins` (with `target_model` and `join_pairs`), `type` values `TIMESTAMP` and `DOUBLE`, and `formula` is opened
@@ -123,7 +123,7 @@ A document is stored when it carries a `version` key or is nested in a stored do
 
 #### Scenario: Stored embedding kinds are renamed in place
 - **WHEN** a YAML and a SQLite store whose embeddings hold rows of kinds `model`, `column` and `measure` are opened, closed and opened again
-- **THEN** every row reads with kind `dataset`, `field` or `metric`, no entity is re-embedded, and every content hash is unchanged
+- **THEN** every row reads with kind `dataset`, `field` or `metric`, only the rows whose rendered text changed are re-embedded, and every other content hash is unchanged
 
 #### Scenario: The 1.x upgrade stores still open
 - **WHEN** the stored fixtures written by 0.10.2 and by 1.8.2 are opened

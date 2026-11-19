@@ -1410,7 +1410,7 @@ def _index_user_tables(*, out: ColumnTypeIndex, catalog: FacadeCatalog) -> None:
                     dt=d.data_type,
                 )
             for m in tbl.metrics:
-                dt = m.data_type if m.data_type is not None else DataType.TEXT
+                dt = m.data_type if m.data_type is not None else DataType.STRING
                 _record_column_type(
                     out=out, key=(schema_lower, tbl_lower, m.name.lower()),
                     dt=dt,
@@ -1519,7 +1519,7 @@ def _collect_non_text_params(
                 continue
             key: ColumnTypeKey = (table[0], table[1], col.name.lower())
             dt = column_type_index.get(key)
-            if dt is not None and dt != DataType.TEXT:
+            if dt is not None and dt != DataType.STRING:
                 result.add(param_idx)
     return result
 

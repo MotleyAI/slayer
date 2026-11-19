@@ -61,7 +61,7 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "aggregation",
    "old": {
     "name": "wavg",
     "formula": "SUM({value})",

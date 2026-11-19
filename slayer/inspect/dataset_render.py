@@ -12,15 +12,16 @@ from typing import Any
 
 from sqlalchemy.exc import DatabaseError, OperationalError
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, NUMERIC_DATATYPES
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, neighbors
 from slayer.core.models import DatasetField, SlayerDataset, field_type_text, is_identifier
 from slayer.core.query import (
     SlayerQuery,
-    extract_dataset_variables,
     extension_variable_refs,
+    extract_dataset_variables,
     extract_placeholder_names,
+    filter_conditions,
 )
 from slayer.live_schema.ingestion import _friendly_db_error
 from slayer.engine.profiling import ensure_samples_fresh
@@ -204,17 +205,17 @@ def _render_field_type(field: DatasetField) -> str:
 
 def _choose_sample_dims(
     dataset: SlayerDataset,
-) -> tuple[list[dict[str, str]], set]:
+) -> tuple[list[str], set]:
     """Up to two visible categorical non-identifier fields to group the sample by (not also aggregated)."""
-    dims: list[dict[str, str]] = []
+    dims: list[str] = []
     dim_names: set = set()
     for c in dataset.fields:
         if c.hidden or is_identifier(field=c, fields=dataset.fields):
             continue
         # Also excludes opaque fields, which can't be GROUP BY'd.
-        if c.datatype not in (DataType.TEXT, DataType.BOOLEAN):
+        if c.datatype not in (DataType.STRING, DataType.BOOLEAN):
             continue
-        dims.append({"name": c.name})
+        dims.append(c.name)
         dim_names.add(c.name)
         if len(dims) >= 2:
             break
@@ -242,9 +243,9 @@ def _choose_sample_agg(
         safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
         return safe if safe else allowed[0]
     inferred = metric_types.get(field.name)
-    if inferred is not None and inferred.type not in (DataType.INT, DataType.DOUBLE):
+    if inferred is not None and inferred.type not in NUMERIC_DATATYPES:
         return "count_distinct"
-    if field.datatype not in (DataType.INT, DataType.DOUBLE):
+    if field.datatype not in NUMERIC_DATATYPES:
         return "count_distinct"
     return "avg"
 
@@ -258,14 +259,14 @@ def _build_sample_query_args(
     metric_types = metric_types or {}
     dims, dim_names = _choose_sample_dims(dataset)
 
-    metrics: list[dict[str, str]] = [{"expression": _COUNT_STAR}]
+    metrics: list[dict[str, str]] = [{"metric": _COUNT_STAR}]
     for c in dataset.fields:
         if c.hidden or is_identifier(field=c, fields=dataset.fields) or c.name in dim_names:
             continue
         agg = _choose_sample_agg(c, metric_types=metric_types)
         if agg is None:
             continue
-        metrics.append({"expression": f"{agg}({c.name})"})
+        metrics.append({"metric": f"{agg}({c.name})"})
 
     return {
         "population": dataset.name,
@@ -301,7 +302,7 @@ async def _get_row_count(
     try:
         q = SlayerQuery.model_validate({
             "population": dataset.name,
-            "metrics": [{"expression": _COUNT_STAR}],
+            "metrics": [{"metric": _COUNT_STAR}],
         })
         r = await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception:
@@ -339,27 +340,17 @@ def _build_backing_query_info(dataset: SlayerDataset) -> dict | None:
 
 
 def _render_field_value(v: Any) -> str:
-    """Most descriptive label of a query-stage field value (name, expression, wrapped name, else ``str``)."""
+    """Most descriptive label of a query-stage entry (alias, metric, a dimension's field, else ``str``)."""
     if not isinstance(v, dict):
         return str(v)
-    name = v.get("name")
-    if name:
-        return str(name)
-    expression = v.get("expression")
-    if expression:
-        return str(expression)
-    inner = v.get("field")
-    if isinstance(inner, dict):
-        inner_name = inner.get("name")
-        if inner_name:
-            return str(inner_name)
-    return str(v)
+    keys = ("alias", "metric") if "granularity" in v else ("alias", "metric", "field")
+    return next((v[k] for k in keys if isinstance(v.get(k), str) and v[k]), str(v))
 
 
-def _render_stage_field_list(key: str, val: list) -> str:
-    """Render a stage's field list (dimensions / metrics / filters / etc.)."""
+def _render_stage_field_list(key: str, val: Any) -> str:
+    """Render a stage's entry list (dimensions / metrics / time dimensions) or its filter."""
     if key == "filter":
-        return "; ".join(f"`{f}`" for f in val)
+        return "; ".join(f"`{f}`" for f in filter_conditions(val))
     return "; ".join(_render_field_value(v) for v in val)
 
 
@@ -370,7 +361,7 @@ def _render_source_dataset(src: Any) -> str | None:
 
 def _render_extensions(extensions: Any) -> str | None:
     """Render a stage's ``extensions`` as the datasets they extend."""
-    names = [e["source_name"] for e in extensions or [] if isinstance(e, dict) and e.get("source_name")]
+    names = [e["dataset"] for e in extensions or [] if isinstance(e, dict) and e.get("dataset")]
     return f"- extensions: {', '.join(f'`{n}`' for n in names)}" if names else None
 
 
@@ -717,18 +708,17 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     if "relationships" in included_set:
         relationship_rows: list[dict[str, Any]] = []
         for h in hops:
-            pairs = "; ".join(f"{src} = {tgt}" for src, tgt in h.join_pairs)
             relationship_rows.append({
                 "name": h.name or "",
                 "to": h.to,
-                "join_pairs": pairs,
+                "keys": "; ".join(f"{src} = {tgt}" for src, tgt in h.column_pairs),
                 "cardinality": str(h.cardinality) if h.cardinality else "",
             })
         out_sections.append(
             f"## Relationships ({len(relationship_rows)})\n\n"
             + _markdown_table(
                 rows=relationship_rows,
-                fields=["name", "to", "join_pairs", "cardinality"],
+                fields=["name", "to", "keys", "cardinality"],
             )
         )
     elif hops:
@@ -758,7 +748,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 if not _is_unsupported_grouping_error(exc):
                     raise
                 minimal_args = dict(query_args)
-                minimal_args["metrics"] = [{"expression": _COUNT_STAR}]
+                minimal_args["metrics"] = [{"metric": _COUNT_STAR}]
                 minimal_args["dimensions"] = []
                 sample_query = SlayerQuery.model_validate(minimal_args)
                 try:
@@ -941,7 +931,8 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 {
                     "name": h.name,
                     "to": h.to,
-                    "join_pairs": h.join_pairs,
+                    "from_columns": [src for src, _ in h.column_pairs],
+                    "to_columns": [tgt for _, tgt in h.column_pairs],
                     "cardinality": h.cardinality,
                 }
                 for h in hops

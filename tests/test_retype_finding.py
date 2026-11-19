@@ -245,7 +245,7 @@ class TestTypedBy160Reflection:
         entries = await _validate(duck.engine(client_factory=_year_gateway), "ds")
         found = _retypes(entries, "years")
         assert set(found) == {"kept"}, entries
-        assert (found["kept"]["stored_type"], found["kept"]["live_type"]) == ("TEXT", "INT"), found
+        assert (found["kept"]["stored_type"], found["kept"]["live_type"]) == ("String", "Integer"), found
         assert _removed(entries, "years") == set(), entries
 
 
@@ -440,13 +440,17 @@ class TestSqliteProbe:
 
 _REINGEST_REMEDY = "re-ingest datasource 'ds' (`slayer ingest`) to re-type it"
 _LEGACY_SET_TYPE_REMEDY = "set the column's type to INT"
-_SET_TYPE_REMEDY = "set the field's type to INT"
+_SET_TYPE_REMEDY = "set the field's type to Integer"
 #: The remedy each legacy text is rendered as now.
 _CURRENT_REMEDY = {_REINGEST_REMEDY: _REINGEST_REMEDY, _LEGACY_SET_TYPE_REMEDY: _SET_TYPE_REMEDY}
 
 
-def _summary(*, subject: str, live_type: str, live_db_type: str, remedy: str) -> str:
-    return f"{subject} 'm.c' is stored as TEXT but its live column is {live_db_type} ({live_type}); {remedy}."
+#: The datatype each 1.8.0 value is rendered as now.
+_NOW = {"TEXT": "String", "INT": "Integer", "ARRAY": "Array"}
+
+
+def _summary(*, subject: str, live_type: str, live_db_type: str, remedy: str, stored: str = "TEXT") -> str:
+    return f"{subject} 'm.c' is stored as {stored} but its live column is {live_db_type} ({live_type}); {remedy}."
 
 
 def _legacy_payload(*, live_type: str, live_db_type: str, remedy: str) -> dict[str, Any]:
@@ -469,8 +473,8 @@ class TestSerializedFinding:
         loaded = schema_drift.RetypeFinding.model_validate(payload)
         assert loaded.remedy_kind == kind
         current = _CURRENT_REMEDY[remedy]
-        assert (loaded.remedy, loaded.summary) == (
-            current, _summary(subject="Field", live_type=live_type, live_db_type=live_db_type, remedy=current))
+        assert (loaded.remedy, loaded.summary) == (current, _summary(
+            subject="Field", stored=_NOW["TEXT"], live_type=_NOW[live_type], live_db_type=live_db_type, remedy=current))
 
     def test_an_unrecognized_remedy_text_is_refused(self) -> None:
         payload = _legacy_payload(live_type="INT", live_db_type="INTEGER", remedy="drop the column")

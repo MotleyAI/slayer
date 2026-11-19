@@ -52,7 +52,8 @@ class TestOrderItemCoercion:
 
 class TestExecuted:
     async def test_expression_in_object_form(self, engine: SlayerQueryEngine) -> None:
-        resp = await assert_equivalent(engine, by_region([SUM_DESC_OBJECT]), by_region([SUM_DESC_STRING]), ordered=True)
+        resp = await assert_equivalent(engine, by_region([SUM_DESC_OBJECT]), by_region([SUM_DESC_STRING]), ordered=True,
+                                       deprecated=True)
         assert [r["orders.region"] for r in resp.data] == ["EU", "US", None]
 
     async def test_stored_raw_formula_round_trips(self, engine: SlayerQueryEngine) -> None:

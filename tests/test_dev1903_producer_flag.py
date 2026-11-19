@@ -398,7 +398,7 @@ class TestOffGrainConstituentNests:
             metric="weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band), direction='desc'))",
             alias="w")])
         resp = await exec_engine.execute(query)
-        names = [d if isinstance(d, str) else d["name"] for d in dimensions]
+        names = [d if isinstance(d, str) else d["alias"] for d in dimensions]
         got = {tuple(r[f"sales.{n}"] for n in names): r["sales.w"] for r in resp.data}
         assert got == {k: None if v is None else pytest.approx(v) for k, v in expected.items()}
 

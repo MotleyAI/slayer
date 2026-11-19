@@ -140,7 +140,7 @@ def test_multiline_lists_fragments_json_lines_and_comments() -> None:
         "```json\n"
         '"metrics": [\n'
         '  "count(*)",\n'
-        '  {"expression": "sum(amount) / count(*)", "name": "aov"}\n'
+        '  {"metric": "sum(amount) / count(*)", "alias": "aov"}\n'
         "]\n"
         "```\n\n"
         "```json\n"
@@ -163,7 +163,7 @@ def test_every_query_field_is_read() -> None:
         "variables": {"v": "x"},
     }
     assert mode_b_values(query) == [
-        "count(*)", "sum(amount)", "status", "upper(status)", "month(order_date)", "order_date",
+        "count(*)", "sum(amount)", "status", "upper(status)", "status", "month(order_date)", "order_date",
         "amount > 10", "sum(amount)",
     ]
 

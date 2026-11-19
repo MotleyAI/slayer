@@ -148,7 +148,7 @@ class TestArgumentTypes:
         with pytest.raises(SlayerError) as info:
             await _count(engine, "contains(skills, DATE '2025-01-01')")
         msg = str(info.value)
-        for needle in ("contains", "TEXT", "DATE"):
+        for needle in ("contains", "String", "Date"):
             assert needle in msg, msg
 
     async def test_text_argument_to_a_list_only_function(self, engine) -> None:

@@ -427,7 +427,7 @@ class TestGenerateJoinsDedup:
         """Two distinct FKs to the same target table should both produce joins."""
         joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("seller_id")])
         assert len(joins) == 2
-        pairs = [j.column_pairs for j in joins]
+        pairs = [[list(p) for p in j.column_pairs] for j in joins]
         assert [["buyer_id", "id"]] in pairs
         assert [["seller_id", "id"]] in pairs
 
@@ -729,7 +729,7 @@ class TestUnmappedTypeBecomesOpaque:
 
             # Exact NUMERIC is represented by logical DOUBLE, so retain the
             # physical type needed to avoid lossy inferred aggregate casts.
-            assert by_name["amount"].datatype is DataType.FLOAT
+            assert by_name["amount"].datatype is DataType.DECIMAL
             assert by_name["amount"].db_type == "NUMERIC(18, 2)"
 
             # Fully represented mapped types carry no db_type.

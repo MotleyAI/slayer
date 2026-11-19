@@ -50,7 +50,7 @@ The grammar SHALL accept, with keywords matched case-insensitively:
 
 #### Scenario: Concatenation operator
 
-- **WHEN** a dimension is `{"expression": "status || '-' || region", "name": "tag"}`
+- **WHEN** a dimension is `{"field": "status || '-' || region", "alias": "tag"}`
 - **THEN** each row's `tag` is the two values joined by `-`, and NULL when either is NULL
 
 #### Scenario: Modulo sign

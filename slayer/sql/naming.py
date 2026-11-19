@@ -247,7 +247,7 @@ ROW_IDENTITY_FIELD = "__slayer_row_id"
 
 def with_row_identity(dataset: SlayerDataset) -> SlayerDataset:
     """``dataset`` keyed by its per-query row number, which the relation door mints."""
-    row_id = DatasetField.model_construct(name=ROW_IDENTITY_FIELD, datatype=DataType.INT, primary_key=True)
+    row_id = DatasetField.model_construct(name=ROW_IDENTITY_FIELD, datatype=DataType.INTEGER, primary_key=True)
     return dataset.model_copy(update={"fields": [*dataset.fields, row_id]})
 
 

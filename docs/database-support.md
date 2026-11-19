@@ -28,7 +28,7 @@ or orders.status = 'ok'`) renders its semi-join from a one-row derived table
 carrying the outer keys — supported on Postgres, SQLite, DuckDB and MySQL 8.0.14+;
 ClickHouse, BigQuery and older MySQL reject it with the engine's own error.
 
-On a Postgres datasource whose URL names `asyncpg`, a column-type probe gets no exact-numeric scale from the driver, so a `NUMERIC` result column is typed DOUBLE (named `numeric`), even at scale 0.
+On a Postgres datasource whose URL names `asyncpg`, a column-type probe gets no exact-numeric scale from the driver, so a `NUMERIC` result column is typed `Float` (named `numeric`), even at scale 0.
 
 BigQuery CI coverage has two layers, both in the `bigquery-example` job of
 `.github/workflows/ci.yml`: the example's `verify.py` exercises query
@@ -329,7 +329,7 @@ Set `database: <catalog>/<schema>` (e.g. `memory/default`) on the datasource.
   comments are imported.
 - **Statement timeout.** SLayer sends the timeout as the `query_max_run_time`
   session property with the query itself and restores your own value afterwards.
-- **`timestamp with time zone`** ingests as `TIMESTAMP`, and truncation follows the
+- **`timestamp with time zone`** ingests as `DateTimeTz`, and truncation follows the
   client session's time zone.
 - **HTTPS.** SLayer connects over HTTPS whenever the URL carries credentials
   (a password, `access_token`, `cert` + `key`, or `externalAuthentication`);

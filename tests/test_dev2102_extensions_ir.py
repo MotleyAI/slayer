@@ -23,6 +23,8 @@ CUSTOMERS_EXT = {
     "relationships": [{"to": "regions", "from_columns": ["region_id"], "to_columns": ["id"]}],
 }
 ORDERS_EXT = {"dataset": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}
+#: ``ORDERS_EXT`` as a versioned (1.x) body spells it.
+ORDERS_EXT_1X = {"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}
 WITH_FILTERS = {"dataset": "customers", "filters": ["credit > 5"]}
 MEASURES_ONLY = {"dataset": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
 ONE_MEASURE = [{"metric": "count(*)"}]
@@ -156,7 +158,7 @@ class TestRestAndMcp:
 
     @pytest.mark.parametrize("version", [9, 10, 11, 12])
     def test_rest_body_migrates_a_versioned_legacy_root_extension(self, version: int) -> None:
-        req = QueryRequest.model_validate({"version": version, "source_model": ORDERS_EXT, "measures": ["count(*)"]})
+        req = QueryRequest.model_validate({"version": version, "source_model": ORDERS_EXT_1X, "measures": ["count(*)"]})
         assert req.population == "orders"
         assert [e.dataset for e in req.extensions or []] == ["orders"]
 

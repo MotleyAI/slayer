@@ -295,7 +295,7 @@ class TestVariableLayering:
 # --------------------------------------------------------------------------- #
 _EXT = {
     "dataset": "cust_rev",
-    "metrics": [m("sum(rev * 2)", "r2")],
+    "metrics": [{"name": "r2", "expression": "sum(rev * 2)"}],
     "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}],
 }
 

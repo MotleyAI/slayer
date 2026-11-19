@@ -62,6 +62,10 @@ def m(expression: str, name: str) -> Dict[str, str]:
     return {"metric": expression, "alias": name}
 
 
+def ext_m(expression: str, name: str) -> Dict[str, str]:
+    return {"name": name, "expression": expression}
+
+
 # --------------------------------------------------------------------------- #
 # Storage models.
 # --------------------------------------------------------------------------- #

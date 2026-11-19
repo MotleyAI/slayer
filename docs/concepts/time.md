@@ -98,7 +98,7 @@ Every datasource has a built-in, never-stored dataset `time_spine` with one fiel
 ```json
 {"dimensions": ["customers.region"],
  "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-01-01", "2025-06-30"]}],
- "metrics": [{"expression": "sum(orders.amount)"}, {"expression": "sum(returns.amount)"}]}
+ "metrics": ["sum(orders.amount)", "sum(returns.amount)"]}
 ```
 
 The population is `time_spine × P` (P the population of the remaining dimensions, or `population`); the spine needs a lower frame bound (the upper defaults to the current bucket), a filter on it must be a frame bound, it has no countable rows (no aggregation over it, no raw-rows query), a dataset reaches it by its nearest axis over to-one hops (equal-length routes are a typed error), and wrap a metric in `coalesce(..., 0)` to fill empty buckets.

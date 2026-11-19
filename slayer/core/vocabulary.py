@@ -8,23 +8,28 @@ import inspect
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel
 
 from slayer.core import deprecation
-from slayer.core.errors import SpellingConflictError
+from slayer.core.enums import PRE_2_0_DATATYPES, DataType, pre_2_0_datatype, stored_datatype
+from slayer.core.errors import RelationshipKeyError, SpellingConflictError
+from slayer.core.names import NAME_PATTERN, quoted_name
 
 if TYPE_CHECKING:
     from slayer.core.warnings import DeprecatedInputWarning
 
 __all__ = [
-    "AGGREGATION_KEYS", "COVERAGE_KEYS", "DATASET_KEYS", "ENTITY_KINDS", "EXTENSION_KEYS", "FIELD_KEYS", "FIELD_REF_KEYS",
-    "METRIC_KEYS", "ORDER_ITEM_KEYS", "QUERY_KEYS", "RECOMMENDATION_KEYS", "REFINEMENT_KEYS", "RELATIONSHIP_KEYS",
-    "RESPONSE_ATTRIBUTE_KEYS", "SOURCE_ORIGIN_KEYS", "TIME_DIMENSION_KEYS", "WARNING_KEYS",
-    "SpellingConflictError", "Spellings", "attribute_used", "bridge_renamed_hooks", "converted_document",
-    "current_spellings", "deprecated_spelling", "method_twin", "name_twins", "one_document", "renamed_arguments",
-    "renamed_input", "renamed_name", "respelled_token", "same_ignoring_deprecations", "stored_dataset", "stored_query",
+    "AGGREGATION_KEYS", "COVERAGE_KEYS", "DATASET_KEYS", "DIMENSION_EXPRESSION_KEYS", "ENTITY_KINDS", "EXTENSION_KEYS",
+    "FIELD_KEYS", "FIELD_REF_KEYS", "METRIC_KEYS", "ORDER_ITEM_KEYS", "QUERY_KEYS",
+    "RECOMMENDATION_KEYS", "REFINEMENT_KEYS", "RELATIONSHIP_KEYS", "RESPONSE_ATTRIBUTE_KEYS", "SOURCE_ORIGIN_KEYS",
+    "TIME_DIMENSION_KEYS", "WARNING_KEYS",
+    "SpellingConflictError", "Spellings", "aggregation", "attribute_used", "bridge_renamed_hooks", "converted_document",
+    "converted_input", "current_spellings", "dataset", "deprecated_spelling", "dimension_entry", "extension", "field",
+    "method_twin", "metric", "name_twins", "one_document", "order_item", "query", "query_metric", "refinement",
+    "relationship", "renamed_arguments", "renamed_input", "renamed_name", "respelled_token", "same_ignoring_deprecations",
+    "stored_dataset", "stored_query", "time_dimension",
 ]
 
 DATASET_KEYS = {"columns": "fields", "measures": "metrics", "joins": "relationships"}
@@ -32,9 +37,10 @@ FIELD_KEYS = {"type": "datatype"}
 METRIC_KEYS = {"formula": "expression", "type": "datatype"}
 AGGREGATION_KEYS = {"formula": "expression"}
 RELATIONSHIP_KEYS = {"target_model": "to"}
-EXTENSION_KEYS = {"measures": "metrics", "joins": "relationships"}
+EXTENSION_KEYS = {"source_name": "dataset", "measures": "metrics", "joins": "relationships"}
 QUERY_KEYS = {"source_model": "population", "measures": "metrics", "fields": "metrics", "filters": "filter"}
 REFINEMENT_KEYS = {"measures": "metrics", "filters": "filter"}
+DIMENSION_EXPRESSION_KEYS = {"expression": "field", "name": "alias"}
 TIME_DIMENSION_KEYS = {"dimension": "field", "column": "field"}
 ORDER_ITEM_KEYS = {"column": "field", "raw_formula": "raw_expression"}
 FIELD_REF_KEYS = {"model": "dataset"}
@@ -183,16 +189,24 @@ class Spellings:
         self.stored = stored
         self._seen: dict[tuple[str, str], None] = {}
         self._reported: dict[tuple[str, str], DeprecatedInputWarning] = {}
+        #: Paths of the unknown keys a stored document dropped.
+        self.dropped: list[str] = []
 
-    def rename(self, data: dict[str, Any], table: Mapping[str, str]) -> dict[str, Any]:
-        """``data`` with each key of ``table`` spelled its replacement; both spellings at once are refused."""
+    def note(self, old: str, new: str) -> None:
+        """Record converting the pre-2.0 form ``old`` to ``new`` (silent in a stored document)."""
+        if not self.stored:
+            self._seen[(old, new)] = None
+
+    def rename(self, data: dict[str, Any], table: Mapping[str, str], *, record: bool = True) -> dict[str, Any]:
+        """``data`` with each key of ``table`` spelled its replacement (each recorded unless ``record`` is off); both
+        spellings at once are refused."""
         for old, new in table.items():
             if old not in data:
                 continue
             if new in data:
                 raise SpellingConflictError(old=old, new=new)
             data = {(new if k == old else k): v for k, v in data.items()}
-            if not self.stored:
+            if record and not self.stored:
                 self._seen[(old, new)] = None
         return data
 
@@ -214,9 +228,10 @@ def current_spellings() -> Spellings | None:
 
 @contextmanager
 def converted_document(*, stored: bool) -> Generator[tuple[Spellings, bool]]:
-    """The enclosing document's spellings, else a new document's; yields ``(spellings, owned)``."""
+    """The enclosing document's spellings, else a new document's; yields ``(spellings, owned)``. A stored document
+    nested in fresh input is a document of its own."""
     shared = _DOCUMENT.get()
-    if shared is not None:
+    if shared is not None and (shared.stored or not stored):
         yield shared, False
         return
     token = _DOCUMENT.set(Spellings(stored=stored))
@@ -244,6 +259,28 @@ def renamed_input(data: Any, handler: Callable[[Any], _T], table: Mapping[str, s
         return out
 
 
+def converted_input(data: Any, handler: Callable[[Any], _T], convert: Callable[[Any, Spellings], Any], *,
+                    stored: bool) -> _T:
+    """``handler`` over ``data`` converted by ``convert``, within the enclosing document."""
+    with converted_document(stored=stored) as (spellings, owned):
+        out = handler(convert(data, spellings))
+        if owned:
+            spellings.report()
+        return out
+
+
+def extension_dataset(extension: Any) -> Any:
+    """A raw extension's target, spelled ``dataset`` or (pre-2.0) ``source_name``; ``None`` when neither."""
+    if not isinstance(extension, dict):
+        return None
+    return extension.get("dataset", extension.get("source_name"))
+
+
+def is_extension_object(source: Any) -> TypeGuard[dict[str, Any]]:
+    """Whether a raw population is an extension object (its target spelled either way)."""
+    return isinstance(source, dict) and ("dataset" in source or "source_name" in source)
+
+
 def _members(data: dict[str, Any], key: str, convert: Callable[[Any], Any]) -> dict[str, Any]:
     items = data.get(key)
     return {**data, key: [convert(item) for item in items]} if isinstance(items, list) else data
@@ -253,56 +290,217 @@ def _renamed(data: Any, table: Mapping[str, str], spellings: Spellings) -> Any:
     return spellings.rename(data, table) if isinstance(data, dict) else data
 
 
-def _field_ref(value: Any, spellings: Spellings) -> Any:
-    return _renamed(value, FIELD_REF_KEYS, spellings) if isinstance(value, dict) and "name" in value else value
+def _datatype_replacement(old: str, new: DataType) -> str:
+    """How a pre-2.0 datatype value's replacement reads: its two values when the database type splits it."""
+    if new in (DataType.DECIMAL, DataType.FLOAT):
+        return "Float (Decimal for an exact numeric database type)"
+    if new in (DataType.DATETIME_TZ, DataType.DATETIME):
+        return "DateTime (DateTimeTz for a zoned database type)"
+    return new.value
+
+
+def _datatype(data: dict[str, Any], key: str, spellings: Spellings, *, db_type: Any = None) -> dict[str, Any]:
+    """``data`` with a pre-2.0 value under ``key`` as its Ossie value (dropped for a pseudo-type)."""
+    value = data.get(key)
+    if not isinstance(value, str) or value not in PRE_2_0_DATATYPES:
+        return data
+    new = pre_2_0_datatype(value, db_type=db_type if isinstance(db_type, str) else None)
+    if new is None:
+        return {k: v for k, v in data.items() if k != key}
+    spellings.note(value, _datatype_replacement(value, new))
+    return {**data, key: new.value}
+
+
+def field(data: Any, spellings: Spellings) -> Any:
+    """A dataset field in the Ossie vocabulary."""
+    if not isinstance(data, dict):
+        return data
+    data = spellings.rename(data, FIELD_KEYS)
+    data = _datatype(data, "datatype", spellings, db_type=data.get("db_type"))
+    return _datatype(data, "element_type", spellings)
+
+
+def metric(data: Any, spellings: Spellings) -> Any:
+    """A dataset or extension metric in the Ossie vocabulary."""
+    if not isinstance(data, dict):
+        return data
+    return _datatype(spellings.rename(data, METRIC_KEYS), "datatype", spellings)
+
+
+def aggregation(data: Any, spellings: Spellings) -> Any:
+    return _renamed(data, AGGREGATION_KEYS, spellings)
+
+
+def relationship(data: Any, spellings: Spellings) -> Any:
+    """A relationship in the Ossie vocabulary: ``join_pairs`` become parallel ``from_columns`` / ``to_columns``."""
+    if not isinstance(data, dict):
+        return data
+    data = spellings.rename(data, RELATIONSHIP_KEYS)
+    if "join_pairs" not in data:
+        return data
+    for new in ("from_columns", "to_columns"):
+        if new in data:
+            raise SpellingConflictError(old="join_pairs", new=new)
+    pairs = data["join_pairs"]
+    if not isinstance(pairs, list) or not all(isinstance(p, (list, tuple)) and len(p) == 2 for p in pairs):
+        raise RelationshipKeyError(summary=f"join_pairs must be [[source_field, target_field], ...], got {pairs!r}")
+    spellings.note("join_pairs", "from_columns and to_columns")
+    rest = {k: v for k, v in data.items() if k != "join_pairs"}
+    return {**rest, "from_columns": [p[0] for p in pairs], "to_columns": [p[1] for p in pairs]}
 
 
 def _dataset(data: dict[str, Any], spellings: Spellings) -> dict[str, Any]:
     data = spellings.rename(data, DATASET_KEYS)
-    data = _members(data, "fields", lambda f: _renamed(f, FIELD_KEYS, spellings))
-    data = _members(data, "metrics", lambda m: _renamed(m, METRIC_KEYS, spellings))
-    data = _members(data, "aggregations", lambda a: _renamed(a, AGGREGATION_KEYS, spellings))
-    return _members(data, "relationships", lambda r: _renamed(r, RELATIONSHIP_KEYS, spellings))
+    data = _members(data, "fields", lambda f: field(f, spellings))
+    data = _members(data, "metrics", lambda m: metric(m, spellings))
+    data = _members(data, "aggregations", lambda a: aggregation(a, spellings))
+    return _members(data, "relationships", lambda r: relationship(r, spellings))
 
 
-def _time_dimension(data: Any, spellings: Spellings) -> Any:
-    data = _renamed(data, TIME_DIMENSION_KEYS, spellings)
-    return {**data, "field": _field_ref(data["field"], spellings)} if isinstance(data, dict) and "field" in data else data
+def dataset(data: Any, spellings: Spellings) -> Any:
+    """A dataset and its members in the Ossie vocabulary (its queries convert on their own)."""
+    return _dataset(data, spellings) if isinstance(data, dict) else data
 
 
-def _order_item(data: Any, spellings: Spellings) -> Any:
-    data = _renamed(data, ORDER_ITEM_KEYS, spellings)
-    return {**data, "field": _field_ref(data["field"], spellings)} if isinstance(data, dict) and "field" in data else data
+def _reference_text(data: dict[str, Any]) -> Any:
+    """The dotted text of a pre-2.0 field-reference object (``name``, ``model``, ``quoted``); only a ``name``-only
+    object may carry an expression, any other names a field by valid names."""
+    name, model = data.get("name"), data.get("model")
+    if not isinstance(name, str) or not (model is None or isinstance(model, str)):
+        return name
+    parts = [*(model.split(".") if model else ()), *name.split(".")] if model else name.split(".")
+    quoted = data.get("quoted")
+    flags = quoted if isinstance(quoted, list) and len(quoted) == len(parts) else [False] * len(parts)
+    if set(data) != {"name"}:
+        bad = next((p for p, q in zip(parts, flags) if not q and not NAME_PATTERN.match(p)), None)
+        if bad is not None:
+            raise ValueError(f"Invalid name '{bad}': must contain only letters, digits, and underscores, and start "
+                             f"with a letter or underscore")
+    return ".".join(quoted_name(p) if q else p for p, q in zip(parts, flags))
 
 
-def _extension(data: Any, spellings: Spellings) -> Any:
+def _reference_object(value: Any) -> bool:
+    return isinstance(value, dict) and isinstance(value.get("name"), str)
+
+
+def _entry_form(item: dict[str, Any], table: Mapping[str, str], spellings: Spellings) -> dict[str, Any]:
+    """``item`` with ``table``'s keys renamed, reported as one deprecation by the form's leading key."""
+    old = next((old for old in table if old in item), None)
+    if old is not None:
+        spellings.note(old, table[old])
+    return spellings.rename(item, table, record=False)
+
+
+def query_metric(item: Any, spellings: Spellings) -> Any:
+    """A query metric entry in the Ossie form; the pre-release ``{expression, name}`` is left to be refused."""
+    if not isinstance(item, dict) or "expression" in item:
+        return item
+    item = _entry_form(item, {"formula": "metric", "name": "alias"}, spellings)
+    return _datatype(spellings.rename(item, {"type": "datatype"}), "datatype", spellings)
+
+
+def dimension_entry(item: Any, spellings: Spellings) -> Any:
+    """A query dimension entry in the Ossie form: ``{name, model}`` and ``{expression, name}`` become ``field`` /
+    ``alias``; the pre-release ``{name, dataset}`` is left to be refused."""
+    if not isinstance(item, dict):
+        return item
+    if "field" in item:
+        for old in ("expression", "model"):
+            if old in item:
+                raise SpellingConflictError(old=old, new="field")
+        return item
+    if "expression" in item:
+        return _entry_form(item, DIMENSION_EXPRESSION_KEYS, spellings)
+    if not _reference_object(item):
+        return item
+    spellings.note("model" if "model" in item else "name", "field")
+    rest = {k: v for k, v in item.items() if k not in ("name", "model", "quoted")}
+    return {"field": _reference_text(item), **rest}
+
+
+def _field_text(data: Any, table: Mapping[str, str], spellings: Spellings, *, labelled: bool) -> Any:
+    """``data`` with ``table``'s keys renamed to ``field``, a pre-2.0 reference object under one becoming text (its
+    ``label`` kept when ``labelled``)."""
+    if not isinstance(data, dict):
+        return data
+    olds = [old for old in table if old in data and table[old] == "field"]
+    data = spellings.rename(data, table)
+    if olds and _reference_object(data.get("field")):
+        if labelled and "label" in data["field"] and "label" not in data:
+            data = {**data, "label": data["field"]["label"]}
+        data = {**data, "field": _reference_text(data["field"])}
+    return data
+
+
+def time_dimension(data: Any, spellings: Spellings) -> Any:
+    return _field_text(data, TIME_DIMENSION_KEYS, spellings, labelled=True)
+
+
+def order_item(data: Any, spellings: Spellings) -> Any:
+    return _field_text(data, ORDER_ITEM_KEYS, spellings, labelled=False)
+
+
+def extension(data: Any, spellings: Spellings) -> Any:
     if not isinstance(data, dict):
         return data
     data = spellings.rename(data, EXTENSION_KEYS)
-    data = _members(data, "metrics", lambda m: _renamed(m, METRIC_KEYS, spellings))
-    return _members(data, "relationships", lambda r: _renamed(r, RELATIONSHIP_KEYS, spellings))
+    data = _members(data, "metrics", lambda m: metric(m, spellings))
+    return _members(data, "relationships", lambda r: relationship(r, spellings))
 
 
 def _query(data: dict[str, Any], spellings: Spellings) -> dict[str, Any]:
     data = spellings.rename(data, QUERY_KEYS)
-    data = _members(data, "metrics", lambda m: _renamed(m, METRIC_KEYS, spellings))
-    data = _members(data, "dimensions", lambda d: _field_ref(d, spellings))
-    data = _members(data, "time_dimensions", lambda t: _time_dimension(t, spellings))
-    data = _members(data, "order", lambda o: _order_item(o, spellings))
-    data = _members(data, "extensions", lambda e: _extension(e, spellings))
+    data = _members(data, "metrics", lambda m: query_metric(m, spellings))
+    data = _members(data, "dimensions", lambda d: dimension_entry(d, spellings))
+    data = _members(data, "time_dimensions", lambda t: time_dimension(t, spellings))
+    data = _members(data, "order", lambda o: order_item(o, spellings))
+    data = _members(data, "extensions", lambda e: extension(e, spellings))
     population = data.get("population")
     if isinstance(population, dict) and "version" in population:
         pass  # a versioned inline dataset converts through its own migration
-    elif isinstance(population, dict) and "source_name" not in population:
+    elif isinstance(population, dict) and "source_name" not in population and "dataset" not in population:
         data = {**data, "population": _dataset(population, spellings)}
     elif isinstance(population, dict):
-        data = {**data, "population": _extension(population, spellings)}
+        data = {**data, "population": extension(population, spellings)}
     return data
+
+
+def refinement(data: Any, spellings: Spellings) -> Any:
+    """A query refinement in the Ossie vocabulary."""
+    if not isinstance(data, dict):
+        return data
+    data = spellings.rename(data, REFINEMENT_KEYS)
+    data = _members(data, "metrics", lambda m: query_metric(m, spellings))
+    data = _members(data, "dimensions", lambda d: dimension_entry(d, spellings))
+    data = _members(data, "time_dimensions", lambda t: time_dimension(t, spellings))
+    return _members(data, "order", lambda o: order_item(o, spellings))
+
+
+def query(data: Any, spellings: Spellings) -> Any:
+    return _query(data, spellings) if isinstance(data, dict) else data
+
+
+def _stash(data: Any) -> Any:
+    """A stored field or metric with the importer's retired ``meta["osi_datatype"]`` folded into ``datatype`` when it
+    names a value of the stored type's kind, then dropped."""
+    if not isinstance(data, dict) or not isinstance(data.get("meta"), dict) or "osi_datatype" not in data["meta"]:
+        return data
+    meta = {k: v for k, v in data["meta"].items() if k != "osi_datatype"}
+    stashed = stored_datatype(data["meta"]["osi_datatype"])
+    stored = stored_datatype(data.get("datatype"))
+    out = {**data, "meta": meta or None}
+    if stashed is not None and (stored is None or stashed.kind is stored.kind):
+        out["datatype"] = stashed.value
+    return out
 
 
 def stored_dataset(data: dict[str, Any]) -> dict[str, Any]:
     """A stored dataset document's own keys and members in the Ossie vocabulary (its queries convert on their own)."""
-    return _dataset(data, Spellings(stored=True))
+    spellings = Spellings(stored=True)
+    data = spellings.rename(data, DATASET_KEYS)
+    data = _members(data, "fields", lambda f: _stash(_renamed(f, FIELD_KEYS, spellings)))
+    data = _members(data, "metrics", lambda m: _stash(_renamed(m, METRIC_KEYS, spellings)))
+    return _dataset(data, spellings)
 
 
 def stored_query(data: dict[str, Any]) -> dict[str, Any]:

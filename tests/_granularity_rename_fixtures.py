@@ -35,7 +35,7 @@ EVENT_ROWS = [
 ]
 #: ``sum(amount)`` per mid-month bucket (``granularity_definition``).
 EXPECTED_BUCKETS = {"2025-01-15": 3.0, "2025-02-15": 12.0}
-SUM = {"expression": "sum(amount)", "name": "s"}
+SUM = {"formula": "sum(amount)", "name": "s"}
 
 
 def renamed(name: str) -> str:

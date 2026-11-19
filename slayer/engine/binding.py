@@ -41,7 +41,24 @@ from slayer.core.errors import (
     UnresolvableDimensionRelationshipError,
     UnresolvedPlaceholderError,
 )
-from slayer.core.enums import RESERVED_NAMES, AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATION_PARAM_ORDER, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, NUMERIC_ONLY_AGGREGATIONS, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, DataType, ambiguous_weekday_message, normalize_aggregation_name, ALL_TRANSFORMS
+from slayer.core.enums import (
+    ALL_TRANSFORMS,
+    AMBIGUOUS_WEEKDAY_NAMES,
+    BUILTIN_AGGREGATIONS,
+    BUILTIN_AGGREGATION_PARAM_ORDER,
+    DATE_PART_ALIASES,
+    DEFAULT_AGGREGATIONS_BY_TYPE,
+    DataType,
+    GRANULARITY_NAMES,
+    NUMERIC_DATATYPES,
+    NUMERIC_ONLY_AGGREGATIONS,
+    PRIMARY_KEY_AGGREGATIONS,
+    RANKED_AGGREGATIONS,
+    RESERVED_NAMES,
+    TEMPORAL_DATATYPES,
+    ambiguous_weekday_message,
+    normalize_aggregation_name,
+)
 from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
@@ -367,7 +384,7 @@ def _bucketed_leaves(
         if not isinstance(leaf, (FieldKey, FieldSqlKey)):
             continue
         field_type, upstream = _field_facts(leaf, scope=scope, bundle=bundle)
-        if upstream is not None and field_type in (DataType.DATE, DataType.TIMESTAMP):
+        if upstream is not None and field_type in TEMPORAL_DATATYPES:
             out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), upstream)
     return tuple(out.items())
 
@@ -603,8 +620,8 @@ def _temporal_literal_value(parsed: TemporalLiteral):
 def _try_cast_source(source: ValueKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
     """What a ``TRY_CAST`` reads ``source`` as: integer text (``INT``), another number (``DOUBLE``), else text."""
     if integer_text_valued(source, field_type=field_type):
-        return DataType.INT
-    return DataType.DOUBLE if numeric_valued(source, field_type=field_type) else None
+        return DataType.INTEGER
+    return DataType.FLOAT if numeric_valued(source, field_type=field_type) else None
 
 
 def _bind_cast(
@@ -621,8 +638,8 @@ def _bind_cast(
         raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
     data_type, element_type = cast_slayer_type(parsed.type_text, dialect=bundle.dialect)
     field_type = scope_field_type(scope=scope, bundle=bundle)
-    if parsed.try_ and data_type in (DataType.INT, DataType.DOUBLE) and boolean_valued(source, field_type=field_type):
-        source = CastKey(source=source, type_text="INT", data_type=DataType.INT)  # a boolean reads as its 1 / 0
+    if parsed.try_ and data_type in NUMERIC_DATATYPES and boolean_valued(source, field_type=field_type):
+        source = CastKey(source=source, type_text="INT", data_type=DataType.INTEGER)  # a boolean reads as its 1 / 0
     return CastKey(
         source=source, type_text=parsed.type_text, data_type=data_type, try_=parsed.try_,
         element_type=element_type,
@@ -946,7 +963,7 @@ def _reject_opaque_elements(
     if field is not None and field.datatype is DataType.ARRAY:
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="DatasetScope",
-            scope_summary=f"list field {field.name!r} holds opaque (UNKNOWN) elements, which have no element access",
+            scope_summary=f"list field {field.name!r} holds opaque (Opaque) elements, which have no element access",
             suggestion=(
                 "Declare the field's element_type to reach its elements; on the list itself, "
                 "count() counts non-NULL lists (not elements) and IS NULL tests for a missing list."
@@ -1362,10 +1379,10 @@ def _expression_is_confidently_text(key, *, dataset: Optional[SlayerDataset]) ->
         return isinstance(key.value, str)
     if isinstance(key, FieldKey) and not key.path and dataset is not None:
         col = dataset.get_field(key.leaf)
-        return col is not None and col.datatype == DataType.TEXT
+        return col is not None and col.datatype == DataType.STRING
     if isinstance(key, FieldSqlKey) and not key.path and dataset is not None:
         col = dataset.get_field(key.field_name)
-        return col is not None and col.datatype == DataType.TEXT
+        return col is not None and col.datatype == DataType.STRING
     # Arithmetic coerces numeric; anything unresolved defaults to numeric.
     return False
 
@@ -1946,7 +1963,7 @@ def _field_agg_refusal(*, col: DatasetField, fields, agg: str, custom: bool) -> 
         return None
     remedy = (
         f" For numbers stored as text, convert them: {agg}(TRY_CAST({leaf} AS DOUBLE))."
-        if col.datatype is DataType.TEXT and agg in NUMERIC_ONLY_AGGREGATIONS else ""
+        if col.datatype is DataType.STRING and agg in NUMERIC_ONLY_AGGREGATIONS else ""
     )
     if col.datatype is DataType.ARRAY:
         remedy = f" {leaf!r} is a list; aggregate its elements: {agg}({leaf}.value)."
@@ -2343,16 +2360,16 @@ def _json_input(arg: ValueKey, *, scope: DatasetScope | StageSchema, bundle: Res
     field_type = scope_field_type(scope=scope, bundle=bundle)
     db_type = _json_db_type(arg, scope=scope, bundle=bundle)
     if db_type is not None:
-        return CastKey(source=arg, type_text=db_type, data_type=DataType.UNKNOWN)
+        return CastKey(source=arg, type_text=db_type, data_type=DataType.OPAQUE)
     declared = field_type(arg) if isinstance(arg, (FieldKey, FieldSqlKey)) else None
-    if declared in (None, DataType.TEXT) and not (
+    if declared in (None, DataType.STRING) and not (
         numeric_valued(arg, field_type=field_type) or boolean_valued(arg, field_type=field_type)
         or temporal_type(arg, field_type=field_type) is not None
     ):
         return arg
     raise ScalarOperandTypeError(
         summary=f"json_value() reads JSON text or a JSON field; `{key_display(arg)}` is "
-        f"{(declared or DataType.UNKNOWN).value if declared not in (None, DataType.TEXT) else 'not text'}.",
+        f"{(declared or DataType.OPAQUE).value if declared not in (None, DataType.STRING) else 'not text'}.",
         suggestion="Pass a TEXT field holding JSON, or a field of the database's JSON type.",
     )
 

@@ -146,19 +146,19 @@ class TestCatalogEligibility:
 class TestInspectSampling:
     def test_composite_member_is_a_sample_dimension(self) -> None:
         dims, _ = _choose_sample_dims(order_lines())
-        assert {"name": "status"} in dims
+        assert "status" in dims
 
     def test_sole_primary_key_is_not_a_sample_dimension(self) -> None:
         dims, _ = _choose_sample_dims(codes())
-        assert dims == [{"name": "label"}]
+        assert dims == ["label"]
 
     def test_composite_members_are_sample_measures(self) -> None:
-        formulas = [m["expression"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["metrics"]]
+        formulas = [m["metric"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["metrics"]]
         assert any("(order_id)" in f for f in formulas)
         assert any("(line_no)" in f for f in formulas)
 
     def test_sole_primary_key_is_not_a_sample_measure(self) -> None:
-        formulas = [m["expression"] for m in _build_sample_query_args(dataset=orders_dataset(), num_rows=3)["metrics"]]
+        formulas = [m["metric"] for m in _build_sample_query_args(dataset=orders_dataset(), num_rows=3)["metrics"]]
         assert not any("(id)" in f for f in formulas)
 
     def test_composite_member_sample_cache_is_checked(self) -> None:

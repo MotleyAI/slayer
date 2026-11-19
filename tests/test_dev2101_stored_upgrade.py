@@ -103,7 +103,7 @@ class TestEverySurface:
         assert [m.metric for m in query.metrics or []] == [
             "sum(iif(region = 'EU', amount, 0))", "count_distinct(status || 'x')",
         ]
-        assert [getattr(d, "expression") for d in query.dimensions or []] == ["concat(status, '!')", "status || '-'"]
+        assert [d.field for d in query.dimensions or []] == ["concat(status, '!')", "status || '-'"]
         assert query.filter == ["status = 'paid'"]
         assert query.order is not None
         assert query.order[0].raw_expression == "sum(iif(status = 'paid', amount, 0))"

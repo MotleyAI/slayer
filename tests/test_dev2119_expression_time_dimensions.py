@@ -255,7 +255,7 @@ class TestNamesAndKeys:
 
     async def test_named_expression_key_and_main_time_dimension(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            time_dimensions=[td("created_at"), td(EFF, name="effective_at")], main_time_dimension="effective_at",
+            time_dimensions=[td("created_at"), td(EFF, alias="effective_at")], main_time_dimension="effective_at",
             metrics=[m("cumsum(count(*))")],
         ))
         assert set(resp.columns) == {"orders.created_at", "orders.effective_at", "orders.v"}
@@ -267,17 +267,17 @@ class TestNamesAndKeys:
         }
 
     async def test_named_column_time_dimension(self, engine: SlayerQueryEngine) -> None:
-        named = await engine.execute(_count(time_dimensions=[td("created_at", name="m")]))
+        named = await engine.execute(_count(time_dimensions=[td("created_at", alias="m")]))
         assert named.columns == ["orders.m", "orders.v"]
         assert by_bucket(named, "orders.m", "orders.v") == CREATED_MONTH_COUNT
 
     async def test_named_time_dimension_never_carries_the_granularity_suffix(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_count(time_dimensions=[td(EFF, name="em"), td(EFF, "year", name="ey")]))
+        resp = await engine.execute(_count(time_dimensions=[td(EFF, alias="em"), td(EFF, "year", alias="ey")]))
         assert set(resp.columns) == {"orders.em", "orders.ey", "orders.v"}
 
     async def test_partition_by_a_time_dimension_name(self, engine) -> None:
         resp = await engine.execute(q(
-            dimensions=["region"], time_dimensions=[td(EFF, name="effective_at")],
+            dimensions=["region"], time_dimensions=[td(EFF, alias="effective_at")],
             metrics=[m("sum(amount, partition_by=effective_at)")],
         ))
         got = by_bucket(resp, "orders.effective_at", "orders.v", by=["orders.region"])
@@ -295,7 +295,7 @@ class TestNamesAndKeys:
         with pytest.raises(ValueError, match="Conflicting"):
             _count(time_dimensions=tds)
 
-    @pytest.mark.parametrize("extra", [{}, {"label": "a"}, {"name": "effective_at"}])
+    @pytest.mark.parametrize("extra", [{}, {"label": "a"}, {"alias": "effective_at"}])
     async def test_equivalent_spellings_with_agreeing_metadata_dedupe_at_binding(self, engine: SlayerQueryEngine, extra: dict) -> None:
         once = await engine.execute(_count(time_dimensions=[td(EFF, **extra)]))
         twice = await engine.execute(_count(time_dimensions=[td(EFF, **extra),
@@ -305,7 +305,7 @@ class TestNamesAndKeys:
 
     async def test_main_time_dimension_by_expression_name(self, engine) -> None:
         resp = await engine.execute(q(
-            dimensions=["date_trunc('month', created_at)"], time_dimensions=[td(EFF, name="effective_at")],
+            dimensions=["date_trunc('month', created_at)"], time_dimensions=[td(EFF, alias="effective_at")],
             main_time_dimension="effective_at", metrics=[m("cumsum(count(*))")],
         ))
         got = {(bucket(r["orders.created_at"]), bucket(r["orders.effective_at"])): num(r["orders.v"])

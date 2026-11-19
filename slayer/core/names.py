@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, List, Optional, Sequence
 
 from slayer.core.errors import AmbiguousReferenceError
+
+
+#: An unquoted name: letters, digits and underscores, not starting with a digit.
+NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 
 
 def quoted_name(name: str) -> str:

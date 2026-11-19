@@ -223,7 +223,7 @@ class TestApplyVariablesToQuery:
         out = apply_variables_to_query(query=q, variables={"x": 1})
         assert out is not q
         assert out == q
-        assert out.filter == []
+        assert out.filter is None
 
     def test_filters_with_no_placeholders_returns_copy_unchanged(self) -> None:
         q = SlayerQuery(population="orders", filter=["status = 'active'"])
@@ -254,10 +254,7 @@ class TestApplyVariablesToQuery:
         downstream mutation can't bleed back into the input query."""
         q = SlayerQuery(population="orders", filter=[])
         out = apply_variables_to_query(query=q, variables={"x": 1})
-        assert out.filter is not None
-        assert out.filter is not q.filter
-        out.filter.append("status = 'active'")
-        assert q.filter == []
+        assert out.filter is None
 
     def test_multiple_filters_all_substituted(self) -> None:
         q = SlayerQuery(

@@ -15,9 +15,10 @@ import json
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, TypeGuard
 
 from slayer.core.strict_flag import without_strict
+from slayer.core.vocabulary import extension_dataset, is_extension_object
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
@@ -171,9 +172,10 @@ def _query_v3_to_v4(data: dict) -> dict:
     return without_strict(data) if "strict" in data else data
 
 
-def is_legacy_root_extension(source: Any) -> bool:
-    """Whether a raw population (``source_model`` before 2.0) is the legacy extension object."""
-    return isinstance(source, dict) and "source_name" in source
+def is_legacy_root_extension(source: Any) -> TypeGuard[dict[str, Any]]:
+    """Whether a raw population (``source_model`` before 2.0) is the legacy extension object (its target spelled
+    ``source_name``, or already ``dataset``)."""
+    return is_extension_object(source)
 
 
 def hoist_root_extension(data: dict, *, key: str = "source_model") -> dict:
@@ -181,7 +183,7 @@ def hoist_root_extension(data: dict, *, key: str = "source_model") -> dict:
     source = data.get(key)
     if not isinstance(source, dict) or not is_legacy_root_extension(source):
         return data
-    return with_root_extension(data, extension=source, base=source["source_name"], key=key)
+    return with_root_extension(data, extension=source, base=extension_dataset(source), key=key)
 
 
 def with_root_extension(data: dict, *, extension: Any, base: Any, key: str = "source_model") -> dict:

@@ -16,7 +16,7 @@ from collections.abc import Callable, Hashable, Iterable
 
 from typing_extensions import deprecated
 
-from slayer.core.enums import RESERVED_NAMES, DataType, TimeGranularity
+from slayer.core.enums import DataType, RESERVED_NAMES, TEMPORAL_DATATYPES, TimeGranularity, stored_datatype
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset, spine_variant_warnings
 from slayer.core.errors import (
@@ -72,7 +72,14 @@ from slayer.storage import migrations as _mig
 from slayer.storage.date_only_migration import (
     StoredDatasets, below_date_only_upgrade, is_exact_inverse_relationship, needs_typing, stored_type, typing_with, upgraded_text,
 )
-from slayer.storage.document_keys import CURRENT_KEYS, LEGACY_KEYS, dataset_in, keys_for
+from slayer.storage.document_keys import (
+    CURRENT_KEYS,
+    LEGACY_KEYS,
+    dataset_in,
+    keys_for,
+    relationship_pairs,
+    with_relationship_pairs,
+)
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.granularity_rename import (
     Renames,
@@ -160,15 +167,14 @@ def _canonical_key(*, key: Any, fields: Any) -> Any:
     return renames[0] if len(renames) == 1 else key
 
 
-def canonical_join_pairs(*, pairs: Any, source_fields: Any, target_fields: Any) -> Any:
-    """Raw ``join_pairs`` with stored physical spellings rewritten to ``DatasetField.name``."""
-    if not isinstance(pairs, list):
-        return pairs
-    return [
-        [_canonical_key(key=p[0], fields=source_fields), _canonical_key(key=p[1], fields=target_fields)]
-        if isinstance(p, list) and len(p) == 2 else p
-        for p in pairs
-    ]
+def canonical_relationship_keys(*, relationship: dict, source_fields: Any, target_fields: Any) -> dict:
+    """A raw relationship with its stored physical key spellings rewritten to ``DatasetField.name``."""
+    pairs = relationship_pairs(relationship)
+    if not pairs:
+        return relationship
+    return with_relationship_pairs(relationship, [
+        (_canonical_key(key=a, fields=source_fields), _canonical_key(key=b, fields=target_fields)) for a, b in pairs
+    ])
 
 
 def _undeclared_key(*, key: Any, fields: list) -> bool:
@@ -188,11 +194,6 @@ def _undeclared_key(*, key: Any, fields: list) -> bool:
     )
 
 
-def _key_pairs(relationship: Any) -> list[tuple[Any, Any]]:
-    pairs = relationship.get("join_pairs") if isinstance(relationship, dict) else None
-    return [(p[0], p[1]) for p in pairs if isinstance(p, list) and len(p) == 2] if isinstance(pairs, list) else []
-
-
 def _stage_names(data: dict) -> frozenset[str]:
     """The names of a stored dataset's own stages."""
     queries = data.get("source_queries")
@@ -207,10 +208,11 @@ def _incoming_keys(*, sibling: dict, target: str, target_fields: list) -> list[t
     for relationship in relationships if isinstance(relationships, list) else []:
         if not isinstance(relationship, dict) or relationship.get("to") != target:
             continue
-        canonical = {**relationship, "join_pairs": canonical_join_pairs(
-            pairs=relationship.get("join_pairs"), source_fields=sibling.get("fields"), target_fields=target_fields,
-        )}
-        out.extend((tgt, stored_type(key=src, fields=sibling.get("fields"), keys=CURRENT_KEYS)) for src, tgt in _key_pairs(canonical))
+        canonical = canonical_relationship_keys(
+            relationship=relationship, source_fields=sibling.get("fields"), target_fields=target_fields,
+        )
+        out.extend((tgt, stored_type(key=src, fields=sibling.get("fields"), keys=CURRENT_KEYS))
+                   for src, tgt in relationship_pairs(canonical))
     return out
 
 
@@ -223,10 +225,9 @@ def _stored_counterpart(*, relationship: dict, name: str, peer: dict | None, fie
         (
             j for j in peer_relationships
             if isinstance(j, dict) and j.get("to") == name
-            and is_exact_inverse_relationship(relationship, {**j, "join_pairs": canonical_join_pairs(
-                pairs=j.get("join_pairs"), source_fields=peer.get("fields"),
-                target_fields=fields,
-            )})
+            and is_exact_inverse_relationship(relationship, canonical_relationship_keys(
+                relationship=j, source_fields=peer.get("fields"), target_fields=fields,
+            ))
         ),
         None,
     )
@@ -567,7 +568,7 @@ def _refuse_colon_metrics(dataset: SlayerDataset) -> None:
 
 def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
     field = dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
-    if field is not None and field.datatype not in (DataType.DATE, DataType.TIMESTAMP):
+    if field is not None and field.datatype not in TEMPORAL_DATATYPES:
         raise DefaultTimeDimensionTypeError(dataset=dataset.name, field=field.name, field_type=field.datatype)
 
 
@@ -1186,12 +1187,12 @@ class StorageBackend(ABC):
         relationships = data.get("relationships")
         if not isinstance(relationships, list):
             return
-        for relationship in relationships:
+        for i, relationship in enumerate(relationships):
             if not isinstance(relationship, dict) or not isinstance(relationship.get("to"), str):
                 continue
             peer = await self._peer_dataset_dict(name=relationship["to"], data_source=data_source)
-            relationship["join_pairs"] = canonical_join_pairs(
-                pairs=relationship.get("join_pairs"), source_fields=data.get("fields"),
+            relationships[i] = canonical_relationship_keys(
+                relationship=relationship, source_fields=data.get("fields"),
                 target_fields=peer.get("fields") if isinstance(peer, dict) else None,
             )
 
@@ -1214,7 +1215,7 @@ class StorageBackend(ABC):
             target = relationship.get("to") if isinstance(relationship, dict) else None
             peer = await self._peer_dataset_dict(name=target, data_source=data_source) if isinstance(target, str) else None
             peer_fields = peer.get("fields") if isinstance(peer, dict) else None
-            keys.extend((src, stored_type(key=tgt, fields=peer_fields, keys=CURRENT_KEYS)) for src, tgt in _key_pairs(relationship))
+            keys.extend((src, stored_type(key=tgt, fields=peer_fields, keys=CURRENT_KEYS)) for src, tgt in relationship_pairs(relationship))
         return keys
 
     async def _sibling_keys_into(self, *, name: str, fields: list, data_source: str) -> list[tuple[Any, str | None]]:
@@ -1301,8 +1302,8 @@ class StorageBackend(ABC):
                 continue
             temporal = [
                 literal for literal, field in pairs
-                if datasets.field_type(host=host, parts=[p.name for p in field.parts], extensions=extensions)
-                in (DataType.DATE.value, DataType.TIMESTAMP.value)
+                if stored_datatype(datasets.field_type(host=host, parts=[p.name for p in field.parts], extensions=extensions))
+                in TEMPORAL_DATATYPES
             ]
             if temporal and whole_day_dates:
                 # A repaired legacy date is a date-only literal meant as its whole day, as stored.

@@ -554,6 +554,18 @@ class SpineRelationshipDroppedWarning(SlayerWarning):
         self.relationship = value
 
 
+class UnknownStoredKeyWarning(SlayerWarning):
+    """Stored dataset ``dataset`` carried keys SLayer does not read (``paths``), dropped on load."""
+
+    kind: Literal["unknown_stored_key"] = "unknown_stored_key"
+    dataset: str
+    paths: List[str]
+
+    def human_message(self) -> str:
+        return (f"stored dataset {self.dataset!r} carried keys SLayer does not read, dropped on load: "
+                f"{', '.join(self.paths)}; save the dataset to persist it without them")
+
+
 class DeprecatedSpellingWarning(SlayerWarning):
     """A deprecated Mode-B ``spelling`` was read (``written``); ``canonical`` is its twin, removed in ``removal``."""
 
@@ -606,6 +618,7 @@ AnySlayerWarning = Annotated[
         DeprecatedSpellingWarning,
         NameCollisionWarning,
         SpineRelationshipDroppedWarning,
+        UnknownStoredKeyWarning,
         DateOnlyMidnightWarning,
     ],
     Field(discriminator="kind"),
@@ -737,6 +750,17 @@ class SlayerSpineRelationshipDroppedWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``SpineRelationshipDroppedWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: SpineRelationshipDroppedWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerUnknownStoredKeyWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``UnknownStoredKeyWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: UnknownStoredKeyWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

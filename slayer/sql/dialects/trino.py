@@ -175,7 +175,7 @@ class PrestoFamilyDialect(SqlDialect):
     ) -> Expression:
         """A DATE takes no sub-day interval, so it moves as a TIMESTAMP."""
         if operand is DataType.DATE and unit in SUB_DAY_GRANULARITIES:
-            expr, operand = self.promote_to_timestamp(expr), DataType.TIMESTAMP
+            expr, operand = self.promote_to_timestamp(expr), DataType.DATETIME
         return super().build_date_add(expr=expr, count=count, unit=unit, operand=operand)
 
     def _day_gap(self, *, start: Expression, end: Expression) -> Expression:

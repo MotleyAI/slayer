@@ -25,7 +25,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, QueryMetric, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.core.warnings import SlayerNormalizationWarning
 from slayer.engine.normalization import (
     NormalizationResult,
@@ -246,7 +246,10 @@ class TestMisplacedMeasure:
         q = SlayerQuery(population="orders", metrics=[QueryMetric(metric="status")])
         result = normalize_query(query=q, dataset=_orders())
         assert result.query is not None
-        assert [type(d) for d in (result.query.dimensions or [])] == [FieldRef]
+        dims = result.query.dimensions or []
+        assert [type(d) for d in dims] == [QueryDimension]
+        assert dims[0].ref is not None
+        assert dims[0].ref.full_name == "status"
 
 
 # ---------------------------------------------------------------------------

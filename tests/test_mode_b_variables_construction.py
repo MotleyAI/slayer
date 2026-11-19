@@ -18,7 +18,8 @@ def build(**kw: Any) -> SlayerQuery:
 
 def test_string_dimension_with_placeholder() -> None:
     q = build(dimensions=["amount * {k}"])
-    assert q.dimensions == [QueryDimension(field="amount * {k}", alias="amount_k")]
+    assert q.dimensions == [QueryDimension(field="amount * {k}")]
+    assert [d.name for d in q.dimensions or []] == ["amount_k"]
 
 
 def test_order_expression_with_placeholder() -> None:

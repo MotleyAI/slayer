@@ -149,7 +149,7 @@ class TestExecutedPostgres:
             model = await _ingested(datasource)
         amount = model.get_field("amount")
         assert amount is not None
-        assert amount.datatype is DataType.FLOAT
+        assert amount.datatype is DataType.DECIMAL
         assert amount.db_type is not None
         assert amount.db_type.lower() == "money"
 

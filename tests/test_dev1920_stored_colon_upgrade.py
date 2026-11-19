@@ -284,8 +284,8 @@ class TestGranularityRename:
         expected = rows(await run(storage, fresh))
         for loaded in (stage, memory.query):
             dumped = loaded.model_dump()
-            assert (dumped["dimensions"], dumped["time_dimensions"]) == (
-                fresh.model_dump()["dimensions"], fresh.model_dump()["time_dimensions"])
+            assert (dumped.get("dimensions"), dumped.get("time_dimensions")) == (
+                fresh.model_dump().get("dimensions"), fresh.model_dump().get("time_dimensions"))
             assert rows(await run(storage, loaded)) == expected
 
 

@@ -360,8 +360,8 @@ class _StagePlanner:
         if not is_spine_query(query):
             return []
         texts = [
-            *(m.expression for m in query.metrics or []), *(query.filter or []),
-            *(getattr(d, "expression", None) or getattr(d, "full_name", "") for d in query.dimensions or []),
+            *(m.metric for m in query.metrics or []), *query.filter_conditions,
+            *(d.field for d in query.dimensions or []),
         ]
         root = query.population_name
         heads = {path[0] for t in texts for path in text_paths(t, root=root) if len(path) > 1}

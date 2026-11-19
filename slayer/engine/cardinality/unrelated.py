@@ -17,7 +17,7 @@ from slayer.core.keys import (
     ValueKey,
 )
 from slayer.core.models import SlayerDataset
-from slayer.core.query import FieldRef, ComputedDimension, SlayerQuery
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.core.time_spine import is_spine
 from slayer.engine.reference_closure import key_closure
 from slayer.core.syntax import drop_root_qualifier, text_paths
@@ -42,16 +42,17 @@ def first_hop_names(query: SlayerQuery) -> set[str]:
     root = query.population_name
     out: set[str] = set()
     for m in query.metrics or []:
-        out.update(_parsed_heads(m.expression, root=root))
+        out.update(_parsed_heads(m.metric, root=root))
     for d in query.dimensions or []:
-        out.update(_parsed_heads(d.expression, root=root) if isinstance(d, ComputedDimension)
-                   else _path_head(d, root=root))
+        ref = d.ref
+        out.update(_parsed_heads(d.field, root=root) if d.is_computed or ref is None else _path_head(ref, root=root))
     for td in query.time_dimensions or []:
         out.update(_parsed_heads(td.field, root=root))
-    for f in query.filter or []:
+    for f in query.filter_conditions:
         out.update(_parsed_heads(f, root=root))
     for o in query.order or []:
-        out.update(_parsed_heads(o.raw_expression, root=root) if o.raw_expression else _path_head(o.field, root=root))
+        ref = o.ref
+        out.update(_path_head(ref, root=root) if ref is not None else _parsed_heads(o.raw_expression or o.field, root=root))
     return out
 
 

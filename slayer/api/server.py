@@ -59,17 +59,14 @@ class QueryRequest(BaseModel):
     name: str | None = None  # Run-by-name: backing query for a query-backed dataset
     population: SourceSpec | None = None
     extensions: list[DatasetExtension] | None = None
-    # ``metrics`` and ``dimensions`` accept bare strings as a shorthand,
-    # mirroring the Python API: ``"count(*)"`` is lifted to
-    # ``{"expression": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
-    # ``SlayerQuery``'s before-validators (``_coerce_metrics`` /
-    # ``_coerce_dimensions``) do the actual lifting downstream.
+    # ``metrics`` and ``dimensions`` entries are strings or ``{"metric", "alias"}`` / ``{"field", "alias"}``,
+    # validated downstream by ``SlayerQuery``.
     metrics: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
     # A string entry is the ``date_trunc('<unit>', expr)`` form, coerced downstream by
     # ``SlayerQuery``.
     time_dimensions: list[str | dict[str, Any]] | None = None
-    filter: list[str] | None = None
+    filter: str | list[str] | None = None
     order: list[dict[str, Any]] | None = None
     limit: int | None = None
     offset: int | None = None

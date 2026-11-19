@@ -64,8 +64,8 @@ Each also takes `variables=` — runtime values for `{placeholders}`, overriding
 ```python
 # Multi-stage DAG
 client.query_sync([
-    {"name": "by_customer", "population": "orders", "metrics": [{"expression": "sum(order_total)"}], "dimensions": [{"name": "customer_id"}]},
-    {"population": "by_customer", "metrics": [{"expression": "avg(order_total_sum)"}]},
+    {"name": "by_customer", "population": "orders", "metrics": ["sum(order_total)"], "dimensions": ["customer_id"]},
+    {"population": "by_customer", "metrics": ["avg(order_total_sum)"]},
 ])
 
 # Run-by-name (query-backed dataset), optionally refined
@@ -150,7 +150,7 @@ run_sync(client.save_memory(
     learning="Top customers by lifetime spend",
     linked_entities={
         "population": "orders",
-        "metrics": [{"expression": "sum(order_total)", "name": "lifetime_spend"}],
+        "metrics": [{"metric": "sum(order_total)", "alias": "lifetime_spend"}],
         "dimensions": ["customers.name"],
         "order": [{"field": "lifetime_spend", "direction": "desc"}],
         "limit": 5,

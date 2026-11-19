@@ -180,7 +180,7 @@ class TestJoinResolution:
         # Both peer joins should survive (different columns)
         assert len(joins) == 2, f"Expected 2 peer joins, got {len(joins)}: {[(j.to, j.column_pairs) for j in joins]}"
         pairs = sorted([j.column_pairs[0] for j in joins])
-        assert pairs == [["col_x", "bx"], ["col_y", "by"]]
+        assert pairs == [("col_x", "bx"), ("col_y", "by")]
 
     def test_peer_join_declared_once_per_pair(self) -> None:
         """DEV-1853: only the lexicographically smaller model declares the peer

@@ -23,14 +23,14 @@ from slayer.facade.rows import FacadeColumn, RowBatch
 
 def _batch_select_one() -> RowBatch:
     return RowBatch(
-        columns=[FacadeColumn(name="1", type=DataType.INT)],
+        columns=[FacadeColumn(name="1", type=DataType.INTEGER)],
         rows=[{"1": 1}],
     )
 
 
 def _batch_select_null_empty() -> RowBatch:
     return RowBatch(
-        columns=[FacadeColumn(name="NULL", type=DataType.INT)],
+        columns=[FacadeColumn(name="NULL", type=DataType.INTEGER)],
         rows=[],
     )
 
@@ -38,14 +38,14 @@ def _batch_select_null_empty() -> RowBatch:
 def _batch_select_version() -> RowBatch:
     value = f"SLayer Flight SQL {slayer.__version__}"
     return RowBatch(
-        columns=[FacadeColumn(name="version", type=DataType.TEXT)],
+        columns=[FacadeColumn(name="version", type=DataType.STRING)],
         rows=[{"version": value}],
     )
 
 
 def _batch_select_current_database() -> RowBatch:
     return RowBatch(
-        columns=[FacadeColumn(name="current_database", type=DataType.TEXT)],
+        columns=[FacadeColumn(name="current_database", type=DataType.STRING)],
         rows=[{"current_database": "slayer"}],
     )
 

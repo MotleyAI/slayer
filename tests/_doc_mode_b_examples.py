@@ -108,8 +108,8 @@ def _metrics(value: Any) -> Iterator[str]:
 
 
 _FIELD_READERS = {
-    "metrics": _metrics,
-    "dimensions": lambda v: _entries(v, keys=("expression",)),
+    "metrics": lambda v: _entries(v, keys=("metric",)),
+    "dimensions": lambda v: _entries(v, keys=("field",)),
     "time_dimensions": lambda v: _entries(v, keys=("field",)),
     "filter": _strings,
     "order": lambda v: _entries(v, keys=("field",)),

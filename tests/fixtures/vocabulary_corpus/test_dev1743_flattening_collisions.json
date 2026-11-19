@@ -87,9 +87,7 @@
     ],
     "time_dimensions": [
      {
-      "field": {
-       "name": "created_at"
-      },
+      "field": "created_at",
       "granularity": "month"
      }
     ]

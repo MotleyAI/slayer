@@ -28,7 +28,7 @@ This way we guarantee that the values of that joined metric are exactly the same
   "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
   "metrics": [
     "count(customers.*)",
-    {"expression": "cumsum(count(customers.*))", "name": "cumulative_customers"}
+    {"metric": "cumsum(count(customers.*))", "alias": "cumulative_customers"}
   ]
 }
 ```

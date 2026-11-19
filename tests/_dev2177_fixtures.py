@@ -186,4 +186,4 @@ async def assert_branch_mismatch(engine: SlayerQueryEngine, query: SlayerQuery |
 
 async def check_concat_branches_rejected(engine: SlayerQueryEngine) -> None:
     for expression in CONCAT_BRANCHES:
-        await assert_branch_mismatch(engine, dimension_query(expression), "TEXT", "INT")
+        await assert_branch_mismatch(engine, dimension_query(expression), "String", "Integer")

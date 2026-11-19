@@ -91,7 +91,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "amount",
+      "expression": "amount",
       "name": "amount"
      }
     ],
@@ -130,7 +130,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "amount",
+      "expression": "amount",
       "name": "amount"
      }
     ],

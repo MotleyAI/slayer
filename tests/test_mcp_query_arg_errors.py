@@ -39,7 +39,7 @@ async def test_invalid_stage_reports_only_its_errors_at_that_stage(server: Any) 
     message = await _error(server, [_FIRST_STAGE, _BAD_NAME_QUERY])
     assert ONE_ERROR.search(message), message
     assert "Invalid name 'bad name'" in message
-    assert ".1.metrics.0.name" in message
+    assert ".1.metrics.0.alias" in message
     assert "valid string" not in message
     assert "valid dictionary" not in message
 

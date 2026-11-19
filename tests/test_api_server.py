@@ -337,7 +337,7 @@ class TestQuery:
     def test_request_legacy_fields_payload_migrates(self) -> None:
         """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
         req = QueryRequest.model_validate(
-            {"population": "orders", "fields": [{"expression": "count(*)"}]}
+            {"population": "orders", "fields": [{"formula": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None

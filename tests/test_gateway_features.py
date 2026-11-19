@@ -189,7 +189,7 @@ class TestGatewayServesEveryFeature:
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
         types = {c["name"]: c["datatype"] for c in twin.default["fields"]}
-        assert (types["quantity"], types["amount"]) == ("INT", "DOUBLE")
+        assert (types["quantity"], types["amount"]) == ("Integer", "Float")
         assert twin.gateway == twin.default
 
     async def test_mcp_create_and_describe_datasource(self, tmp_path: Path, shop_db: str) -> None:

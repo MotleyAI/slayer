@@ -20,12 +20,8 @@ from pydantic import (
 
 from slayer.core.enums import DataType
 
-OSSIE_DATATYPES: dict[str, DataType] = {
-    "String": DataType.TEXT, "Integer": DataType.INT, "Decimal": DataType.DOUBLE,
-    "Float": DataType.DOUBLE, "Boolean": DataType.BOOLEAN, "Date": DataType.DATE,
-    "DateTime": DataType.TIMESTAMP, "DateTimeTz": DataType.TIMESTAMP,
-    "Time": DataType.UNKNOWN, "Opaque": DataType.UNKNOWN,
-}
+#: Ossie's datatype names, each SLayer's value of the same name.
+OSSIE_DATATYPES: dict[str, DataType] = {t.value: t for t in DataType if t is not DataType.ARRAY}
 TEMPORAL_DATATYPES = frozenset({"Date", "Time", "DateTime", "DateTimeTz"})
 
 

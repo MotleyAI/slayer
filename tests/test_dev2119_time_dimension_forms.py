@@ -71,8 +71,8 @@ class TestSchema:
         assert props["field"]["type"] == "string"
         assert "column" not in props
 
-    def test_name_is_advertised(self) -> None:
-        assert "name" in _td_schema()["properties"]
+    def test_alias_is_advertised(self) -> None:
+        assert "alias" in _td_schema()["properties"]
 
 
 class TestFunctionalForms:
@@ -179,7 +179,7 @@ class TestDedupe:
                                     {"field": "orders.created_at", "granularity": "month"}])
         assert len(_tds(query)) == 1
 
-    @pytest.mark.parametrize("diff", [{"label": "b"}, {"date_range": ["2025-01-01", "2025-02-01"]}, {"name": "b"}])
+    @pytest.mark.parametrize("diff", [{"label": "b"}, {"date_range": ["2025-01-01", "2025-02-01"]}, {"alias": "b"}])
     def test_same_text_differing_metadata_rejected(self, diff: dict) -> None:
         with pytest.raises((GranularityCallError, ValidationError), match="(?i)conflicting|collision"):
             _q(time_dimensions=[{"field": EFF, "granularity": "month", "label": "a"},
