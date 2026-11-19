@@ -1,7 +1,8 @@
 ## 1. Prerequisites
 
-- [ ] 1.1 Merge `origin/main` once DEV-1607 has merged; respell this change's deltas and design only if DEV-1607 changed a name they use (verify: `openspec validate dev-2219-stages-inherit-joins-on-pass-through-key --strict` passes)
+- [x] 1.1 Merge DEV-1607 (PR #604) into this branch and respell the deltas and design to its names (verify: `openspec validate dev-2219-stages-inherit-joins-on-pass-through-key --strict` passes)
 - [ ] 1.2 If DEV-2277 merged first, respell the scenarios to its reference rules with the owner's approval of the exact edit (verify: validate passes)
+- [ ] 1.3 After PR #604 merges, merge `origin/main` before opening this change's PR, so its diff holds only this change (verify: `git diff --stat origin/main...HEAD` lists no DEV-1607 file)
 
 ## 2. Tests (pr-tests; unit, SQLite and DuckDB, no `integration` marker)
 
@@ -20,9 +21,9 @@
 
 ## 4. Pass-through lineage and inheritance
 
-- [ ] 4.1 Add a typed pass-through origin to `StageColumn` (bound field key, resolved path with each hop's edge identity, field), set in schema emission only for untransformed public row-level columns (verify: unit test on emitted schemas for bucket, cast, computed, alias and dotted cases)
+- [ ] 4.1 Add a typed pass-through origin to `StageField` (bound field key, resolved path with each hop's edge identity, field), set in schema emission only for untransformed public row-level columns (verify: unit test on emitted schemas for bucket, cast, computed, alias and dotted cases)
 - [ ] 4.2 Compute inherited edges in an engine module from a stage's origins and its candidate edges (stored, its extension relationships, upstream inherited), both directions, with the hop-target proxy, resolved target identities, origin identity for dedup, name and join type per the design, and cardinality per decision 8; carry them as typed data on `StageSchema` (verify: 2.2 and 2.3 pass)
-- [ ] 4.3 `model_from_stage_schema` merges inherited edges with a saved model's declared relationships per decision 16 and the same-name rule; a consuming extension's relationship of the same name replaces the inherited edge (verify: 2.4 passes)
+- [ ] 4.3 `dataset_from_stage_schema` merges inherited edges with a saved model's declared relationships per decision 16 and the same-name rule; a consuming extension's relationship of the same name replaces the inherited edge (verify: 2.4 passes)
 
 ## 5. One binding scope
 

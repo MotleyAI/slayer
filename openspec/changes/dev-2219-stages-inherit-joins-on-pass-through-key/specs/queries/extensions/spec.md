@@ -7,7 +7,7 @@ An extension SHALL be visible only inside the query object that declares it.
 - Other stages SHALL NOT see the extension.
 - Stored definitions SHALL NOT see it: stored relationships, stored fields, saved metrics, and the stages of a stored query-backed model.
 
-An extension's `source_name` and each of its relationships' `to` SHALL resolve, in order, to:
+An extension's `dataset` and each of its relationships' `to` SHALL resolve, in order, to:
 1. a sibling stage of the query list;
 2. else a stored dataset of the query's datasource;
 3. else fail with a model-not-found error.

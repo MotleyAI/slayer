@@ -2,7 +2,7 @@
 
 ### Requirement: Stages are ordered by every sibling reference
 A multi-stage query list SHALL be ordered so each stage follows every sibling it
-references — as its `population`, as an extension's `source_name`, as the `to` of one
+references — as its `population`, as an extension's `dataset`, as the `to` of one
 of its extensions' relationships, or as a dataset named by any reference in any of its
 expressions (dimensions, metrics, filters, order) — regardless of the order or the
 names of the non-root stages. The last entry SHALL stay the root. A stage's join graph

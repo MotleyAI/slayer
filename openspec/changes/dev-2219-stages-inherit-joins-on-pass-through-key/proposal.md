@@ -26,7 +26,7 @@ A stage's output is flat today: a later stage sees only its columns, never the r
 
 ## Impact
 
-- **Code:** `slayer/core/scope.py` (`StageColumn` pass-through origin, `StageSchema` inherited edges), `slayer/engine/compile/stages.py` (schema emission), a new engine module computing inheritance, `slayer/ir/source_bundle.py` (`model_from_stage_schema`, `resolve_scope`, sibling threading), `slayer/engine/plan.py`, `slayer/engine/stage_ordering.py`, the `StageSchema`-scope branches in `slayer/engine/{binding,bind_inputs,elaborate_env,extensions,key_metadata}.py` and `compile/stages.py`, `slayer/inspect/model_render.py`.
+- **Code:** `slayer/core/scope.py` (`StageField` pass-through origin, `StageSchema` inherited edges), `slayer/engine/compile/stages.py` (schema emission), a new engine module computing inheritance, `slayer/ir/source_bundle.py` (`dataset_from_stage_schema`, `resolve_scope`, sibling threading), `slayer/engine/plan.py`, `slayer/engine/stage_ordering.py`, the `StageSchema`-scope branches in `slayer/engine/{binding,bind_inputs,elaborate_env,extensions,key_metadata}.py` and `compile/stages.py`, `slayer/inspect/model_render.py`.
 - **Results:** queries whose stage passes through a key to a dataset they read change from broadcast to joined values.
 - **Docs:** `docs/concepts/queries.md`, `docs/concepts/models.md` (query-backed models), `docs/reference/mcp.md`, help memories, `docs/upgrading/2.0.md`.
-- **Depends on:** DEV-2021 (merged) and DEV-1607 (implemented after it merges; this change uses its vocabulary). DEV-2277 runs in parallel; whichever merges second respells the other's scenarios.
+- **Depends on:** DEV-2021 and DEV-2318 (merged), and DEV-1607 (PR #604, merged into this branch; its names and shapes are this change's). DEV-2277 runs in parallel; whichever merges second respells the other's scenarios.
