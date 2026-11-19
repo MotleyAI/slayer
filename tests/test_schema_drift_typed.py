@@ -1,22 +1,22 @@
-"""DEV-1450 stage 7b.14 — schema-drift measure-ref extraction via the typed
+"""Stage 7b.14 — schema-drift metric-ref extraction via the typed
 Mode-B parser.
 
 Pins the migration of ``slayer/live_schema/schema_drift.py`` off the legacy
 ``the legacy formula parser`` / ``legacy mixed-arithmetic node`` field-spec union walk and onto
 ``parse_expr`` + ``walk_parsed_refs`` (the new scope-free typed parser).
 
-``_measure_formula_refs(formula)`` stays a *best-effort textual* extractor:
-it returns the set of column / measure names a formula references — possibly
-dotted for cross-model refs — so the cascade attribution can check each one
-against the dropped-column / dropped-measure sets WITHOUT binding the formula
+``_metric_expression_refs(expression)`` stays a *best-effort textual* extractor:
+it returns the set of field / metric names an expression references — possibly
+dotted for cross-dataset refs — so the cascade attribution can check each one
+against the dropped-field / dropped-metric sets WITHOUT binding the expression
 against a scope (binding is impossible here: the refs being hunted are
-exactly the ones about to be dropped, and bare named-measure refs require
-planner-side expansion). See the 7b.14 design note on DEV-1450.
+exactly the ones about to be dropped, and bare named-metric refs require
+planner-side expansion).
 
 The behaviour pinned here matches the legacy walk exactly for every shape the
 cascade tests exercise; the only intentional difference is that bare
-named-measure refs surface by name (``aov``) instead of being inline-expanded,
-which the cascade reaches via the dropped-measure set in a later fixed-point
+named-metric refs surface by name (``aov``) instead of being inline-expanded,
+which the cascade reaches via the dropped-metric set in a later fixed-point
 pass.
 """
 
@@ -43,7 +43,7 @@ from slayer.core.syntax import (
 
 
 def _ext_datasets() -> dict[str, SlayerDataset]:
-    """The stage source and the extension joins' target, as the runtime loads them."""
+    """The stage source and the extension relationships' target, as the runtime loads them."""
     orders = SlayerDataset(name="orders", data_source="ds", sql_table="orders", fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="customer_id", datatype=DataType.INTEGER),
@@ -59,7 +59,7 @@ def _stage_scope(stage: SlayerQuery, datasets_by_name: dict) -> QueryScope:
 
 
 class TestStageGraphBidirectional:
-    """DEV-1853: the cascade graph and attribution traverse either direction."""
+    """The cascade graph and attribution traverse either direction."""
 
     def test_reverse_edge_reachable_and_attributed(self) -> None:
         orders = SlayerDataset(
@@ -154,7 +154,7 @@ class TestWalkParsedRefs:
         assert aggs == {"amount", "count_col"}
 
     def test_transform_descends_input_only(self) -> None:
-        # partition_by kwarg columns are NOT yielded (legacy parity).
+        # partition_by kwarg fields are NOT yielded (legacy parity).
         nodes = list(
             walk_parsed_refs(parse_expr("cumsum(sum(amount), partition_by=region)"))
         )
@@ -166,7 +166,7 @@ class TestWalkParsedRefs:
 
     def test_transform_list_partition_by_parses_and_skips_kwargs(self) -> None:
         # parse_expr accepts list-valued kwargs; the walker still descends
-        # only the transform input, so partition columns never surface.
+        # only the transform input, so partition fields never surface.
         nodes = list(
             walk_parsed_refs(
                 parse_expr("rank(sum(amount), partition_by=[region, channel], direction='desc')")
@@ -176,7 +176,7 @@ class TestWalkParsedRefs:
 
     def test_agg_kwargs_not_descended(self) -> None:
         # weighted_avg(weight=quantity): only the aggregated source surfaces,
-        # not the weight column (legacy parity — agg args/kwargs are opaque).
+        # not the weight field (legacy parity — agg args/kwargs are opaque).
         nodes = list(
             walk_parsed_refs(parse_expr("weighted_avg(price, weight=quantity)"))
         )
@@ -200,13 +200,13 @@ class TestWalkParsedRefs:
 
 
 class TestMeasureFormulaRefs:
-    """``_measure_formula_refs`` — the cascade's textual name extractor."""
+    """``_metric_expression_refs`` — the cascade's textual name extractor."""
 
     def test_simple_agg(self) -> None:
         assert _metric_expression_refs("sum(amount)") == {"amount"}
 
     def test_star_count_excluded(self) -> None:
-        # ``*`` is not a real column reference.
+        # ``*`` is not a real field reference.
         assert _metric_expression_refs("count(*)") == set()
 
     def test_cross_model_dotted(self) -> None:
@@ -221,7 +221,7 @@ class TestMeasureFormulaRefs:
         }
 
     def test_bare_measure_name(self) -> None:
-        # Bare named-measure ref surfaces by name (no inline expansion).
+        # Bare named-metric ref surfaces by name (no inline expansion).
         assert _metric_expression_refs("aov") == {"aov"}
 
     def test_arithmetic_with_bare_and_star(self) -> None:
@@ -241,7 +241,7 @@ class TestMeasureFormulaRefs:
     def test_transform_list_partition_by_inner_only(self) -> None:
         # List-valued partition_by is documented Mode-B grammar; parse_expr
         # must accept it. Only the inner value's refs surface (legacy never
-        # extracted the partition columns either).
+        # extracted the partition fields either).
         assert _metric_expression_refs(
             "rank(sum(revenue), partition_by=[status, customer_id], direction='desc')"
         ) == {"revenue"}
@@ -281,7 +281,7 @@ class TestMeasureFormulaRefs:
         }
 
     def test_predicate_with_transform(self) -> None:
-        # filter-shape formula (comparison wrapping a transform).
+        # filter-shape expression (comparison wrapping a transform).
         assert _metric_expression_refs("change(sum(amount)) > 0") == {"amount"}
 
     def test_boolop_descends_all_operands(self) -> None:
@@ -293,7 +293,7 @@ class TestMeasureFormulaRefs:
         assert _metric_expression_refs("not (sum(amount) > 0)") == {"amount"}
 
     def test_weighted_avg_kwarg_column_not_extracted(self) -> None:
-        # Legacy parity: the weight column is not a cascade ref.
+        # Legacy parity: the weight field is not a cascade ref.
         assert _metric_expression_refs("weighted_avg(price, weight=quantity)") == {
             "price"
         }
@@ -306,14 +306,14 @@ class TestMeasureFormulaRefs:
         assert _metric_expression_refs("robot__details") == {"robot__details"}
 
     def test_agg_dunder_source_is_extracted(self) -> None:
-        # Supports persisted query-backed ``__``-named columns.
+        # Supports persisted query-backed ``__``-named fields.
         assert _metric_expression_refs("sum(robot__details)") == {
             "robot__details"
         }
 
 
 class TestFilterRefsDslParity:
-    """DEV-1833 parity suite pinned while migrating ``_filter_refs_dsl`` onto
+    """Parity suite pinned while migrating ``_filter_refs_dsl`` onto
     ``parse_expr`` (verified green on the legacy implementation first).
     Set equality only: reference order is expression order."""
 
@@ -359,8 +359,7 @@ class TestFilterRefsDslParity:
 
 
 class TestFilterRefsDslMigrationGains:
-    """Refs only the migrated ``parse_expr`` implementation surfaces
-    (DEV-1833); red until the migration lands."""
+    """Refs only the migrated ``parse_expr`` implementation surfaces."""
 
     def test_funcstyle_custom_agg(self) -> None:
         assert set(_filter_refs_dsl("my_custom_agg(revenue) > 5")) == {"revenue"}

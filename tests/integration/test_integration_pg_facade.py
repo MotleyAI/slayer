@@ -316,7 +316,7 @@ async def test_metabase_fingerprint_substring_wrapper(pg_demo_server) -> None:
         await conn.close()
 
 
-# --- semantic-model queries --------------------------------------------------
+# --- dataset queries ---------------------------------------------------------
 
 
 async def test_row_count_metric(pg_demo_server) -> None:
@@ -334,7 +334,7 @@ async def test_count_star_aggregate_sql_mapping(pg_demo_server) -> None:
     host, port = pg_demo_server
     conn = await _connect(host, port)
     try:
-        # COUNT(*) maps to the *:count measure (aggregate-SQL mapping).
+        # COUNT(*) maps to the *:count metric (aggregate-SQL mapping).
         count = await conn.fetchval("SELECT COUNT(*) FROM orders")
         assert isinstance(count, int)
         assert count > 0

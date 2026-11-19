@@ -1,8 +1,8 @@
-"""DEV-1866 — LAW: an inferred population is invariant under measures.
+"""LAW: an inferred population is invariant under metrics.
 
-Axiom 12 (``architecture/semantics.arc42.md``): adding or removing a measure on
+Axiom 12 (``architecture/semantics.arc42.md``): adding or removing a metric on
 a rootless query must never change the inferred population or the dimension row
-set. Compositionality — a measure attaches values, it never re-quantifies the
+set. Compositionality — a metric attaches values, it never re-quantifies the
 rows. Runs on SQLite and DuckDB.
 """
 
@@ -21,7 +21,7 @@ _BASES = [
     ("orders_scoped", ["customers.region"], ["orders.status = 'ok'"], "orders"),
 ]
 
-# Measure sets layered onto each base; all bind under either population.
+# Metric sets layered onto each base; all bind under either population.
 _MEASURE_SETS = [
     [],
     [{"metric": "sum(orders.amount)", "alias": "m1"}],

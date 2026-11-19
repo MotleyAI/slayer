@@ -22,7 +22,7 @@ QUERIES = [
     {"population": "orders", "metrics": COUNT, "dimensions": ["status"], "dry_run": True},
     {"population": "no_such_dataset", "metrics": COUNT},
 ]
-# 200 for the first four queries; a client error for the last, which names a model that does not exist.
+# 200 for the first four queries; a client error for the last, which names a dataset that does not exist.
 EXPECTED = [range(200, 201)] * 4 + [range(400, 500)]
 
 

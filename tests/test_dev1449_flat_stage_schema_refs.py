@@ -1,9 +1,9 @@
 """Flat stage-schema references, end to end via ``engine.execute``.
 
 A downstream stage sees its upstream as a FLAT ``StageSchema``, not
-as a model with joins (P5/P6). A multi-hop upstream dimension
+as a dataset with relationships (P5/P6). A multi-hop upstream dimension
 (``customers.region``) surfaces downstream under its flat name
-(``customers__region``); the dotted form names ``customers``, which no join path
+(``customers__region``); the dotted form names ``customers``, which no relationship path
 reaches from the stage, so a row-level read of it raises ``UnrelatedDatasetError``.
 
 End-to-end through ``engine.execute([stage1, root])``. The planner-level
@@ -129,7 +129,7 @@ async def test_dev1449_flat_name_resolves(engine: Tuple[SlayerQueryEngine, str])
 
 
 async def test_dev1449_dotted_form_raises(engine: Tuple[SlayerQueryEngine, str]) -> None:
-    """The dotted form reads a model no join path reaches from the flat upstream stage."""
+    """The dotted form reads a dataset no relationship path reaches from the flat upstream stage."""
     eng, _ = engine
     root = SlayerQuery.model_validate({
         "population": "stage1",

@@ -6,7 +6,7 @@ However, these can never cover every possible eventuality that raw SQL can expre
 
 This leads to a challenge: how to combine the simplicity of custom transforms (such as `time_shift` or `last` for example) that are natural semantically, with the power that raw SQL can offer, without making a mess of the syntax? 
 
-Many semantic layers achieve that via some sort of escape syntax, such as {} or $, that allows to inject DSL expressions into the SQL used in defining columns. In a way, that option is almost the only one available if the only place for any nontrivial operations or expressions is in column definitions, and all queries do is retrieve these.
+Many semantic layers achieve that via some sort of escape syntax, such as {} or $, that allows to inject DSL expressions into the SQL used in defining fields. In a way, that option is almost the only one available if the only place for any nontrivial operations or expressions is in field definitions, and all queries do is retrieve these.
 
 In SLayer, we chose a different path: the dataset defines the abstraction between the DSL and the underlying database, so the `sql` and `filter` properties of a dataset's `fields` (and the dataset-level `filters` list) only allow raw SQL. And the query underlying a `sql`-mode dataset can be any valid SQL SELECT expression at all.
 

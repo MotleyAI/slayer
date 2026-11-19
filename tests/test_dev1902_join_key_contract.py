@@ -1,6 +1,6 @@
 """The join-key spelling contract: ``join_pairs`` entries name declared base
-columns by ``Column.name`` on each side; the physical spelling comes from one
-seam (``Column.physical_name`` over ``join_key_columns``)."""
+fields by ``DatasetField.name`` on each side; the physical spelling comes from one
+seam (``DatasetField.physical_name`` over ``join_key_columns``)."""
 
 from __future__ import annotations
 
@@ -308,7 +308,7 @@ class TestDriftAndRefinement:
 
     @pytest.mark.parametrize("key", ["id", "cust_id"])
     def test_dropped_local_key_drops_its_join(self, key):
-        """A dropped local key (PK or not) takes its join with it."""
+        """A dropped local key (PK or not) takes its relationship with it."""
         orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),

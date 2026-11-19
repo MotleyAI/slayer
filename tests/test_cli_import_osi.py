@@ -1,7 +1,7 @@
 """End-to-end CLI tests for `slayer import-osi`.
 
 Run the importer over the legacy shop.yaml fixture (SQLite) and the current-spec
-current_shop.yaml fixture (DuckDB), asserting saved models, queries and the report.
+current_shop.yaml fixture (DuckDB), asserting saved datasets, queries and the report.
 """
 
 from pathlib import Path
@@ -60,7 +60,7 @@ def test_import_osi_saves_models_and_prints_report(shop_setup, capsys) -> None:
     _run_import_osi(_args(store, FIXTURES / "shop.yaml"))
 
     out = capsys.readouterr().out
-    assert "orders" in out  # per-model summary printed
+    assert "orders" in out  # per-dataset summary printed
 
     storage = YAMLStorage(base_dir=str(store))
     names = run_sync(storage.list_datasets())
@@ -70,7 +70,7 @@ def test_import_osi_saves_models_and_prints_report(shop_setup, capsys) -> None:
     assert orders is not None
     measure_names = {m.name for m in orders.metrics}
     assert {"total_amount", "order_count", "aov"}.issubset(measure_names)
-    # relationship -> join persisted
+    # OSI relationship -> SLayer relationship persisted
     assert any(j.to == "customers" for j in orders.relationships)
 
 

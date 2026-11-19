@@ -55,9 +55,9 @@ def _metric(result: ConversionResult, name: str, dataset: str = "orders"):
 
 
 def _column_for(result: ConversionResult, expression: str, dataset: str = "orders"):
-    """The Column referenced by the leading ``<agg>(<col>, ...)`` in a formula."""
+    """The field referenced by the leading ``<agg>(<col>, ...)`` in an expression."""
     match = re.match(r"\s*\w+\(\s*(\w+)\s*[,)]", expression)
-    assert match is not None, f"formula not in <agg>(<col>...) form: {expression!r}"
+    assert match is not None, f"expression not in <agg>(<col>...) form: {expression!r}"
     return next(c for c in _dataset(result, dataset).fields if c.name == match.group(1))
 
 
@@ -413,7 +413,7 @@ def test_conversion_metric_clean_fails_with_category() -> None:
 def test_conversion_metric_stashes_funnel_params_in_meta() -> None:
     """A fully-resolved single-model funnel (both measures on one model) drops
     cleanly and stashes its funnel details (base/conversion measure, entity,
-    calculation) into that model's meta — nothing silently lost, consistent
+    calculation) into that dataset's meta — nothing silently lost, consistent
     with the other clean-fail branches."""
     project = DbtProject(
         semantic_models=[
@@ -578,7 +578,7 @@ def test_clean_fail_stashes_raw_construct_in_meta() -> None:
     ))
     model = _dataset(result)
     blob = model.meta or {}
-    # The dropped semantics are retained in the model's meta, not thrown away.
+    # The dropped semantics are retained in the dataset's meta, not thrown away.
     assert any(
         "non_additive" in str(k).lower() or "non_additive" in str(v).lower()
         for k, v in blob.items()
@@ -691,7 +691,7 @@ def test_offset_window_custom_granularity_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
-# ───────────────── Part 3.4 — filtered-column dedup ─────────────────
+# ───────────────── Part 3.4 — filtered-field dedup ─────────────────
 
 
 def test_same_measure_different_filters_make_distinct_columns() -> None:
@@ -738,7 +738,7 @@ def test_same_measure_same_filter_reuses_one_column() -> None:
     assert a.name == b.name
 
 
-# ───────────────── Part 3.4 — cross-model filter reachability ─────────────────
+# ───────────────── Part 3.4 — cross-dataset filter reachability ─────────────────
 
 
 def _orders_customers_project(metric: DbtMetric) -> DbtProject:
@@ -778,7 +778,7 @@ def test_cross_model_filter_pushes_down_when_join_reachable() -> None:
 
 
 def test_cross_model_filter_unreachable_clean_fails() -> None:
-    # 'warehouse__zone' references an entity that orders has no join to.
+    # 'warehouse__zone' references an entity that orders has no relationship to.
     metric = DbtMetric(
         name="zone_revenue",
         type="simple",
@@ -792,10 +792,10 @@ def test_cross_model_filter_unreachable_clean_fails() -> None:
 
 
 def test_cross_model_filter_multi_hop_clean_fails() -> None:
-    """A filter on a model two hops away (orders → customers → regions) is
+    """A filter on a dataset two hops away (orders → customers → regions) is
     clean-failed: the dbt filter converter only emits a one-hop
     ``regions.zone`` path, which would not resolve from orders (it needs the
-    full ``customers__regions.zone`` join path). Full multi-hop support is
+    full ``customers__regions.zone`` relationship path). Full multi-hop support is
     tracked separately (DEV-1445)."""
     project = DbtProject(
         semantic_models=[
@@ -837,7 +837,7 @@ def test_cross_model_filter_multi_hop_clean_fails() -> None:
 
 def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
     """A filter on a foreign entity that no model owns as primary clean-fails:
-    convert_dbt_filter would otherwise fall back to a bare, invalid column."""
+    convert_dbt_filter would otherwise fall back to a bare, invalid field."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -867,7 +867,7 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
 
 def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
     """A simple metric whose filter lives only on type_params.measure.filter is
-    materialized as a filtered measure; a derived reference to it must use that
+    materialized as a filtered metric; a derived reference to it must use that
     filtered metric, not collapse to the unfiltered base measure."""
     project = DbtProject(
         semantic_models=[
@@ -893,7 +893,7 @@ def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
         ],
     )
     result = _convert(project)
-    # The derived formula references the filtered metric, not the bare base measure.
+    # The derived expression references the filtered metric, not the bare base measure.
     assert "web_revenue" in _metric(result, "web_rev_plus_one").expression
     # And web_revenue itself materialized with a channel filter.
     web = _metric(result, "web_revenue")
@@ -1030,9 +1030,9 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
 
 
 def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
-    """A foreign entity owned as primary by more than one model can't be
-    unambiguously qualified to a single join, so it clean-fails instead of
-    being lowered to a possibly-wrong model."""
+    """A foreign entity owned as primary by more than one semantic model can't be
+    unambiguously qualified to a single relationship, so it clean-fails instead of
+    being lowered to a possibly-wrong dataset."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1072,7 +1072,7 @@ def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
 
 def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
     """A derived metric whose input is an unsupported (non-materialized) simple
-    metric must clean-fail, not emit a formula referencing a missing measure."""
+    metric must clean-fail, not emit an expression referencing a missing metric."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(name="orders", model="orders",
@@ -1338,7 +1338,7 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
 
 def test_derived_input_filter_pushes_down() -> None:
     """A per-input filter on a derived metric's single-aggregate input pushes
-    into that input's leaf column."""
+    into that input's leaf field."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(

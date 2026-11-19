@@ -509,8 +509,8 @@ def test_query_v1_to_v2_inline_slayer_model_dict_migrates() -> None:
 
 
 def test_model_v1_to_v2_source_queries_nested_rename() -> None:
-    """``source_queries`` entries are migrated in place at model-load time
-    so re-saving the model doesn't persist the v1 ``fields`` key.
+    """``source_queries`` entries are migrated in place at dataset-load time
+    so re-saving the dataset doesn't persist the v1 ``fields`` key.
     """
     m = SlayerDataset.model_validate({
         "version": 1,
@@ -801,7 +801,7 @@ def test_slayer_query_v3_direct_construct_with_dry_run_still_warns() -> None:
 
 
 async def _build_engine_with_orders(tmpdir: str):
-    """Engine over one 'orders' model on a postgres datasource (dry_run never connects)."""
+    """Engine over one 'orders' dataset on a postgres datasource (dry_run never connects)."""
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="postgres", host="localhost", port=5432,
@@ -857,7 +857,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
 
 
 async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
-    """A v2 query-backed model saved with a stale nested dry_run=True still executes: the
+    """A v2 query-backed dataset saved with a stale nested dry_run=True still executes: the
     v2→v3 migration on load drops the flag."""
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
 
@@ -883,7 +883,7 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
                 }],
             }, f)
 
-        # Loading the model triggers nested SlayerQuery validation, which
+        # Loading the dataset triggers nested SlayerQuery validation, which
         # fires the v2→v3 migration and drops dry_run with a warning.
         loaded = await storage.get_dataset("stale")
         assert loaded is not None
@@ -901,7 +901,7 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
             if r.levelno == logging.WARNING
         )
 
-        # The engine can now execute the model. Pass dry_run=True as a kwarg
+        # The engine can now execute the dataset. Pass dry_run=True as a kwarg
         # (which is the new way), which short-circuits to SQL without DB calls.
         result = await engine.execute(query="stale", dry_run=True)
         assert result.data == []

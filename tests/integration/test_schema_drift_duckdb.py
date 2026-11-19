@@ -1,7 +1,7 @@
 """Integration tests for ``validate_models`` against a real DuckDB database.
 
 DuckDB lets us exercise live DDL mutations (DROP COLUMN, DROP TABLE) and assert
-that the validator surfaces them correctly without Docker. See DEV-1356.
+that the validator surfaces them correctly without Docker.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def duckdb_drift_env(tmp_path):
-    """Per-test DuckDB file + persisted SlayerModels for orders/customers."""
+    """Per-test DuckDB file + persisted SlayerDatasets for orders/customers."""
     db_path = tmp_path / "drift.duckdb"
     conn = duckdb.connect(str(db_path))
     conn.execute(

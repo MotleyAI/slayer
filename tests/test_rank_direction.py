@@ -99,7 +99,7 @@ def _bind(expression: str):
 
 
 def _fails_like_its_comparison_twin(*, expression: str, twin: str) -> str:
-    """``formula`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
+    """``expression`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
     with pytest.raises(ValueError) as twin_info:
         _bind(twin)
     with pytest.raises(ValueError) as info:

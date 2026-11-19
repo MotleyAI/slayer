@@ -1,8 +1,8 @@
-"""DEV-1865 — filter conjuncts stratify.
+"""Filter conjuncts stratify.
 
 Stratum-0 (aggregate-free, all base-level) conjuncts define the population every
 producer sees; an attached-value conjunct masks at its re-aggregation point
-without feeding other producers; a measure conjunct prunes cells only. Run on
+without feeding other producers; a metric conjunct prunes cells only. Run on
 SQLite + DuckDB.
 """
 
@@ -25,7 +25,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 
 
 def _bucket_key(row):
-    """A (region, month) bucket identity — every column except the measure."""
+    """A (region, month) bucket identity — every column except the metric."""
     return tuple(sorted((k, v) for k, v in row.items() if k != "orders.w"))
 
 
@@ -78,7 +78,7 @@ class TestFieldMaskRestrictsPopulation:
 
 
     async def test_stratum0_reaches_the_cross_model_producer(self, exec_engine) -> None:
-        # A host-local stratum-0 filter reaches a cross-model producer via the
+        # A host-local stratum-0 filter reaches a cross-dataset producer via the
         # established cross-root propagation (axiom D): the grand total counts
         # only customers with >=1 app order (c1+c3 = 150), not the full 350.
         total = QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total")

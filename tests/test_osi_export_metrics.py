@@ -1,4 +1,4 @@
-"""Ossie export: measures become metrics with Ossie component semantics; portable vs dialect-only expressions."""
+"""Ossie export: metrics carry Ossie component semantics; portable vs dialect-only expressions."""
 
 import re
 from pathlib import Path
@@ -201,7 +201,7 @@ async def test_case_ambiguous_identifier_is_quoted(env) -> None:
     [ident] = [c.this for c in tree.find_all(exp.Column)]
     assert ident.quoted
     assert ident.name == "Status"
-    # Re-import saves a new model, so the collision is no longer grandfathered.
+    # Re-import saves a new dataset, so the collision is no longer grandfathered.
     with pytest.raises(SlayerError) as raised:
         await reimport(env, result.document)
     assert re.search(r"\bstatus\b", str(raised.value))

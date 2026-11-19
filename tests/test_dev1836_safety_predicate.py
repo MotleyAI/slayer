@@ -1,8 +1,8 @@
-"""The join-arity safety predicate.
+"""The relationship-arity safety predicate.
 
 Spec: openspec …/specs/models/join-cardinality — "Provable many-to-one arity",
 "Composite keys prove arity only when fully covered". Pure unit tests over
-declared model metadata; before implementation the module is absent and this
+declared dataset metadata; before implementation the module is absent and this
 file fails on import (the right reason).
 """
 
@@ -54,7 +54,7 @@ class TestStructuralProof:
         assert provably_to_one(edge=join, target_dataset=target)
 
     def test_logical_spelling_of_a_renamed_pk_proves(self) -> None:
-        # A renamed PK proves the hop when the join names it by column name.
+        # A renamed PK proves the hop when the relationship names it by field name.
         target = SlayerDataset(
             name="loss_payment", data_source="test", sql_table="Loss_Payment",
             fields=[
@@ -88,7 +88,7 @@ class TestStructuralProof:
         assert not provably_to_one(edge=join, target_dataset=segments_dataset())
 
     def test_non_key_target_column_is_unproven(self) -> None:
-        # Joining on a non-key column of a model that HAS a PK elsewhere.
+        # Joining on a non-key field of a dataset that HAS a PK elsewhere.
         join = _join("regions", [["r", "name"]])
         assert not provably_to_one(edge=join, target_dataset=regions_dataset())
 
@@ -144,7 +144,7 @@ class TestDeclaredCardinality:
 
 
 class TestInvertedCardinalityEdges:
-    """A declared join read in its inverted-cardinality shape; the predicate reads it as-is."""
+    """A declared relationship read in its inverted-cardinality shape; the predicate reads it as-is."""
 
     def test_inverted_many_to_one_reverse_edge_is_unsafe(self) -> None:
         # Forward m:1 inverts to 1:N — the reverse-orientation shape.
@@ -227,7 +227,7 @@ class TestMayInlineSeam:
 
     def test_inlining_a_crossing_input_is_refused(self) -> None:
         """Hardcoded ``False``: a crossing input desugars onto a producer,
-        always. Inlining one is only safe when the crossed join is provably
+        always. Inlining one is only safe when the crossed relationship is provably
         1:N-free for the aggregate."""
         assert may_inline_crossing_inputs([("customers",)]) is False
         assert may_inline_crossing_inputs([]) is False

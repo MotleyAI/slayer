@@ -1,4 +1,4 @@
-"""DEV-1756: the identifier-length primitive and its dialect wiring.
+"""The identifier-length primitive and its dialect wiring.
 
 Postgres caps identifiers at 63 bytes and silently truncates longer ones, so sibling
 aliases can collapse. ``fit_identifier`` shortens to a pure ``<head>_<hash8>_<tail>``;
@@ -15,8 +15,10 @@ import sys
 
 import pytest
 
-from slayer.core.errors import IdentifierCollisionError
+import slayer.sql._identifier_fit as fitmod
+from slayer.core.errors import IdentifierCollisionError, SlayerError
 from slayer.sql.dialects import _ALL_DIALECTS, get_dialect
+from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import encode_alias
 from slayer.sql._identifier_fit import (
     HASH_LEN,
@@ -158,7 +160,7 @@ class TestFitIdentifierEdges:
         assert _nbytes(got) <= 63 < len(name) * 2
 
     def test_unquoted_legality_preserved_for_flat_input(self) -> None:
-        """CTE names and virtual-model shorts are emitted unquoted, so a fitted flat name stays legal."""
+        """CTE names and virtual-dataset shorts are emitted unquoted, so a fitted flat name stays legal."""
         flat = "_cm_" + "SandboxSubscription__SandboxCustomer__SandboxConsumer__" * 2
         got = fit_identifier(flat, limit=63)
         assert _UNQUOTED_IDENT_RE.match(got), got
@@ -297,7 +299,6 @@ class TestDialectLimits:
 
     def test_base_default_is_conservative(self) -> None:
         """A dialect that forgets to set the field inherits the tightest limit, not unbounded."""
-        from slayer.sql.dialects.base import SqlDialect
 
         assert SqlDialect().max_identifier_bytes == 63
 
@@ -376,7 +377,6 @@ class TestAliasRewriteMap:
 
     def test_digest_collision_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A constant digest forces two mid-differing over-limit aliases onto one emitted name."""
-        import slayer.sql._identifier_fit as fitmod
 
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
         pg = get_dialect("postgres")
@@ -394,7 +394,6 @@ class TestAliasRewriteMap:
             pg.alias_rewrite_map([LONG_EMAIL, collider])
 
     def test_error_names_the_dialect_and_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import slayer.sql._identifier_fit as fitmod
 
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
         pg = get_dialect("postgres")
@@ -404,7 +403,6 @@ class TestAliasRewriteMap:
         assert "63" in str(exc.value)
 
     def test_is_a_slayer_error_and_value_error(self) -> None:
-        from slayer.core.errors import SlayerError
 
         assert issubclass(IdentifierCollisionError, SlayerError)
         assert issubclass(IdentifierCollisionError, ValueError)

@@ -1,4 +1,4 @@
-"""Tests for query-backed models — engine.execute(str), variable precedence,
+"""Tests for query-backed datasets — engine.execute(str), variable precedence,
 and error paths.
 
 These tests run against an in-process SQLite datasource (dry_run=False would
@@ -62,8 +62,8 @@ async def _expand_stage_as_dataset(
     data_source: str = "ds",
 ) -> SlayerDataset:
     """Expand a single ``SlayerQuery`` stage into its virtual ``sql``-mode
-    model via the typed query-backed expansion
-    (``engine._expand_query_backed_model``, the DEV-1452 Stage B replacement
+    dataset via the typed query-backed expansion
+    (``engine._expand_query_backed_dataset``, the Stage B replacement
     for the legacy join-target renderer).
     """
     model = SlayerDataset(name=name, source_queries=[stage], data_source=data_source)
@@ -182,7 +182,7 @@ class TestVariablePrecedence:
             tmp.cleanup()
 
     async def test_run_by_name_uses_query_variables_default(self) -> None:
-        """When no kwarg, ``model.query_variables`` provides defaults to the stage."""
+        """When no kwarg, ``dataset.query_variables`` provides defaults to the stage."""
         saved = SlayerDataset(
             name="rev_filtered",
             data_source="ds",
@@ -333,8 +333,8 @@ class TestSaveModelGuards:
 
 
 def _wrap_save_counter(storage: StorageBackend):
-    """Spy on ``storage.save_model``. Returns ``(calls, restore)`` where
-    ``calls`` is a live list of saved-model names and ``restore()`` undoes
+    """Spy on ``storage.save_dataset``. Returns ``(calls, restore)`` where
+    ``calls`` is a live list of saved-dataset names and ``restore()`` undoes
     the wrapping. Used to assert that read paths never write to storage.
     """
     calls: list[str] = []
@@ -353,14 +353,14 @@ def _wrap_save_counter(storage: StorageBackend):
 
 
 class TestCacheRefreshOnExecute:
-    """Read paths must never write to storage. Cache (`columns`,
+    """Read paths must never write to storage. Cache (`fields`,
     `data_source`) is populated only by
-    ``engine.save_model`` / ``create_model_from_query(save=True)``.
+    ``engine.save_dataset`` / ``create_dataset_from_query(save=True)``.
     Lost-update race fix: see issue #74.
     """
 
     async def test_execute_does_not_populate_cache_for_raw_saved_model(self) -> None:
-        """A query-backed model written directly to storage (bypassing the
+        """A query-backed dataset written directly to storage (bypassing the
         engine) keeps its empty cache after ``engine.execute`` — read paths
         no longer initialize cache as a side effect.
         """
@@ -388,8 +388,8 @@ class TestCacheRefreshOnExecute:
             tmp.cleanup()
 
     async def test_model_extension_over_query_backed_model_adds_columns(self) -> None:
-        """A computed dimension over a saved query-backed model must NOT be
-        written back into the base model's persisted cache.
+        """A computed dimension over a saved query-backed dataset must NOT be
+        written back into the base dataset's persisted cache.
         """
         engine, tmp = await _engine_with_orders()
         try:
@@ -414,7 +414,7 @@ class TestCacheRefreshOnExecute:
             assert "is_high_rev" in resp.sql
             assert "amount_sum" in resp.sql
 
-            # The computed dimension must not bleed into the base model's cache.
+            # The computed dimension must not bleed into the base dataset's cache.
             base = await engine.storage.get_dataset("rev_by_region")
             assert base is not None
             assert not any(c.name == "is_high_rev" for c in base.fields)
@@ -451,7 +451,7 @@ class TestCacheRefreshOnExecute:
 
     async def test_execute_never_writes_to_storage(self) -> None:
         """Stronger invariant: ``engine.execute`` never calls
-        ``storage.save_model`` regardless of cache state — populated, empty,
+        ``storage.save_dataset`` regardless of cache state — populated, empty,
         or stale, with or without runtime/outer variables. Eliminates the
         lost-update race (issue #74) by removing the writer entirely.
         """
@@ -510,7 +510,7 @@ class TestCacheRefreshOnExecute:
 
 class TestQueryBackedColumnTypes:
     """``engine.get_result_column_types`` must derive its datasource from the
-    expanded query-backed model, not from the (possibly stale or blank)
+    expanded query-backed dataset, not from the (possibly stale or blank)
     stored ``data_source`` on the unexpanded record.
     """
 
@@ -535,9 +535,9 @@ class TestQueryBackedColumnTypes:
                 conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
 
             # Register a second, deliberately-stale datasource and pin the
-            # query-backed model to it. Saving via raw storage skips the
+            # query-backed dataset to it. Saving via raw storage skips the
             # cache populator that would otherwise refresh data_source from
-            # the resolved virtual model, so the on-disk record disagrees
+            # the resolved virtual dataset, so the on-disk record disagrees
             # with the source query's actual datasource (ds_b).
             await storage.save_datasource(DatasourceConfig(name="ds_stale", type="sqlite", database=":memory:"))
             await storage.save_dataset(SlayerDataset(
@@ -550,13 +550,13 @@ class TestQueryBackedColumnTypes:
             ))
             stored = await storage.get_dataset("qb")
             assert stored is not None, (
-                "test setup expects stale data_source on the raw-saved model"
+                "test setup expects stale data_source on the raw-saved dataset"
             )
             assert stored.data_source == "ds_stale", (
-                "test setup expects stale data_source on the raw-saved model"
+                "test setup expects stale data_source on the raw-saved dataset"
             )
 
-            # Should resolve datasource from the expanded model (ds_b), open
+            # Should resolve datasource from the expanded dataset (ds_b), open
             # the right SQLite file, and successfully probe — ignoring the
             # stale ds_stale on the stored record.
             types = await engine.get_result_column_types("qb")
@@ -565,7 +565,7 @@ class TestQueryBackedColumnTypes:
             tmp.cleanup()
 
     async def test_get_result_column_types_with_required_unbound_variable(self) -> None:
-        """A stored query-backed model with an undefaulted ``{var}`` probes no types."""
+        """A stored query-backed dataset with an undefaulted ``{var}`` probes no types."""
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -674,7 +674,7 @@ class TestRequestVariableHygiene:
             tmp.cleanup()
 
     async def test_data_source_refreshed_when_backing_query_changes(self) -> None:
-        """Editing a query-backed model so its final stage now resolves through
+        """Editing a query-backed dataset so its final stage now resolves through
         a different datasource must update the persisted ``data_source`` even
         when the caller still passes the old one — otherwise
         ``get_result_column_types()`` opens the wrong client.
@@ -706,7 +706,7 @@ class TestRequestVariableHygiene:
 
             # Edit: backing query now resolves through ds_b, but the caller
             # still passes the stale data_source="ds_a". The engine must
-            # overwrite from the virtual model.
+            # overwrite from the virtual dataset.
             await engine.save_dataset(SlayerDataset(
                 name="qb",
                 data_source="ds_a",  # stale!
@@ -716,7 +716,7 @@ class TestRequestVariableHygiene:
                 })],
             ))
             assert (await storage.get_dataset("qb")).data_source == "ds_b", (
-                "data_source must be refreshed from the virtual model, not "
+                "data_source must be refreshed from the virtual dataset, not "
                 "preserved from the stale caller-supplied value"
             )
         finally:
@@ -724,7 +724,7 @@ class TestRequestVariableHygiene:
 
 
 class TestInlineQueryBackedSourceModel:
-    """An inline ``SlayerModel(source_queries=[...])`` as ``source_model`` is rejected at construction."""
+    """An inline ``SlayerDataset(source_queries=[...])`` as ``population`` is rejected at construction."""
 
     def test_inline_slayermodel_with_source_queries_rejected(self) -> None:
         inline = SlayerDataset(
@@ -761,15 +761,15 @@ class TestInlineQueryBackedSourceModel:
 
 
 class TestJoinTargetIsQueryBacked:
-    """Joining onto a saved query-backed model: the join target must be
+    """A relationship onto a saved query-backed dataset: its target must be
     expanded through the same resolution path so its rendered SQL is
     available as the join source.
     """
 
     async def test_join_target_with_variables_uses_runtime_value(self) -> None:
-        """Saved query-backed join target with `filters=["amount > {threshold}"]`
+        """Saved query-backed relationship target with `filters=["amount > {threshold}"]`
         must see the enclosing query's runtime ``variables`` — not the cached
-        placeholder-fill or model defaults.
+        placeholder-fill or dataset defaults.
         """
         engine, tmp = await _engine_with_orders()
         try:
@@ -785,7 +785,7 @@ class TestJoinTargetIsQueryBacked:
                 })],
                 query_variables={"threshold": 0},  # save-time default
             ))
-            # Add a join from orders → rev_filtered on region.
+            # Add a relationship from orders → rev_filtered on region.
             orders = await engine.storage.get_dataset("orders")
             assert orders is not None
             orders = orders.model_copy(update={
@@ -796,7 +796,7 @@ class TestJoinTargetIsQueryBacked:
             })
             await engine.storage.save_dataset(orders)
 
-            # Outer query passes a runtime value for {threshold}; the join
+            # Outer query passes a runtime value for {threshold}; the relationship
             # target's rendered SQL must use 999, not the saved 0.
             outer = SlayerQuery.model_validate({
                 "population": "orders",
@@ -807,7 +807,7 @@ class TestJoinTargetIsQueryBacked:
             resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
             assert "999" in resp.sql, (
-                f"join target should use runtime threshold=999, got SQL:\n{resp.sql}"
+                f"relationship target should use runtime threshold=999, got SQL:\n{resp.sql}"
             )
         finally:
             tmp.cleanup()
@@ -815,7 +815,7 @@ class TestJoinTargetIsQueryBacked:
     async def test_concurrent_expansions_do_not_share_recursion_state(self) -> None:
         """Two concurrent expansions must not see each other's in-flight names.
 
-        DEV-1485 Stage D: this replaces
+        This replaces
         ``test_join_target_resolving_set_is_per_context``, which asserted the
         legacy ``_join_target_resolving_var`` ContextVar was per-task rather
         than an engine instance attribute. That guard is deleted with the
@@ -863,7 +863,7 @@ class TestJoinTargetIsQueryBacked:
     async def test_join_target_is_query_backed_model(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            # Create a saved query-backed "rollup" model joinable from orders.
+            # Create a saved query-backed "rollup" dataset joinable from orders.
             await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
                     "population": "orders",
@@ -872,7 +872,7 @@ class TestJoinTargetIsQueryBacked:
                 }),
                 name="rev_by_region",
             )
-            # Add a join from orders → rev_by_region on region.
+            # Add a relationship from orders → rev_by_region on region.
             orders = await engine.storage.get_dataset("orders")
             assert orders is not None
             orders = orders.model_copy(update={
@@ -890,7 +890,7 @@ class TestJoinTargetIsQueryBacked:
             })
             resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
-            # The join target should resolve to a sub-query containing the
+            # The relationship target should resolve to a sub-query containing the
             # rollup SQL (not raise about missing sql_table).
             assert "amount_sum" in resp.sql.lower()
         finally:
@@ -965,10 +965,10 @@ class TestRunByNamePlanFlags:
 
 
 class TestSiblingStageJoins:
-    """Non-final stages in source_queries can join prior named sibling stages.
+    """Non-final stages in source_queries can relate to prior named sibling stages.
 
-    Regression coverage for DEV-1340. The final stage already supported
-    ``joins.target_model`` referencing a named sibling (see
+    The final stage already supported
+    ``relationships[].to`` referencing a named sibling (see
     ``test_model_extension_over_named_query_stage_adds_columns`` and the
     "Query lists" docs); this class extends that contract to non-final
     stages, plus pins clear errors for forward and self references.
@@ -1007,7 +1007,7 @@ class TestSiblingStageJoins:
     def _three_stage_dag() -> list:
         """3-stage DAG used by both the lookup-fix smoke test and the
         idempotency test. Stage 1 ``kpis`` aggregates orders per customer;
-        stage 2 ``tagged`` (non-final) joins back to customers; stage 3
+        stage 2 ``tagged`` (non-final) relates back to customers; stage 3
         re-aggregates ``tagged``.
         """
         return [
@@ -1034,7 +1034,7 @@ class TestSiblingStageJoins:
         ]
 
     async def test_non_final_named_stage_joins_prior_named_sibling(self) -> None:
-        """Stage 2 (named ``tagged``) joins prior named ``kpis``; stage 3 uses ``tagged``."""
+        """Stage 2 (named ``tagged``) relates to prior named ``kpis``; stage 3 uses ``tagged``."""
         engine, tmp = await self._engine()
         try:
             resp = await engine.execute(self._three_stage_dag(), dry_run=True)
@@ -1092,7 +1092,7 @@ class TestSiblingStageJoins:
     async def test_runtime_list_dag_auto_sorted(self) -> None:
         """Caller submits stages in non-topological order — engine auto-sorts.
 
-        Stage ``a`` references stage ``b`` via ``joins.target_model``,
+        Stage ``a`` references stage ``b`` via ``relationships[].to``,
         but ``b`` is defined later in the input list. Pre-auto-sort this
         was rejected as a forward reference; now the engine reorders to
         ``[b, a, final]`` and emits valid SQL. The last entry of the
@@ -1279,7 +1279,7 @@ class TestSiblingStageJoins:
             tmp.cleanup()
 
     async def test_non_final_stage_with_sibling_join_renders_stable_sql(self) -> None:
-        """Re-running a non-final stage that joins a prior sibling produces
+        """Re-running a non-final stage that relates to a prior sibling produces
         the same SQL twice — pinning the engine's recursion guard so the
         sibling-aware codepath is idempotent. This is the regression
         coverage for the ContextVar-based forbidden-refs frame restoring
@@ -1297,16 +1297,16 @@ class TestSiblingStageJoins:
 
 
 class TestMultiStageMeasureRename:
-    """DEV-1335: when an inner stage names an aggregated measure via
-    ``{"formula": "col:agg", "name": "X"}``, the inner stage's emitted column
+    """When an inner stage names an aggregated metric via
+    ``{"metric": "agg(col)", "alias": "X"}``, the inner stage's emitted column
     must surface as ``X`` — not the canonical ``col_agg``. Outer stages
     referencing ``X`` must resolve cleanly. Stage-shape edits via the save
     path must produce a cache that reflects the new names.
     """
 
     async def test_inner_stage_aggregated_measure_honors_user_name(self) -> None:
-        """Stage 1 measure ``{formula: 'amount:sum', name: 'rev'}`` must surface
-        as ``rev`` on the virtual model, not ``amount_sum``. Stage 2 must be
+        """Stage 1 metric ``{metric: 'sum(amount)', alias: 'rev'}`` must surface
+        as ``rev`` on the virtual dataset, not ``amount_sum``. Stage 2 must be
         able to reference ``rev`` and the cached SQL must reflect the rename.
         """
         saved = SlayerDataset(
@@ -1331,9 +1331,9 @@ class TestMultiStageMeasureRename:
             loaded = await engine.storage.get_dataset("renamed_metric")
             assert loaded is not None
             col_names = [c.name for c in loaded.fields]
-            # Stage 2's outer measure is `sum(rev)` → cache column `rev_sum`.
+            # Stage 2's outer metric is `sum(rev)` → cache field `rev_sum`.
             assert "rev_sum" in col_names, (
-                f"expected 'rev_sum' in cached columns, got: {col_names}"
+                f"expected 'rev_sum' in cached fields, got: {col_names}"
             )
             sql = (await engine.execute("renamed_metric", dry_run=True)).sql or ""
             # The inner stage names its column ``rev``, quoted or bare.
@@ -1362,14 +1362,14 @@ class TestMultiStageMeasureRename:
             virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_default")
             col_names = [c.name for c in virtual.fields]
             assert "amount_sum" in col_names, (
-                f"unnamed measure must keep canonical 'amount_sum', got: {col_names}"
+                f"unnamed metric must keep canonical 'amount_sum', got: {col_names}"
             )
         finally:
             tmp.cleanup()
 
     async def test_inner_stage_user_name_collides_with_canonical_is_one_column(self) -> None:
         """When the user picks a ``name`` that happens to equal the canonical
-        form, the wrap must emit exactly one column (no duplicate-alias error).
+        form, the wrap must emit exactly one field (no duplicate-alias error).
         """
         engine, tmp = await _engine_with_orders()
         try:
@@ -1381,14 +1381,14 @@ class TestMultiStageMeasureRename:
             virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_collide")
             col_names = [c.name for c in virtual.fields]
             assert col_names.count("amount_sum") == 1, (
-                f"name=canonical must not duplicate the column, got: {col_names}"
+                f"name=canonical must not duplicate the field, got: {col_names}"
             )
         finally:
             tmp.cleanup()
 
     async def test_query_backed_expansion_emits_user_alias_unit(self) -> None:
         """Direct unit test on the query-backed expansion: the wrap subquery
-        and the virtual model's ``columns`` must use the user-supplied
+        and the virtual dataset's ``fields`` must use the user-supplied
         ``name``.
         """
         engine, tmp = await _engine_with_orders()
@@ -1401,7 +1401,7 @@ class TestMultiStageMeasureRename:
             virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_alias")
             col_names = [c.name for c in virtual.fields]
             assert "rev" in col_names, (
-                f"user-supplied 'name' must surface as a virtual column, got: {col_names}"
+                f"user-supplied 'name' must surface as a virtual field, got: {col_names}"
             )
             assert "amount_sum" not in col_names, (
                 f"canonical 'amount_sum' must be replaced when user supplies "

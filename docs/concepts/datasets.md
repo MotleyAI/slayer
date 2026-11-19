@@ -191,7 +191,7 @@ Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`
 
 A field's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The field behaves like any other field when used in `dimensions` / SELECT.
 
-> **Filtering on a windowed field is rejected.** A query filter naming a `DatasetField` whose `sql` contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [formulas.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
+> **Filtering on a windowed field is rejected.** A query filter naming a `DatasetField` whose `sql` contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [expressions.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
 
 ### SQL expression conventions
 
@@ -271,7 +271,7 @@ A saved expression produces the same SQL as writing it out longhand. Cycles (`a 
 
 A dotted `"customers.aov"` reuses a saved metric from the joined `customers` dataset as if its expression were written inline, and a query-backed dataset cannot declare `metrics` directly. A saved metric whose expression crosses back to a dataset already on the path (e.g. `customers.order_total` defined as `sum(customer.amount)`, used from `orders`) evaluates over its own occurrence of that dataset rather than failing.
 
-See [formulas.md](expressions.md) for the full expression grammar — operators, transforms, time-shifted forms, and the `Mode B` DSL rules.
+See [expressions.md](expressions.md) for the full expression grammar — operators, transforms, time-shifted forms, and the `Mode B` DSL rules.
 
 ## Aggregations
 
@@ -414,7 +414,7 @@ Joined tables use `__`-delimited path aliases in generated SQL so **diamond join
 - `customers.regions.name` → table alias `customers__regions`
 - `warehouses.regions.name` → table alias `warehouses__regions`
 
-You write dotted relationship paths everywhere — in both queries and dataset-internal SQL (`customers.regions.name`). The `__`-delimited alias is purely an emitted-SQL detail SLayer generates for you. See [Diamond Joins](ingestion.md#diamond-relationships) for details.
+You write dotted relationship paths everywhere — in both queries and dataset-internal SQL (`customers.regions.name`). The `__`-delimited alias is purely an emitted-SQL detail SLayer generates for you. See [Diamond relationships](ingestion.md#diamond-relationships) for details.
 
 ## Dataset filters
 

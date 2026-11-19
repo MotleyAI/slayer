@@ -45,6 +45,9 @@ class IdentifierHit(BaseModel):
     name: str
     file: str
 
+    def __hash__(self) -> int:
+        return hash((self.name, self.file))
+
 
 def _node_binding(node: ast.AST) -> str | None:
     match node:

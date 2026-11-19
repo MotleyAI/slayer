@@ -55,7 +55,7 @@ def _pk() -> DatasetField:
     return DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)
 
 
-# DuckDB models typed as 1.6.0 typed them: info-schema reflection (table-backed), the category probe (sql-mode).
+# DuckDB datasets typed as 1.6.0 typed them: info-schema reflection (table-backed), the category probe (sql-mode).
 
 def _legacy() -> SlayerDataset:
     return SlayerDataset(name="legacy", sql_table="kinds", data_source="ds", fields=[
@@ -183,7 +183,7 @@ def _retypes(entries: list[dict[str, Any]], dataset: str) -> dict[str, dict[str,
 
 
 def _removed(entries: list[dict[str, Any]], dataset: str) -> set[str]:
-    """Every column and measure ``dataset`` loses to the deletes in ``entries``."""
+    """Every field and metric ``dataset`` loses to the deletes in ``entries``."""
     out: set[str] = set()
     for e in entries:
         if e.get("dataset_name") != dataset:

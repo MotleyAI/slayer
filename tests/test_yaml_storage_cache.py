@@ -1,4 +1,4 @@
-"""mtime-keyed model/datasource load cache for YAMLStorage (DEV-1816)."""
+"""mtime-keyed dataset/datasource load cache for YAMLStorage."""
 
 import os
 import tempfile
@@ -48,7 +48,7 @@ def _bump_mtime(path: str) -> None:
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000))
 
 
-# ---- models: cache hits skip work -----------------------------------------
+# ---- datasets: cache hits skip work ---------------------------------------
 
 
 async def test_hit_skips_parse(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,7 +74,7 @@ async def test_hit_skips_validate_and_migrate(storage: YAMLStorage, monkeypatch:
     assert migrates["n"] == m0
 
 
-# ---- models: invalidation --------------------------------------------------
+# ---- datasets: invalidation ------------------------------------------------
 
 
 async def test_save_model_evicts(storage: YAMLStorage) -> None:
@@ -349,7 +349,7 @@ async def test_external_atomic_replace_invalidates_cache(storage: YAMLStorage) -
     assert reloaded.sql_table == "public.bbbb"
 
 
-# ---- models: mutation safety (deep-copy handout) --------------------------
+# ---- datasets: mutation safety (deep-copy handout) ------------------------
 
 
 async def test_mutating_returned_model_does_not_poison_cache(storage: YAMLStorage) -> None:
@@ -364,7 +364,7 @@ async def test_mutating_returned_model_does_not_poison_cache(storage: YAMLStorag
     assert second.fields[0].sql == "id"
 
 
-# ---- models: migration behavior & cache coherence -------------------------
+# ---- datasets: migration behavior & cache coherence -----------------------
 
 
 def _write_legacy_model(storage: YAMLStorage) -> str:

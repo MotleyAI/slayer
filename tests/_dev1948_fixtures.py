@@ -127,7 +127,7 @@ def stage_x() -> SlayerQuery:
 
 
 def stage_c() -> SlayerQuery:
-    """Grain ``{id}`` so a join on ``id`` is provably to-one; ``tr`` carries the tier."""
+    """Grain ``{id}`` so a relationship on ``id`` is provably to-one; ``tr`` carries the tier."""
     return _query(
         name="c", population="x", dimensions=["id"],
         metrics=[{"metric": "sum(total_spend)", "alias": "cspend"},
@@ -136,7 +136,7 @@ def stage_c() -> SlayerQuery:
 
 
 def orders_joined(*targets: str) -> Dict[str, Any]:
-    """Query kwargs: ``orders`` extended with a ``customer_id = <target>.id`` join per target."""
+    """Query kwargs: ``orders`` extended with a ``customer_id = <target>.id`` relationship per target."""
     return {"population": "orders", "extensions": [DatasetExtension.model_validate({
         "dataset": "orders",
         "relationships": [{"to": t, "from_columns": ["customer_id"], "to_columns": ["id"]} for t in targets],
@@ -162,7 +162,7 @@ def chain_list() -> List[SlayerQuery]:
 
 
 def inline_orders(*, joins: List[DatasetRelationship]) -> SlayerDataset:
-    """An inline model over the ``orders`` table carrying ``joins``."""
+    """An inline dataset over the ``orders`` table carrying ``joins``."""
     return SlayerDataset(
         name="orders_inline", data_source="test", sql_table="orders",
         fields=[
@@ -176,7 +176,7 @@ def inline_orders(*, joins: List[DatasetRelationship]) -> SlayerDataset:
 
 
 def inline_join_list() -> List[SlayerQuery]:
-    """``b`` reaches sibling ``c`` through an inline model's own joins."""
+    """``b`` reaches sibling ``c`` through an inline dataset's own relationships."""
     b = _query(
         name="b",
         population=inline_orders(
@@ -196,7 +196,7 @@ def stage_o() -> SlayerQuery:
 
 
 def three_reads_list() -> List[SlayerQuery]:
-    """``p`` sources sibling ``c`` and joins siblings ``x`` and ``o``."""
+    """``p`` sources sibling ``c`` and relates to siblings ``x`` and ``o``."""
     p = _query(
         name="p",
         population="c",
@@ -284,7 +284,7 @@ def pop_check_list() -> List[SlayerQuery]:
 
 
 def stored_join_collision_list() -> List[SlayerQuery]:
-    """A sibling named ``customers`` beside ``orders``' stored join to model ``customers``."""
+    """A sibling named ``customers`` beside ``orders``' stored relationship to dataset ``customers``."""
     sibling = _query(
         name="customers", population="orders", dimensions=["status"],
         metrics=[{"metric": "sum(amount)", "alias": "a"}],

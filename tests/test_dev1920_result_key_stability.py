@@ -14,7 +14,7 @@ from tests._dev1920_fixtures import FISCAL_QUARTER, StoreFactory, make_store, ru
 
 MONTH = {"field": "created_at", "granularity": "month"}
 
-#: (unnamed measure, its result key).
+#: (unnamed metric, its result key).
 MEASURE_KEYS = [
     ("sum(amount)", "orders.amount_sum"),
     ("count(*)", "orders._count"),

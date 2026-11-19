@@ -1,6 +1,6 @@
-"""DEV-1732 — frame-bound filters must not truncate trailing-window / shifted CTEs.
+"""Frame-bound filters must not truncate trailing-window / shifted CTEs.
 
-Stage 10 (DEV-1714) strips the typed ``date_range`` from a windowed measure's
+Stage 10 strips the typed ``date_range`` from a windowed metric's
 ``_src`` subquery so the trailing window can reach rows *before* the visible
 frame; without that, the earliest buckets under-count. But it strips ONLY the
 typed ``date_range``. An explicit filter expressing the same intent
@@ -13,7 +13,7 @@ propagated every other ROW filter).
 The rule this module pins:
 
     A ROW-phase filter conjunct that is a relational bound, with a temporal
-    literal, on the raw column of one of the query's time dimensions is a FRAME
+    literal, on the raw field of one of the query's time dimensions is a FRAME
     bound, not a population filter. Frame bounds constrain the visible buckets
     only; they are removed from any CTE that must reach outside the frame
     (``_wm_``'s ``_src``, ``time_shift``'s shifted CTE). Every other predicate is
@@ -68,7 +68,7 @@ SHIP_DATE = FieldKey(path=(), leaf="ship_date")
 DELIVERY_AT = FieldKey(path=(), leaf="delivery_at")
 STATUS = FieldKey(path=(), leaf="status")
 
-# The two query time dimensions' raw columns — the strippable set (§2.2).
+# The two query time dimensions' raw fields — the strippable set (§2.2).
 TIME_COLS = frozenset({CREATED_AT, SHIP_DATE})
 
 
@@ -97,7 +97,7 @@ def _strip(key):
 class TestFrameBoundRecognition:
     @pytest.mark.parametrize("op", [">=", ">", "<=", "<"])
     async def test_relational_bound_on_td_column_is_stripped(self, op: str) -> None:
-        """Every relational operator on a query TD's raw column is a frame
+        """Every relational operator on a query TD's raw field is a frame
         bound — BOTH directions. `date_range` strips a single carrier
         node, i.e. both bounds, so equivalence requires stripping both."""
         assert _strip(_cmp(op, CREATED_AT, _lit("2024-06-01"))) is None
@@ -121,15 +121,15 @@ class TestFrameBoundRecognition:
         assert _strip(key) is key
 
     async def test_bound_on_second_time_dimension_is_stripped(self) -> None:
-        """§2.2: the strippable set is EVERY non-hidden query TD's raw column,
+        """§2.2: the strippable set is EVERY non-hidden query TD's raw field,
         not just the window axis — that is exactly the set for which a
         ``date_range`` spelling exists."""
         assert _strip(_cmp(">=", SHIP_DATE, _lit("2024-06-01"))) is None
 
     async def test_bound_on_derived_time_column_is_stripped_by_identity(self) -> None:
-        """A derived (``Column.sql``) temporal column binds to a
-        ``ColumnSqlKey``; ``_build_date_range_filter`` binds its
-        date-range bound column through the same path that produces
+        """A derived (``DatasetField.sql``) temporal field binds to a
+        ``FieldSqlKey``; ``_build_date_range_filter`` binds its
+        date-range bound field through the same path that produces
         ``TimeTruncKey.source``, so identity matching covers it for free."""
         derived = FieldSqlKey(path=(), dataset="orders", field_name="event_at")
         key = _cmp(">=", derived, _lit("2024-06-01"))
@@ -145,20 +145,20 @@ class TestFrameBoundRecognition:
 
     async def test_column_rhs_is_kept(self) -> None:
         """``created_at >= ship_date`` is a row-wise correlation between two
-        columns, not a frame bound — even though both are query TDs."""
+        fields, not a frame bound — even though both are query TDs."""
         key = _cmp(">=", CREATED_AT, SHIP_DATE)
         assert _strip(key) is key
 
     async def test_scalar_call_lhs_is_kept(self) -> None:
         """``date(created_at) >= X`` is a different ValueKey from the raw
-        column, so it is not a frame bound."""
+        field, so it is not a frame bound."""
         key = _cmp(">=", ScalarCallKey(name="trunc", args=(CREATED_AT,)), _lit("2024-06-01"))
         assert _strip(key) is key
 
     async def test_bound_on_time_column_that_is_not_a_query_td_is_kept(self) -> None:
         """``delivery_at >= X`` has no ``date_range`` spelling, so it is a
-        genuine population filter. Dropping it would make the windowed measure
-        over-count against every other measure in the same query."""
+        genuine population filter. Dropping it would make the windowed metric
+        over-count against every other metric in the same query."""
         key = _cmp(">=", DELIVERY_AT, _lit("2024-06-01"))
         assert _strip(key) is key
 
@@ -193,7 +193,7 @@ class TestFrameBoundRecognition:
 class TestTemporalLiteralWhitelist:
     """Only a bare ``LiteralKey`` holding a non-``None`` ``str`` qualifies.
 
-    An earlier draft used a blacklist ("no column/aggregate key anywhere in the
+    An earlier draft used a blacklist ("no field/aggregate key anywhere in the
     subtree"), which classifies dynamic expressions as frame bounds.
     """
 
@@ -225,7 +225,7 @@ class TestTemporalLiteralWhitelist:
 
     async def test_arithmetic_over_literals_is_not_temporal(self) -> None:
         """Only a *bare* ``LiteralKey`` qualifies — not a tree that happens to
-        contain no column reference."""
+        contain no field reference."""
         tree = ArithmeticKey(op="+", operands=(_lit(Decimal(1)), _lit(Decimal(2))))
         assert is_temporal_literal(tree) is False
         key = _cmp(">=", CREATED_AT, tree)
@@ -318,7 +318,7 @@ class TestFrameBoundComposition:
 
 
 # --------------------------------------------------------------------------- #
-# Models for the SQL-shape tests
+# Datasets for the SQL-shape tests
 # --------------------------------------------------------------------------- #
 def _orders(**kw) -> SlayerDataset:
     base = dict(
@@ -387,16 +387,16 @@ def _windowed_query(**kw) -> SlayerQuery:
 
 
 async def _wm_sql(query: SlayerQuery, dataset: SlayerDataset, **kw) -> str:
-    # DEV-1835: windowed producers now render under uniform ``_cm_`` naming.
+    # Windowed producers now render under uniform ``_cm_`` naming.
     sql = await _engine_generate(query=query, dataset=dataset, validate=False, **kw)
     assert "_cm_" in sql, sql
     return sql
 
 
 async def _plan(query: SlayerQuery, dataset: SlayerDataset, *, extra_datasets=None):
-    """Plan ``query`` against ``model`` and return the ``PlannedQuery``.
+    """Plan ``query`` against ``dataset`` and return the ``PlannedQuery``.
 
-    Used by the column-set tests, which assert on planner state rather than
+    Used by the field-set tests, which assert on planner state rather than
     emitted SQL.
     """
     with tempfile.TemporaryDirectory() as d:
@@ -425,7 +425,7 @@ class TestWindowedSrcFrameBounds:
     """
 
     async def test_explicit_lower_bound_is_stripped_from_src(self) -> None:
-        """The DEV-1732 headline case, and the inverse of the Stage-10 parity
+        """The headline case, and the inverse of the Stage-10 parity
         pin: the bound must bound ``_base`` and NOT reach ``_src``, while a
         sibling population filter is untouched."""
         sql = await _wm_sql(
@@ -531,8 +531,8 @@ class TestWindowedSrcFrameBounds:
         assert "2024-07-01" not in src, src
 
     async def test_instant_equality_on_time_dimension_column_is_kept_in_src(self) -> None:
-        """Same column, two operators, opposite outcomes: the operator and the
-        literal's kind decide, not the column."""
+        """Same field, two operators, opposite outcomes: the operator and the
+        literal's kind decide, not the field."""
         sql = await _wm_sql(
             _windowed_query(
                 filter=["created_at == '2024-06-01 00:00:00'", "created_at >= '2024-07-01'"],
@@ -556,12 +556,12 @@ class TestWindowedSrcFrameBounds:
         assert "2024-06-02" in sql, sql
 
     async def test_mode_a_model_filter_is_kept_verbatim_in_src(self) -> None:
-        """§2.5: a ``SlayerModel.filters`` entry defines which rows EXIST. There
-        is no ``date_range`` spelling at model level, so there is no
+        """§2.5: a ``SlayerDataset.filters`` entry defines which rows EXIST. There
+        is no ``date_range`` spelling at dataset level, so there is no
         inconsistency to fix — and analysing raw Mode-A SQL would make a silent
         mis-strip possible.
 
-        The model filter and the query filter name the SAME column, so the only
+        The dataset filter and the query filter name the SAME field, so the only
         thing separating them is their carrier — which is exactly the rule.
         """
         sql = await _wm_sql(
@@ -569,7 +569,7 @@ class TestWindowedSrcFrameBounds:
             _orders(filters=["created_at >= '2024-01-01'"]),
         )
         src = _extract_src_body(sql)
-        assert "2024-01-01" in src, f"Mode-A model filter must survive.\n{src}"
+        assert "2024-01-01" in src, f"Mode-A dataset filter must survive.\n{src}"
         assert "2024-07-01" not in src, f"the Mode-B query bound must strip.\n{src}"
 
     async def test_second_time_dimension_bound_stripped_but_join_key_kept(self) -> None:
@@ -621,7 +621,7 @@ class TestWindowedSrcFrameBounds:
     async def test_stripping_a_joined_td_bound_keeps_the_projection_join(self) -> None:
         """Stripping a frame bound can never ORPHAN a join.
 
-        The strippable columns are exactly the query TDs' raw columns, and
+        The strippable fields are exactly the query TDs' raw fields, and
         ``_src`` projects every non-hidden TD (``_w_time`` / ``_w_td_<n>``) — so
         a joined TD's join is required by the projection regardless of the
         filter. Codex asked for a "stripped bound was the only reason for the
@@ -713,8 +713,8 @@ class TestWindowedSrcFrameBounds:
             filter=["created_at >= '2024-06-01' and status = 'paid'"],
         )
         sql = await _wm_sql(query, _orders())
-        # DEV-1835: producer CTEs render under ``_cm_`` naming, keyed by the
-        # canonical windowed-aggregate name (not the declared measure alias).
+        # Producer CTEs render under ``_cm_`` naming, keyed by the
+        # canonical windowed-aggregate name (not the declared metric alias).
         # Each producer now inlines its own ``_base`` (which KEEPS the frame
         # bound) plus its own ``_src`` (which strips it), so the shared-residual
         # assertion lives on each producer's ``_src`` body.
@@ -746,9 +746,9 @@ class TestWindowedSrcFrameBounds:
         assert_scope_closed(sql, dialect="postgres")
 
     async def test_bound_on_unselected_time_column_survives_into_src(self) -> None:
-        """Only columns of SELECTED time dimensions are strippable.
+        """Only fields of SELECTED time dimensions are strippable.
 
-        ``ship_date`` is a temporal column of the model but is not a query time
+        ``ship_date`` is a temporal field of the dataset but is not a query time
         dimension here, so nothing grain-joins it into ``_src`` and no
         ``date_range`` spelling exists for it — its bound is a population filter.
         The ``created_at`` sibling, which IS selected, strips in the same query.
@@ -768,7 +768,7 @@ class TestWindowedSrcFrameBounds:
         assert "2024-07-01" not in src, src
 
     async def test_date_range_still_stripped_from_src(self) -> None:
-        """Stage-10 regression guard — the behaviour DEV-1732 generalises must
+        """Stage-10 regression guard — the behaviour this suite generalises must
         not move."""
         query = _windowed_query(
             time_dimensions=[
@@ -790,7 +790,7 @@ class TestWindowedSrcFrameBounds:
 
 
 # --------------------------------------------------------------------------- #
-# The strippable column set, at the planner level
+# The strippable field set, at the planner level
 # --------------------------------------------------------------------------- #
 class TestFrameBoundColumnSet:
     """``PlannedQuery.frame_bound_fields`` is the single authoritative set,
@@ -820,9 +820,9 @@ class TestFrameBoundColumnSet:
 
         The windowed emission skips hidden row slots when deriving
         ``other_td_slot_ids``, so a hidden ``TimeTruncKey`` is never
-        equality-joined into ``_src``. Stripping a bound on such a column would
+        equality-joined into ``_src``. Stripping a bound on such a field would
         leave that axis wholly unconstrained — an unbounded over-count — so the
-        set must contain only columns of NON-hidden time-dimension slots.
+        set must contain only fields of NON-hidden time-dimension slots.
         """
 
         plan = await _plan(
@@ -847,14 +847,14 @@ class TestFrameBoundColumnSet:
         assert set(plan.frame_bound_fields) == visible, (
             plan.frame_bound_fields, visible,
         )
-        # A hidden slot's column never leaks into the set.
+        # A hidden slot's field never leaks into the set.
         hidden_cols = {
             s.key.source
             for s in plan.row_slots
             if isinstance(s.key, TimeTruncKey) and s.hidden
         }
         assert not (set(plan.frame_bound_fields) & hidden_cols), plan.frame_bound_fields
-        # …nor does a plain row column that merely happens to be temporal.
+        # …nor does a plain row field that merely happens to be temporal.
         assert DELIVERY_AT not in set(plan.frame_bound_fields), plan.frame_bound_fields
 
 
@@ -878,7 +878,7 @@ async def _shifted_body(query: SlayerQuery, dataset: SlayerDataset, **kw) -> str
 
 class TestTimeShiftFrameBounds:
     async def test_explicit_bounds_do_not_reach_the_shifted_cte(self) -> None:
-        """Before DEV-1732 the shifted CTE carried the bound, so the first
+        """Before the fix the shifted CTE carried the bound, so the first
         visible bucket's ``prev`` was NULL — while the ``date_range`` spelling
         of the same intent produced a correct value."""
         body = await _shifted_body(
@@ -916,7 +916,7 @@ class TestTimeShiftFrameBounds:
 
     async def test_date_range_still_omitted(self) -> None:
         """Stage-7 regression guard (the 7b.3c invariant): ``date_range`` was
-        already omitted before DEV-1732 and must stay omitted."""
+        already omitted before the fix and must stay omitted."""
         body = await _shifted_body(
             _shift_query(
                 time_dimensions=[

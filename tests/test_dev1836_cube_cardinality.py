@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.3 — Cube importer maps ``relationship`` → ``Join.cardinality``
+"""Cube importer maps ``relationship`` → ``DatasetRelationship.cardinality``
 (design D8, F10).
 
 Spec: openspec …/specs/models/join-cardinality — "Cube import maps relationship

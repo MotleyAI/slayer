@@ -311,7 +311,7 @@ class TestEdgeSetChangeWarnings:
 
 
 class TestUnchangedEdgeSetReExaminesNothing:
-    """``audits`` is reachable only through its model filter, so a strict hop onto
+    """``audits`` is reachable only through its dataset filter, so a strict hop onto
     ``orders`` during the save can only come from re-examining it."""
 
     @staticmethod

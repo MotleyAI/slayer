@@ -31,9 +31,9 @@ _INDEX_YAML = _ROOT / "architecture" / "index.yaml"
 # --------------------------------------------------------------------------- #
 def _ceiling() -> int:
     entry = yaml.safe_load(_INDEX_YAML.read_text()).get("x-vocabulary-stragglers")
-    assert isinstance(entry, dict) and "baseline" in entry, (
-        "architecture/index.yaml must declare `x-vocabulary-stragglers: {baseline: N}` (only ever lowered)"
-    )
+    missing = "architecture/index.yaml must declare `x-vocabulary-stragglers: {baseline: N}` (only ever lowered)"
+    assert isinstance(entry, dict), missing
+    assert "baseline" in entry, missing
     return int(entry["baseline"])
 
 

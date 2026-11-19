@@ -1,8 +1,8 @@
-"""A dotted saved measure whose formula crosses back to a model on the host chain composes.
+"""A dotted saved metric whose expression crosses back to a dataset on the host chain composes.
 
 ``customers.order_total`` (``sum(orders.amount)``) from an ``orders``-rooted query reads a
 second ``orders`` occurrence — the customer's orders — evaluated once per row of it.
-Expected values come from raw-SQL oracles over the seeded DEV-1836 rows.
+Expected values come from raw-SQL oracles over the seeded cross-dataset fixture rows.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from tests._dev1836_fixtures import _seed_duckdb, _seed_sqlite
 from tests._dev1842_fixtures import dev1842_datasets, q
 from tests._engine_helpers import disposable_engine, seeded_exec_engine
 
-# The second ``orders`` occurrence is a virtual model over every order (Axiom 6):
+# The second ``orders`` occurrence is a virtual dataset over every order (Axiom 6):
 # its value never depends on the query root, so the orphan order counts, in the NULL tier.
 _TOTAL_SQL = "SELECT SUM(amount) FROM orders"
 _BY_TIER_SQL = (

@@ -1,10 +1,10 @@
-"""DEV-1836 D3 reroot rules over a provably to-one reverse hop.
+"""D3 reroot rules over a provably to-one reverse hop.
 
-The producer roots at the aggregate's model and reaches HOST coordinates back
-over the INVERTED forward join (DEV-1853 — no declared reverse edge): a host
+The producer roots at the aggregate's dataset and reaches HOST coordinates back
+over the INVERTED forward relationship (no declared reverse edge): a host
 time dimension re-roots leaf-wise (TimeTruncKey included), and a host-sibling
-filter binds the HOST's join instance (via-host preferred over the root's own
-same-named join).
+filter binds the HOST's relationship instance (via-host preferred over the root's own
+same-named relationship).
 """
 
 from __future__ import annotations
@@ -50,10 +50,10 @@ def _datasets() -> list[SlayerDataset]:
             DatasetField(name="party_b", datatype=DataType.INTEGER),
         ],
         relationships=[
-            # DEV-1853: no declared reverse edge — the policy_amount → policy
+            # No declared reverse edge — the policy_amount → policy
             # hop is the INVERTED policy → policy_amount edge, provably to-one
             # structurally (policy_identifier is policy's PK).
-            # Same sibling model as the host, joined on a DIFFERENT key.
+            # Same sibling dataset as the host, joined on a DIFFERENT key.
             DatasetRelationship(to="party", from_columns=["party_b"], to_columns=["id"]),
         ],
     )
@@ -81,7 +81,7 @@ def _seed(db_path: str) -> None:
             (2, "POL-2", "2024-02-10 00:00:00", 2),
         ])
         # party_b deliberately OPPOSITE of the owning policy's party_a, so the
-        # root's own party join selects different rows than the host's instance.
+        # root's own party relationship selects different rows than the host's instance.
         conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?, ?)", [
             (10, 1, 100.0, 2), (11, 1, 200.0, 2),
             (20, 2, 300.0, 1), (21, 2, 400.0, 1),
@@ -128,8 +128,8 @@ class TestTimeTruncGrainReroots:
         assert resp.sql is not None
         assert_scope_closed(resp.sql, dialect="sqlite")
         by_month = {r["policy.created_at"][:7]: r for r in resp.data}
-        # Values calibrated against the LOCAL windowed measure on identical
-        # dates/amounts — cross-model must match local window semantics. The
+        # Values calibrated against the LOCAL windowed metric on identical
+        # dates/amounts — cross-dataset must match local window semantics. The
         # 20-day February window starts on Feb 10 inclusive, so POL-2's two
         # amounts are in.
         assert by_month["2024-01"]["policy.w"] == pytest.approx(300.0)
@@ -138,9 +138,9 @@ class TestTimeTruncGrainReroots:
 
 class TestSiblingFilterBindsTheHostInstance:
     async def test_via_host_instance_wins_over_the_roots_own_join(self, engine) -> None:
-        """``party.code`` in host coordinates is the HOST's party join
+        """``party.code`` in host coordinates is the HOST's party relationship
         (policy.party_a). The producer must inherit that instance via the
-        reverse hop — not the root's own ``party_b`` join, which selects the
+        reverse hop — not the root's own ``party_b`` relationship, which selects the
         opposite rows here."""
         resp = await engine.execute(SlayerQuery(
             population="policy",
@@ -151,6 +151,6 @@ class TestSiblingFilterBindsTheHostInstance:
         rows = {r["policy.policy_number"]: r for r in resp.data}
         assert set(rows) == {"POL-1"}, rows
         assert rows["POL-1"]["policy.cm"] == pytest.approx(300.0), (
-            "the producer bound the root's own party join (party_b) instead of "
+            "the producer bound the root's own party relationship (party_b) instead of "
             "the host's instance"
         )

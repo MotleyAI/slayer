@@ -1425,7 +1425,7 @@ class OsiToSlayerConverter:
             target = self._datasets.get(relationship.to)
             problem = None
             if dataset is None or target is None:
-                problem = f"joins {declaration.dataset!r} to {relationship.to!r}, which are not both imported"
+                problem = f"connects {declaration.dataset!r} to {relationship.to!r}, which are not both imported"
             elif any(j.to == relationship.to and j.name == relationship.name for j in dataset.relationships):
                 problem = f"duplicates a relationship from {dataset.name!r} to {relationship.to!r}"
             else:

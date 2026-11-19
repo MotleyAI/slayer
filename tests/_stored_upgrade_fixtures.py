@@ -142,9 +142,9 @@ async def raw_store(
     *, backend: str, base: str, datasource: DatasourceConfig | None,
     models: Sequence[dict] = (), memories: Sequence[dict] = (), raw_rows: Sequence[tuple[str, str]] = (),
 ) -> StorageBackend:
-    """A YAML or SQLite store whose models/memories are written verbatim (never validated).
+    """A YAML or SQLite store whose datasets/memories are written verbatim (never validated).
 
-    ``raw_rows`` are ``(name, text)`` model payloads written byte-for-byte (corrupt documents).
+    ``raw_rows`` are ``(name, text)`` dataset payloads written byte-for-byte (corrupt documents).
     """
     os.makedirs(base, exist_ok=True)
     if backend == "yaml":
@@ -188,7 +188,7 @@ def _write_text(*, path: str, text: str) -> None:
 
 
 def stored_bytes(*, backend: str, base: str, name: str) -> str:
-    """The persisted model payload exactly as stored."""
+    """The persisted dataset payload exactly as stored."""
     if backend == "yaml":
         with open(yaml_model_path(base=base, name=name), encoding="utf-8") as f:  # NOSONAR(S7493) — test read
             return f.read()
@@ -227,7 +227,7 @@ def measure_total(resp: SlayerResponse, *, measure: str) -> float:
 
 
 def by_dimension(resp: SlayerResponse, *, dim_suffix: str) -> dict:
-    """``{dimension value: float(other column)}`` for a one-dimension, one-measure result."""
+    """``{dimension value: float(other column)}`` for a one-dimension, one-metric result."""
     row = resp.data[0]
     dim = next(k for k in row if k.endswith(dim_suffix))
     val = next(k for k in row if k != dim)

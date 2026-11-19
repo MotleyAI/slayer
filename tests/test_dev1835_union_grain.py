@@ -1,11 +1,10 @@
-"""DEV-1835 union-grain lift (design D9, task 3.7) — a transform-in-dimension
+"""Union-grain lift (design D9) — a transform-in-dimension
 mixing a windowed or first/last inner aggregate with a different-grain sibling
 broadcasts over the union grain, with the windowed axis entering as the query's
 bucketed time dimension.
 
-Strict-xfail until task 3.7 deletes the residual DEV-1839→1835 guard (today
-these raise ``NotImplementedError`` naming the deferred combination); an
-accidental lift XPASSes loudly and flips the module.
+These shapes once raised ``NotImplementedError`` naming the deferred
+combination; the residual guard is deleted.
 
 Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   A windowed inner aggregate contributes the time bucket   test_windowed_inner…
@@ -36,7 +35,7 @@ from tests._dev1835_fixtures import (
 
 LIFT_XFAIL = pytest.mark.xfail(
     strict=True, raises=NotImplementedError,
-    reason="DEV-1835 task 3.7 — residual windowed/first-last union-grain guard",
+    reason="residual windowed/first-last union-grain guard",
 )
 
 
@@ -103,7 +102,7 @@ class TestUnionGrainBroadcast:
         self, exec_backend,
     ) -> None:
         """No resolvable time dimension → the same clear time-resolution error
-        as windowed measures (today: the residual union-grain guard instead)."""
+        as windowed metrics (today: the residual union-grain guard instead)."""
         _, engine = exec_backend
         query = q(
             dimensions=["region", {"field": UNION_WM_DIM, "alias": "ur"}],

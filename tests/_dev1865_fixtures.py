@@ -1,10 +1,10 @@
-"""Shared fixtures for DEV-1865 — filters and order targets compile as hidden
-fields/measures (positions by construction).
+"""Shared fixtures for filters and order targets compiling as hidden
+fields/metrics (positions by construction).
 
-Reuses the DEV-1739/1824 models + dataset verbatim (``orders → customers →
+Reuses the ``_dev1739``/``_dev1824`` fixtures' datasets + seed data verbatim (``orders → customers →
 regions``) and their hand-computed oracles. Adds a ``plan_query`` bundle helper
-for plan-shape tests and the cross-model partition oracle the newly-legal
-cross-model-partitioned filter asserts against.
+for plan-shape tests and the cross-dataset partition oracle the newly-legal
+cross-dataset-partitioned filter asserts against.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def bundle(datasets: Optional[List] = None) -> ResolvedSourceBundle:
 
 
 def plan(query: SlayerQuery, **kw):
-    """A ``PlannedQuery`` for one stage over the dev1865 models."""
+    """A ``PlannedQuery`` for one stage over the dev1865 datasets."""
     return plan_query(query=query, bundle=bundle(), **kw)
 
 

@@ -1,4 +1,4 @@
-"""Shared models, oracles and checks for boolean aggregation parameters and conditional branch types.
+"""Shared datasets, oracles and checks for boolean aggregation parameters and conditional branch types.
 
 Underscore-prefixed so pytest skips collection. Data: the idiom dataset (``tests/_mcp_idiom_fixtures.py``).
 ``orders.true_amount`` is a custom aggregation over a ``{flag}`` placeholder; ``regions.weighted_avg``

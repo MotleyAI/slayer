@@ -37,7 +37,7 @@ def _shared_client(_shared_storage: YAMLStorage) -> TestClient:
 
 
 def _reset_yaml_storage(storage: YAMLStorage) -> None:
-    # v4 nests models under ``models/<data_source>/``; recurse into
+    # v4 nests datasets under ``models/<data_source>/``; recurse into
     # subdirectories instead of unlinking only top-level entries. Also
     # clears the ``priority.yaml`` written by ``set_datasource_priority``
     # so it doesn't leak between session-scoped tests (PR #92 thread #13).
@@ -162,8 +162,8 @@ class TestModels:
         assert col_names == ["id", "revenue"]
 
     def test_all_named_measures_returned_from_get(self, client: TestClient) -> None:
-        """``ModelMeasure`` has no ``hidden`` field; every saved measure must come
-        back from ``/models/{name}``.
+        """``DatasetMetric`` has no ``hidden`` field; every saved metric must come
+        back from ``/datasets/{name}``.
         """
         model = {
             "name": "orders",
@@ -312,7 +312,7 @@ class TestQuery:
         assert resp.json()["detail"]["error"] == "schema_drift"
 
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
-        """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
+        """The `metrics` key must be declared on QueryRequest so FastAPI keeps it."""
         req = QueryRequest.model_validate(
             {"population": "orders", "metrics": [{"metric": "count(*)"}]}
         )
@@ -322,9 +322,9 @@ class TestQuery:
         assert slayer_query.metrics[0].metric == "count(*)"
 
     def test_request_accepts_bare_string_measures_and_dimensions(self) -> None:
-        """Bare strings in ``measures`` / ``dimensions`` (matching ``SlayerQuery``'s
+        """Bare strings in ``metrics`` / ``dimensions`` (matching ``SlayerQuery``'s
         coercion and the docs / example READMEs) must pass FastAPI validation
-        and lift to ``{"formula": ...}`` / ``{"name": ...}`` downstream."""
+        and lift to ``{"metric": ...}`` / ``{"field": ...}`` downstream."""
         req = QueryRequest.model_validate(
             {"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}
         )
@@ -346,7 +346,7 @@ class TestQuery:
 
 
 class TestQueryBackedModelsAPI:
-    """REST surface for query-backed models — POST /models with source_queries
+    """REST surface for query-backed datasets — POST /datasets with source_queries
     and POST /query with run-by-name body shape.
     """
 
@@ -376,7 +376,7 @@ class TestQueryBackedModelsAPI:
             "query_variables": {},
         })
         assert resp.status_code == 200, resp.text
-        # GET returns the model with source_queries + query_variables
+        # GET returns the dataset with source_queries + query_variables
         get_resp = client.get("/datasets/qb_via_api")
         assert get_resp.status_code == 200
         body = get_resp.json()
@@ -624,7 +624,7 @@ class TestQueryListBody:
 
 
 class TestQueryInlineSourceModel:
-    """POST /query refuses extension columns and inline models with 422, as the MCP ``query`` tool does."""
+    """POST /query refuses extension fields and inline datasets with 422, as the MCP ``query`` tool does."""
 
     @staticmethod
     def _setup_orders(client: TestClient) -> None:
@@ -699,7 +699,7 @@ class TestOpenAPI400Documentation:
         assert "400" in responses
 
     def test_get_model_documents_409(self, client: TestClient) -> None:
-        """``GET /models/{name}`` raises 409 on AmbiguousModelError; declare it."""
+        """``GET /datasets/{name}`` raises 409 on AmbiguousDatasetError; declare it."""
         spec = client.get("/openapi.json").json()
         responses = spec["paths"]["/datasets/{name}"]["get"]["responses"]
         assert "409" in responses
@@ -740,7 +740,7 @@ class TestOpenAPI400Documentation:
             name="upstream", sql_table="t", data_source="ds",
             fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
         )))
-        # Save a query-backed model whose stage does NOT have dry_run set.
+        # Save a query-backed dataset whose stage does NOT have dry_run set.
         setup_resp = client.post("/datasets", json={
             "name": "qb_dryrun",
             "data_source": "ds",
@@ -769,7 +769,7 @@ class TestOpenAPI400Documentation:
 
 
 class TestSaveTimeSqlValidation:
-    """DEV-1843 — ``POST /models`` trial-executes a raw-``sql`` model against a
+    """``POST /datasets`` trial-executes a raw-``sql`` dataset against a
     reachable datasource; a rejection surfaces as HTTP 400 (ValueError→400)."""
 
     def _register_live_ds(self, client: TestClient, tmp_path) -> None:

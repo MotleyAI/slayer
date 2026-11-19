@@ -5,7 +5,7 @@ its inner aggregates' explicit grains (a windowed inner adds the active bucket);
 an ungrained inner is the degenerate identity + warning; a row-level leaf under
 the transform that is not a projected grain key is rejected at plan time; a
 time-ordered constituent without its axis fails with the time-axis error. Mixed
-sources admit transform constituents and joined-model row leaves.
+sources admit transform constituents and joined-dataset row leaves.
 
 All of the above is implemented; this module guards it against regression.
 """
@@ -70,7 +70,7 @@ from tests._dev1832_fixtures import (
 from tests._rank_direction_fixtures import rank_windows
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
-# Source formulas under test.
+# Source expressions under test.
 GRAINED_CUMSUM = "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)"
 UNGRAINED_CUMSUM = "sum(cumsum(sum(amount)))"
 RANK_MIXED = "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))"
@@ -94,7 +94,7 @@ WAVG_MIN_PARAM = f"weighted_avg(amount, weight=min({_X}, partition_by=region))"
 MIXED_COMBINED = (f"sum(amount * min({_X}, partition_by=region)) "
                   "+ sum(amount, partition_by=region)")
 WINDOWED_INNER = "sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))"
-# Cross-model grained inner: the host-time-axis boundary (fanning hop), the legal
+# Cross-dataset grained inner: the host-time-axis boundary (fanning hop), the legal
 # to-one key, and the non-time contrast that still associates.
 XMODEL_BOUNDARY = ("sum(cumsum(sum(customers.spend, "
                    "partition_by=[customers.tier, ordered_at])))")
@@ -118,7 +118,7 @@ def _month_cols(resp: SlayerResponse, name: str) -> tuple[str, str]:
 
 
 def _by_month(resp: SlayerResponse, name: str) -> dict:
-    """``{YYYY-MM: value}`` for measure ``name``, NULL-valued cells dropped."""
+    """``{YYYY-MM: value}`` for metric ``name``, NULL-valued cells dropped."""
     month_col, meas_col = _month_cols(resp, name)
     return {month_key(row[month_col]): row[meas_col] for row in resp.data
             if row[meas_col] is not None}
@@ -187,7 +187,7 @@ def _year_td() -> TimeDimension:
 
 class TestDualGranularityQueryGrain:
     """queries/partitioned-aggregates › the query grain is every projected time
-    bucket — two granularities of one column are two grain keys."""
+    bucket — two granularities of one field are two grain keys."""
 
     @pytest.mark.parametrize("tds", [
         [*month_td(), _year_td()], [_year_td(), *month_td()],
@@ -277,7 +277,7 @@ class TestTransformSourceRejections:
 
     async def test_axis_check_covers_filter_and_order_positions(self):
         # The axis check must walk filter and order constituents too, not just
-        # measures (a coarser producer grain would else reach planning).
+        # metrics (a coarser producer grain would else reach planning).
         axis_missing = "sum(cumsum(sum(amount, partition_by=region)))"
         filter_query = monthly_q(
             metrics=[QueryMetric(metric="sum(amount)", alias="s")],
@@ -517,7 +517,7 @@ class TestReaggMixedSource:
             metrics=[QueryMetric(metric="sum(amount)", alias="s")],
             filter=[f"{COLLAPSE_MIXED} > 400"], time_dimensions=month_td()))
         # collapse-mixed is Jan 375 / Feb 825 / Mar 900 → only Feb, Mar survive,
-        # each keeping its unfiltered amount:sum (a measure-typed filter prunes only).
+        # each keeping its unfiltered amount:sum (a metric-typed filter prunes only).
         assert _by_month(resp, "s") == pytest.approx({"2024-02": 35.0, "2024-03": 30.0})
 
     async def test_collapse_mixed_in_order_position(self, exec_backend: tuple[str, SlayerQueryEngine]):
@@ -695,7 +695,7 @@ class TestCrossModelGrainedInnerBoundary:
 class TestReaggAxiomCompliance:
     """queries/semantics › Axiom 2.4 — a source with no row leaf is a second-order
     aggregation homed on the operand dataset, so it counts the operand's CELLS; a row
-    leaf homes it back on the model rows, so it counts ROWS. The monthly_multi fixture
+    leaf homes it back on the dataset rows, so it counts ROWS. The monthly_multi fixture
     (two rows per (region, month) cell) tells the two apart — the monthly fixture,
     one row per cell, cannot, so the windowed pin's phase would pass either way there.
 
@@ -724,7 +724,7 @@ class TestReaggAxiomCompliance:
         [pure] = _reagg_multi_plan(WINDOWED_INNER).regroup_attach_plans
         assert pure.attach_phase == "combined"  # no row leaf → over operand cells
         [mixed] = _reagg_multi_plan(HANDWRITTEN_MIN).regroup_attach_plans
-        assert mixed.attach_phase == "row"  # row leaf → over model rows
+        assert mixed.attach_phase == "row"  # row leaf → over dataset rows
 
     async def test_reagg_used_standalone_and_mixed_executes(self, exec_backend: tuple[str, SlayerQueryEngine]):
         # The same re-aggregation both on its own (combined phase) and inside a mixed

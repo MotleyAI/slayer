@@ -1,7 +1,7 @@
-"""DEV-1842 task 2.1 — migration of the pre-bind pass's unit suites.
+"""Migration of the pre-bind pass's unit suites.
 
 ``slayer/engine/measure_expansion.py`` (and its ``expand_model_measures`` /
-``_ExpandCtx``) is deleted; all saved-measure resolution moves into the binder.
+``_ExpandCtx``) is deleted; all saved-metric resolution moves into the binder.
 The eligibility matrix, cycle, and depth scenarios that
 ``test_measure_expansion.py`` / ``test_model_measure_expansion.py`` pinned at the
 pass level are re-expressed here against the real binder path (through the
@@ -9,7 +9,7 @@ engine), importing nothing from the deleted module.
 
 Positive bare-name resolution (root / arithmetic / transform / chained) is
 already covered end-to-end by ``test_named_measures.py``; this suite pins the
-NEGATIVE eligibility edges (a measure in an aggregation source / arg / kwarg is
+NEGATIVE eligibility edges (a metric in an aggregation source / arg / kwarg is
 NOT expanded), plus cycle-chain naming and the depth cap — the rules the unit
 suites uniquely covered.
 """
@@ -66,7 +66,7 @@ _GRP = DatasetMetric(name="grp", expression="status")
 
 
 class TestPositiveResolutionThroughBinder:
-    """Every eligible operand position expands the bare measure — behaviour the
+    """Every eligible operand position expands the bare metric — behaviour the
     deleted pass's matrix covered, now through the binder."""
 
     async def test_root_measure_equals_inline(self) -> None:
@@ -104,8 +104,8 @@ class TestPositiveResolutionThroughBinder:
 
 
 class TestAggregationScopeNotExpanded:
-    """A saved-measure name inside an aggregation's source / arg / kwarg is
-    column-level by contract and is NOT expanded — the binder rejects it."""
+    """A saved-metric name inside an aggregation's source / arg / kwarg is
+    field-level by contract and is NOT expanded — the binder rejects it."""
 
     async def test_agg_source_not_expanded(self) -> None:
         model = _dataset([_REV])
@@ -164,10 +164,10 @@ class TestCycleAndDepthThroughBinder:
 
 
 class TestTransformArgEligibilityDropped:
-    """D2 — a transform's ``partition_by`` (and scalar args) DROP measure
+    """D2 — a transform's ``partition_by`` (and scalar args) DROP metric
     eligibility. This is a deliberate change from the deleted pass, which
     expanded transform kwargs. With ``status`` a real query dimension, the ONLY
-    variable is whether ``grp`` (a measure whose formula is the bare dimension
+    variable is whether ``grp`` (a metric whose expression is the bare dimension
     ``status``) expands: under D2 ``grp`` is not expanded in a transform's
     ``partition_by`` and the reference is rejected (the deleted pass substituted
     ``status`` and the query succeeded)."""
@@ -182,8 +182,8 @@ class TestTransformArgEligibilityDropped:
 
 
 class TestStageSchemaScope:
-    """A dotted saved-measure reference is illegal in a downstream ``StageSchema``
-    scope — the measure feature never leaks into stage scopes (task 1.5)."""
+    """A dotted saved-metric reference is illegal in a downstream ``StageSchema``
+    scope — the metric feature never leaks into stage scopes (task 1.5)."""
 
     def test_dotted_ref_in_stage_schema_is_rejected(self) -> None:
         stage = StageSchema(

@@ -146,7 +146,7 @@ def _cases() -> dict:
             dimensions=["cust_region"],
             metrics=[{"metric": "last(cust_region)", "alias": "l"}],
         ),
-        # --- cross-model: the second ranked-subquery instance ---
+        # --- cross-dataset: the second ranked-subquery instance ---
         "cross_model/target_default_time": _q(
             metrics=[{"metric": "last(customers.spend)", "alias": "l"}],
         ),
@@ -198,7 +198,7 @@ def _cases() -> dict:
             time_dimensions=_MONTH,
             metrics=[{"metric": "cumsum(last(amount))", "alias": "c"}],
         ),
-        # --- filters and ordering that TARGET the ranked measure ---
+        # --- filters and ordering that TARGET the ranked metric ---
         "route/having_on_ranked": _q(
             dimensions=["status"], metrics=last,
             filter=[f"last(amount) > {BIG_AMOUNT_THRESHOLD}"],

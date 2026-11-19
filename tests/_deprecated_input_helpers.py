@@ -86,7 +86,7 @@ def saved_stage() -> SlayerQuery:
 
 @asynccontextmanager
 async def orders_engine() -> AsyncGenerator[SlayerQueryEngine]:
-    """The dev1840 engine plus a saved query-backed model ``by_status``."""
+    """The dev1840 engine plus a saved query-backed dataset ``by_status``."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "data.sqlite")
         _seed_sqlite(db_path)

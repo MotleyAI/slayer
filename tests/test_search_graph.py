@@ -48,7 +48,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 @pytest_asyncio.fixture
 async def rich_storage() -> AsyncIterator[YAMLStorage]:
-    """2 datasources, 3 models (joins, measures, custom aggregations), 4
+    """2 datasources, 3 datasets (relationships, metrics, custom aggregations), 4
     memories — including one memory→memory cross-reference."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
@@ -130,7 +130,7 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
             )
         )
 
-        # 4 memories: 2 tagged on shop columns, 1 on analytics model,
+        # 4 memories: 2 tagged on shop fields, 1 on analytics dataset,
         # 1 with a memory→memory cross-reference.
         mem1 = await storage.save_memory(
             learning="Orders with status=cancelled must be excluded from revenue.",
@@ -155,7 +155,7 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
 
 @pytest_asyncio.fixture
 async def shop_only_storage() -> AsyncIterator[YAMLStorage]:
-    """Minimal shop datasource with one model — used for fingerprint/cache tests."""
+    """Minimal shop datasource with one dataset — used for fingerprint/cache tests."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(
@@ -385,7 +385,7 @@ async def test_model_description_property(rich_storage: YAMLStorage) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1549 round 6: Memory.description and Datasource.description
+# Memory.description and Datasource.description
 # expose the new fields on the graph so cypher_filter can match them.
 # ---------------------------------------------------------------------------
 
@@ -448,13 +448,13 @@ async def test_datasource_description_property(
 async def test_aggregation_description_property(
     rich_storage: YAMLStorage,
 ) -> None:
-    """DEV-1549 (round-7 codex): Aggregation nodes carry their
+    """Aggregation nodes carry their
     ``description`` so cypher_filter can match on aggregation
-    descriptions in parity with model/column/measure."""
+    descriptions in parity with dataset/field/metric."""
     # The rich_storage fixture seeds shop.orders with a custom
     # aggregation ``weighted_avg`` that has no description; create a
-    # second, described aggregation on the same model to exercise the
-    # description column.
+    # second, described aggregation on the same dataset to exercise the
+    # description property.
     orders = await rich_storage.get_dataset("orders", data_source="shop")
     assert orders is not None
     orders.aggregations.append(Aggregation(
@@ -523,7 +523,7 @@ async def test_mentions_memory_to_datasource(rich_storage: YAMLStorage) -> None:
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 @pytest.mark.asyncio
 async def test_mentions_memory_to_measure(rich_storage: YAMLStorage) -> None:
-    """MENTIONS to a Measure node (memory entity tag at measure level)."""
+    """MENTIONS to a Metric node (memory entity tag at metric level)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(
@@ -634,7 +634,7 @@ async def test_contains_multi_hop_datasource_to_column(
 
 
 # ---------------------------------------------------------------------------
-# JOINS edges (requires ladybug)
+# RELATIONSHIPS edges (requires ladybug)
 # ---------------------------------------------------------------------------
 
 
@@ -660,8 +660,8 @@ async def test_multi_label_union_column_and_measure(rich_storage: YAMLStorage) -
     ids = await get_filtered_ids(
         "MATCH (n:DatasetField:Metric) RETURN n.id AS id", rich_storage
     )
-    assert "shop.orders.amount" in ids          # Column
-    assert "shop.orders.total_revenue" in ids   # Measure
+    assert "shop.orders.amount" in ids          # DatasetField
+    assert "shop.orders.total_revenue" in ids   # Metric
 
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
@@ -672,9 +672,9 @@ async def test_multi_label_all_data_model_entities(rich_storage: YAMLStorage) ->
         rich_storage,
     )
     assert "shop" in ids                        # Datasource
-    assert "shop.orders" in ids                 # Model
-    assert "shop.orders.amount" in ids          # Column
-    assert "shop.orders.total_revenue" in ids   # Measure
+    assert "shop.orders" in ids                 # Dataset
+    assert "shop.orders.amount" in ids          # DatasetField
+    assert "shop.orders.total_revenue" in ids   # Metric
     assert "shop.orders.weighted_avg" in ids    # Aggregation
     assert not any(id_.startswith("memory:") for id_ in ids)
 
@@ -875,7 +875,7 @@ def test_validate_cypher_accepts_match_return() -> None:
 
 
 def test_validate_cypher_accepts_leading_whitespace_and_case_variants() -> None:
-    """The MATCH-prefix allowlist (DEV-1464) is case-insensitive and
+    """The MATCH-prefix allowlist is case-insensitive and
     tolerates leading whitespace."""
 
     _validate_cypher("  MATCH (m:Memory) RETURN m.id AS id")
@@ -903,7 +903,7 @@ def test_validate_cypher_accepts_leading_whitespace_and_case_variants() -> None:
         "MATCH (m:Memory) RETURN m.id",
         # Multiple statements
         "MATCH (m:Memory) RETURN m.id AS id; MATCH (n) RETURN n.id AS id",
-        # DEV-1464 / Codex round-2 finding: the validator was an
+        # Codex round-2 finding: the validator was an
         # under-constrained denylist. Non-mutating but still-dangerous
         # Kuzu clauses (LOAD FROM file, UNWIND scan, IMPORT/EXPORT,
         # INSTALL/LOAD extension) used to pass the mutation-keyword
@@ -953,7 +953,7 @@ async def test_cypher_path_traversal_memories_of_model(
         "RETURN m.id AS id",
         rich_storage,
     )
-    # Only mem1 mentions shop.orders.* columns
+    # Only mem1 mentions shop.orders.* fields
     assert len(ids) == 1
 
 
@@ -1118,7 +1118,7 @@ async def test_ladybug_not_installed_without_filter_no_warning(
 async def test_candidate_ids_narrow_memory_corpus_seen_by_retrievers(
     rich_storage: YAMLStorage,
 ) -> None:
-    """Under the DEV-1514 retriever-orchestrator model, candidate_ids
+    """Under the retriever-orchestrator model, candidate_ids
     is not threaded into each retriever's ``retrieve`` call. Instead,
     the orchestrator pre-filters ``all_memories`` against the allowlist
     BEFORE fan-out so each retriever sees only the surviving memory
@@ -1207,7 +1207,7 @@ async def test_cypher_filter_and_datasource_are_intersected(
     rich_storage: YAMLStorage,
 ) -> None:
     service = SearchService(storage=rich_storage)
-    # Cypher returns memories mentioning shop columns; datasource='analytics'
+    # Cypher returns memories mentioning shop fields; datasource='analytics'
     # scopes the corpus → intersection is empty
     response = await service.search(
         entities=["shop.orders.amount"],
@@ -1288,7 +1288,7 @@ def test_validate_cypher_still_rejects_bare_mutation_keyword() -> None:
     embedded-mutation case (query starts with MATCH but smuggles a SET
     after) is the one that exercises the keyword denylist directly; the
     bare-CALL case is now caught one layer earlier by the
-    must-start-with-MATCH allowlist (DEV-1464 round 2)."""
+    must-start-with-MATCH allowlist."""
 
     with pytest.raises(ValueError, match="mutation keyword"):
         _validate_cypher("MATCH (m:Memory) SET m.x = 1 RETURN m.id AS id")

@@ -2,7 +2,7 @@
 
 The federation tests run a second Trino with live Postgres and MySQL catalogs.
 
-The ``memory`` connector has no primary or foreign keys, so joins are hand-declared.
+The ``memory`` connector has no primary or foreign keys, so relationships are hand-declared.
 Skipped when ``testcontainers[trino]`` or the Trino driver is missing, or Docker is unreachable.
 """
 
@@ -607,7 +607,7 @@ class TestTrinoStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# Cross-model + multistage (hand-declared joins)
+# Cross-dataset + multistage (hand-declared relationships)
 # ---------------------------------------------------------------------------
 
 _CROSS_ORDERS = [
@@ -850,7 +850,7 @@ async def test_cross_model_derived_columnsql(trino_derived_chain_env: SlayerQuer
 
 
 # ---------------------------------------------------------------------------
-# log10 / log2, windowed-column filter
+# log10 / log2, windowed-field filter
 # ---------------------------------------------------------------------------
 
 
@@ -1334,7 +1334,7 @@ class TestTrinoPortableLibrary:
 
 
 # ---------------------------------------------------------------------------
-# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# List fields (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
 # ---------------------------------------------------------------------------
 
 

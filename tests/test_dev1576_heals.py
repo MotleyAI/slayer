@@ -1,8 +1,8 @@
-"""DEV-1576 — parse-level coverage for the three SlayerQuery heals.
+"""Parse-level coverage for the three SlayerQuery heals.
 
 1. Aggregation-name alias / casing normalization (``normalize_aggregation_name``;
    healing happens at binding).
-2. ``round()`` / ``abs()`` as top-level formula functions (scalar calls over
+2. ``round()`` / ``abs()`` as top-level expression functions (scalar calls over
    aggregations; arity validated at binding).
 
 The §3 error-message split and end-to-end execution live in
@@ -160,7 +160,7 @@ class TestAggregationAliasHealing:
 
 
 # ---------------------------------------------------------------------------
-# §2 — round() / abs() as top-level formula functions
+# §2 — round() / abs() as top-level expression functions
 # ---------------------------------------------------------------------------
 
 

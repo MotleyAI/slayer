@@ -1,6 +1,6 @@
-"""DEV-1777 sub-item 1: ``_emit_step_cte`` is the one shell shared by the four
+"""``_emit_step_cte`` is the one shell shared by the four
 transform-chain step-CTE sites (window / unmaterialised-POST, in the host and
-cross-model chains). These pin the shell directly and deterministically:
+cross-dataset chains). These pin the shell directly and deterministically:
 
 * the multi-slot-in-one-batch body, pinned in caller-supplied slot order;
 * a step's own aliases publish after its SELECT, so siblings never read each other;
@@ -125,7 +125,7 @@ def test_step_aliases_publish_after_its_select() -> None:
 
 
 def test_multi_alias_slot_emits_one_column_per_public_alias() -> None:
-    # DEV-1798 (C13): a slot projected under two names surfaces both, rendered
+    # A slot projected under two names surfaces both, rendered
     # once and emitted per name; the FIRST name stays the canonical handle.
     gen = _gen()
     ctes = _base_ctes()
@@ -208,7 +208,7 @@ def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
     # The detection loop feeding block C (F1) and block D (F2): DERIVED
     # Arithmetic and ScalarCall slots needing a column are detected; TransformKey
     # (materialised by a layer), an already-materialised slot, a mask-only slot
-    # (needs_field=False), and a plain ColumnKey are skipped.
+    # (needs_field=False), and a plain FieldKey are skipped.
     arith = _post_slot("arith", ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(1)),)), needs_field=True)
     scalar = _post_slot("scalar", ScalarCallKey(name="abs", args=(FieldKey(leaf="x"),)), needs_field=True)
     transform = _post_slot("xf", TransformKey(op="cumsum", input=FieldKey(leaf="x")))

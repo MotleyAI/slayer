@@ -1,7 +1,7 @@
-"""Live Postgres values for dotted join paths.
+"""Live Postgres values for dotted relationship paths.
 
-* a ``__``-named model joined and grouped returns the right per-label sums;
-* two deep long-name join paths whose naive ``__`` aliases collide after
+* a ``__``-named dataset joined and grouped returns the right per-label sums;
+* two deep long-name relationship paths whose naive ``__`` aliases collide after
   Postgres's 63-byte truncation still resolve to their OWN relations.
 """
 
@@ -57,7 +57,7 @@ def _storage_for(proc, db_name, tmpdir, datasets) -> YAMLStorage:
 
 
 # --------------------------------------------------------------------------- #
-# A __-named model joined and grouped returns correct per-label sums.
+# A __-named dataset joined and grouped returns correct per-label sums.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def _dunder_storage(postgresql_proc, tmp_path_factory):

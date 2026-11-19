@@ -1,8 +1,8 @@
 """{variable} substitution in Mode-A (raw-SQL) surfaces.
 
-Scope is the DIRECT source model only: SlayerModel.sql, SlayerModel.filters,
-Column.sql, Column.filter. Nested source_queries stages, query-backed direct
-sources, join targets and cross-model targets are out of scope (boundary pins below).
+Scope is the DIRECT source dataset only: SlayerDataset.sql, SlayerDataset.filters,
+DatasetField.sql, DatasetField.filter. Nested source_queries stages, query-backed direct
+sources, relationship targets and cross-dataset targets are out of scope (boundary pins below).
 
 All end-to-end cases run against a real file-backed SQLite datasource and
 assert on RESULT DATA, not just generated SQL strings.
@@ -70,7 +70,7 @@ def _seed_orders_db_at(db_path) -> None:
 
 
 async def _engine_with(*models: SlayerDataset) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
-    """Build a real SQLite datasource + YAML storage with the given models
+    """Build a real SQLite datasource + YAML storage with the given datasets
     saved. Returns (engine, tmpdir_handle); caller keeps the tmpdir alive.
     """
     tmp = tempfile.TemporaryDirectory()
@@ -138,7 +138,7 @@ class TestModelFiltersSubstitution:
 
 
 # ---------------------------------------------------------------------------
-# 2. Column.sql with {var}
+# 2. DatasetField.sql with {var}
 # ---------------------------------------------------------------------------
 
 class TestColumnSqlSubstitution:
@@ -182,7 +182,7 @@ class TestColumnSqlSubstitution:
 
 
 # ---------------------------------------------------------------------------
-# 3. Column.filter with {var} (CASE-WHEN at aggregation time)
+# 3. DatasetField.filter with {var} (CASE-WHEN at aggregation time)
 # ---------------------------------------------------------------------------
 
 class TestColumnFilterSubstitution:
@@ -269,7 +269,7 @@ class TestModelSqlSubstitution:
 
 
 # ---------------------------------------------------------------------------
-# 5. Precedence: runtime kwarg > outer/stage query.variables > model defaults
+# 5. Precedence: runtime kwarg > outer/stage query.variables > dataset defaults
 # ---------------------------------------------------------------------------
 
 class TestPrecedence:
@@ -523,7 +523,7 @@ class TestEscaping:
 
 class TestBraceLiterals:
     async def test_no_variable_model_brace_literal_untouched(self) -> None:
-        """A model that uses NO variables must be left untouched, so a raw
+        """A dataset that uses NO variables must be left untouched, so a raw
         brace literal (Postgres-array-style) survives to the DB verbatim."""
         model = SlayerDataset(
             name="orders",
@@ -546,7 +546,7 @@ class TestBraceLiterals:
         self,
     ) -> None:
         """Empty-map contract: raise-on-missing applies only once a
-        variable is in play. A model with an {identifier}-shaped placeholder in
+        variable is in play. A dataset with an {identifier}-shaped placeholder in
         a string literal but NO variables anywhere (no query_variables, no
         caller vars) treats it as a literal — it is NOT substituted and does NOT
         raise 'Undefined variable'. `status = '{status}'` matches no seeded row,
@@ -604,13 +604,13 @@ class TestBraceLiterals:
 
 
 # ---------------------------------------------------------------------------
-# 9. Cross-model consistency: direct-source model.filters {var} substituted in
+# 9. Cross-dataset consistency: direct-source dataset.filters {var} substituted in
 #    BOTH the main and the re-rooted CTE.
 # ---------------------------------------------------------------------------
 
 class TestCrossModelConsistency:
     def _datasets(self) -> list[SlayerDataset]:
-        # No declared reverse join: the orders → customers edge traverses both ways.
+        # No declared reverse relationship: the orders → customers edge traverses both ways.
         customers = SlayerDataset(
             name="customers",
             sql_table="customers",
@@ -680,7 +680,7 @@ class TestCrossModelConsistency:
             tmp.cleanup()
 
     async def test_source_model_filter_var_applies_to_reroot_reachable(self) -> None:
-        # The host's model filter restricts the customers-rooted count exactly as the same query filter does.
+        # The host's dataset filter restricts the customers-rooted count exactly as the same query filter does.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -693,7 +693,7 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            # The host's model filter restricts the customers-rooted count.
+            # The host's dataset filter restricts the customers-rooted count.
             assert _sum(resp, "orders.customers.id_count") == 2
             # The substituted predicate is emitted where the filter DOES apply,
             # and no placeholder token survives anywhere.
@@ -709,7 +709,7 @@ class TestCrossModelConsistency:
 
 class TestDeferredScope:
     async def test_join_target_var_not_substituted(self) -> None:
-        """A {var} in a JOIN-TARGET model's Column.sql is NOT substituted:
+        """A {var} in a RELATIONSHIP-TARGET dataset's DatasetField.sql is NOT substituted:
         the enclosing query's variable does
         not reach it, so the stray {var} surfaces an error rather than being
         silently filled. Stable boundary pin (holds before AND after)."""
@@ -720,7 +720,7 @@ class TestDeferredScope:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                # join-target Column.sql var — not substituted → unsupported
+                # relationship-target DatasetField.sql var — not substituted → unsupported
                 DatasetField(name="scaled", sql="id * {mult}", datatype=DataType.FLOAT),
             ],
         )
@@ -763,7 +763,7 @@ class TestDeferredScope:
             # The failure must be about the stray, unsubstituted {mult}: it is
             # emitted as a bare `mult` column ref, so the DB errors with
             # "no such column: customers.mult" (a DB error, NOT a substitution
-            # ValueError — precisely because the join-target var was not
+            # ValueError — precisely because the relationship-target var was not
             # substituted). The \bmult\b word boundary keeps an unrelated error
             # mentioning "multiple"/"multi-stage" from satisfying the pin.
             with pytest.raises(Exception, match=r"\bmult\b"):
@@ -808,7 +808,7 @@ class TestInspectShowsTemplate:
 # ---------------------------------------------------------------------------
 
 def _bind(*, template: str, variables: dict, dialect=None) -> str:
-    """``template`` as a model filter, bound by the engine entry; returns the bound filter."""
+    """``template`` as a dataset filter, bound by the engine entry; returns the bound filter."""
     model = SlayerDataset(name="m", sql_table="t", data_source="ds", filters=[template])
     out = _substitute_dataset_sql_surfaces(
         dataset=model, variables=variables, dialect=dialect or SqliteDialect()
@@ -926,13 +926,13 @@ class TestSubstituteHelperScope:
                     filter="r = '{region}'",
                     datatype=DataType.FLOAT,
                 ),
-                # Hidden column is still a Mode-A surface — it IS substituted
-                # (the helper iterates all columns, visible or not).
+                # Hidden field is still a Mode-A surface — it IS substituted
+                # (the helper iterates all fields, visible or not).
                 DatasetField(
                     name="hid", sql="amount * {mult}", datatype=DataType.FLOAT, hidden=True
                 ),
             ],
-            # Saved measure formula: substituted under the Mode-B regime.
+            # Saved metric expression: substituted under the Mode-B regime.
             metrics=[DatasetMetric(name="rev", expression="sum(amount) + {mult}")],
             # Aggregation.expression uses its OWN {expr}/{param} fill mechanism —
             # a query-variable pass must never touch it.
@@ -942,17 +942,17 @@ class TestSubstituteHelperScope:
             dataset=model, variables={"region": "US", "floor": 5, "mult": 2},
             dialect=SqliteDialect(),
         )
-        # The four Mode-A surfaces are substituted (hidden column included):
+        # The four Mode-A surfaces are substituted (hidden field included):
         assert _literals(out.sql) == ["US"]
         assert len(out.filters) == 1
         assert _literals(out.filters[0]) == [5]
         assert _literals(_col(out, "scaled").sql) == [2]
         assert _literals(_col(out, "flt").filter) == ["US"]
         assert _literals(_col(out, "hid").sql) == [2]
-        # Saved measure formulas substitute (Mode-B regime); Aggregation.expression never does:
+        # Saved metric expressions substitute (Mode-B regime); Aggregation.expression never does:
         assert _literals(out.metrics[0].expression) == [2]
         assert out.aggregations[0].expression == "SUM({expr}) * {mult}"
-        # Input model is NOT mutated — every Mode-A surface stays templated:
+        # Input dataset is NOT mutated — every Mode-A surface stays templated:
         assert model.sql == "SELECT * FROM t WHERE r = '{region}'"
         assert model.filters == ["a >= {floor}"]
         assert model.get_field("scaled").sql == "amount * {mult}"
@@ -1047,14 +1047,14 @@ class TestQueryFilterRegression:
 
 
 # ---------------------------------------------------------------------------
-# 14. Cached-model immutability across repeated executes with different values
+# 14. Cached-dataset immutability across repeated executes with different values
 # ---------------------------------------------------------------------------
 
 class TestModelImmutabilityAcrossExecutes:
     async def test_same_model_two_values_distinct_results(self) -> None:
-        """Executing the same stored model twice with different variable values
+        """Executing the same stored dataset twice with different variable values
         yields different results (proving per-call substitution) AND the stored
-        model still holds the literal {var} template afterwards (no mutation of
+        dataset still holds the literal {var} template afterwards (no mutation of
         the shared cached object)."""
         model = SlayerDataset(
             name="orders",
@@ -1095,7 +1095,7 @@ class TestModelImmutabilityAcrossExecutes:
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
                 await engine.execute(missing_var_q)
-            # The stored model is untouched — reloading shows the template.
+            # The stored dataset is untouched — reloading shows the template.
             reloaded = await engine.storage.get_dataset("orders")
             assert reloaded is not None
             assert reloaded.filters == ["region = '{region}'"]
@@ -1104,7 +1104,7 @@ class TestModelImmutabilityAcrossExecutes:
 
 
 # ---------------------------------------------------------------------------
-# 15. Missing-variable raises on each Mode-A surface (not just model.filters)
+# 15. Missing-variable raises on each Mode-A surface (not just dataset.filters)
 # ---------------------------------------------------------------------------
 
 class TestMissingVariablePerSurface:
@@ -1161,7 +1161,7 @@ class TestMissingVariablePerSurface:
 
 class TestGetResultColumnTypesDefaults:
     async def test_complete_defaults_probe_succeeds(self) -> None:
-        """A Mode-A {var} column with a complete model default resolves at the
+        """A Mode-A {var} field with a complete dataset default resolves at the
         type-probe path (get_result_column_types), returning real types instead of the
         {} degradation."""
         model = SlayerDataset(
@@ -1416,7 +1416,7 @@ class TestListModeAEndToEnd:
                 "variables": {"regions": ["US"]},
             })
             resp = await engine.execute(q)
-            # Query-level ['US'] wins over model default ['EU','CA'] → 160.
+            # Query-level ['US'] wins over dataset default ['EU','CA'] → 160.
             assert _sum(resp, "orders.amount_sum") == 160.0
         finally:
             tmp.cleanup()
@@ -1697,7 +1697,7 @@ class TestSubstituteModelSqlSurfacesDialect:
 
     def test_dialect_is_required(self) -> None:
 
-        # Build the model outside the raises-block so only the call under test
+        # Build the dataset outside the raises-block so only the call under test
         # (missing the required `dialect`) can raise (Sonar S5778).
         model = self._dataset()
         with pytest.raises(TypeError):
@@ -1724,8 +1724,8 @@ class TestEngineDialectThreadingEndToEnd:
     raise on ``'a\\''b'`` and the dry_run would fail outright."""
 
     async def _dry_run_sql_for(self, ds_type: str, value: str) -> str:
-        """Build a one-model engine on a datasource of ``ds_type`` and return
-        the generated SQL for a Mode-A model filter carrying ``value``. Uses a
+        """Build a one-dataset engine on a datasource of ``ds_type`` and return
+        the generated SQL for a Mode-A dataset filter carrying ``value``. Uses a
         SQLite file as the actual backend but pins the datasource *type* so the
         dialect (hence escaping regime) is exercised; dry_run skips execution."""
         tmp = tempfile.TemporaryDirectory()
@@ -1777,7 +1777,7 @@ class TestEngineDialectThreadingEndToEnd:
 
 class TestProbeModelDialectThreading:
     """``_render_probe_model`` threads the dialect into the Mode-A surfaces it
-    renders from the model's own defaults."""
+    renders from the dataset's own defaults."""
 
     def _template_dataset(self) -> SlayerDataset:
         return SlayerDataset(
@@ -1801,7 +1801,7 @@ class TestProbeModelDialectThreading:
 
     def test_probe_dialect_required(self) -> None:
 
-        # Build the model outside the raises-block so only the call under test
+        # Build the dataset outside the raises-block so only the call under test
         # (missing the required `dialect`) can raise (Sonar S5778).
         model = self._template_dataset()
         with pytest.raises(TypeError):

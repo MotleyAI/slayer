@@ -1,7 +1,7 @@
-"""DEV-1840 task 1.1 — the fixture graph is healthy on today's engine.
+"""The fixture graph is healthy on today's engine.
 
-Pins only shapes whose behavior DEV-1840 does not change: unfiltered
-cross-model aggregates, a provably-safe inline filter, and the planner entry
+Pins only shapes whose behavior the implementation does not change: unfiltered
+cross-dataset aggregates, a provably-safe inline filter, and the planner entry
 point. Everything here must pass before AND after the implementation.
 """
 
@@ -70,7 +70,7 @@ class TestGraphExecutes:
 
     async def test_ambiguity_graph_executes(self, exec_backend_amb):
         """The healthy leg (tickets→reviews) executes; the ambiguous pair
-        fails closed. DEV-1853 divergences.md class (d)."""
+        fails closed (divergences.md class (d))."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
             tq(metrics=[QueryMetric(metric="sum(reviews.stars)", alias="rv")]),

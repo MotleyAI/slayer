@@ -1,4 +1,4 @@
-"""Tests for dbt entity registry and join resolution."""
+"""Tests for dbt entity registry and relationship resolution."""
 
 
 from slayer.dbt.entities import EntityRegistry
@@ -79,7 +79,7 @@ class TestJoinResolution:
         assert joins[0].column_pairs == [("customer_id", "id")]
 
     def test_no_self_joins(self) -> None:
-        """A model's own primary entity should not generate a join to itself."""
+        """A model's own primary entity should not generate a relationship to itself."""
         orders = _make_dataset("orders", [
             DbtEntity(name="order_id", type="primary", expr="id"),
             DbtEntity(name="order_id", type="foreign", expr="order_id"),
@@ -92,7 +92,7 @@ class TestJoinResolution:
 
     def test_truly_duplicate_signature_deduped(self) -> None:
         """Two foreign entities with identical (target, fk_expr, pk_expr) signature
-        produce one join — protects against truly redundant YAML entries."""
+        produce one relationship — protects against truly redundant YAML entries."""
         orders = _make_dataset("orders", [
             DbtEntity(name="customer_id", type="foreign", expr="cust_id"),
             DbtEntity(name="customer_id", type="foreign", expr="cust_id"),
@@ -109,7 +109,7 @@ class TestJoinResolution:
     def test_distinct_fks_to_same_target_kept_separate(self) -> None:
         """Regression for CodeRabbit #4 — distinct FK columns pointing at the same
         target model (e.g., buyer_id / seller_id both → users.id) must each get
-        their own ModelJoin so neither relationship silently disappears."""
+        their own DatasetRelationship so neither relationship silently disappears."""
         transactions = _make_dataset("transactions", [
             DbtEntity(name="transaction_id", type="primary", expr="id"),
             DbtEntity(name="user_id", type="foreign", expr="buyer_id"),
@@ -123,7 +123,7 @@ class TestJoinResolution:
 
         joins = reg.resolve_relationships_for_model(transactions)
         assert len(joins) == 2
-        # Both joins point at users but via different FK columns
+        # Both relationships point at users but via different FK columns
         assert all(j.to == "users" for j in joins)
         fk_columns = sorted(j.column_pairs[0][0] for j in joins)
         assert fk_columns == ["buyer_id", "seller_id"]
@@ -163,7 +163,7 @@ class TestJoinResolution:
 
     def test_peer_joins_two_entities_same_peer_different_columns(self) -> None:
         """Two shared primary entities mapping to the same peer via different columns
-        must both produce peer joins, not collapse to one."""
+        must both produce peer relationships, not collapse to one."""
         # model_a has two primary entities that both map to model_b
         model_a = _make_dataset("model_a", [
             DbtEntity(name="entity_x", type="primary", expr="col_x"),
@@ -177,13 +177,13 @@ class TestJoinResolution:
         reg.build([model_a, model_b])
 
         joins = reg.resolve_relationships_for_model(model_a)
-        # Both peer joins should survive (different columns)
-        assert len(joins) == 2, f"Expected 2 peer joins, got {len(joins)}: {[(j.to, j.column_pairs) for j in joins]}"
+        # Both peer relationships should survive (different columns)
+        assert len(joins) == 2, f"Expected 2 peer relationships, got {len(joins)}: {[(j.to, j.column_pairs) for j in joins]}"
         pairs = sorted([j.column_pairs[0] for j in joins])
         assert pairs == [("col_x", "bx"), ("col_y", "by")]
 
     def test_peer_join_declared_once_per_pair(self) -> None:
-        """DEV-1853: only the lexicographically smaller model declares the peer
+        """Only the lexicographically smaller model declares the peer
         edge — the exact-inverse twin would be rejected at save time."""
         model_a = _make_dataset("model_a", [
             DbtEntity(name="entity_x", type="primary", expr="col_x"),

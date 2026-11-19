@@ -1,6 +1,6 @@
-"""DEV-1901 — Axiom 2.7: ``w=<col>`` and ``w=<fragment over col>`` get one verdict.
+"""Axiom 2.7: ``w=<col>`` and ``w=<fragment over col>`` get one verdict.
 
-Home, input safety, dependency closure, join registration and the cross-model
+Home, input safety, dependency closure, join registration and the cross-dataset
 kwarg gate read a parameter's row leaves, never its spelling.
 """
 
@@ -90,7 +90,7 @@ def test_the_fanning_leaf_is_unsafe_in_both_spellings() -> None:
 
 
 def test_cross_model_kwarg_gate() -> None:
-    """A kwarg on another branch than a cross-model source is refused in both spellings."""
+    """A kwarg on another branch than a cross-dataset source is refused in both spellings."""
     customers = next(m for m in dev1901_datasets() if m.name == "customers")
     stores_rent = FieldKey(path=("stores",), leaf="rent")
     gen = SQLGenerator(dialect="postgres")

@@ -1,5 +1,5 @@
-"""The derived-column error vocabulary carries no ``sql``/``filter`` kind and one
-declaring-model field, so the storage and engine save doors cannot disagree."""
+"""The derived-field error vocabulary carries no ``sql``/``filter`` kind and one
+declaring-dataset field, so the storage and engine save doors cannot disagree."""
 
 from __future__ import annotations
 

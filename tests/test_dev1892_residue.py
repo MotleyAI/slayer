@@ -1,7 +1,7 @@
-"""DEV-1892 task 1.2 — the ill-typed residue: a parameter the home dataset's
+"""The ill-typed residue: a parameter the home dataset's
 grain does not determine fails at plan time with one ref-free typed error naming
 the parameter, the grain, and the remedy; the REST surface maps the residue to
-400. ``TestAttachedParameterOnRowLevelSource`` was re-pointed by DEV-1859 leg C
+400. ``TestAttachedParameterOnRowLevelSource`` was re-pointed by leg C
 (consented 2026-09-15): that shape is now legal.
 
 Spec: queries/semantics — "Parameter not determined by the grain fails closed";
@@ -73,7 +73,7 @@ class TestOperandGrainResidue:
             metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
-        # wavg's weight defaults to the ``amount`` column — undetermined at the
+        # wavg's weight defaults to the ``amount`` field — undetermined at the
         # [city, region] grain.
         assert_grain_residue(ei.value, param="weight")
 
@@ -144,7 +144,7 @@ class TestRestSurfaceResidue:
             yield engine.storage
 
     async def test_residue_maps_to_400(self, sales_storage):
-        """A re-aggregation column-parameter residue is a client error (400)."""
+        """A re-aggregation field-parameter residue is a client error (400)."""
         client = TestClient(create_app(storage=sales_storage))
         body = {"population": "sales", "dimensions": ["region"],
                 "metrics": [{"metric": f"wavg({INNER_CR}, weight=id)", "alias": "w"}]}

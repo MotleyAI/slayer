@@ -1,9 +1,7 @@
-"""Unit tests for the synchronous derived-column expander
-(``expand_derived_refs_sync``) used by the DEV-1450 planned-query generator.
-
-(DEV-1485 deleted the async ``expand_derived_refs`` twin along with the legacy
-enrichment path it served, so this is now the only expander.) These tests pin its
-behavior directly against an in-memory ``name -> SlayerModel`` resolver,
+"""Unit tests for the synchronous derived-field expander
+(``expand_derived_refs_sync``) used by the planned-query generator — the only
+expander. These tests pin its
+behavior directly against an in-memory ``name -> SlayerDataset`` resolver,
 mirroring how the generator drives it via ``bundle.get_referenced_model``.
 """
 
@@ -32,7 +30,7 @@ def _dataset_a() -> SlayerDataset:
             # Local derived chain: c2 references sibling derived c1.
             DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
             DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.FLOAT),
-            # Cross-model derived ref into B's derived column.
+            # Cross-dataset derived ref into B's derived field.
             DatasetField(name="ratio", sql="A.bar / B.foo_normalized", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
@@ -113,7 +111,7 @@ def test_cycle_raises_column_cycle_error() -> None:
 
 
 def test_unknown_alias_left_untouched() -> None:
-    """A ``<alias>.<col>`` whose alias is not a join target is left alone
+    """A ``<alias>.<col>`` whose alias is not a relationship target is left alone
     (likely a CTE / subquery alias the user wired up)."""
     a = _dataset_a()
     out = expand_derived_refs_sync(
@@ -126,9 +124,9 @@ def test_unknown_alias_left_untouched() -> None:
 
 
 def test_dev1752_subquery_inner_ref_not_qualified() -> None:
-    """DEV-1752: qualification is gated on root scope. The OUTER ``bar``
+    """Qualification is gated on root scope. The OUTER ``bar``
     qualifies to the host alias; the inner ``bar`` (a column of the subquery's
-    own FROM) is left bare even though ``bar`` is also a model column."""
+    own FROM) is left bare even though ``bar`` is also a dataset field."""
     a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT bar FROM other_tbl)", dataset=a, alias_path="A",
@@ -138,10 +136,10 @@ def test_dev1752_subquery_inner_ref_not_qualified() -> None:
 
 
 def test_dev1752_root_inlines_while_subquery_local_untouched() -> None:
-    """DEV-1752 over-gating guard (non-differential): the root ``c1`` still
+    """Over-gating guard (non-differential): the root ``c1`` still
     inlines to its definition; the inner ``c1`` is untouched. Non-differential
     because the buggy qualification branch never fired for a DERIVED inner
-    column — only for trivial-base / non-model columns — so this guards against
+    field — only for trivial-base / non-dataset columns — so this guards against
     the fix over-gating root inlining, not the bug itself."""
     a = _dataset_a()
     out = expand_derived_refs_sync(
@@ -152,10 +150,10 @@ def test_dev1752_root_inlines_while_subquery_local_untouched() -> None:
 
 
 def test_dev1752_nonroot_explicit_ref_not_requalified() -> None:
-    """DEV-1752 (differential, alias != model name): an inner ref explicitly
-    qualified with the model name is left byte-for-byte untouched — it is NOT
+    """Differential (alias != dataset name): an inner ref explicitly
+    qualified with the dataset name is left byte-for-byte untouched — it is NOT
     rewritten to the host alias. Proves non-root columns are untouched, not just
-    coincidentally unchanged when alias == model name."""
+    coincidentally unchanged when alias == dataset name."""
     a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT A.bar FROM other_tbl)", dataset=a, alias_path="A_host",
@@ -166,8 +164,8 @@ def test_dev1752_nonroot_explicit_ref_not_requalified() -> None:
 
 
 def test_dev1752_set_operation_branches_leave_inner_bare() -> None:
-    """DEV-1752: both legs of a UNION are non-root scopes; their inner columns
-    stay bare even though ``bar`` is a model column."""
+    """Both legs of a UNION are non-root scopes; their inner columns
+    stay bare even though ``bar`` is a dataset field."""
     a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT bar FROM t1 UNION SELECT bar FROM t2)",
@@ -178,7 +176,7 @@ def test_dev1752_set_operation_branches_leave_inner_bare() -> None:
 
 
 def test_dev1752_cte_body_leaves_inner_bare() -> None:
-    """DEV-1752: a CTE (WITH) inside Mode-A is a non-root scope; refs in its
+    """A CTE (WITH) inside Mode-A is a non-root scope; refs in its
     body and its select stay bare."""
     a = _dataset_a()
     out = expand_derived_refs_sync(

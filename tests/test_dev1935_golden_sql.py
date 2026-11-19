@@ -1,4 +1,4 @@
-"""DEV-1935 golden SQL — the boolean-total pushdown shapes across the seven
+"""Golden SQL — the boolean-total pushdown shapes across the seven
 Tier-1 dialects. Each ``mixed_or``/``multi_branch`` shape restricts the population
 by one correlated EXISTS whose subquery holds the whole boolean predicate (the
 disjunction stays inside the EXISTS, never an operand of the outer OR); a
@@ -9,7 +9,7 @@ materialised branch to the outer query and quantifies only the rest.
 Today every ``mixed_or``/``multi_branch`` case fails closed or drops-and-warns, so
 the committed baseline records that; ``test_new_shapes_generate_sql`` is the RED
 tripwire that flips to real SQL once the lowering lands, re-blessed per the
-DEV-1742 ALLOWED_DELTAS protocol.
+ALLOWED_DELTAS protocol.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _cases() -> dict:
             "source": "customers",
             "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
                    "filter": [NOT_GOLD_AND_OK]}},
-        # is_null/* — a null-test on a related column reads as absence (spine).
+        # is_null/* — a null-test on a related field reads as absence (spine).
         "is_null/absence": {
             "source": "customers",
             "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],

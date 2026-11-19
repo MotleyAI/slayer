@@ -729,7 +729,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Inspect one entity by reference and kind, a batch when `reference` is a list, or a whole collection when `reference` is omitted. A point lookup: use `search` to find entities by meaning, with related memories.
 
-        Before using a field as a filter, projection, group-by or join key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a field by its name alone.
+        Before using a field as a filter, projection, group-by or relationship key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a field by its name alone.
 
         Collection: omit `reference` with entity_type "dataset" (every dataset, grouped by datasource) or "datasource".
         Batch: a list of same-kind references returns one block per id in input order (a JSON array in json); a bad id does not sink the batch.
@@ -996,8 +996,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description=(
                 'Relationships to upsert, {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], '
                 '"name", "cardinality": "many_to_one", "description", "meta"}, matched by name, else '
-                "target and key columns, else the sole relationship to the target; a second relationship to a target needs a name. "
-                "Keys name fields by name; a composite key lists several columns on each side, in pair order. "
+                "target and key fields, else the sole relationship to the target; a second relationship to a target needs a name. "
+                "Keys name fields by name; a composite key lists several fields on each side, in pair order. "
                 "cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read "
                 "source->target) is descriptive only; omit it when unknown."
             ),

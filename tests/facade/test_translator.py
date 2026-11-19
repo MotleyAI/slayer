@@ -704,7 +704,7 @@ def test_count_distinct_maps_to_count_distinct(dialect) -> None:
 
 
 def test_aggregate_over_joined_column_resolves_same_as_named_metric(dialect) -> None:
-    # A joined-column aggregate resolves to the same cross-model metric as the
+    # A joined-column aggregate resolves to the same cross-dataset metric as the
     # named projection; both fail identically, so the sugar is just an alias.
     agg_err = _raises_message("SELECT COUNT(customers.region) FROM orders", dialect)
     named_err = _raises_message("SELECT customers.region_count FROM orders", dialect)
@@ -803,7 +803,7 @@ def test_order_by_aggregate_expression_resolves(dialect) -> None:
 # --- MBQL aggregation-alias refs in WHERE/HAVING/ORDER BY --------------------
 #
 # Metabase names the projection alias directly; the translator must connect it
-# back to the aggregate's measure_formula (filters) or projected_name (ORDER BY),
+# back to the aggregate's metric_expression (filters) or projected_name (ORDER BY),
 # NOT the catalog-side FacadeMetric.name.
 
 
@@ -884,7 +884,7 @@ def test_where_on_aggregate_alias_gte_comparator_resolves(dialect) -> None:
 
 
 def test_where_on_aggregate_alias_count_distinct_resolves(dialect) -> None:
-    """Emission uses the catalog's pre-expanded ``measure_formula``."""
+    """Emission uses the catalog's pre-expanded ``metric_expression``."""
     result = translate(
         sql='SELECT status, COUNT(DISTINCT id) AS "uniq" FROM orders '
             'WHERE "uniq" > 1 GROUP BY status',
@@ -1469,7 +1469,7 @@ def test_postgres_double_colon_cast_works() -> None:
 
 
 def test_cast_joined_column_projection(dialect) -> None:
-    """CAST around a joined dotted column ref resolves via the cross-model dim path."""
+    """CAST around a joined dotted column ref resolves via the cross-dataset dim path."""
     result = translate(
         sql="SELECT CAST(customers.region AS TEXT) FROM orders",
         catalog=_catalog(), dialect=dialect,
@@ -1949,7 +1949,7 @@ def test_cast_alias_order_by_safe_pair_admitted(
             "SELECT CAST(id AS DOUBLE) AS x FROM orders ORDER BY x",
             "INT", "DOUBLE",
         ),
-        # Implicit grouping via an aggregating measure (no explicit GROUP BY).
+        # Implicit grouping via an aggregating metric (no explicit GROUP BY).
         (
             "SELECT CAST(ordered_at AS DATE), COUNT(*) FROM orders",
             "TIMESTAMP", "DATE",
@@ -2103,7 +2103,7 @@ def test_allow_column_cast_default_true_unchanged(dialect) -> None:
 # --- LEFT JOIN with subquery (Metabase MBQL shape) ---------------------------
 #
 # Metabase v0.62 emits joins as ``LEFT JOIN (SELECT ... FROM t) AS "Alias" ON ...``.
-# Tests pin positive (existing join, dynamic fallback) and negative shapes.
+# Tests pin positive (existing relationship, dynamic fallback) and negative shapes.
 
 
 def _join_catalog(
@@ -2113,7 +2113,7 @@ def _join_catalog(
     parent_join_type: JoinType = JoinType.LEFT,
     store_fk_hidden: bool = False,
 ) -> FacadeCatalog:
-    """Catalog with orders + stores; knobs vary the parent's joins[] entry."""
+    """Catalog with orders + stores; knobs vary the parent's relationships[] entry."""
     join_pairs = parent_join_pairs if parent_join_pairs is not None else [["store_id", "id"]]
     orders_joins: list[DatasetRelationship] = []
     if parent_join_target is not None:
@@ -2189,7 +2189,7 @@ def _metabase_join_sql(
     return " ".join(parts)
 
 
-# --- Positive: existing configured join wins ---------------------------------
+# --- Positive: existing configured relationship wins -------------------------
 
 
 def test_left_join_subquery_projects_joined_column(dialect) -> None:
@@ -2217,7 +2217,7 @@ def test_left_join_subquery_inverted_on_accepted(dialect) -> None:
 
 
 def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
-    """WHERE on a joined col lifts to a SLayer filter using the cross-model dotted form."""
+    """WHERE on a joined col lifts to a SLayer filter using the cross-dataset dotted form."""
     sql = _metabase_join_sql(
         projection='"public"."orders"."status", COUNT(*) AS "count"',
         where=""""Stores"."name" = 'Acme'""",
@@ -2292,8 +2292,8 @@ def test_metric_reference_in_any_predicate_shape_is_an_aggregate_filter(sql, exp
 
 
 def test_left_join_subquery_aggregate_on_joined_col_blocked_by_local_metric_guard(dialect) -> None:
-    """AVG(Stores.tax_rate) maps to a cross-model measure, but the local-metric guard
-    rejects cross-model metric projection in flat SELECT."""
+    """AVG(Stores.tax_rate) maps to a cross-dataset metric, but the local-metric guard
+    rejects cross-dataset metric projection in flat SELECT."""
     sql = _metabase_join_sql(
         projection='AVG("Stores"."tax_rate") AS "avg"',
     )
@@ -2337,7 +2337,7 @@ def test_left_join_subquery_group_by_joined_col(dialect) -> None:
 
 def test_left_join_subquery_having_on_joined_aggregate_blocked_by_local_metric_guard(dialect) -> None:
     """HAVING on a joined-col aggregate hits the same local-metric guard as projection;
-    the cross-model AVG metric is rejected before the HAVING rewrite runs."""
+    the cross-dataset AVG metric is rejected before the HAVING rewrite runs."""
     sql = _metabase_join_sql(
         projection='"public"."orders"."status", AVG("Stores"."tax_rate") AS "avg"',
         group_by='"public"."orders"."status"',
@@ -2373,7 +2373,7 @@ def test_left_join_parent_qualifier_bare_table_accepted(dialect) -> None:
 
 
 def test_left_join_uses_configured_join_emits_no_warning(dialect, caplog) -> None:
-    """On a clean match to the configured LEFT join, no dynamic-join WARN is emitted."""
+    """On a clean match to the configured LEFT relationship, no dynamic-join WARN is emitted."""
     sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"')
     with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
         result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
@@ -2384,7 +2384,7 @@ def test_left_join_uses_configured_join_emits_no_warning(dialect, caplog) -> Non
 
 
 def test_left_join_on_hidden_fk_column_succeeds(dialect) -> None:
-    """ON-column existence checks against `SlayerModel.fields[]`, so hidden FKs match."""
+    """ON-column existence checks against `SlayerDataset.fields[]`, so hidden FKs match."""
     sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"')
     result = translate(
         sql=sql, catalog=_join_catalog(store_fk_hidden=True), dialect=dialect,
@@ -2395,7 +2395,7 @@ def test_left_join_on_hidden_fk_column_succeeds(dialect) -> None:
 
 
 def test_left_join_on_column_case_insensitive(dialect) -> None:
-    """Unquoted UPPERCASE ON columns resolve against the model's canonical lowercase names."""
+    """Unquoted UPPERCASE ON columns resolve against the dataset's canonical lowercase names."""
     sql = _metabase_join_sql(
         projection='"Stores"."name" AS "Stores__name"',
         on_clause='"orders"."STORE_ID" = "Stores"."ID"',
@@ -2450,7 +2450,7 @@ def test_left_join_alias_different_from_target_name(dialect) -> None:
 
 
 def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) -> None:
-    """No configured join to stores — build a ModelExtension from the ON columns and WARN."""
+    """No configured relationship to stores — build a DatasetExtension from the ON columns and WARN."""
     sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"')
     cat = _join_catalog(parent_join_target=None)
     with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
@@ -2503,7 +2503,7 @@ def test_left_join_dynamic_supports_filter_on_joined_col(dialect, caplog) -> Non
 def test_left_join_configured_inner_with_matching_join_pairs_warns(
     dialect, caplog,
 ) -> None:
-    """Configured INNER + emitted LEFT differ in cardinality; use the existing join
+    """Configured INNER + emitted LEFT differ in cardinality; use the existing relationship
     (author's semantics) but WARN on the divergence."""
     sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"')
     cat = _join_catalog(parent_join_type=JoinType.INNER)
@@ -2710,7 +2710,7 @@ def test_subquery_with_inner_offset_rejected(dialect) -> None:
 
 
 def test_subquery_without_from_rejected(dialect) -> None:
-    """A subquery with no FROM has no addressable target model — reject cleanly."""
+    """A subquery with no FROM has no addressable target dataset — reject cleanly."""
     sql = (
         'SELECT "Stores"."id" '
         'FROM "public"."orders" '
@@ -2837,8 +2837,8 @@ def test_left_join_target_model_unknown_errors(dialect) -> None:
 
 
 def test_left_join_different_join_pairs_rejected(dialect) -> None:
-    """Emitted join_pairs that differ from the configured join would produce a
-    duplicate additive join; reject with a clear error instead."""
+    """Emitted join_pairs that differ from the configured relationship would produce a
+    duplicate additive relationship; reject with a clear error instead."""
     sql = _metabase_join_sql(
         projection='"Stores"."name"',
         on_clause='"public"."orders"."id" = "Stores"."id"',

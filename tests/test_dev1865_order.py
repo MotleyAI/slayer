@@ -1,8 +1,8 @@
-"""DEV-1865 — order targets compile through the same typing pass as filters.
+"""Order targets compile through the same typing pass as filters.
 
 Covers the order-position gaps: opposite-direction MIN/MAX duplicates on one
-column, NULLs-last on every backend, hidden order-only slots trimmed from the
-result, and ordering by a cross-model partitioned aggregate. Run on
+field, NULLs-last on every backend, hidden order-only slots trimmed from the
+result, and ordering by a cross-dataset partitioned aggregate. Run on
 SQLite + DuckDB.
 """
 
@@ -22,7 +22,7 @@ RK_TIER = "orders.customers.tier"
 class TestDuplicateOppositeDirection:
     async def test_min_and_max_wrap_the_same_column(self, exec_engine: SlayerQueryEngine) -> None:
         # ASC wraps per-group MIN, DESC per-group MAX — two hidden slots for one
-        # column must coexist, and neither leaks into the projection.
+        # field must coexist, and neither leaks into the projection.
         query = q(
             dimensions=["region"],
             metrics=[QueryMetric(metric="sum(amount)", alias="s")],

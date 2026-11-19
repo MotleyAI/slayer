@@ -1,4 +1,4 @@
-"""``model_from_stage_schema``: the one stage→model builder and its grain stamping."""
+"""``dataset_from_stage_schema``: the one stage→dataset builder and its grain stamping."""
 
 from __future__ import annotations
 

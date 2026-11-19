@@ -4,14 +4,14 @@ Pins ``render_value_key(key, ctx)`` in ``slayer/sql/render/value_expr.py`` — t
 one ``ValueKey``→AST renderer, parameterised by an explicit ``RenderContext``
 and failing closed when the context lacks a facility a key kind needs. It
 replaced five independent per-path renderers in ``generator.py`` (host
-WHERE/HAVING, cross-model CTE routed filters, POST/alias space, outer combined
+WHERE/HAVING, cross-dataset CTE routed filters, POST/alias space, outer combined
 WHERE, AGGREGATE-phase composites) plus three arithmetic composer shims, all of
 which had drifted; those were deleted. Materialisation stays on
 ``ScopeFrame`` (P-B) — the renderer anchors leaves through
 ``scope.resolve(ref, consumer=...)`` and never by hand.
 
 Also pinned here: B10 (``ScopeFrame._dataset_for`` raises instead of silently
-substituting the root model) and the aggregation registry (``AGG_REGISTRY``)
+substituting the root dataset) and the aggregation registry (``AGG_REGISTRY``)
 that `_build_agg` reads instead of several ad-hoc dispatch mechanisms.
 
 B5 is the sharpest drift instance: the same ``ScalarCallKey`` reached Postgres
@@ -91,7 +91,7 @@ from slayer.storage.sqlite_conn import transaction
 
 
 # ===========================================================================
-# Models + scope construction (mirrors tests/test_scope.py's idiom).
+# Datasets + scope construction (mirrors tests/test_scope.py's idiom).
 # ===========================================================================
 
 
@@ -178,15 +178,15 @@ def _sql(expr: exp.Expression, dialect: str = "postgres") -> str:
 
 
 # ===========================================================================
-# B10 — ScopeFrame._dataset_for raises on an unknown model.
+# B10 — ScopeFrame._dataset_for raises on an unknown dataset.
 # ===========================================================================
 
 
 class TestB10UnknownModelRaises:
-    """Today ``_model_for`` ends in ``or self.root_model``: a ``ColumnSqlKey``
-    naming a model absent from the bundle silently expands the ROOT model's
+    """Today ``_dataset_for`` ends in ``or self.root_dataset``: a ``FieldSqlKey``
+    naming a dataset absent from the bundle silently expands the ROOT dataset's
     derived SQL instead. That turns a wiring bug into a wrong answer — the
-    query runs and returns numbers computed from the wrong model."""
+    query runs and returns numbers computed from the wrong dataset."""
     def test_unknown_model_in_columnsqlkey_raises(self) -> None:
 
         scope = _scope()
@@ -195,7 +195,7 @@ class TestB10UnknownModelRaises:
             scope.resolve(key)
 
     def test_error_names_the_missing_model(self) -> None:
-        """The message must be actionable: which model was asked for, what the
+        """The message must be actionable: which dataset was asked for, what the
         scope root is, and what the bundle actually knows."""
         scope = _scope()
         key = FieldSqlKey(dataset="not_in_bundle", field_name="net")
@@ -206,15 +206,15 @@ class TestB10UnknownModelRaises:
         assert "orders" in message
 
     def test_known_models_still_resolve(self) -> None:
-        """Parity guard: the root model and every bundle member keep working —
+        """Parity guard: the root dataset and every bundle member keep working —
         B10 removes only the silent FALLBACK, not the lookup."""
         scope = _scope()
         expr = scope.resolve(FieldSqlKey(dataset="orders", field_name="net"))
         assert "amount" in _sql(expr)
 
     def test_root_model_lookup_does_not_consult_the_bundle(self) -> None:
-        """A scope whose root model is not listed in ``referenced_models`` must
-        still resolve its own root — the first branch of ``_model_for``."""
+        """A scope whose root dataset is not listed in ``referenced_datasets`` must
+        still resolve its own root — the first branch of ``_dataset_for``."""
         host = _orders()
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
@@ -268,11 +268,11 @@ class TestRenderContextApi:
     def test_consumer_routes_column_like_leaves_through_materialization(
         self, label, key,
     ) -> None:
-        """With a consumer named, EVERY column-like leaf must come back as a
+        """With a consumer named, EVERY field-like leaf must come back as a
         BARE materialisation alias and be projected in the PRODUCING scope —
         the single Law-2 mechanism, not a second one grown inside the renderer.
 
-        Parametrised over all three column-like kinds because a renderer that
+        Parametrised over all three field-like kinds because a renderer that
         special-cases one of them would otherwise slip through."""
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
@@ -315,7 +315,7 @@ class TestRenderContextApi:
         assert len(producer.materializations) == 1
 
     def test_join_paths_register_as_a_side_effect_of_rendering(self) -> None:
-        """P-A: join discovery is a side effect of rendering, never a separate
+        """P-A: relationship-path discovery is a side effect of rendering, never a separate
         pass. Rendering a joined leaf must register the crossed path on the
         scope without the caller asking."""
         scope = _scope()
@@ -390,9 +390,9 @@ class TestRenderContextApi:
     def test_cross_model_star_without_a_builder_fails_closed(self) -> None:
         """``count(customers.*)`` counts rows of the JOINED relation.
 
-        ``StarKey.path`` carries that hop, and routing it needs the join graph.
+        ``StarKey.path`` carries that hop, and routing it needs the relationship graph.
         Emitting a bare ``*`` would count HOST rows instead — a wrong number,
-        the same failure class as a dropped column filter.
+        the same failure class as a dropped field filter.
         """
         key = AggregateKey(source=StarKey(path=("customers",)), agg="count")
         ctx = _composite_ctx()
@@ -468,7 +468,7 @@ class TestRendersEveryKeyKind:
 
     def test_time_trunc_key(self) -> None:
         """Exact per-dialect SQL — a substring check would accept a truncation
-        at the wrong granularity or over the wrong column."""
+        at the wrong granularity or over the wrong field."""
         key = TimeTruncKey(
             source=FieldKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
@@ -939,7 +939,7 @@ class TestAggregationRegistry:
     """``_build_agg`` reaches its builders five different ways: a hardcoded
     name pair for first/last, ``_AGG_FUNCTION_MAP`` plus a SECOND inline
     ``agg_class_map``, a frozenset membership test for the stat aggregates,
-    name equality for the dialect-hook aggregates, and a formula-template
+    name equality for the dialect-hook aggregates, and an expression-template
     fallback. One registry table replaces all five."""
 
     # Frozen INDEPENDENTLY of both BUILTIN_AGGREGATIONS and the registry, one
@@ -995,7 +995,7 @@ class TestAggregationRegistry:
     def test_registry_and_builtins_agree_both_ways(self) -> None:
         """The import-time invariant, asserted in both directions.
 
-        A missing built-in would fall through to the custom-formula path. A
+        A missing built-in would fall through to the custom-expression path. A
         registry key that is NOT a built-in — a typo such as ``sumn`` — is the
         subtler half: ``is_builtin_agg`` would accept it and route it AWAY from
         that path, so the typo would render as if it were a real aggregation.
@@ -1035,7 +1035,7 @@ async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryE
             name="orders",
             sql_table="orders",
             data_source="prod",
-            # first/last needs a resolvable ranking time column.
+            # first/last needs a resolvable ranking time field.
             default_time_dimension="created_at",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
@@ -1045,7 +1045,7 @@ async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryE
                 DatasetField(name="qty", datatype=DataType.FLOAT),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
-            # Exercises the formula-template dispatch mechanism through the
+            # Exercises the expression-template dispatch mechanism through the
             # registry — a CUSTOM aggregation, not a builtin.
             aggregations=[
                 Aggregation(name="sum_sq", expression="SUM({value} * {value})"),
@@ -1108,7 +1108,7 @@ class TestMigratedCallSitesEndToEnd:
     async def test_custom_formula_aggregation_still_dispatches(
         self, e2e,
     ) -> None:
-        """The registry must keep the formula-template mechanism reachable for
+        """The registry must keep the expression-template mechanism reachable for
         aggregations that are NOT builtins — a closed builtin table would drop
         them. new = 10² + 20² = 500; old = 30² = 900."""
         resp = await e2e.execute(
@@ -1136,7 +1136,7 @@ class TestMigratedCallSitesEndToEnd:
 
     async def test_first_last_composite_call_site_executes(self, e2e) -> None:
         """R5's SECOND production call site (``_build_first_last_base_select``,
-        the generator) — reached only by a first/last measure, which builds
+        the generator) — reached only by a first/last metric, which builds
         its own ranked base SELECT rather than the ordinary composite one.
 
         Ordered by ``id``: new -> last amount 20, old -> 30."""
@@ -1225,7 +1225,7 @@ class TestOuterWrapperAndShiftedCteFamilies:
                     DatasetField(name="amount", datatype=DataType.FLOAT),
                     DatasetField(name="disc", datatype=DataType.FLOAT),
                     DatasetField(name="created_at", datatype=DataType.DATETIME),
-                    # Join-crossing Column.filter => filtered-local
+                    # Relationship-crossing DatasetField.filter => filtered-local
                     # isolation => the outer combined-SELECT wrapper (R4).
                     DatasetField(
                         name="gold_amount", sql="amount",
@@ -1624,7 +1624,7 @@ class TestContainsAggregate:
         """The case a phase test gets wrong.
 
         Every TransformKey is POST phase, so ``phase >= AGGREGATE`` reports
-        True even when the transform wraps a plain column — routing a
+        True even when the transform wraps a plain field — routing a
         non-aggregate predicate into HAVING.
         """
         key = TransformKey(op="cumsum", input=FieldKey(leaf="amount"))
@@ -2139,7 +2139,7 @@ class TestComparisonsAreNonAssociative:
         assert out == "NOT (orders.amount = 5) IS NULL", out
 
     def test_plain_is_null_over_a_column_gains_no_parens(self) -> None:
-        """Don't over-wrap: a column is self-delimiting."""
+        """Don't over-wrap: a field is self-delimiting."""
         key = self._cmp("is", FieldKey(leaf="amount"), LiteralKey(value=None))
         assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "orders.amount IS NULL"
 

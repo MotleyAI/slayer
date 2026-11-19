@@ -1,5 +1,5 @@
-"""Until DEV-2175, a construct reading a physical name a different column holds, and a self-named member, is
-dropped with a report; the rest of the model imports and saves."""
+"""Until DEV-2175, a construct reading a physical name a different field holds, and a self-named member, is
+dropped with a report; the rest of the dataset imports and saves."""
 
 from __future__ import annotations
 

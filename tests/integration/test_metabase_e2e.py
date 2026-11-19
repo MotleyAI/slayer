@@ -242,7 +242,7 @@ def _wait_until_stable(
 
 
 async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """B.3 — flip ``Column.hidden=True`` on the SLayer model, query
+    """B.3 — flip ``DatasetField.hidden=True`` on the SLayer dataset, query
     ``INFORMATION_SCHEMA.COLUMNS`` directly via asyncpg, assert the column
     is absent. Restore in ``finally``.
 
@@ -279,7 +279,7 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
         assert "description" not in names, (
             f"hidden column 'description' still surfaced in INFORMATION_SCHEMA.COLUMNS: {sorted(names)}"
         )
-        # Sanity: the model is otherwise intact (other columns still surface).
+        # Sanity: the dataset is otherwise intact (other columns still surface).
         assert "name" in names
         assert "sku" in names
     finally:
@@ -288,7 +288,7 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
 
 
 async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """B.4 — set ``Column.description`` on the SLayer model, query
+    """B.4 — set ``DatasetField.description`` on the SLayer dataset, query
     ``pg_description`` directly via asyncpg, assert the description appears.
 
     Same Metabase-c3p0-caching workaround as B.3: pg_description is the
@@ -317,7 +317,7 @@ async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv
             await conn.close()
         descriptions = {r["description"] for r in rows}
         assert marker in descriptions, (
-            f"Column.description {marker!r} did not surface in pg_description "
+            f"DatasetField.description {marker!r} did not surface in pg_description "
             f"(saw {len(descriptions)} entries)"
         )
     finally:
@@ -368,13 +368,13 @@ async def test_pg_namespace_table_schem_column_name(metabase_e2e_env: MetabaseE2
 
 def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """B.7 — ``first`` / ``last`` aggregations must not be
-    callable on models without a time dimension.
+    callable on datasets without a time dimension.
 
     Scope note: Metabase derives per-field aggregation availability from
     ``base_type``, not from per-field catalog metadata, so the canonical
     "exposed in the picker" assertion isn't available end-to-end. The
     contract that matters from a regression standpoint is the call itself:
-    if a regression re-enables ``first()`` on a timeless model, the dataset
+    if a regression re-enables ``first()`` on a timeless dataset, the dataset
     POST will COMPLETE; this test asserts it does NOT.
     """
     client = metabase_e2e_env.client
@@ -455,7 +455,7 @@ def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> 
     rows = _dataset_rows(payload)
     cols = _dataset_cols(payload)
     assert 1 <= len(rows) <= 10
-    # 9 physical columns + the saved demo measures exposed by the catalog.
+    # 9 physical columns + the saved demo metrics exposed by the catalog.
     assert len(cols) == 9 + len(DEMO_ENRICHMENT["orders"].metrics)
 
 
@@ -997,13 +997,13 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "DEV-1493: the LEFT JOIN shape recognises Metabase's "
-        "AVG(\"Stores\".\"tax_rate\") and produces a cross-model "
-        "stores.tax_rate:avg measure, but the _assert_local_metric "
-        "guard rejects projecting cross-model metrics in a flat SELECT "
+        "The LEFT JOIN shape recognises Metabase's "
+        "AVG(\"Stores\".\"tax_rate\") and produces a cross-dataset "
+        "stores.tax_rate:avg metric, but the _assert_local_metric "
+        "guard rejects projecting cross-dataset metrics in a flat SELECT "
         "(the engine emits a CROSS-JOIN'd CTE that returns N rows of the "
         "same aggregate value instead of 1). Needs a multi-stage rewrite "
-        "(DEV-1493) before this flat-projection shape can execute correctly."
+        "before this flat-projection shape can execute correctly."
     ),
 )
 def test_join_aggregate_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:

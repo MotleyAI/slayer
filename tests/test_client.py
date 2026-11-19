@@ -1,6 +1,6 @@
 """Tests for SlayerClient — local-mode dispatch + HTTP-mode body shapes.
 
-Covers DEV-1437: the client mirrors the engine's full input union
+The client mirrors the engine's full input union
 ``SlayerQuery | dict | list[SlayerQuery | dict] | str`` on every public
 query entry point. Local-mode tests are contract smokes (engine already
 accepts every shape, so local-mode dispatch was already working by
@@ -212,7 +212,7 @@ class TestLocalMode:
     async def test_query_sync_accepts_str_local_smoke(
         self, client: SlayerClient, storage: YAMLStorage
     ) -> None:
-        """``str`` input runs the backing query of a query-backed model."""
+        """``str`` input runs the backing query of a query-backed dataset."""
         await _save_orders(storage)
         saved = SlayerDataset(
             name="rev_by_region",
@@ -272,7 +272,7 @@ class TestLocalMode:
 
 
 # --------------------------------------------------------------------------- #
-# HTTP-mode body-shape tests (pins the DEV-1437 bug)
+# HTTP-mode body-shape tests
 # --------------------------------------------------------------------------- #
 
 
@@ -332,7 +332,7 @@ class TestHttpBodyShape:
             mode="json", exclude_none=True
         )
         # Dict items are normalised through SlayerQuery (string-shorthand
-        # measures / dimensions become dict-form; defaults like ``version``
+        # metrics / dimensions become dict-form; defaults like ``version``
         # surface).
         assert body["queries"][1] == SlayerQuery.model_validate(
             {"population": "a"}
@@ -357,7 +357,7 @@ class TestHttpBodyShape:
         """Dict input is round-tripped through ``SlayerQuery`` so the
         server sees the JSON-mode dump (string-shorthand normalised,
         defaults included). FastAPI's ``QueryRequest`` declares strict
-        list-of-dict types for measures/dimensions; the round-trip is
+        list-of-dict types for metrics/dimensions; the round-trip is
         the only way string-shorthand input doesn't 422 server-side.
         """
         client, cap = http_client_with_capture
@@ -378,8 +378,8 @@ class TestHttpBodyShape:
         self,
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
-        """String-shorthand measures (e.g. ``"amount:sum"``) become
-        dict-form (``{"formula": "amount:sum"}``) before reaching the
+        """String-shorthand metrics (e.g. ``"sum(amount)"``) become
+        dict-form (``{"metric": "sum(amount)"}``) before reaching the
         server — otherwise FastAPI's ``QueryRequest`` rejects the body
         with HTTP 422.
         """

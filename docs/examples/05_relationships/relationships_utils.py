@@ -81,7 +81,7 @@ def setup_diamond_example() -> tuple:
 
     Uses a temporary directory that the caller can clean up.
     """
-    work_dir = tempfile.mkdtemp(prefix="diamond_joins_")
+    work_dir = tempfile.mkdtemp(prefix="diamond_relationships_")
     db_path = os.path.join(work_dir, "diamond.duckdb")
     datasets_dir = os.path.join(work_dir, "slayer_datasets")
 

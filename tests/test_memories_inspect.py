@@ -1,4 +1,4 @@
-"""Model ``inspect`` Learnings section + ``query`` docstring tests.
+"""Dataset ``inspect`` Learnings section + ``query`` docstring tests.
 
 The Learnings section surfaces only memories where ``query is None`` and is
 pruned when none match; the ``query`` docstring points agents at ``search``.
@@ -128,7 +128,7 @@ async def _call(
 
 
 # ---------------------------------------------------------------------------
-# Model inspect — Learnings section (only memories where query is None)
+# Dataset inspect — Learnings section (only memories where query is None)
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +151,7 @@ class TestInspectModelLearningsSection:
     async def test_section_pruned_when_only_query_bearing_memories_match(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        # A memory with a query attached must NOT surface in the model inspect.
+        # A memory with a query attached must NOT surface in the dataset inspect.
         await seeded.save_memory(
             learning="example query",
             entities=["mydb.orders.amount"],

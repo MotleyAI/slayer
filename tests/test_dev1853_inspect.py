@@ -1,6 +1,6 @@
-"""DEV-1853 — both orientations are visible on inspection and audit surfaces.
+"""Both orientations are visible on inspection and audit surfaces.
 
-Inspecting a model lists reverse-reachable neighbors with the cardinality
+Inspecting a dataset lists reverse-reachable neighbors with the cardinality
 oriented for traversal from the inspected side; the safety audit reports each
 edge once with per-orientation provability.
 """

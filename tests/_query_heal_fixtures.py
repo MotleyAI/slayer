@@ -1,4 +1,4 @@
-"""Seed, models and equivalence helpers for the clear-intent query heals (datasource ``test``).
+"""Seed, datasets and equivalence helpers for the clear-intent query heals (datasource ``test``).
 
 orders (id, cust, region, status, amount, created_at, shipped_at):
   1  1  US    paid      10  2024-01-01 Mon  2024-01-03

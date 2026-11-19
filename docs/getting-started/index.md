@@ -1,6 +1,6 @@
 # Getting Started
 
-SLayer is a semantic layer that sits between your database and whatever consumes the data — AI agents, apps, scripts, or dashboards. You define your data model once (or let SLayer auto-generate it), and consumers query using metrics, dimensions, and filters instead of writing SQL.
+SLayer is a semantic layer that sits between your database and whatever consumes the data — AI agents, apps, scripts, or dashboards. You define your datasets once (or let SLayer auto-generate them), and consumers query using metrics, dimensions, and filters instead of writing SQL.
 
 ## Which interface is right for you?
 

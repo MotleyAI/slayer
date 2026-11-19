@@ -1,4 +1,4 @@
-"""A stored TEXT column over a live list is a re-type finding, never a deletion (spec: models/schema-drift)."""
+"""A stored TEXT field over a live list is a re-type finding, never a deletion (spec: models/schema-drift)."""
 
 from __future__ import annotations
 

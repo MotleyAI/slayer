@@ -7,7 +7,7 @@ the ``dbt`` optional extra is not installed.
 The manifest is used to discover *regular* dbt models (``resource_type ==
 "model"``) that are **not** referenced by any ``semantic_model``. Those
 "orphan" models can then be introspected via SQL and imported into SLayer as
-``hidden=True`` models so LLM agents can still see and query them.
+``hidden=True`` datasets so LLM agents can still see and query them.
 """
 
 import json
@@ -82,7 +82,7 @@ def load_or_generate_manifest(project_path: str) -> dict | None:
     if not DBT_AVAILABLE:
         logger.warning(
             "No manifest.json at %s and dbt-core is not installed. "
-            "Install `slayer[dbt]` to import regular dbt models as hidden SLayer models.",
+            "Install `slayer[dbt]` to import regular dbt models as hidden SLayer datasets.",
             path,
         )
         return None

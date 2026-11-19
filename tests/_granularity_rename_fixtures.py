@@ -143,7 +143,7 @@ def reopen(*, backend: str, base: str) -> StorageBackend:
 
 
 def raw_documents(*, backend: str, base: str) -> dict[str, str]:
-    """Every persisted datasource, model and memory exactly as stored, keyed ``<kind>/<name>``."""
+    """Every persisted datasource, dataset and memory exactly as stored, keyed ``<kind>/<name>``."""
     out: dict[str, str] = {}
     if backend == "yaml":
         for kind, ext in (("datasources", ".yaml"), ("models", ".yaml"), ("memories", ".md")):
@@ -166,8 +166,8 @@ def raw_documents(*, backend: str, base: str) -> dict[str, str]:
 
 
 async def granularity_store(*, backend: str, base: str, name: str) -> StorageBackend:
-    """A v1.4.1 store: datasource ``DS`` defining ``name`` (``granularity_definition``), the ``events`` model,
-    and the query-backed model ``bucketed`` whose stage buckets ``created_at`` by ``name``."""
+    """A v1.4.1 store: datasource ``DS`` defining ``name`` (``granularity_definition``), the ``events`` dataset,
+    and the query-backed dataset ``bucketed`` whose stage buckets ``created_at`` by ``name``."""
     db_path = live_db(base)
     return await write_raw_store(
         backend=backend, base=base,
@@ -177,7 +177,7 @@ async def granularity_store(*, backend: str, base: str, name: str) -> StorageBac
 
 
 async def bucket_totals(storage: StorageBackend, *, dataset: str = "bucketed") -> dict[str, float]:
-    """``sum(s)`` per ``created_at`` bucket of the query-backed ``model`` (compare with ``EXPECTED_BUCKETS``)."""
+    """``sum(s)`` per ``created_at`` bucket of the query-backed ``dataset`` (compare with ``EXPECTED_BUCKETS``)."""
     resp = await run(storage, {"population": dataset, "dimensions": ["created_at"], "metrics": ["sum(s)"]})
     return {str(r[f"{dataset}.created_at"])[:10]: float(r[f"{dataset}.s_sum"]) for r in resp.data}
 

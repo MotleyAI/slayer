@@ -1,4 +1,4 @@
-"""FILTER result keys come from the formula text; a filtered aggregate never shares its twin's name or value.
+"""FILTER result keys come from the expression text; a filtered aggregate never shares its twin's name or value.
 
 Spec: aggregations/functional-form › An aggregation accepts a FILTER clause. Data: the idiom dataset; ``first`` /
 ``last`` rank by ``order_date``. Earliest order 1 (10), earliest open 2 (20); latest 11 (5), latest open 9 (25).

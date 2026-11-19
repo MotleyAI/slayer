@@ -1,7 +1,7 @@
-"""DEV-1836 semantic-equivalence driver.
+"""Cross-dataset semantic-equivalence driver.
 
 Seeds RANDOM data (respecting PK/FK/arity so join fan-out is exercised) into
-each cross-model golden suite's fixture schema, executes EVERY case query
+each cross-dataset golden suite's fixture schema, executes EVERY case query
 through the engine against SQLite, and dumps {module::case: {status, rows}} to
 JSON. Run in the pre-change worktree AND the current worktree, then diff:
 
@@ -55,13 +55,13 @@ _SQLITE_TYPE = {
 
 
 def _physical_columns(dataset: SlayerDataset) -> list[DatasetField]:
-    """Only bare/identity columns are real table columns; a ``sql`` expression
-    (derived/filtered) or a filter-bearing column is computed by the query."""
+    """Only bare/identity fields are real table columns; a ``sql`` expression
+    (derived/filtered) or a filter-bearing field is computed by the query."""
     out: list[DatasetField] = []
     for c in dataset.fields:
         sql = getattr(c, "sql", None)
         if getattr(c, "filter", None) is not None:
-            # a filtered column's PHYSICAL backing (its sql) is a separate col;
+            # a filtered field's PHYSICAL backing (its sql) is a separate col;
             # only include if sql is a bare identifier equal-ish and not already present
             continue
         if sql is None or sql.strip() == c.name:

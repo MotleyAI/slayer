@@ -867,7 +867,7 @@ Pass a list of queries to `execute()`. Earlier queries are named sub-queries, th
 
 This counts how many months exist in the monthly summary. The main query references `"monthly"` by name — a stage name overrides a same-named dataset only within its own query list, never inside stored definitions such as a dataset's stored relationships.
 
-You can also join named queries to datasets:
+You can also relate named queries to datasets:
 
 ```json
 [

@@ -1,12 +1,12 @@
-"""Live integration tests for the Flight SQL facade via JayDeBeAPI (DEV-1390 Task 15a).
+"""Live integration tests for the Flight SQL facade via JayDeBeAPI.
 
 Drives the production Flight SQL server through the upstream Apache
 ``flight-sql-jdbc-driver`` JAR — the same client a Power BI / Sigma /
 Looker / dbt-SL deployment uses in production. Skipped automatically
 when Java isn't on PATH or the JAR can't be downloaded.
 
-Covers introspection, the four probe queries, semantic-model selects
-(prepared-statement path), time grain, cross-model dimensions,
+Covers introspection, the four probe queries, dataset selects
+(prepared-statement path), time grain, cross-dataset dimensions,
 ``SELECT *`` rejection, DML rejection, bearer-token auth, and an
 N=10 concurrent ``executeQuery`` smoke test.
 """
@@ -177,7 +177,7 @@ def test_get_type_info_returns_jdbc_shape(
         conn.close()
 
 
-# ----- INFORMATION_SCHEMA + semantic-model SELECTs ---------------------------
+# ----- INFORMATION_SCHEMA + dataset SELECTs ----------------------------------
 
 
 def test_select_information_schema_metrics(

@@ -1,4 +1,4 @@
-"""Seed, models and comparison helpers for the root-qualifier and one-reader tests."""
+"""Seed, datasets and comparison helpers for the root-qualifier and one-reader tests."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def orders_columns() -> list[DatasetField]:
 
 
 def orders_dataset(*, edge_name: Optional[str] = None) -> SlayerDataset:
-    """``orders`` → ``customers`` (the edge optionally named), saved measure ``revenue``."""
+    """``orders`` → ``customers`` (the edge optionally named), saved metric ``revenue``."""
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
         fields=orders_columns(),

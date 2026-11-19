@@ -1,8 +1,8 @@
-"""DEV-1706 Stage 2 — ``ScopeFrame`` + single resolver (``slayer/sql/scope.py``).
+"""``ScopeFrame`` + single resolver (``slayer/sql/scope.py``).
 
 Law 1 (anchored rendering): every ref enters a scope through ``resolve``, which
 expands derived refs, anchors them at the scope root or a ``__``-path join alias,
-and REGISTERS every crossed join path into ``scope.join_paths`` as a side effect.
+and REGISTERS every crossed relationship path into ``scope.join_paths`` as a side effect.
 
 Law 2 (projection boundaries): a ``resolve(ref, consumer=<scope>)`` call
 materialises the value as a ``_val_<n>`` projection in the PRODUCING scope
@@ -31,7 +31,7 @@ from slayer.sql.scope_check import assert_scope_closed
 
 
 # --------------------------------------------------------------------------- #
-# Models — the orders → customers → regions chain (+ a reserved-word variant).
+# Datasets — the orders → customers → regions chain (+ a reserved-word variant).
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
     return SlayerDataset(
@@ -72,8 +72,8 @@ def _orders(*, extra=None) -> SlayerDataset:
 
 
 def _reserved_host() -> SlayerDataset:
-    # Model NAME is a reserved word ("order"); joins to another reserved name
-    # ("user"). DEV-1686: aliases/qualifiers for these must be QUOTED.
+    # Dataset NAME is a reserved word ("order"); relates to another reserved name
+    # ("user"). Aliases/qualifiers for these must be QUOTED.
     return SlayerDataset(
         name="order", sql_table="orders_tbl", data_source="test",
         fields=[
@@ -107,7 +107,7 @@ def _scope(host: SlayerDataset, *others: SlayerDataset, dialect: str = "postgres
 
 
 # --------------------------------------------------------------------------- #
-# Law 1 — anchored rendering + join registration.
+# Law 1 — anchored rendering + relationship-path registration.
 # --------------------------------------------------------------------------- #
 class TestResolveRegistersJoins:
     def test_local_columnkey_anchors_to_root_no_join(self) -> None:
@@ -148,7 +148,7 @@ class TestResolveRegistersJoins:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1686 — reserved-identifier quoting, compositional (Codex M5/H1).
+# Reserved-identifier quoting, compositional (Codex M5/H1).
 # --------------------------------------------------------------------------- #
 class TestResolveReservedQuoting:
     def test_reserved_root_qualifier_quoted(self) -> None:
@@ -163,7 +163,7 @@ class TestResolveReservedQuoting:
         assert scope.join_paths.as_list() == [("user",)]
 
     def test_resolver_alias_matches_build_from_and_joins(self) -> None:
-        # D-K / Codex H1: the alias the resolver anchors a reserved-word join
+        # D-K / Codex H1: the alias the resolver anchors a reserved-word relationship
         # path to MUST equal the alias ``_build_from_and_joins`` emits — else the
         # cached expr references a table the FROM never binds.
         host, target = _reserved_host(), _reserved_target()
@@ -199,9 +199,9 @@ class TestResolveReservedQuoting:
         assert resolver_alias in emitted
 
     def test_derived_columnsqlkey_reserved_qualifier_quoted(self) -> None:
-        # A derived ColumnSqlKey whose sql crosses to a reserved-word join target
-        # ("user") must emit the quoted qualifier and register the join (the
-        # "reserved prequoted expansion" path, not just a bare ColumnKey).
+        # A derived FieldSqlKey whose sql crosses to a reserved-word relationship target
+        # ("user") must emit the quoted qualifier and register the relationship path (the
+        # "reserved prequoted expansion" path, not just a bare FieldKey).
         host = SlayerDataset(
             name="order", sql_table="orders_tbl", data_source="test",
             fields=[
@@ -218,7 +218,7 @@ class TestResolveReservedQuoting:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1539 — predicate outer-parens / precedence (Codex M5).
+# Predicate outer-parens / precedence (Codex M5).
 # --------------------------------------------------------------------------- #
 class TestResolvePredicateParens:
     @staticmethod
@@ -382,18 +382,18 @@ class TestMaterialization:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1711 Stage 7 — path'd ColumnSqlKey (derived column ON a joined model).
-# The shifted-CTE partition/time resolver hands ``resolve`` a ColumnSqlKey whose
+# Stage 7 — path'd FieldSqlKey (derived field ON a joined dataset).
+# The shifted-CTE partition/time resolver hands ``resolve`` a FieldSqlKey whose
 # ``path`` is non-empty (e.g. ``stores.tier`` where ``tier = upper(name)`` is
-# derived on the joined ``stores`` model). ``_anchor`` must expand it rooted at
-# the ``__``-path alias (``is_root=False``) and register the join chain — today
+# derived on the joined ``stores`` dataset). ``_anchor`` must expand it rooted at
+# the ``__``-path alias (``is_root=False``) and register the relationship chain — today
 # it ignores ``path`` and mis-anchors at the host relation.
 # --------------------------------------------------------------------------- #
 class TestResolvePathedColumnSqlKey:
     @staticmethod
     def _customers_with_tier():
-        # ``tier = upper(balance)`` — a LOCAL derived column on the joined
-        # customers model (its inner ref stays on customers).
+        # ``tier = upper(balance)`` — a LOCAL derived field on the joined
+        # customers dataset (its inner ref stays on customers).
         return SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
@@ -410,13 +410,13 @@ class TestResolvePathedColumnSqlKey:
         expr = scope.resolve(
             FieldSqlKey(path=("customers",), dataset="customers", field_name="tier"))
         rendered = expr.sql(dialect="postgres")
-        # The derived column is EXPANDED (the ``upper(...)`` wrapper is preserved,
-        # not dropped to the bare column) AND its inner ref qualifies under the
+        # The derived field is EXPANDED (the ``upper(...)`` wrapper is preserved,
+        # not dropped to the bare field) AND its inner ref qualifies under the
         # JOINED alias, not the host — ``UPPER(customers.balance)``, never
         # ``UPPER(orders.balance)``.
         assert "UPPER(customers.balance)" in rendered, rendered
         assert "orders.balance" not in rendered, rendered
-        # The join it lives behind is registered (Law 1).
+        # The relationship it lives behind is registered (Law 1).
         assert scope.join_paths.as_list() == [("customers",)]
 
     def test_single_hop_derived_registers_only_its_join(self) -> None:
@@ -428,9 +428,9 @@ class TestResolvePathedColumnSqlKey:
         assert ("customers", "regions") not in scope.join_paths.as_list()
 
     def test_joined_derived_crossing_further_join_registers_prefixes(self) -> None:
-        # A derived column on the joined model whose sql crosses a FURTHER join
+        # A derived field on the joined dataset whose sql crosses a FURTHER relationship
         # (``deep = regions.population`` on customers) anchors the further ref at
-        # the full ``customers__regions`` path (DEV-1701 shape) and registers
+        # the full ``customers__regions`` path and registers
         # both prefixes.
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",

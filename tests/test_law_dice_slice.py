@@ -5,7 +5,7 @@ cell of the same query grouped by ``d``. Holds by default and under ``to_many_ha
 satisfy it (its warning hint is the disclosure).
 
 Spec: openspec …/specs/queries/semantics — "Dice–slice correspondence under
-associate". Generated over a measure × dimension × value family on SQLite +
+associate". Generated over a metric × dimension × value family on SQLite +
 DuckDB; the two runs are compared to each other, so no hand oracle is needed.
 """
 
@@ -21,7 +21,7 @@ from tests._dev1841_fixtures import (
 )
 from slayer.core.query import QueryMetric
 
-#: metric root spans local column, star-count, deep hop, and percentile family.
+#: metric root spans local field, star-count, deep hop, and percentile family.
 MEASURES = {
     "spend": "sum(customers.spend)",
     "count": "count(customers.*)",

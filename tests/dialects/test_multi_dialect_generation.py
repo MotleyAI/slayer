@@ -53,7 +53,7 @@ class TestMultiDialectGeneration:
                 DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
 
                 DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                # Second numeric column so 2-arg stat aggregates
+                # Second numeric field so 2-arg stat aggregates
                 # (corr(other=...) / covar_*(other=...)) have a valid LHS+RHS pair.
                 DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
             ],
@@ -223,7 +223,7 @@ class TestMultiDialectGeneration:
         # Scoped to the TIME DIMENSION operand: a bare column keeps its live
         # DB type and must not be cast. (A blanket "no CAST anywhere" check
         # would now trip on the typed pipeline's result-type cast around the
-        # ``count(*)`` measure, which is unrelated to this contract.)
+        # ``count(*)`` metric, which is unrelated to this contract.)
         assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
@@ -389,7 +389,7 @@ class TestMultiDialectGeneration:
         upper = sql.upper()
         assert "SELECT" in upper
         # The aggregate must wrap the resolved value column (orders.amount,
-        # since the `revenue` Column has sql="amount") in its single-arg slot.
+        # since the `revenue` field has sql="amount") in its single-arg slot.
         assert "(ORDERS.AMOUNT)" in upper, (
             f"expected single-arg call (ORDERS.AMOUNT) in SQL for {formula!r} on {dialect}:\n{sql}"
         )
@@ -486,12 +486,12 @@ class TestLogAliasPreservation:
     aliases. sqlglot's default behaviour normalises both into a generic
     ``Log(this=Literal(base), expression=arg)`` AST node and re-emits as
     ``LOG(base, x)`` for almost every dialect, which makes generated SQL
-    diverge from the recipe formula text and (on dialects that lack 2-arg
+    diverge from the recipe expression text and (on dialects that lack 2-arg
     ``LOG``) can break a previously working call.
 
     The expectations name the column ``ORDERS.AMOUNT`` rather than bare
     ``AMOUNT``: the typed pipeline anchors every reference at its scope root
-    (Law 1), so a ``Column.sql`` operand emits qualified. That is orthogonal
+    (Law 1), so a ``DatasetField.sql`` operand emits qualified. That is orthogonal
     to the alias-preservation contract under test here, and pinning the
     qualified form keeps the negative assertions meaningful — a bare
     ``LOG(10, AMOUNT)`` needle would be trivially absent whatever the
@@ -508,7 +508,7 @@ class TestLogAliasPreservation:
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                # Scalar log expressions inside Column.sql — the primary
+                # Scalar log expressions inside DatasetField.sql — the primary
                 # path the issue surfaced through.
                 DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
                 DatasetField(name="log2_amount", sql="log2(amount)", datatype=DataType.FLOAT),
@@ -583,7 +583,7 @@ class TestLogAliasPreservation:
     async def test_log10_inside_filtered_column_survives_reparse(
         self, dialect: str,
     ) -> None:
-        """A filtered Column (``Column.filter="..."``) wraps the resolved
+        """A filtered field (``DatasetField.filter="..."``) wraps the resolved
         value in ``CASE WHEN ... THEN ... END`` and re-parses through
         sqlglot. The log-alias rewrite must survive that round-trip — a
         re-parse of ``LOG10(amount)`` would otherwise canonicalise back to
@@ -614,10 +614,10 @@ class TestLogAliasPreservation:
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected literal log10(amount) inside filtered "
-            f"column wrapper, got:\n{sql}"
+            f"field wrapper, got:\n{sql}"
         )
         assert "LOG(10,ORDERS.AMOUNT)" not in upper_no_ws, (
-            f"{dialect}: filtered-column re-parse must not re-canonicalise "
+            f"{dialect}: filtered-field re-parse must not re-canonicalise "
             f"to LOG(10, amount):\n{sql}"
         )
 
@@ -625,7 +625,7 @@ class TestLogAliasPreservation:
     async def test_log10_in_arithmetic_measure_is_preserved(
         self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
-        """Arithmetic that mixes a log10 column-derived measure with COUNT(*).
+        """Arithmetic that mixes a log10 field-derived metric with COUNT(*).
         Pins that the rewrite survives the arithmetic enrichment path.
         """
         gen = SQLGenerator(dialect=dialect)
@@ -636,7 +636,7 @@ class TestLogAliasPreservation:
         sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
-            f"{dialect}: expected log10(amount) inside arithmetic measure:\n{sql}"
+            f"{dialect}: expected log10(amount) inside arithmetic metric:\n{sql}"
         )
         assert "COUNT(" in sql.upper(), f"COUNT(*) leg missing on {dialect}:\n{sql}"
 

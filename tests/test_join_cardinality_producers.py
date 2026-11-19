@@ -1,4 +1,4 @@
-"""dbt / OSI / facade producers set and carry join cardinality."""
+"""dbt / OSI / facade producers set and carry relationship cardinality."""
 
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -106,7 +106,7 @@ class TestDbtConverterMirror:
         assert fwd.cardinality is RelationshipCardinality.MANY_TO_ONE
 
     def test_reverse_orientation_inverts_to_one_to_many(self) -> None:
-        # DEV-1853 divergences.md class (d): dbt mirroring is retired — no
+        # dbt mirroring is retired — no
         # stored reverse edge; the inverted forward edge carries the
         # orientation instead.
         result = DbtToSlayerConverter(
@@ -140,7 +140,7 @@ class TestDbtConverterMirror:
             next(j for j in claim.relationships if j.to == "claim_coverage").cardinality
             is RelationshipCardinality.ONE_TO_ONE
         )
-        # DEV-1853: the larger-named peer declares nothing; the inverted
+        # The larger-named peer declares nothing; the inverted
         # orientation stays one_to_one.
         assert not any(j.to == "claim" for j in cov.relationships)
         rev = edges_between(source=cov, target=claim)[0]
@@ -204,7 +204,7 @@ class TestFacade:
 
 
 def _dyn_catalog():
-    """orders (no configured join) + stores — forces the dynamic-join path."""
+    """orders (no configured relationship) + stores — forces the dynamic-join path."""
     orders = SlayerDataset(
         name="orders",
         data_source="jaffle",
@@ -274,7 +274,7 @@ class TestFacadeDynamicJoin:
             ],
             relationships=[],
         )
-        # Composite PK (id, region) — neither column is unique on its own.
+        # Composite PK (id, region) — neither field is unique on its own.
         stores = SlayerDataset(
             name="stores",
             data_source="jaffle",
@@ -302,7 +302,7 @@ class TestFacadeDynamicJoin:
         assert ext.relationships[0].cardinality is None
 
     def test_dynamic_join_many_to_one_for_non_pk_unique_target(self) -> None:
-        """A non-PK column flagged ``unique`` is a solo uniqueness claim."""
+        """A non-PK field flagged ``unique`` is a solo uniqueness claim."""
         orders = SlayerDataset(
             name="orders",
             data_source="jaffle",

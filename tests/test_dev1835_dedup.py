@@ -1,4 +1,4 @@
-"""DEV-1835 attach-dedup (design D6) — one producer per structural identity,
+"""Attach-dedup (design D6) — one producer per structural identity,
 serving every consuming position across both attach phases; producers that
 differ in any input stay separate.
 
@@ -80,7 +80,7 @@ class TestDedupPositive:
         self, exec_backend,
     ) -> None:
         """The same region total inside a computed dimension AND as a selected
-        measure: one producer relation, both roles correct."""
+        metric: one producer relation, both roles correct."""
         dialect, engine = exec_backend
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
@@ -147,7 +147,7 @@ class TestDedupPositive:
         self, exec_backend,
     ) -> None:
         """D10 subsumption: the dual-role total dedups to one producer, the
-        bare windowed measure adds exactly one more."""
+        bare windowed metric adds exactly one more."""
         dialect, engine = exec_backend
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
@@ -207,7 +207,7 @@ class TestDedupNegative:
         self, shipped_backend,
     ) -> None:
         """``last(amount)`` (default ``ordered_at``) vs an explicit
-        ``shipped_at`` ranking column — North's values differ (30 vs 10)."""
+        ``shipped_at`` ranking field — North's values differ (30 vs 10)."""
         dialect, engine = shipped_backend
         query = q(
             dimensions=["region"],

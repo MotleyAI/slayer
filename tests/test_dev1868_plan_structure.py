@@ -1,4 +1,4 @@
-"""DEV-1868 plan-structure pins (design D2/D3/D7): producer count, substitution
+"""Plan-structure pins (design D2/D3/D7): producer count, substitution
 ownership, attach phase, complete join grain; composites become combined slots;
 the row-leaf time_shift rejection fires at plan time."""
 
@@ -83,7 +83,7 @@ class TestSharedInnerProducerShape:
         assert any(_reads_placeholder(s) for s in transform_slots)
         mask_slots = [slots[m.slot_id] for m in planned.masks]
         assert any(_reads_placeholder(s) for s in mask_slots)
-        # The original cross-model aggregate survives in no slot.
+        # The original cross-dataset aggregate survives in no slot.
         assert not [s.id for s in slots.values()
                     if any(k == sub.original_key for k in walk_value_keys(s.key))]
 
@@ -96,7 +96,7 @@ class TestSharedInnerProducerShape:
 
 
 class TestCompositesBecomeCombinedSlots:
-    """D3: every cross-model composite shape plans as a placeholder-substituted
+    """D3: every cross-dataset composite shape plans as a placeholder-substituted
     AGGREGATE slot with target-rooted producers — none reaches the seam."""
 
     @pytest.mark.parametrize("formula, n_producers", [

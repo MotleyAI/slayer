@@ -47,7 +47,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 async def integration_env(tmp_path) -> SlayerQueryEngine:
-    """Create a real SQLite database with test data, configure storage, models, and engine."""
+    """Create a real SQLite database with test data, configure storage, datasets, and engine."""
 
     # -- SQLite database --
     db_path = tmp_path / "test.db"
@@ -107,7 +107,7 @@ async def integration_env(tmp_path) -> SlayerQueryEngine:
     )
     await storage.save_datasource(datasource)
 
-    # -- Orders model --
+    # -- Orders dataset --
     orders_model = SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -126,7 +126,7 @@ async def integration_env(tmp_path) -> SlayerQueryEngine:
     )
     await storage.save_dataset(orders_model)
 
-    # -- Customers model --
+    # -- Customers dataset --
     customers_model = SlayerDataset(
         name="customers",
         sql_table="customers",
@@ -802,7 +802,7 @@ async def test_forward_row_shift_with_date_range(integration_env):
 
 
 async def test_post_filter_on_change(integration_env):
-    """Filter on a computed column (change) should only return matching rows."""
+    """Filter on a computed field (change) should only return matching rows."""
     engine = integration_env
 
     # 3 months: Jan(300), Feb(125), Mar(325)
@@ -972,11 +972,11 @@ async def test_transform_on_filter_rhs(integration_env):
 
 
 async def test_last_measure_type(integration_env):
-    """A measure with type=last should return the most recent time bucket's value."""
+    """A metric with type=last should return the most recent time bucket's value."""
     engine = integration_env
 
     # 3 months: Jan(300), Feb(125), Mar(325)
-    # latest_amount has type=last, so querying it as a bare measure
+    # latest_amount has type=last, so querying it as a bare metric
     # should auto-wrap with last() and return Mar's value (325) for all rows
     query = SlayerQuery(
         population="orders",
@@ -1030,7 +1030,7 @@ async def test_last_function(integration_env):
 
 
 async def test_having_filter(integration_env):
-    """Filters on measures should use HAVING with the aggregate expression."""
+    """Filters on metrics should use HAVING with the aggregate expression."""
     engine = integration_env
 
     # Group by status: completed(3 orders), pending(2), cancelled(1)
@@ -1052,7 +1052,7 @@ async def test_having_filter(integration_env):
 
 
 async def test_having_filter_with_sum(integration_env):
-    """HAVING on a SUM measure should use the SUM() expression."""
+    """HAVING on a SUM metric should use the SUM() expression."""
     engine = integration_env
 
     # Group by status: completed(100+200+300=600), pending(50+25=75), cancelled(75)
@@ -1073,7 +1073,7 @@ async def test_having_filter_with_sum(integration_env):
 
 async def test_filter_mixing_measure_and_row_conjuncts_splits(integration_env):
     """A top-level AND splits: the row conjunct masks before aggregation, the
-    measure conjunct prunes result cells."""
+    metric conjunct prunes result cells."""
     engine = integration_env
 
     query = SlayerQuery(
@@ -1100,7 +1100,7 @@ async def test_filter_mixing_measure_and_row_conjuncts_splits(integration_env):
 async def joined_time_env(tmp_path):
     """Schema: order_items → orders (with created_at) → stores (with opened_at).
 
-    Tests that type=last resolves through join paths correctly.
+    Tests that type=last resolves through relationship paths correctly.
     """
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
@@ -1166,7 +1166,7 @@ async def joined_time_env(tmp_path):
 
 @pytest.mark.integration
 async def test_last_with_joined_time_dimension(joined_time_env):
-    """type=last resolves correctly when the time dimension is from a joined model (single hop)."""
+    """type=last resolves correctly when the time dimension is from a joined dataset (single hop)."""
     engine = joined_time_env
 
     # Query orders with stores.opened_at as time dimension and latest_amount (type=last).
@@ -1195,7 +1195,7 @@ async def test_last_with_joined_time_dimension(joined_time_env):
 
 @pytest.mark.integration
 async def test_last_with_multihop_joined_time_dimension(joined_time_env):
-    """type=last resolves correctly through multi-hop joins (order_items → orders.created_at)."""
+    """type=last resolves correctly through multi-hop relationships (order_items → orders.created_at)."""
     engine = joined_time_env
 
     # Query order_items with orders.created_at as time dimension and latest_qty (type=last).
@@ -1225,12 +1225,12 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
 
 
 # ---------------------------------------------------------------------------
-# Cross-model measures
+# Cross-dataset metrics
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 async def cross_dataset_env(tmp_path):
-    """SQLite env with orders + customers models and an explicit join."""
+    """SQLite env with orders + customers datasets and an explicit relationship."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
         conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
@@ -1276,7 +1276,7 @@ async def cross_dataset_env(tmp_path):
 
 
 async def test_cross_model_measure_monthly(cross_dataset_env):
-    """Cross-model measure: monthly order count + avg customer score from joined model."""
+    """Cross-dataset metric: monthly order count + avg customer score from joined dataset."""
     engine = cross_dataset_env
 
     query = SlayerQuery(
@@ -1298,7 +1298,7 @@ async def test_cross_model_measure_monthly(cross_dataset_env):
 
 
 async def test_cross_model_measure_no_join_raises(cross_dataset_env):
-    """An unreachable cross-model measure target is route-aware-rejected:
+    """An unreachable cross-dataset metric target is route-aware-rejected:
     ``UnresolvableDimensionJoinError`` (a ``ValueError``) with no route to target."""
     engine = cross_dataset_env
 
@@ -1311,13 +1311,13 @@ async def test_cross_model_measure_no_join_raises(cross_dataset_env):
 
 
 async def test_cross_model_measure_with_target_join_filters(cross_dataset_env):
-    """Cross-model measure CTE must include filters reachable from the target model.
+    """Cross-dataset metric CTE must include filters reachable from the target dataset.
 
     Based on Q9 benchmark: policy_amount.total_policy_amount:sum with filters on
     premium (has_premium='1', constant dim — INNER JOIN does the filtering) and
     agreement_party_role (party_role_code='PH'). Both are reachable from
-    policy_amount's join graph. Without the re-rooted subquery fix, these filters
-    would be stripped from the cross-model CTE, producing wrong aggregates.
+    policy_amount's relationship graph. Without the re-rooted subquery fix, these filters
+    would be stripped from the cross-dataset CTE, producing wrong aggregates.
     """
     engine = cross_dataset_env
     tmp = tempfile.mkdtemp()
@@ -1393,7 +1393,7 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
 
     engine = SlayerQueryEngine(storage=storage)
 
-    # Q9-style query: cross-model measure with filters on target's join graph
+    # Q9-style query: cross-dataset metric with filters on target's relationship graph
     query = SlayerQuery(
         population="policy",
         metrics=[QueryMetric(metric="sum(policy_amount.total_policy_amount)")],
@@ -1405,7 +1405,7 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
     )
     response = await engine.execute(query)
 
-    # With both filters applied in the cross-model CTE:
+    # With both filters applied in the cross-dataset CTE:
     # POL-001: amounts 100+200=300 (both have premium rows, PH)
     # POL-002: only amount 300 has a premium row (INNER JOIN excludes 400)
     # POL-003: excluded (AG role, not PH)
@@ -1419,7 +1419,7 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
 
 
 async def test_transform_on_cross_model(cross_dataset_env):
-    """Transforms on cross-model measures work (applied after the cross-model join)."""
+    """Transforms on cross-dataset metrics work (applied after the cross-dataset join)."""
     engine = cross_dataset_env
 
     # cumsum of avg customer score per month
@@ -1441,11 +1441,11 @@ async def test_transform_on_cross_model(cross_dataset_env):
 
 
 # ---------------------------------------------------------------------------
-# Query as model (multistage queries)
+# Query as dataset (multistage queries)
 # ---------------------------------------------------------------------------
 
 async def test_query_backed_model_count(integration_env):
-    """A named query can be used as the model for another query via list."""
+    """A named query can be used as the dataset for another query via list."""
     engine = integration_env
 
     # Inner: monthly order counts (3 months), named for reference
@@ -1487,10 +1487,10 @@ async def test_query_backed_model_aggregate(integration_env):
 
 
 async def test_create_model_from_query(integration_env: SlayerQueryEngine):
-    """A query can be saved as a permanent model and then queried by name."""
+    """A query can be saved as a permanent dataset and then queried by name."""
     engine = integration_env
 
-    # Create a monthly summary model from a query
+    # Create a monthly summary dataset from a query
     source_query = SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
@@ -1502,20 +1502,20 @@ async def test_create_model_from_query(integration_env: SlayerQueryEngine):
         query=source_query, name="monthly_summary",
     )
 
-    # Verify model structure
+    # Verify dataset structure
     dim_names = [d.name for d in saved.fields]
     assert "created_at" in dim_names
     assert "_count" in dim_names
     assert "total_amount_sum" in dim_names
     assert saved.source_queries is not None
 
-    # Query the saved model by name
+    # Query the saved dataset by name
     result = await engine.execute(query=SlayerQuery(
         population="monthly_summary", metrics=[QueryMetric(metric="count(*)")],
     ))
     assert result.data[0]["monthly_summary._count"] == 3
 
-    # Re-aggregate over saved model
+    # Re-aggregate over saved dataset
     result2 = await engine.execute(query=SlayerQuery(
         population="monthly_summary", metrics=[QueryMetric(metric="sum(total_amount_sum)")],
     ))
@@ -1535,8 +1535,8 @@ async def test_query_list_with_joins(cross_dataset_env):
     )
 
     # Main query: monthly orders joined to customer_scores
-    # In the virtual model, inner measures become dimensions with auto-generated
-    # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
+    # In the virtual dataset, inner metrics become dimensions with auto-generated
+    # SUM/AVG metrics. Use avg_score_avg to re-average the inner avg_score.
     main = SlayerQuery(
         population="orders",
         extensions=[DatasetExtension.model_validate({
@@ -1565,7 +1565,7 @@ async def test_sibling_stage_joins_dag(cross_dataset_env):
 
     ``kpis`` aggregates per customer; ``tagged``
     is a non-final named stage whose source is ``customers`` extended with
-    a join back to ``kpis`` and pulls the kpis sum in as a join-traversed
+    a relationship back to ``kpis`` and pulls the kpis sum in as a relationship-traversed
     dimension; the final stage re-aggregates ``tagged`` across the
     population.
 
@@ -1588,7 +1588,7 @@ async def test_sibling_stage_joins_dag(cross_dataset_env):
                 "dataset": "customers",
                 "relationships": [{"to": "kpis", "from_columns": ["id"], "to_columns": ["customer_id"]}],
             })],
-            # ``kpis.total_amount_sum`` is a join-traversed dimension, so
+            # ``kpis.total_amount_sum`` is a relationship-traversed dimension, so
             # each customer row carries their own kpis sum.
             dimensions=[QueryDimension(field="name"), QueryDimension(field="kpis.total_amount_sum")],
         ),
@@ -1645,7 +1645,7 @@ async def test_sql_dimension_with_regular(integration_env):
 
 
 async def test_formula_dimension_via_query_list(integration_env):
-    """Formula dimensions on aggregates work via multistage query list."""
+    """Expression dimensions on aggregates work via multistage query list."""
     engine = integration_env
 
     # Inner: compute monthly totals
@@ -1674,8 +1674,8 @@ async def test_formula_dimension_via_query_list(integration_env):
 
 
 async def test_multistage_renamed_measure_returns_non_null(integration_env: SlayerQueryEngine):
-    """A 2-stage query-backed model where the inner stage
-    renames its aggregated measure via ``name=`` must return non-NULL values
+    """A 2-stage query-backed dataset where the inner stage
+    renames its aggregated metric via ``name=`` must return non-NULL values
     for the renamed column when executed end-to-end.
 
     Before the fix: the inner-stage wrap silently emits ``amount_sum``
@@ -1715,7 +1715,7 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env: Slay
     )
     value = row["raw.rev_sum"]
     assert value is not None, (
-        f"renamed measure must surface a non-NULL value, got NULL in row: {row}"
+        f"renamed metric must surface a non-NULL value, got NULL in row: {row}"
     )
     # 100 + 200 + 50 + 75 + 300 + 25 = 750  # NOSONAR(S125) — arithmetic explanation, not commented-out code
     assert value == pytest.approx(750.0), (
@@ -1740,7 +1740,7 @@ async def test_circular_query_reference_raises(integration_env):
 
 
 async def _mutual_join_engine(tmp_path, *, ab_name=None, ba_name=None):
-    """Engine over models a/b with mutual declared joins (optionally named)."""
+    """Engine over datasets a/b with mutual declared relationships (optionally named)."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
         conn.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, b_id INTEGER)")
@@ -1774,7 +1774,7 @@ async def _mutual_join_engine(tmp_path, *, ab_name=None, ba_name=None):
 
 
 def _b_a_unique_field_query(hop1: str, hop2: str) -> SlayerQuery:
-    # "unique_b_field" only exists on model b, so translation can't short-circuit.
+    # "unique_b_field" only exists on dataset b, so translation can't short-circuit.
     return SlayerQuery(
         population="a",
         dimensions=[QueryDimension(field=f"{hop1}.{hop2}.unique_b_field")],
@@ -1791,7 +1791,7 @@ async def test_unnamed_parallel_edges_fail_closed(tmp_path):
 
 
 async def test_circular_join_graph_raises(tmp_path):
-    """A named-edge path that revisits a model is rejected as a circular join."""
+    """A named-edge path that revisits a dataset is rejected as a circular relationship path."""
     engine = await _mutual_join_engine(tmp_path, ab_name="fwd", ba_name="back")
     # fwd.back walks a→b→a — a cycle.
     query = _b_a_unique_field_query("fwd", "back")
@@ -1800,11 +1800,11 @@ async def test_circular_join_graph_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Model filters on joined columns
+# Dataset filters on joined fields
 # ---------------------------------------------------------------------------
 
 async def test_model_filter_on_joined_column(tmp_path):
-    """Model-level filter on a joined column applies WHERE correctly."""
+    """Dataset-level filter on a joined field applies WHERE correctly."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
         conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region TEXT)")
@@ -1838,7 +1838,7 @@ DatasetField(name="total", sql="amount", datatype=DataType.FLOAT)
 
     engine = SlayerQueryEngine(storage=storage)
 
-    # Model filter "customers.region == 'US'" should exclude Bob (EU)
+    # Dataset filter "customers.region == 'US'" should exclude Bob (EU)
     result = await engine.execute(SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="customers.name")],
@@ -1848,7 +1848,7 @@ DatasetField(name="total", sql="amount", datatype=DataType.FLOAT)
     names = {r["orders.customers.name"] for r in result.data}
     assert "Alice" in names
     assert "Charlie" in names
-    assert "Bob" not in names  # Filtered by model filter
+    assert "Bob" not in names  # Filtered by dataset filter
 
     # JOIN must be included even though the filter (not the dimension) needs it
     assert "LEFT JOIN" in result.sql
@@ -1856,7 +1856,7 @@ DatasetField(name="total", sql="amount", datatype=DataType.FLOAT)
 
 
 # ---------------------------------------------------------------------------
-# Diamond joins — same table reached via two different paths
+# Diamond relationships — same table reached via two different paths
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -1909,16 +1909,16 @@ async def test_diamond_joins_both_paths(diamond_env: tuple[SlayerQueryEngine, St
     """Query both customer region and warehouse region in one query — must not collide."""
     engine, storage = diamond_env
 
-    # Verify the ingested model has its own columns (not flattened joined dims)
+    # Verify the ingested dataset has its own fields (not flattened joined dims)
     shipments = await storage.get_dataset("shipments")
     assert shipments is not None
     dim_names = {d.name for d in shipments.fields}
     assert "customer_id" in dim_names
     assert "warehouse_id" in dim_names
-    # Joined dimensions are resolved via the join graph, not pre-flattened
+    # Joined dimensions are resolved via the relationship graph, not pre-flattened
     assert not any("." in name for name in dim_names)
 
-    # Query both region paths simultaneously — resolved via join graph
+    # Query both region paths simultaneously — resolved via relationship graph
     result = await engine.execute(query=SlayerQuery(
         population="shipments",
         dimensions=[
@@ -1955,7 +1955,7 @@ async def test_sqlite_ingest_has_no_descriptions(diamond_env: tuple[Any, Storage
 
 
 async def test_query_filter_on_joined_dimension(diamond_env):
-    """Query-level filter on a joined dimension resolves through the model."""
+    """Query-level filter on a joined dimension resolves through the dataset."""
     engine, _ = diamond_env
 
     result = await engine.execute(query=SlayerQuery(
@@ -1985,16 +1985,16 @@ async def test_diamond_joins_single_path(diamond_env):
 
 
 # ---------------------------------------------------------------------------
-# Filtered measures
+# Filtered metrics
 # ---------------------------------------------------------------------------
 
 
 async def test_filtered_measure_sum(integration_env: SlayerQueryEngine):
-    """Measure with filter produces CASE WHEN — only matching rows aggregated."""
+    """Metric with filter produces CASE WHEN — only matching rows aggregated."""
     engine = integration_env
     storage = engine.storage
 
-    # Add a filtered measure: only sum completed orders' amounts
+    # Add a filtered metric: only sum completed orders' amounts
     orders = await storage.get_dataset("orders")
     assert orders is not None
     orders.fields.append(
@@ -2018,7 +2018,7 @@ async def test_filtered_measure_sum(integration_env: SlayerQueryEngine):
 
 
 async def test_filtered_measure_count(integration_env: SlayerQueryEngine):
-    """Filtered count measure counts only matching rows."""
+    """Filtered count metric counts only matching rows."""
     engine = integration_env
     storage = engine.storage
 
@@ -2044,7 +2044,7 @@ async def test_filtered_measure_count(integration_env: SlayerQueryEngine):
 
 
 async def test_filtered_measure_with_dimensions(integration_env: SlayerQueryEngine):
-    """Filtered measure works with GROUP BY dimensions."""
+    """Filtered metric works with GROUP BY dimensions."""
     engine = integration_env
     storage = engine.storage
 
@@ -2071,7 +2071,7 @@ async def test_filtered_measure_with_dimensions(integration_env: SlayerQueryEngi
 
 
 async def test_filtered_last_picks_correct_row(integration_env: SlayerQueryEngine):
-    """A ``Column.filter`` masks the value and never restricts the ranking: ``last``
+    """A ``DatasetField.filter`` masks the value and never restricts the ranking: ``last``
     picks the globally latest row and reads its masked value (NULL when that row
     fails the filter).
 
@@ -2120,7 +2120,7 @@ async def test_filtered_last_picks_correct_row(integration_env: SlayerQueryEngin
 
 
 async def test_time_dimension_label_fallback(integration_env: SlayerQueryEngine):
-    """Time dimension inherits label from model dimension definition."""
+    """Time dimension inherits label from dataset dimension definition."""
     engine = integration_env
     storage = engine.storage
 
@@ -2142,20 +2142,20 @@ async def test_time_dimension_label_fallback(integration_env: SlayerQueryEngine)
         ],
         metrics=[QueryMetric(metric="sum(total_amount)")],
     ))
-    # The model-level label should propagate through
+    # The dataset-level label should propagate through
     td_meta = result.attributes.dimensions.get("orders.created_at")
     assert td_meta is not None
     assert td_meta.label == "Order Date"
 
 
 async def test_label_propagation_enrichment(integration_env: SlayerQueryEngine):
-    """Model-level labels propagate through enrichment to query results."""
+    """Dataset-level labels propagate through enrichment to query results."""
     engine = integration_env
     storage = engine.storage
 
     orders = await storage.get_dataset("orders")
     assert orders is not None
-    # Add labels to a dimension and measure
+    # Add labels to a dimension and metric
     for d in orders.fields:
         if d.name == "status":
             d.label = "Order Status"
@@ -2318,7 +2318,7 @@ async def stat_env(tmp_path):
                 DatasetField(name="x", sql="x", datatype=DataType.FLOAT),
                 DatasetField(name="y", sql="y", datatype=DataType.FLOAT),
                 DatasetField(name="bucket", sql="bucket", datatype=DataType.STRING),
-                # Column.sql exercising scalar math UDFs
+                # DatasetField.sql exercising scalar math UDFs
                 DatasetField(name="ln_x", sql="ln(x)", datatype=DataType.FLOAT),
                 DatasetField(name="sqrt_x", sql="sqrt(x)", datatype=DataType.FLOAT),
                 DatasetField(name="x_squared", sql="pow(x, 2)", datatype=DataType.FLOAT),
@@ -2462,7 +2462,7 @@ async def test_stat_aggs_per_group_sqlite(stat_env):
 
 
 async def test_scalar_ln_in_column_sql(stat_env):
-    """A Column.sql containing `ln(x)` must execute on SQLite (UDF lookup)
+    """A DatasetField.sql containing `ln(x)` must execute on SQLite (UDF lookup)
     and return the math.log of every row.
     """
     engine, _ = stat_env
@@ -2557,7 +2557,7 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
 
 @pytest.fixture
 async def planets_env(tmp_path):
-    """Planets fixture: a Column.sql with `row_number() over (...)` for top-N."""
+    """Planets fixture: a DatasetField.sql with `row_number() over (...)` for top-N."""
     db_path = tmp_path / "planets.db"
     with transaction(str(db_path)) as conn:
         cur = conn.cursor()
@@ -2612,11 +2612,11 @@ async def planets_env(tmp_path):
 
 
 async def test_filter_on_windowed_column_sqlite_raises(planets_env):
-    """End-to-end: filtering on a `Column.sql` with a window function used to
+    """End-to-end: filtering on a `DatasetField.sql` with a window function used to
     auto-promote to a post-aggregation outer WHERE. That escape
     hatch is removed — users must use rank-family transforms
-    (`rank(<measure>, direction='desc') <= 3`) or factor the windowed column into a
-    multi-stage `source_queries` model instead. The engine raises a
+    (`rank(<metric>, direction='desc') <= 3`) or factor the windowed field into a
+    multi-stage `source_queries` dataset instead. The engine raises a
     clear error with that suggestion."""
     engine = planets_env
     query = SlayerQuery(
@@ -2629,7 +2629,7 @@ async def test_filter_on_windowed_column_sqlite_raises(planets_env):
 
 
 async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
-    """A derived ``Column.sql`` that uses ``json_extract`` inside a CASE WHEN
+    """A derived ``DatasetField.sql`` that uses ``json_extract`` inside a CASE WHEN
     must return the expected aggregate. Pre-fix the SQLite emitter rewrites
     ``json_extract(...)`` to ``col -> '$.path'``, which returns the
     JSON-quoted form (``'"Owned"'``); CASE WHEN against the bare-string
@@ -2687,14 +2687,14 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Cross-model and local derived ``Column.sql`` chaining (SQLite)
+# Cross-dataset and local derived ``DatasetField.sql`` chaining (SQLite)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 async def derived_chain_env(tmp_path):
-    """Two-table A→B fixture: B has a derived column referenced by A's
-    derived columns. Used to verify recursive expansion at execution time.
+    """Two-table A→B fixture: B has a derived field referenced by A's
+    derived fields. Used to verify recursive expansion at execution time.
     """
     db_path = tmp_path / "derived_chain.db"
     with transaction(str(db_path)) as conn:
@@ -2801,15 +2801,15 @@ async def test_integration_local_derived_chain(derived_chain_env):
 
 
 # ---------------------------------------------------------------------------
-# Filter-only references to derived columns whose sql crosses a
-# join must auto-add the join (no need to also list the column in
+# Filter-only references to derived fields whose sql crosses a
+# relationship must auto-add the join (no need to also list the field in
 # ``dimensions``).
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 async def orders_customers_env(tmp_path):
-    """orders → customers with a derived ``is_eu`` column on orders whose
+    """orders → customers with a derived ``is_eu`` field on orders whose
     SQL references the joined customers table. Used to pin filter-only
     auto-join behavior end-to-end.
     """
@@ -2861,8 +2861,8 @@ async def orders_customers_env(tmp_path):
 async def test_filter_on_derived_column_with_cross_table_ref_executes(
     orders_customers_env,
 ):
-    """Filter-only reference to a bare-named derived column whose SQL
-    crosses a join must execute end-to-end (no ``no such column`` error)
+    """Filter-only reference to a bare-named derived field whose SQL
+    crosses a relationship must execute end-to-end (no ``no such column`` error)
     and return the right count.
     """
     engine = orders_customers_env
@@ -2884,7 +2884,7 @@ async def test_filter_on_derived_column_with_cross_table_ref_executes(
 
 
 async def test_log10_round_trip_sqlite(tmp_path):
-    """A user-written `log10(x)` formula must (a) execute correctly
+    """A user-written `log10(x)` expression must (a) execute correctly
     end-to-end on SQLite (via the registered `log10` UDF) and (b) appear
     verbatim as `log10(...)` in the emitted SQL — not the canonicalised
     `LOG(10, ...)` form. Same shape for `log2(x)` (which depends on the
@@ -3006,7 +3006,7 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
 
 
 async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
-    """A ``Column(sql="json_extract(...)", type=DataType.FLOAT)`` over JSON-
+    """A ``DatasetField(sql="json_extract(...)", type=DataType.FLOAT)`` over JSON-
     encoded numeric data must produce native float result tuples on SQLite.
     Without the cast emission, json_extract returns TEXT and the
     benchmark's tuple comparison fails (TEXT '"1.5"' != REAL 1.5).
@@ -3132,9 +3132,9 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
 
 @pytest.fixture
 async def search_env(tmp_path):
-    """SQLite + storage with two models ingested through the live
-    ``ingest_datasource_idempotent`` path so every column gets a real
-    ``Column.sampled`` snapshot, plus one seeded memory tagged on
+    """SQLite + storage with two datasets ingested through the live
+    ``ingest_datasource_idempotent`` path so every field gets a real
+    ``DatasetField.sampled`` snapshot, plus one seeded memory tagged on
     ``test_sqlite.orders`` for the entity-channel test."""
     db_path = tmp_path / "search.db"
     with transaction(str(db_path)) as conn:
@@ -3189,7 +3189,7 @@ async def search_env(tmp_path):
     await storage.save_datasource(datasource)
 
     engine = SlayerQueryEngine(storage=storage)
-    # Live ingest — populates Column.sampled on every non-pk column via the
+    # Live ingest — populates DatasetField.sampled on every non-pk field via the
     # production code path.
     await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=engine.client_for(datasource))
 
@@ -3202,9 +3202,9 @@ async def search_env(tmp_path):
 
 
 async def test_refresh_samples_populates_sampled(search_env: tuple[SlayerQueryEngine, StorageBackend]):
-    """Ingest no longer profiles columns (samples are lazy). An explicit
-    ``refresh-samples`` pass writes ``Column.sampled`` for every non-pk
-    column. Categorical and numeric columns get different formats —
+    """Ingest no longer profiles fields (samples are lazy). An explicit
+    ``refresh-samples`` pass writes ``DatasetField.sampled`` for every non-pk
+    field. Categorical and numeric fields get different formats —
     spot-check one of each."""
     engine, storage = search_env
     # After ingest alone, samples are unpopulated.
@@ -3237,14 +3237,14 @@ async def test_refresh_samples_populates_sampled(search_env: tuple[SlayerQueryEn
     assert "cancelled" in status.sampled
 
     amount = next(c for c in orders.fields if c.name == "amount")
-    # Numeric columns surface as "<min> .. <max>".
+    # Numeric fields surface as "<min> .. <max>".
     assert amount.sampled is not None
     assert ".." in amount.sampled
 
 
 async def test_search_question_finds_column(search_env):
-    """``search(question="amount")`` returns a column hit pointing at
-    one of the seeded ``amount``-named columns."""
+    """``search(question="amount")`` returns a field hit pointing at
+    one of the seeded ``amount``-named fields."""
     _engine, storage = search_env
     response = await SearchService(storage=storage).search(
         question="amount",
@@ -3252,14 +3252,14 @@ async def test_search_question_finds_column(search_env):
     )
     column_hits = [h for h in response.results if h.kind == "field"]
     assert column_hits, (
-        "expected at least one column hit; got results="
+        "expected at least one field hit; got results="
         f"{[(h.id, h.kind) for h in response.results]}"
     )
-    # The question is "amount" — only ``*.amount`` columns are
-    # acceptable. Accepting any column hit (e.g. ``customers.region``)
+    # The question is "amount" — only ``*.amount`` fields are
+    # acceptable. Accepting any field hit (e.g. ``customers.region``)
     # would mask a relevance regression in the search ranker.
     assert any(h.id.endswith(".amount") for h in column_hits), (
-        "expected an `.amount` column hit; got column hits="
+        "expected an `.amount` field hit; got field hits="
         f"{[h.id for h in column_hits]}"
     )
 
@@ -3283,9 +3283,9 @@ async def test_search_entity_filter_finds_memory(search_env):
 
 
 async def test_search_edit_model_filter_refreshes_sampled(search_env: tuple[SlayerQueryEngine, StorageBackend]):
-    """A model-level mutation (``SlayerModel.filters``) triggers
+    """A dataset-level mutation (``SlayerDataset.filters``) triggers
     ``handle_edit_refresh(model_level_change=True)`` which re-profiles
-    every column. After the mutation, every column still has a
+    every field. After the mutation, every field still has a
     ``sampled`` snapshot."""
     engine, storage = search_env
     orders_before = await storage.get_dataset("orders", data_source="test_sqlite")
@@ -3347,7 +3347,7 @@ async def _setup_items_db(tmp_path) -> YAMLStorage:
 
 
 async def test_model_filter_with_lower_function_runs(tmp_path):
-    """Mode A: ``SlayerModel.filters`` with arbitrary SQL function call
+    """Mode A: ``SlayerDataset.filters`` with arbitrary SQL function call
     (``lower(...)``) must execute end-to-end against SQLite. Previously
     the engine raised ``Unknown filter function 'lower'`` at
     enrichment time."""
@@ -3375,8 +3375,8 @@ async def test_model_filter_with_lower_function_runs(tmp_path):
 
 
 async def test_column_filter_with_lower_function_runs(tmp_path):
-    """Mode A: ``Column.filter`` with ``lower(...)`` runs end-to-end as a
-    CASE-WHEN measure-level filter against SQLite."""
+    """Mode A: ``DatasetField.filter`` with ``lower(...)`` runs end-to-end as a
+    CASE-WHEN metric-level filter against SQLite."""
     storage = await _setup_items_db(tmp_path)
 
     model = SlayerDataset(
@@ -3406,7 +3406,7 @@ async def test_column_filter_with_lower_function_runs(tmp_path):
 
 
 async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
-    """Mode A: ``SlayerModel.filters`` with a ``__``-delimited join path
+    """Mode A: ``SlayerDataset.filters`` with a ``__``-delimited relationship path
     (``customers__regions.name = 'EU'``) must drive the join planner
     correctly so the filter is applied against the joined table."""
     db_path = tmp_path / "ds.db"
@@ -3456,7 +3456,7 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
         name="orders",
         sql_table="orders",
         data_source="ds",
-        # Mode A SQL filter with __-delimited join path through customers→regions.
+        # Mode A SQL filter with __-delimited relationship path through customers→regions.
         filters=["customers.regions.name = 'EU'"],
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
@@ -3478,7 +3478,7 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
 
 
 async def test_model_filter_with_json_extract_runs(tmp_path):
-    """Mode A: ``SlayerModel.filters`` with ``json_extract(...)`` (a SQLite
+    """Mode A: ``SlayerDataset.filters`` with ``json_extract(...)`` (a SQLite
     built-in function) executes end-to-end. Previously this raised
     ``Unknown filter function 'json_extract'`` at enrichment time."""
     db_path = tmp_path / "ds.db"
@@ -3561,8 +3561,8 @@ async def test_query_filter_with_replace_runs(integration_env):
 
 
 async def test_filter_renamed_measure_colon_syntax(integration_env):
-    """Filter on the raw colon-syntax formula must resolve to the
-    user alias when the measure is renamed on the same node. Without the
+    """Filter on the raw colon-syntax expression must resolve to the
+    user alias when the metric is renamed on the same node. Without the
     fix the query fails at execution time (column-not-found on the inner
     SELECT). With the fix it executes correctly as HAVING on the aggregate.
     """
@@ -3583,13 +3583,13 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
     # completed and pending survive.
     surviving = {row["orders.status"]: row["orders.num_customers"] for row in response.data}
     assert surviving == {"completed": 2, "pending": 2}, (
-        f"unexpected rows from renamed-measure HAVING filter: {response.data}"
+        f"unexpected rows from renamed-metric HAVING filter: {response.data}"
     )
 
 
 async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
     """ORDER BY two ``last()`` aggregates over
-    different explicit time columns must execute end-to-end against real
+    different explicit time fields must execute end-to-end against real
     SQLite and return rows ordered by the correct distinct rank keys
     (no dangling ``_last_rn``, no collapsed ranks). Uses a tied primary
     rank so the secondary ASC tie-break actually engages.
@@ -3671,14 +3671,14 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Measure-source Column.sql with __-delimited path alias must
+# Metric-source DatasetField.sql with __-delimited path alias must
 # (a) execute end-to-end on SQLite (no `no such column` error from a
 # missing JOIN) and (b) return the right cardinality.
 # ---------------------------------------------------------------------------
 
 
 async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
-    """orders → customers → regions chain; a derived column on orders
+    """orders → customers → regions chain; a derived field on orders
     references the deep ``customers__regions.population`` path. The
     typed pipeline must pull both LEFT JOINs so the aggregate evaluates
     against real columns.
@@ -3763,7 +3763,7 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
 #
 # Reproduces the vaccine_3 failure mode: a column declared
 # ``INTEGER`` storing mostly REAL values. Pre-fix, the auto-ingested
-# Column.datatype=Integer propagates through downstream SQL generation and produces
+# DatasetField.datatype=Integer propagates through downstream SQL generation and produces
 # AVG values ~0 instead of ~0.9. Post-fix, the affinity probe widens to
 # DOUBLE at ingest time and the AVG is correct.
 # ---------------------------------------------------------------------------
@@ -3771,7 +3771,7 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
 
 async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     """End-to-end vaccine-style: ingest a SQLite DB whose INTEGER-declared
-    column actually stores REAL values, then run a SUM/AVG measure and
+    column actually stores REAL values, then run a SUM/AVG metric and
     confirm the result reflects the REAL values (not zero-truncated)."""
     db_path = tmp_path / "vaccine.db"
     with transaction(str(db_path)) as conn:
@@ -3799,7 +3799,7 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     engine = SlayerQueryEngine(storage=storage)
     await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
 
-    # Persisted model carries Column.datatype=Float for tempstabidx.
+    # Persisted dataset carries DatasetField.datatype=Float for tempstabidx.
     persisted = await storage.get_dataset("sensordata", data_source="vac")
     col = next(c for c in persisted.fields if c.name == "tempstabidx")
     assert col.datatype is DataType.FLOAT
@@ -3823,7 +3823,7 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
 
 @pytest.fixture
 async def composite_score_env(tmp_path) -> SlayerQueryEngine:
-    """A model whose ``Column.sql`` is a multi-term
+    """A dataset whose ``DatasetField.sql`` is a multi-term
     arithmetic expression. Used by both the WHERE-side and HAVING-side
     paren-wrap integration tests.
     """
@@ -3849,9 +3849,9 @@ async def composite_score_env(tmp_path) -> SlayerQueryEngine:
     await storage.save_datasource(DatasourceConfig(
         name="score_sqlite", type="sqlite", database=str(db_path),
     ))
-    # Build the columns list via a small helper so the unit-test-side
+    # Build the fields list via a small helper so the unit-test-side
     # equivalent (``_build_score_model_dev1539``) and this fixture
-    # don't duplicate the column-list boilerplate (Sonar
+    # don't duplicate the field-list boilerplate (Sonar
     # ``new_duplicated_lines_density``). Score body is the canonical
     # multi-term arithmetic shape from the bug report.
     bare_cols = [DatasetField(name=n, sql=n, datatype=DataType.FLOAT) for n in ("a", "b", "c", "d")]
@@ -3874,7 +3874,7 @@ async def composite_score_env(tmp_path) -> SlayerQueryEngine:
 
 
 async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score_env):
-    """The SQL emitted for a filter on a multi-term Column.sql
+    """The SQL emitted for a filter on a multi-term DatasetField.sql
     must wrap the inlined arithmetic expression in outer parens.
 
     Asserts both:
@@ -3932,7 +3932,7 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     # aggregation (``SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)``)
     # so the substituted ``agg_sql`` is a Binary at the AST root.
     engine = composite_score_env
-    # Re-fetch and edit the model to add the custom aggregation.
+    # Re-fetch and edit the dataset to add the custom aggregation.
     model = await engine.storage.get_dataset("entities", data_source="score_sqlite")
     assert model is not None
     model.aggregations = [
@@ -4054,7 +4054,7 @@ async def test_stddev_alias_maps_to_sample_variant(integration_env):
 
 
 async def test_round_over_bare_measure_raises(integration_env):
-    """A bare (non-aggregated) measure inside round is rejected, not leaked."""
+    """A bare (non-aggregated) metric inside round is rejected, not leaked."""
     engine = integration_env
     query = SlayerQuery(
         population="orders",
@@ -4065,7 +4065,7 @@ async def test_round_over_bare_measure_raises(integration_env):
 
 
 async def test_abs_over_bare_measure_raises(integration_env):
-    """Same guard for abs — a bare measure inside abs is rejected."""
+    """Same guard for abs — a bare metric inside abs is rejected."""
     engine = integration_env
     query = SlayerQuery(
         population="orders",

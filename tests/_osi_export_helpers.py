@@ -128,7 +128,7 @@ def convert_document(env: Env, document: dict[str, Any]) -> ConversionResult:
 
 async def stored(env: Env, name: str) -> SlayerDataset:
     model = await YAMLStorage(base_dir=str(env.store)).get_dataset(name, data_source=env.datasource)
-    assert model is not None, f"model {name!r} not in {env.store}"
+    assert model is not None, f"dataset {name!r} not in {env.store}"
     return model
 
 
@@ -221,7 +221,7 @@ def same_sql(actual: str, expected: str, *, read_dialect: str = "snowflake") -> 
 
 
 def eval_field(env: Env, ds: dict[str, Any], name: str, *, order_by: str) -> list[Any]:
-    """``ds``'s field ``name`` evaluated over its source, ordered by the source column ``order_by``."""
+    """``ds``'s field ``name`` evaluated over its source, ordered by the source field ``order_by``."""
     entity = field(ds, name)
     assert entity is not None, f"no field {name!r} on {ds['name']!r}"
     target = sqlglot_target(env)
@@ -239,7 +239,7 @@ def sqlglot_target(env: Env) -> str:
 
 def mentions(result: OsiExportResult | ConversionResult, name: str, *, severity: str | None = None,
              category: str | None = None) -> list[ConversionWarning]:
-    """Report entries naming ``name`` (as model, metric, or in the message), optionally filtered."""
+    """Report entries naming ``name`` (as dataset, metric, or in the message), optionally filtered."""
     return [
         e for e in result.entries
         if name in (e.dataset_name, e.metric_name) or name in e.message

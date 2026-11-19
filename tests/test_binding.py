@@ -1,5 +1,5 @@
-"""ExpressionBinder + FilterBinder tests: ``ParsedExpr`` + scope (``ModelScope``
-with joins / flat ``StageSchema``) → typed ``BoundExpr`` of resolved ``ValueKey``s.
+"""ExpressionBinder + FilterBinder tests: ``ParsedExpr`` + scope (``DatasetScope``
+with relationships / flat ``StageSchema``) → typed ``BoundExpr`` of resolved ``ValueKey``s.
 Covers self-prefix stripping (C14) and phase classification (P8)."""
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ class TestRowRefs:
         )
 
     def test_cross_model_derived_column_carries_path(self):
-        # Joined derived column: ColumnSqlKey.path is the join walk.
+        # Joined derived field: FieldSqlKey.path is the relationship walk.
         bound = bind_expr(
             parse_expr("customers.revenue_doubled"),
             scope=_scope(), bundle=_bundle(),
@@ -171,7 +171,7 @@ class TestRowRefs:
             bind_expr(expr, scope=scope, bundle=bundle)
 
     def test_unknown_join_target_raises(self):
-        # DEV-1856: an unreachable short form is route-aware-rejected (was UnknownReferenceError).
+        # An unreachable short form is route-aware-rejected (was UnknownReferenceError).
         expr = parse_expr("warehouses.id")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(UnresolvableDimensionRelationshipError):
@@ -185,7 +185,7 @@ class TestRowRefs:
 
 class TestSelfPrefixStripping:
     def test_self_prefix_stripped(self):
-        # orders.status over an orders-rooted query → ColumnKey(path=(), leaf="status").
+        # orders.status over an orders-rooted query → FieldKey(path=(), leaf="status").
         bound = bind_expr(
             parse_expr("orders.status"), scope=_scope(), bundle=_bundle(),
         )
@@ -242,7 +242,7 @@ class TestAggregations:
         key = bound.value_key
         assert isinstance(key, AggregateKey)
         assert key.agg == "weighted_avg"
-        # Kwargs canonicalised; weight=ColumnKey(...).
+        # Kwargs canonicalised; weight=FieldKey(...).
         assert dict(key.kwargs) == {
             "weight": FieldKey(path=(), leaf="customer_id"),
         }
@@ -314,9 +314,9 @@ class TestComposite:
         assert bound.value_key == LiteralKey(value=Decimal(42))
 
     def test_aggregates_nested_in_scalar_call_stay_bound(self):
-        # DEV-1484 backfill from the deleted
-        # test_formula.py::TestPlaceholderLeakRegression (DEV-1341). The legacy
-        # parser flattened such formulas to a SQL string with ``__aggN__``
+        # Backfill from the deleted
+        # test_formula.py::TestPlaceholderLeakRegression. The legacy
+        # parser flattened such expressions to a SQL string with ``__aggN__``
         # placeholders, so an aggregate nested inside a non-transform call
         # (``nullif`` / ``coalesce``) could fail to register and leak its
         # placeholder into emitted SQL. The typed pipeline keeps structure, so
@@ -341,7 +341,7 @@ class TestComposite:
         assert key.phase == Phase.AGGREGATE
 
     def test_coalesce_wrapped_aggregate_plus_outside_aggregate(self):
-        # DEV-1484 backfill: ``coalesce(sum(amount), 0) + avg(amount)`` — one
+        # ``coalesce(sum(amount), 0) + avg(amount)`` — one
         # aggregate wrapped by a scalar, one outside it. Both must bind.
         bound = bind_expr(
             parse_expr("coalesce(sum(amount), 0) + avg(amount)"),
@@ -360,7 +360,7 @@ class TestComposite:
 
 
 # ---------------------------------------------------------------------------
-# IllegalScopeReferenceError — `__` in ModelScope
+# IllegalScopeReferenceError — `__` in DatasetScope
 # ---------------------------------------------------------------------------
 
 
@@ -404,7 +404,7 @@ def _stage_schema_with_flat_names() -> StageSchema:
 
 class TestStageSchemaScope:
     def test_flat_name_resolves(self):
-        # In a StageSchema scope, refs resolve as flat names — no join
+        # In a StageSchema scope, refs resolve as flat names — no relationship
         # walking.
         scope = _stage_schema_with_flat_names()
         bound = bind_expr(
@@ -413,7 +413,7 @@ class TestStageSchemaScope:
         assert bound.value_key == FieldKey(path=(), leaf="status")
 
     def test_dotted_ref_in_stage_schema_rejected(self):
-        # DEV-1449: downstream stages see a flat schema — dotted refs
+        # Downstream stages see a flat schema — dotted refs
         # are illegal in StageSchema scope.
         scope = _stage_schema_with_flat_names()
         expr, bundle = parse_expr("robot_details.modelseriesval"), _bundle()
@@ -421,12 +421,12 @@ class TestStageSchemaScope:
             bind_expr(expr, scope=scope, bundle=bundle)
 
     def test_flat_underscore_name_resolves(self):
-        # The flat name `robot_details__modelseriesval` IS a column on
+        # The flat name `robot_details__modelseriesval` IS a field on
         # the stage schema — it resolves.
         scope = _stage_schema_with_flat_names()
         # The syntax parser rejects `__` in user identifiers — bind_expr
         # is given a pre-parsed ParsedExpr that explicitly uses the flat
-        # column name via the Ref constructor.
+        # field name via the Ref constructor.
         bound = bind_expr(Ref(name="robot_details__modelseriesval"),
                           scope=scope, bundle=_bundle())
         assert bound.value_key == FieldKey(
@@ -487,7 +487,7 @@ class TestFilterBinder:
         assert any(isinstance(k, AggregateKey) for k in refs)
 
     def test_referenced_keys_include_aggregate_inside_scalar_call(self):
-        # DEV-1484 backfill from the deleted
+        # Backfill from the deleted
         # test_formula.py::TestPlaceholderLeakRegression::
         # test_predicate_with_nullif_wrapper — ``nullif(count(*), 0) > 5`` is a
         # predicate whose aggregate is buried inside a scalar call. It must
@@ -504,14 +504,14 @@ class TestFilterBinder:
 
 
 # ---------------------------------------------------------------------------
-# Windowed Column.sql in filter → IllegalWindowInFilterError
+# Windowed DatasetField.sql in filter → IllegalWindowInFilterError
 # ---------------------------------------------------------------------------
 
 
 class TestWindowInFilter:
     def test_filter_on_windowed_column_sql_raises(self):
-        # A Column.sql containing a window function. A filter referencing
-        # that column raises IllegalWindowInFilterError (DEV-1369: no
+        # A DatasetField.sql containing a window function. A filter referencing
+        # that field raises IllegalWindowInFilterError (no
         # auto-promotion).
         model = _orders().model_copy(update={
             "fields": list(_orders().fields) + [

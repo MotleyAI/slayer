@@ -1,4 +1,4 @@
-"""DEV-1740 Part B1 — row-level expression dimensions (no aggregate inside).
+"""Part B1 — row-level expression dimensions (no aggregate inside).
 
 These need no second pass: the expression goes straight into SELECT + GROUP BY.
 Executed values on SQLite AND DuckDB, the no-second-pass SQL shape, name
@@ -59,7 +59,7 @@ class TestNoSecondPass:
             metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
         ))
         # ``_cm_`` is the isolated-aggregate (regroup) CTE prefix used by the B2
-        # desugar and DEV-1739. A purely row-level expression dimension must not
+        # desugar and the partitioned-metric path. A purely row-level expression dimension must not
         # trigger it — pinned so a needless extra scan is caught.
         assert "_cm_" not in sql
         assert "IS NOT DISTINCT FROM" not in sql.upper()
@@ -90,7 +90,7 @@ class TestJoinedColumnInExpression:
 
 class TestNameReferences:
     async def test_order_by_computed_name(self, exec_engine) -> None:
-        # Order by the COMPUTED dimension's name (not a measure).
+        # Order by the COMPUTED dimension's name (not a metric).
         resp = await exec_engine.execute(_q(
             dimensions=[{"field": "lower(city)", "alias": "lc"}],
             metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
@@ -112,7 +112,7 @@ class TestNameReferences:
 
 class TestDedupInteraction:
     async def test_dim_only_dedups_computed_values(self, exec_engine) -> None:
-        # No measures: distinct computed values (5 cities incl. the NULL group).
+        # No metrics: distinct computed values (5 cities incl. the NULL group).
         resp = await exec_engine.execute(_q(
             dimensions=[{"field": "lower(city)", "alias": "lc"}],
         ))
@@ -131,9 +131,9 @@ class TestDedupInteraction:
 
 class TestCollisionFailsClosed:
     async def test_name_colliding_with_a_column_raises(self) -> None:
-        # ``channel`` is a real column (a legal plain dimension on its own, so
+        # ``channel`` is a real field (a legal plain dimension on its own, so
         # today this query plans fine — the collision guard is what must make it
-        # fail). Naming a computed dimension ``channel`` shadows that column and
+        # fail). Naming a computed dimension ``channel`` shadows that field and
         # must be rejected fail-closed.
         q = _q(
             dimensions=["region", {"field": "lower(city)", "alias": "channel"}],
@@ -143,7 +143,7 @@ class TestCollisionFailsClosed:
             await gen(q)
 
     async def test_name_colliding_with_a_measure_raises(self) -> None:
-        # A computed dimension named the same as a query measure must fail closed.
+        # A computed dimension named the same as a query metric must fail closed.
         q = _q(
             dimensions=["region", {"field": "lower(city)", "alias": "rev"}],
             metrics=[QueryMetric(metric="sum(amount)", alias="rev")],

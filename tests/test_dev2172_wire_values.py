@@ -1,5 +1,5 @@
 """Each value type read back by real clients — psycopg over the Postgres wire, pyarrow over Arrow Flight — and
-``collect`` over a UUID column (spec: results/value-encoding, facade/list-values)."""
+``collect`` over a UUID field (spec: results/value-encoding, facade/list-values)."""
 
 from __future__ import annotations
 

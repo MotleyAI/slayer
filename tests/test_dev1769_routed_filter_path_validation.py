@@ -1,4 +1,4 @@
-"""Multi-hop routed-filter path validation in the cross-model target-scope renderer.
+"""Multi-hop routed-filter path validation in the cross-dataset target-scope renderer.
 Two-hop aggregate (``sum(customers_v2.regions.population)``) → CTE target ``regions``, so a filter path can end at the target or the intermediate hop; reachable filters route into the CTE, unreachable ones drop from the producer with a warning.
 """
 
@@ -19,7 +19,7 @@ from tests._cross_model_chain import (
 )
 from tests._engine_helpers import _assert_valid_sql
 
-# Derived column on regions: its filter path ends AT the target ``regions``.
+# Derived field on regions: its filter path ends AT the target ``regions``.
 _REGIONS_EXTRA = [DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT)]
 
 _TWO_HOP_AGG = QueryMetric(metric="sum(customers_v2.regions.population)")
@@ -51,10 +51,10 @@ class TestRoutedFilterPathE2E:
         assert "CAST(regions.population * 2 AS DOUBLE PRECISION) > 5" in cm_body, cm_body
 
     async def test_intermediate_hop_plain_column_filter_pushes(self) -> None:
-        """DEV-1840: a plain-column filter on the INTERMEDIATE hop
+        """A plain-field filter on the INTERMEDIATE hop
         (``customers_v2.status``) binds to the reverse-path node and pushes
         into the producer as a correlated EXISTS — silently, superseding the
-        DEV-1836 drop+warn."""
+        old drop+warn."""
         query = SlayerQuery(
             population="orders_x",
             metrics=[_TWO_HOP_AGG],
@@ -73,9 +73,9 @@ class TestRoutedFilterPathE2E:
         ], [str(w.message) for w in caught]
 
     async def test_derived_column_owned_by_other_model_filter_pushes(self) -> None:
-        """DEV-1840: a derived-column filter owned by the intermediate model
+        """A derived-field filter owned by the intermediate dataset
         (``customers_v2.ltv_x2``) expands at the reverse-path node inside the
-        pushed EXISTS — silently, superseding the DEV-1836 drop+warn."""
+        pushed EXISTS — silently, superseding the old drop+warn."""
         query = SlayerQuery(
             population="orders_x",
             metrics=[_TWO_HOP_AGG],

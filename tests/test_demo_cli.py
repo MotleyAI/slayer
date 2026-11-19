@@ -182,8 +182,8 @@ def _setup_demo(storage: YAMLStorage, storage_path: Path) -> tuple:
 
 class TestEnsureDemoDatasourceScoping:
     def test_lookups_scoped_with_models_in_multiple_datasources(self, tmp_path, jaffle_generator):
-        # Bare list_models()/get_model() raise on storages whose models span
-        # several datasources (DEV-1330); the demo must scope every lookup to
+        # Bare list_datasets()/get_dataset() raise on storages whose datasets span
+        # several datasources; the demo must scope every lookup to
         # its own datasource.
         storage = YAMLStorage(base_dir=str(tmp_path))
         _setup_demo(storage, tmp_path)
@@ -253,7 +253,7 @@ class TestDemoEnrichment:
     def test_auto_default_format_replaced_custom_format_preserved(self):
         model = self._orders_dataset()
         by_name = {c.name: c for c in model.fields}
-        # Auto-ingestion stamps a bare FLOAT format on numeric columns — the
+        # Auto-ingestion stamps a bare FLOAT format on numeric fields — the
         # curated currency format must win over it.
         by_name["order_total"].format = NumberFormat(type=NumberFormatType.FLOAT)
         # A user-tuned format must survive.
@@ -277,7 +277,7 @@ class TestDemoEnrichment:
         assert jaffle_shop.apply_demo_enrichment(model) is False
 
     def test_non_table_backed_model_skipped(self):
-        # The curated spec assumes the physical jaffle tables — a demo model
+        # The curated spec assumes the physical jaffle tables — a demo dataset
         # redefined as sql-mode or query-backed must be left alone.
         model = SlayerDataset(
             name="orders",
@@ -327,7 +327,7 @@ class TestDemoEnrichment:
 
         _, models, _ = _setup_demo(storage, tmp_path)
 
-        # Returned models are enriched, and the enrichment was persisted.
+        # Returned datasets are enriched, and the enrichment was persisted.
         assert all(m.description is not None for m in models)
         stored_orders = jaffle_shop.run_sync(
             storage.get_dataset(name="orders", data_source="jaffle_shop")

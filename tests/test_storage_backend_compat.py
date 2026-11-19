@@ -232,7 +232,7 @@ async def test_new_style_backend_keeps_failure_reporting() -> None:
 
 
 class SelfBuildingBackend(_DictStore):
-    """Builds datasources from its own records; models and memories decode through the base load pipeline."""
+    """Builds datasources from its own records; datasets and memories decode through the base load pipeline."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -277,7 +277,7 @@ class SelfBuildingBackend(_DictStore):
 
 
 def _self_building_backend() -> SelfBuildingBackend:
-    """A fresh instance holding datasource ``shop``, model ``shop.orders`` and memory ``1``."""
+    """A fresh instance holding datasource ``shop``, dataset ``shop.orders`` and memory ``1``."""
     backend = SelfBuildingBackend()
     backend.datasources["shop"] = _valid()
     model = SlayerDataset.model_validate({"name": "orders", "data_source": "shop", "sql_table": "orders",

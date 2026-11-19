@@ -1,9 +1,9 @@
-"""DEV-1743 category 6 / WP8 / D5 — the flatten map stops being injective.
+"""Category 6 / WP8 / D5 — the flatten map stops being injective.
 
-Once source columns may contain ``__``, the projection flattening ``.`` → ``__``
-can map two DISTINCT public columns onto one downstream name: a joined dim
-``customers.region`` (flattens to ``customers__region``) and a literal model
-column ``customers__region`` (the C11 carve-out). That collision must raise a
+Once source fields may contain ``__``, the projection flattening ``.`` → ``__``
+can map two DISTINCT public fields onto one downstream name: a joined dim
+``customers.region`` (flattens to ``customers__region``) and a literal dataset
+field ``customers__region`` (the C11 carve-out). That collision must raise a
 LOUD, CLEAR error — never silently uniquify or bind the first match.
 
 Two surfaces:
@@ -14,7 +14,7 @@ Two surfaces:
   the Mode-B parser rejects the ``customers__region`` reference before planning,
   so the collision message is not yet produced. Asserting on the collision
   message therefore fails today for a feature reason.
-* Query-backed model expansion (``query_engine._expand_query_backed_model``) —
+* Query-backed dataset expansion (``query_engine._expand_query_backed_model``) —
   WP8 [C9] adds a local, flatten-specific error BEFORE ``build_flat_rename_
   wrapper``, replacing a confusing Pydantic duplicate-column error. Asserting on
   the improved (``flatten`` / ``collision``) wording fails today.
@@ -43,8 +43,8 @@ from tests._engine_helpers import _engine_generate
 
 
 # --------------------------------------------------------------------------- #
-# Model shapes: a host that both JOINS ``customers`` (with a ``region`` column)
-# and carries its OWN literal column ``customers__region``. Post-flip the query
+# Dataset shapes: a host that both RELATES to ``customers`` (with a ``region`` field)
+# and carries its OWN literal field ``customers__region``. Post-flip the query
 # ``["customers.region", "customers__region"]`` projects both — and both flatten
 # to ``customers__region``.
 # --------------------------------------------------------------------------- #
@@ -64,7 +64,7 @@ def _host_with_flat_collider() -> SlayerDataset:
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="cust_id", datatype=DataType.INTEGER),
-            # Literal flat column that collides with the joined dim's flattened
+            # Literal flat field that collides with the joined dim's flattened
             # alias (C11 carve-out). Legal to declare today (D5).
             DatasetField(name="customers__region", datatype=DataType.STRING),
         ],
@@ -73,7 +73,7 @@ def _host_with_flat_collider() -> SlayerDataset:
 
 
 async def _execute_named(datasets, name: str, *, dialect: str = "postgres"):
-    """Save ``models`` (validation off) and run ``engine.execute(name)``."""
+    """Save ``datasets`` (validation off) and run ``engine.execute(name)``."""
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name=DS, type=dialect))
@@ -92,7 +92,7 @@ class TestStageFlattenCollision:
             name="qb", data_source=DS,
             source_queries=[
                 # Inner stage projects BOTH the joined dim and the literal
-                # flat column; both flatten downstream to ``customers__region``.
+                # flat field; both flatten downstream to ``customers__region``.
                 SlayerQuery(
                     name="inner", population="hostm",
                     dimensions=["customers.region", "customers__region"],
@@ -119,7 +119,7 @@ class TestStageFlattenCollision:
 
 # --------------------------------------------------------------------------- #
 # 2. Invariant lock: the _emit_stage_schema guard itself is live today.
-#    Two same-named transform measures flatten to one name → collision. No `__`
+#    Two same-named transform metrics flatten to one name → collision. No `__`
 #    involved, so this holds identically before and after the flip.
 # --------------------------------------------------------------------------- #
 class TestSameNameCollisionGuardLive:
@@ -136,7 +136,7 @@ class TestSameNameCollisionGuardLive:
 
     @pytest.mark.asyncio
     async def test_two_same_named_measures_collide(self) -> None:
-        """INVARIANT LOCK: two projected columns that flatten to the same
+        """INVARIANT LOCK: two projected fields that flatten to the same
         downstream name raise, before and after the flip."""
         query = SlayerQuery(
             population="orders",
@@ -159,8 +159,8 @@ class TestSameNameCollisionGuardLive:
 class TestQueryBackedFlattenMessage:
     @pytest.mark.asyncio
     async def test_create_model_from_query_flatten_collision_message(self) -> None:
-        """FAIL-FIRST: expanding a query-backed model whose projection flattens
-        two columns to one ``__`` name must raise a flatten-specific /
+        """FAIL-FIRST: expanding a query-backed dataset whose projection flattens
+        two fields to one ``__`` name must raise a flatten-specific /
         collision message — NOT a bare Pydantic "duplicate column" error.
 
         Fails today: the Mode-B parser rejects ``customers__region`` (a
@@ -216,14 +216,14 @@ class TestQueryBackedFlattenMessage:
 
 
 # --------------------------------------------------------------------------- #
-# 4. Computed dimension (DEV-1740) whose name flattens onto a dotted dim's
+# 4. Computed dimension whose name flattens onto a dotted dim's
 #    downstream name collides too — the computed branch must not `continue` past
 #    the [D5] flatten guard (Codex, post-merge review).
 # --------------------------------------------------------------------------- #
 class TestComputedDimFlattenCollision:
     def _host(self) -> SlayerDataset:
-        # No literal ``customers__region`` column here (so the computed-dim name
-        # doesn't trip the column/measure shadow check first) — only the joined
+        # No literal ``customers__region`` field here (so the computed-dim name
+        # doesn't trip the field/metric shadow check first) — only the joined
         # ``customers.region``, which flattens to ``customers__region``.
         return SlayerDataset(
             name="hostm", data_source=DS, sql_table="hostm_t",

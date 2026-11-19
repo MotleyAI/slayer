@@ -1,4 +1,4 @@
-"""Re-ingest gap-fills a stored model's missing primary key, and never changes one it has."""
+"""Re-ingest gap-fills a stored dataset's missing primary key, and never changes one it has."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def test_new_live_key_column_does_not_widen_a_stored_key():
 
 
 def test_renamed_live_column_takes_its_key_and_comment():
-    """A live ``_count`` is the model column ``count_col``."""
+    """A live ``_count`` is the dataset field ``count_col``."""
     def counts(*, key: bool, description: str | None) -> SlayerDataset:
         return SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
             DatasetField(name="count_col", sql="_count", datatype=DataType.INTEGER, primary_key=key, description=description),

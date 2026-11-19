@@ -1,4 +1,4 @@
-"""Ossie export: nonportable_extensions with object data, a 1.8-stored model, YAML quoting, round trips
+"""Ossie export: nonportable_extensions with object data, a 1.8-stored dataset, YAML quoting, round trips
 (spec: importers/osi-export)."""
 
 import io
@@ -103,7 +103,7 @@ async def test_malformed_document_level_entry_is_reported_and_omitted(env, exten
     validate(result.document)
 
 
-# ──────────────────────── model stored by SLayer 1.8 ───────────────────────
+# ──────────────────────── dataset stored by SLayer 1.8 ───────────────────────
 
 async def test_model_stored_before_the_shape_change(env) -> None:
     await save(env, customers(), orders(metrics=BASIC_MEASURES))

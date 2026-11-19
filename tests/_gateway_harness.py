@@ -105,7 +105,7 @@ COUNT_ORDERS_MEM = {"population": "t", "metrics": [{"metric": "count(*)", "alias
 
 
 def mem_count_dataset() -> SlayerDataset:
-    """Model ``t`` over table ``t`` of the in-memory datasource ``mem``."""
+    """Dataset ``t`` over table ``t`` of the in-memory datasource ``mem``."""
     return SlayerDataset(
         name="t", sql_table="t", data_source="mem",
         fields=[DatasetField(name="v", sql="v", datatype=DataType.INTEGER)],

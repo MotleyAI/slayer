@@ -1,9 +1,9 @@
-"""DEV-1771: schema_drift._is_bare_identifier unified on the canonical IDENTIFIER_RE.
+"""schema_drift._is_bare_identifier unified on the canonical IDENTIFIER_RE.
 
 The flip rejects non-ASCII *leading* identifiers (the old char-loop accepted
 them). Non-ASCII in non-leading positions, all ASCII behavior, and whitespace
 normalization are unchanged. The residual drift false-negative for a bare
-non-ASCII-leading ``Column.sql`` alias is documented in the DEV-1771 decision trail (git history).
+non-ASCII-leading ``DatasetField.sql`` alias is documented in the git history.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from slayer.live_schema.schema_drift import (
 
 @pytest.mark.parametrize("value", ["год", "émile", "über", "Ω"])
 def test_non_ascii_leading_rejected(value):
-    # Flipped by DEV-1771: the old char-loop accepted these.
+    # Flipped: the old char-loop accepted these.
     assert _is_bare_identifier(value) is False
 
 
@@ -54,15 +54,15 @@ def test_column_is_base_ascii_identifier():
 
 
 def test_column_is_base_non_ascii_leading_now_derived():
-    # Flipped: a bare non-ASCII-leading Column.sql is no longer a base column.
+    # Flipped: a bare non-ASCII-leading DatasetField.sql is no longer a base field.
     assert _field_is_base("год") is False
 
 
 # --- Group 3: end-to-end drift diff (the shipped false-negative) -----------
 
 def test_diff_skips_non_ascii_leading_alias():
-    """A base column aliasing a non-ASCII-leading physical name is no longer
-    diffed against the live schema (DEV-1771 residual change); an ASCII alias
+    """A base field aliasing a non-ASCII-leading physical name is no longer
+    diffed against the live schema; an ASCII alias
     still is."""
     model = SlayerDataset(
         name="orders",
@@ -79,7 +79,7 @@ def test_diff_skips_non_ascii_leading_alias():
 
 
 def test_first_dropped_ref_scans_non_ascii_leading_alias():
-    """The other call site: a bare non-ASCII-leading ``Column.sql`` is now
+    """The other call site: a bare non-ASCII-leading ``DatasetField.sql`` is now
     scanned for dropped references instead of short-circuiting as base."""
     model = SlayerDataset(
         name="orders",

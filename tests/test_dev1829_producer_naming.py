@@ -1,6 +1,6 @@
-"""DEV-1829 (F1 / D4) — the combined regroup producer names its output aggregate
+"""F1 / D4 — the combined regroup producer names its output aggregate
 by the CONSUMER's public alias when the partitioned aggregate is a directly-named
-measure, and by the CANONICAL alias when it is a composite leaf. Byte-level across
+metric, and by the CANONICAL alias when it is a composite leaf. Byte-level across
 the five golden dialects; this is the naming the byte-identical ``local/*`` goldens
 depend on."""
 
@@ -60,8 +60,8 @@ class TestProducerOutputAlias:
 
 @pytest.mark.parametrize("dialect", DIALECTS)
 async def test_filtered_measure_predicate_lives_in_producer(dialect: str) -> None:
-    # The measure's ``Column.filter`` (CASE WHEN status='ok') renders inside the
-    # producer CTE, at the partition grain — unchanged from the DEV-1739 path.
+    # The metric's ``DatasetField.filter`` (CASE WHEN status='ok') renders inside the
+    # producer CTE, at the partition grain.
     sql = await gen(_q(
         dimensions=["region", "city"],
         metrics=[QueryMetric(

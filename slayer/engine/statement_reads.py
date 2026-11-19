@@ -14,7 +14,7 @@ from slayer.engine.field_dependency import definition_reads
 from slayer.ir.planned import PlannedQuery, plan_value_keys_by_root
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-#: ``(declaring dataset, target dataset, edge name, join pairs)``.
+#: ``(declaring dataset, target dataset, edge name, key pairs)``.
 RelationshipRead = tuple[str, str, str | None, frozenset[tuple[str, str]]]
 
 

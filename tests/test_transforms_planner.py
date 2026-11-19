@@ -12,7 +12,7 @@ Three slots:
    ``partition_keys`` or ``time_key``, those underlying ``ValueKey``s
    must materialise as hidden slots so the generator (slice 7b.10) can
    render the PARTITION BY / ORDER BY against named SELECT projections
-   rather than re-walking the model graph.
+   rather than re-walking the dataset graph.
 
 3. **stage_planner populates transform_layers**: each TransformKey slot
    in the registry produces a ``TransformLayer`` entry in the
@@ -310,13 +310,13 @@ class TestIterSlotDepsTransformAux:
         )
         deps = list(_iter_slot_deps(tk))
         # The transform itself, the inner aggregate, AND the partition
-        # column should all be slot-worthy deps.
+        # field should all be slot-worthy deps.
         assert tk in deps
         assert inner in deps
         assert region in deps
 
     def test_iter_slot_deps_time_key(self) -> None:
-        # cumsum-like transform with an explicit time_key column.
+        # cumsum-like transform with an explicit time_key field.
         inner = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
         ts = FieldKey(path=(), leaf="created_at")
         tk = TransformKey(op="cumsum", input=inner, time_key=ts)
@@ -524,7 +524,7 @@ class TestTransformInnerIdentity:
         )
 
     def test_change_and_explicit_amount_sum_share_one_aggregate_slot(self) -> None:
-        # change(amount:sum) + amount:sum as a separate measure must
+        # change(amount:sum) + amount:sum as a separate metric must
         # still intern the amount aggregate exactly once.
         q = SlayerQuery(
             population="orders",

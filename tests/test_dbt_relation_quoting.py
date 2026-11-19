@@ -44,7 +44,7 @@ def _import(tmp_path: Path, *, dialect: str, semantic_models: list[dict[str, Any
 
 
 def _relation(dataset: SlayerDataset, *, dialect: str) -> list[str]:
-    """The catalog names of the one relation ``model`` reads, as SLayer reads its stored text."""
+    """The catalog names of the one relation ``dataset`` reads, as SLayer reads its stored text."""
     sql_dialect = get_dialect(dialect)
     if dataset.sql_table is not None:
         table = parse_table(name=dataset.sql_table, dialect=sql_dialect)

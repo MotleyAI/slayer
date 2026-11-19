@@ -143,7 +143,7 @@ class Live(BaseModel):
         return {m.name: m for m in loaded}
 
     async def edges(self) -> dict[EdgeKey, str | None]:
-        """Every stored join keyed by (declaring model, target, pairs) → its name."""
+        """Every stored relationship keyed by (declaring dataset, target, pairs) → its name."""
         return {
             edge_key(m.name, j): j.name
             for m in (await self.datasets()).values() for j in m.relationships

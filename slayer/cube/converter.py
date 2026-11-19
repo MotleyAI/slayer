@@ -388,7 +388,7 @@ class CubeToSlayerConverter:
 
         # mutually-inverse declarations collapse to one edge (reverse
         # traversal is automatic); contradicting pairs import both edges. After
-        # view conversion so facades still see the pre-dedup root joins.
+        # view conversion so facades still see the pre-dedup root relationships.
         self._dedup_inverse_relationships(
             [m for m in datasets if (m.meta or {}).get("cube_kind") != "view"])
 
@@ -1324,7 +1324,7 @@ class CubeToSlayerConverter:
             return None
 
     def _facade_relationship_keys(self, *, relationship: DatasetRelationship, root_dataset: SlayerDataset, fields, names, view, report) -> bool:
-        """Declare a carried join's source keys on the facade (hidden); ``False`` drops the join."""
+        """Declare a carried relationship's source keys on the facade (hidden); ``False`` drops it."""
         for src, _ in relationship.column_pairs:
             col = next((c for c in fields if c.name == src), None)
             root_col = root_dataset.get_field(src)
@@ -1336,7 +1336,7 @@ class CubeToSlayerConverter:
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
                     view=view.name, member=relationship.to,
-                    message=f"Join key '{src}' is not a base field of the facade; join dropped."))
+                    message=f"Relationship key '{src}' is not a base field of the facade; relationship dropped."))
                 return False
         return True
 

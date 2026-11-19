@@ -1,4 +1,4 @@
-"""Model-level sample profiling: caching, failure bounding, failure cache, logging, RLS scoping."""
+"""Dataset-level sample profiling: caching, failure bounding, failure cache, logging, RLS scoping."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def _ghost() -> SlayerDataset:
 
 
 def _all_bad() -> SlayerDataset:
-    """``count(*)`` succeeds but every column expression errors."""
+    """``count(*)`` succeeds but every field expression errors."""
     return SlayerDataset(
         name="allbad", sql_table="t", data_source=DS,
         fields=[
@@ -345,7 +345,7 @@ async def test_forced_refresh_reprofiles_cached_columns(env: tuple[SlayerQueryEn
 
 
 # ---------------------------------------------------------------------------
-# A successful profile always caches the column
+# A successful profile always caches the field
 # ---------------------------------------------------------------------------
 
 
@@ -517,7 +517,7 @@ async def test_failing_numeric_batch_on_healthy_model(env: tuple[SlayerQueryEngi
     log = _record(engine=engine, monkeypatch=monkeypatch)
     outcome = await _profile(engine=engine, storage=storage, dataset=model)
     assert len(_probes(log)) == 1
-    assert len(_numeric_batches(log)) == 4  # the batch + one per column
+    assert len(_numeric_batches(log)) == 4  # the batch + one per field
     assert (await _stored(storage, column="amount")).sampled == "5.0 .. 99.0"
     assert (await _stored(storage, column="qty")).sampled == "1 .. 4"
     assert (await _stored(storage, column="badnum")).sampled is None

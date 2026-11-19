@@ -2,15 +2,15 @@
 
 Pins the four refresh trigger paths from §7 of the spec:
 
-1. ``ingest`` populates ``Column.sampled`` for every column on every
-   table-backed model in the touched datasource.
+1. ``ingest`` populates ``DatasetField.sampled`` for every field on every
+   table-backed dataset in the touched datasource.
 2. ``slayer datasources refresh-samples`` does the same on demand.
-3. ``edit_model`` invalidates and immediately recomputes:
-   - column sql/filter/type/name change → just that column;
-   - SlayerModel.filters / sql / source_queries change → every column.
-4. The model ``inspect`` lazily fills the cache on a miss (read cached when
+3. ``edit_dataset`` invalidates and immediately recomputes:
+   - field sql/filter/type/name change → just that field;
+   - SlayerDataset.filters / sql / source_queries change → every field.
+4. The dataset ``inspect`` lazily fills the cache on a miss (read cached when
    present; if None, profile live and persist via
-   ``update_column_sampled`` before returning).
+   ``update_field_sampled`` before returning).
 """
 
 from __future__ import annotations
@@ -53,15 +53,15 @@ def sqlite_table_setup(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (1) ingest does NOT profile columns — samples are lazy (on inspect)
+# (1) ingest does NOT profile fields — samples are lazy (on inspect)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_ingest_does_not_profile_columns(sqlite_table_setup: tuple[StorageBackend, Any]) -> None:
-    """Ingest is fast: it no longer fires a per-column full-table scan.
-    Column samples are populated lazily on the first ``inspect`` of the
-    column (or explicitly via ``slayer datasources refresh-samples``)."""
+    """Ingest is fast: it no longer fires a per-field full-table scan.
+    Field samples are populated lazily on the first ``inspect`` of the
+    field (or explicitly via ``slayer datasources refresh-samples``)."""
     storage, db_file = sqlite_table_setup
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_file)
     await storage.save_datasource(ds)
@@ -73,7 +73,7 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup: tuple[Storage
         engine.close()
     loaded = await storage.get_dataset("orders", data_source="ds")
     assert loaded is not None
-    # Columns are ingested but NOT profiled — samples stay unpopulated.
+    # Fields are ingested but NOT profiled — samples stay unpopulated.
     assert _stored_col(loaded, "amount").sampled is None
     assert _stored_col(loaded, "status").sampled is None
     assert _stored_col(loaded, "status").sampled_values is None
@@ -176,13 +176,13 @@ async def test_edit_model_model_level_change_recomputes_all_columns(
     )
     loaded = await storage.get_dataset("orders", data_source="ds")
     assert loaded is not None
-    # Both columns recomputed.
+    # Both fields recomputed.
     assert _stored_col(loaded, "amount").sampled != "OLD AMOUNT"
     assert _stored_col(loaded, "status").sampled != "OLD STATUS"
 
 
 # ---------------------------------------------------------------------------
-# (4) model inspect lazy fill on miss
+# (4) dataset inspect lazy fill on miss
 # ---------------------------------------------------------------------------
 
 
@@ -210,7 +210,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
     assert result is not None
     loaded = await storage.get_dataset("orders", data_source="ds")
     assert loaded is not None
-    # After the call, sampled should be populated for non-PK columns.
+    # After the call, sampled should be populated for non-PK fields.
     assert _stored_col(loaded, "amount").sampled is not None
     assert _stored_col(loaded, "status").sampled is not None
 
@@ -219,7 +219,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
 async def test_inspect_model_reads_cached_sampled_without_recompute(
     sqlite_table_setup: tuple[StorageBackend, Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When Column.sampled is set, the model inspect uses it and runs no profiling query."""
+    """When DatasetField.sampled is set, the dataset inspect uses it and runs no profiling query."""
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,

@@ -1,14 +1,14 @@
-"""Stage 7a.7 (DEV-1450) — stage planner tests.
+"""Stage planner tests.
 
 The stage planner orchestrates multi-stage ``source_queries`` DAGs:
 
 1. Topologically sorts a list of ``SlayerQuery`` stages.
 2. For each stage in order, parses → binds → plans (using
-   ProjectionPlanner + the cross-model planner Protocol).
+   ProjectionPlanner + the cross-dataset planner Protocol).
 3. Downstream stages bind against the upstream stage's
-   ``StageSchema`` (flat namespace — DEV-1449).
+   ``StageSchema`` (flat namespace).
 4. Each stage's emitted ``StageSchema`` uses the user-supplied ``name``
-   as the column alias (DEV-1448).
+   as the column alias.
 
 Dormant in 7a — no engine wiring. Stage 7b cuts ``engine.execute`` /
 ``engine.save_model`` over to this orchestrator.
@@ -121,15 +121,15 @@ class TestSingleStage:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1448 acceptance: user `name` on join-traversed measure
+# Acceptance: user `name` on relationship-traversed metric
 # ---------------------------------------------------------------------------
 
 
 class TestUserNameAlias:
     def test_named_measure_becomes_stage_schema_column(self):
-        # Stage 1 declares `{"formula": "customers.revenue:sum", "name": "rev_sum"}`.
+        # Stage 1 declares `{"metric": "sum(customers.revenue)", "alias": "rev_sum"}`.
         # The stage's emitted StageSchema must include a column named
-        # "rev_sum" — DEV-1448 contract.
+        # "rev_sum".
         q = SlayerQuery(
             population="orders",
             metrics=[
@@ -144,7 +144,7 @@ class TestUserNameAlias:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1449 acceptance: downstream stage references upstream by flat name
+# Downstream stage references upstream by flat name
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +270,7 @@ class TestTopoSort:
 
 class TestStageSchemaMultiAlias:
     def test_multi_alias_emits_separate_columns(self):
-        # Two declared measures with the same key but different names
+        # Two declared metrics with the same key but different names
         # share a slot. The StageSchema should expose BOTH aliases.
         q = SlayerQuery(
             population="orders",

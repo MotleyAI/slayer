@@ -2,7 +2,7 @@
 
 Asserts the typed-plan-derived ``attributes`` + ``expected_columns`` match
 what the legacy enriched-query path produced: result keys read straight from
-the statement's projection, dimensions vs measures split by phase, measure format
+the statement's projection, dimensions vs metrics split by phase, metric format
 inferred (currency inheritance, count→integer), labels propagated.
 """
 
@@ -95,7 +95,7 @@ def test_dimension_vs_measure_split_and_label():
     attrs, _cols, _sql = _meta_for(q)
     assert "orders.status" in attrs.dimensions
     assert "orders.amount_sum" in attrs.metrics
-    # Dimension label flows from the Column.label.
+    # Dimension label flows from the DatasetField.label.
     assert attrs.dimensions["orders.status"].label == "Order status"
 
 
@@ -142,14 +142,14 @@ def test_cross_model_aggregate_format_integer_for_count():
     attrs, cols, _sql = _meta_for(q)
     assert "orders.customers.revenue_sum" in cols
     fm = attrs.metrics["orders.customers.revenue_sum"]
-    # sum inherits the target column's currency format.
+    # sum inherits the target field's currency format.
     assert fm.format is not None
     assert fm.format.type == NumberFormatType.CURRENCY
     assert fm.format.symbol == "$"
 
 
 # ---------------------------------------------------------------------------
-# DEV-1788: stat/parametric aggregation display format through the full
+# Stat/parametric aggregation display format through the full
 # response-metadata path (query → plan → build_response_metadata → attributes).
 # ---------------------------------------------------------------------------
 

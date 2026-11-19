@@ -1,4 +1,4 @@
-"""A selected composite alongside any consumer containing it executes and equals its single-measure runs."""
+"""A selected composite alongside any consumer containing it executes and equals its single-metric runs."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ async def test_ratio_and_its_cumsum(exec_engine, spelling, time_filter) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Consumer matrix: a local ratio and a ratio with a cross-model operand
+# Consumer matrix: a local ratio and a ratio with a cross-dataset operand
 # --------------------------------------------------------------------------- #
 _RATIOS = {"local": (AOV, AOV_BY_MONTH), "cross": (CROSS_RATIO, CROSS_RATIO_BY_MONTH)}
 

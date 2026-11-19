@@ -21,15 +21,15 @@
 
 Gotcha: give every worker the carve-out table from the issue and design decisions 8, 9 and 12, and review each directory's diff before moving on.
 
-- [ ] 4.1 `slayer/`: messages, warnings, errors, CLI help, docstrings, comments, MCP tool and field descriptions, server instructions, and help topics (`slayer/memories/help_content/`), including `slayer/otel/`. Gotcha: `tests/test_mcp_surface_budget.py` caps description lengths, so reword to fit. Verify that a sweep of `slayer/` prose finds only carve-outs.
-- [ ] 4.2 `docs/` (including `docs/upgrading/2.0.md` Part 1's 2.0-behaviour sections; the before/after old spellings stay) and `examples/` Markdown, YAML comments and scripts. Verify that a sweep of both finds only carve-outs.
-- [ ] 4.3 `tests/`: docstrings, comments, assertion messages, and old `--type` and tool-name strings in shared helpers (`tests/_law_harness.py`, `tests/test_law_grain_union.py`, …). Test function and class names, test locals, test identifiers and test-data literals stay (DEV-2364). Verify that a sweep of `tests/` finds only those exemptions and carve-outs.
-- [ ] 4.4 Align every existing test that pins respelled message text to the new text (design decision 13; mechanical only, no logic change). Verify that the local test scope passes.
+- [x] 4.1 `slayer/`: messages, warnings, errors, CLI help, docstrings, comments, MCP tool and field descriptions, server instructions, and help topics (`slayer/memories/help_content/`), including `slayer/otel/`. Gotcha: `tests/test_mcp_surface_budget.py` caps description lengths, so reword to fit. Verify that a sweep of `slayer/` prose finds only carve-outs.
+- [x] 4.2 `docs/` (including `docs/upgrading/2.0.md` Part 1's 2.0-behaviour sections; the before/after old spellings stay) and `examples/` Markdown, YAML comments and scripts. Verify that a sweep of both finds only carve-outs.
+- [x] 4.3 `tests/`: docstrings, comments, assertion messages, and old `--type` and tool-name strings in shared helpers (`tests/_law_harness.py`, `tests/test_law_grain_union.py`, …). Test function and class names, test locals, test identifiers and test-data literals stay (DEV-2364). Verify that a sweep of `tests/` finds only those exemptions and carve-outs.
+- [x] 4.4 Align every existing test that pins respelled message text to the new text (design decision 13; mechanical only, no logic change). Verify that the local test scope passes.
 
 ## 5. Notebooks
 
-- [ ] 5.1 Re-execute every notebook edited in 3 or 4 in place (`poetry run jupyter nbconvert --to notebook --execute --inplace <nb>`), and check the refreshed outputs. Gotcha: delete the stale jaffle DuckDB first, and run the notebooks twice. Verify that each notebook ran with no errors and its outputs are saved.
-- [ ] 5.2 Run `tests/integration/test_notebooks.py` with the CI invocation from `.github/workflows/ci.yml`. Verify that it passes.
+- [x] 5.1 Re-execute every notebook edited in 3 or 4 in place (`poetry run jupyter nbconvert --to notebook --execute --inplace <nb>`), and check the refreshed outputs. Gotcha: delete the stale jaffle DuckDB first, and run the notebooks twice. Verify that each notebook ran with no errors and its outputs are saved.
+- [x] 5.2 Run `tests/integration/test_notebooks.py` with the CI invocation from `.github/workflows/ci.yml`. Verify that it passes.
 
 ## 6. Gate
 

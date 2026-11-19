@@ -1,7 +1,4 @@
-"""Tests for the Cube conversion report shapes (slayer/cube/report.py).
-
-DEV-1608 §10.
-"""
+"""Tests for the Cube conversion report shapes (slayer/cube/report.py)."""
 
 import json
 
@@ -81,7 +78,7 @@ def test_result_json_round_trips():
 
 
 def test_converter_derives_report_counts():
-    """The converter must populate model/hidden/view counts on the report."""
+    """The converter must populate dataset/hidden/view counts on the report."""
     project = CubeProject(
         cubes=[
             CubeCube(name="orders", sql_table="public.orders",

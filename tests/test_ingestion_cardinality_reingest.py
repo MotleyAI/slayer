@@ -75,7 +75,7 @@ class TestFillsMetadataAndPersists:
     ) -> None:
         storage, ds = await _setup(workspace)
 
-        # Simulate legacy persisted data: join without a cardinality.
+        # Simulate legacy persisted data: relationship without a cardinality.
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         orders.relationships[0] = _order_join(orders).model_copy(update={"cardinality": None})
@@ -131,7 +131,7 @@ class TestAdditiveContract:
     ) -> None:
         storage, ds = await _setup(workspace)
 
-        # User marked a column unique that has no DB constraint.
+        # User marked a field unique that has no DB constraint.
         customers = await storage.get_dataset("customers", data_source="ds")
         assert customers is not None
         region = next(c for c in customers.fields if c.name == "region")
@@ -148,11 +148,11 @@ class TestAdditiveContract:
 
 
 class TestLegacyJoinTargetNormalisation:
-    """DEV-1743: a ``__`` join target is a LEGAL model name now, so a join to a
-    faithfully-named ``__`` model is preserved across re-ingest — never rewritten
+    """A ``__`` relationship target is a LEGAL dataset name now, so a relationship to a
+    faithfully-named ``__`` dataset is preserved across re-ingest — never rewritten
     to a sanitized spelling. (Genuine old-world healing — a raw target with no
-    model but a sanitized one that does — is handled by the [C2] adopt-stored-name
-    pre-pass in ``ingest_datasource_idempotent`` plus ``_repair_legacy_join_targets``.)
+    dataset but a sanitized one that does — is handled by the [C2] adopt-stored-name
+    pre-pass in ``ingest_datasource_idempotent`` plus ``_repair_legacy_relationship_targets``.)
     """
 
     async def test_dunder_join_target_is_preserved_across_reingest(
@@ -192,7 +192,7 @@ class TestLegacyJoinTargetNormalisation:
         Repairing on the name alone would point both at `a_b`, and the
         duplicate-target guard in `_merge_joins_strict` would then turn a
         tolerated (if dangling) store into a hard re-ingest failure. Only the
-        join whose pairs match the fresh one is the join the bug produced.
+        relationship whose pairs match the fresh one is the relationship the bug produced.
 
         Looped, so this also covers idempotence: a repaired target sanitizes
         to itself and later runs are no-ops.
@@ -219,10 +219,10 @@ class TestLegacyJoinTargetNormalisation:
                 DatasetField(name="x", datatype=DataType.INTEGER),
             ],
             relationships=[
-                # Matches the fresh join's pairs — this is the one to repair.
+                # Matches the fresh relationship's pairs — this is the one to repair.
                 DatasetRelationship(to="a__b", from_columns=["x"], to_columns=["id"]),
                 # Sanitizes to the same name but has different pairs, so it is
-                # somebody else's join and must be left alone.
+                # somebody else's relationship and must be left alone.
                 DatasetRelationship(to="a___b", from_columns=["id"], to_columns=["id"]),
             ],
         ))

@@ -36,7 +36,7 @@ def _datasets() -> list[SlayerDataset]:
 
 
 def _cities(*extra: dict, name: str = "cities_src") -> SlayerDataset:
-    """A stored model over ``addresses``."""
+    """A stored dataset over ``addresses``."""
     return SlayerDataset.model_validate({"name": name, "data_source": DS, "sql_table": "addresses", "fields": [
         {"name": "id", "datatype": "Integer", "primary_key": True}, {"name": "city", "datatype": "String"}, *extra]})
 
@@ -127,7 +127,7 @@ _CORPUS: list[Any] = [
 
 
 async def _planned(engine: SlayerQueryEngine, payload: Any) -> tuple[set[str], StatementReads]:
-    """The stored models the planned statement reads, and its element reads; nothing executes."""
+    """The stored datasets the planned statement reads, and its element reads; nothing executes."""
     main, named, ds, chain = await engine._normalize_input(payload, runtime_kwarg={}, prefer_data_source=None)
     prepared = await engine._prepare_pipeline(
         query=main, named_queries=named, runtime_kwarg={}, prefer_data_source=ds, splice_chain=chain,
@@ -143,7 +143,7 @@ async def _stored(engine: SlayerQueryEngine, name: str) -> SlayerDataset:
 
 
 def _access_reads(qb: SlayerDataset, *, universe: list[SlayerDataset]) -> set[tuple[str, str]]:
-    """What the access filter sees ``qb`` read: ``models_read_by``, closed over what each read model reads."""
+    """What the access filter sees ``qb`` read: ``datasets_read_by``, closed over what each read dataset reads."""
     by_id = {(m.data_source, m.name): m for m in universe}
     seen: set[tuple[str, str]] = set()
     pending = list(datasets_read_by(qb, datasets=universe))
@@ -215,7 +215,7 @@ def test_a_stage_source_written_in_another_case_is_read(data_source: str) -> Non
 def _root_source_and_base(
     stages: list[SlayerQuery], datasets: list[SlayerDataset], *, data_source: str | None,
 ) -> tuple[Any, str | None]:
-    """The root's static scope: its source as respelled and the stored model its chain ends on."""
+    """The root's static scope: its source as respelled and the stored dataset its chain ends on."""
     (scope,) = query_scopes(stages, datasets_by_ds={DS: {m.name: m for m in datasets}}, data_source=data_source)[-1]
     assert scope.query is not None
     return scope.query.population, scope.base

@@ -57,7 +57,7 @@ async def exec_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 def _cm_declared_first_query() -> SlayerQuery:
-    """A cross-model measure declared BEFORE a local one; B7 keeps its position."""
+    """A cross-dataset metric declared BEFORE a local one; B7 keeps its position."""
     return SlayerQuery(
         population="orders_x",
         dimensions=[QueryDimension(field="status")],
@@ -69,7 +69,7 @@ def _cm_declared_first_query() -> SlayerQuery:
 
 
 def _windowed_declared_first_query() -> SlayerQuery:
-    """A windowed measure declared BEFORE a local one."""
+    """A windowed metric declared BEFORE a local one."""
     return SlayerQuery(
         population="orders_x",
         dimensions=[QueryDimension(field="status")],
@@ -85,7 +85,7 @@ def _windowed_declared_first_query() -> SlayerQuery:
 
 
 def _interleaved_query() -> SlayerQuery:
-    """local, cross-model, local — an order no grouped-pass scheme can produce,
+    """local, cross-dataset, local — an order no grouped-pass scheme can produce,
     because any such scheme emits all host slots before all ``_cm_`` ones."""
     return SlayerQuery(
         population="orders_x",
@@ -136,7 +136,7 @@ class TestB7DeclarationOrderProjection:
         emitted = _alias_suffixes(outer_select_aliases(sql))
         assert emitted == ["status", "cm_first", "local_second"], (
             f"emitted projection order {emitted} is not declaration order — the "
-            f"cross-model measure was grouped after the host slots.\n\n{sql}"
+            f"cross-dataset metric was grouped after the host slots.\n\n{sql}"
         )
 
     async def test_windowed_measure_keeps_its_declared_position(self) -> None:
@@ -147,12 +147,12 @@ class TestB7DeclarationOrderProjection:
         )
 
     async def test_interleaved_local_and_cross_model_measures(self) -> None:
-        """The decisive shape: local, cross-model, local — only walking the plan's list emits this order."""
+        """The decisive shape: local, cross-dataset, local — only walking the plan's list emits this order."""
         sql = await _gen(_interleaved_query(), dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
         assert emitted == ["status", "a_local", "b_cross", "c_local"], (
-            f"emitted {emitted}; a cross-model measure cannot be woven between "
-            f"two host measures unless the renderer consumes the plan's "
+            f"emitted {emitted}; a cross-dataset metric cannot be woven between "
+            f"two host metrics unless the renderer consumes the plan's "
             f"ordered projection.\n\n{sql}"
         )
 
@@ -234,15 +234,15 @@ class TestB7DeclarationOrderProjection:
         )
         assert operand_sid == ltv_sid, (
             f"precondition: the transform's operand must be the SAME slot as "
-            f"the projected measure, or this shape does not exercise the "
+            f"the projected metric, or this shape does not exercise the "
             f"guard. operand={operand_sid} projected={ltv_sid}"
         )
 
-        # (2) The cross-model path — the guard lives in that builder.
+        # (2) The cross-dataset path — the guard lives in that builder.
         assert any(
             a.producer_root_dataset == "customers_v2"
             for a in planned.regroup_attach_plans
-        ), "precondition: this query must take the cross-model path"
+        ), "precondition: this query must take the cross-dataset path"
         assert planned.transform_layers, (
             "precondition: this query must carry a transform chain"
         )
@@ -310,7 +310,7 @@ class TestB7DeclarationOrderProjection:
     async def test_hidden_cross_model_order_slot_is_trimmed_but_orderable(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """A hidden cross-model aggregate must drive ORDER BY while absent from the projection."""
+        """A hidden cross-dataset aggregate must drive ORDER BY while absent from the projection."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.tier")],
@@ -320,7 +320,7 @@ class TestB7DeclarationOrderProjection:
         resp = await exec_engine.execute(query)
         assert _alias_suffixes(list(resp.columns)) == ["tier", "n"], resp.columns
         assert [r["orders.customers.tier"] for r in resp.data] == ["gold", None], (
-            f"hidden cross-model order slot did not drive the ordering: {resp.data}"
+            f"hidden cross-dataset order slot did not drive the ordering: {resp.data}"
         )
 
 
@@ -449,7 +449,7 @@ class TestWindowedGrainInvariant:
 
 
 class TestB8InnerStagePlanOrder:
-    """Measures named so alphabetical and declaration order disagree (``zz_running`` before ``aa_total``)."""
+    """Metrics named so alphabetical and declaration order disagree (``zz_running`` before ``aa_total``)."""
 
     def _transform_query(self) -> SlayerQuery:
         return SlayerQuery(
@@ -519,7 +519,7 @@ class TestB8InnerStagePlanOrder:
     async def test_carried_aliases_follow_base_order_not_alphabetical(
         self, factory_name: str,
     ) -> None:
-        """Every downstream stage carries its aliases in the base's plan order, not ``sorted()`` (the measure names make the two disagree)."""
+        """Every downstream stage carries its aliases in the base's plan order, not ``sorted()`` (the metric names make the two disagree)."""
         query = getattr(self, factory_name)()
         sql = await _gen(query, dialect="postgres")
         violations = carry_list_order_violations(sql)
@@ -582,7 +582,7 @@ class TestB8InnerStagePlanOrder:
     async def test_cross_model_transform_chain_executes(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """Executed: a transform chain that also carries a cross-model measure."""
+        """Executed: a transform chain that also carries a cross-dataset metric."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -599,7 +599,7 @@ class TestB8InnerStagePlanOrder:
         assert [r["orders.zz_running"] for r in resp.data] == pytest.approx(
             [15.0, 42.0],
         ), resp.data
-        # The scalar cross-model total is the same on every row (no shared grain).
+        # The scalar cross-dataset total is the same on every row (no shared grain).
         assert [r["orders.aa_cross"] for r in resp.data] == pytest.approx(
             [1325.0, 1325.0],
         ), resp.data
@@ -687,7 +687,7 @@ class TestB11JoinOrdering:
     async def test_filter_on_a_joined_derived_column_pulls_the_deeper_hop(
         self,
     ) -> None:
-        """Filtering on a joined model's crossing derived column: both the filter renderer and the join scanner must expand with ``is_root=False`` so the hop is joined."""
+        """Filtering on a joined dataset's crossing derived field: both the filter renderer and the join scanner must expand with ``is_root=False`` so the hop is joined."""
         sql = await _gen(
             SlayerQuery(
                 population="orders_x",

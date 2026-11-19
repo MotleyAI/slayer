@@ -272,7 +272,7 @@ class TestSlayerClientSurface:
 
 
 # ===========================================================================
-# DEV-1612: reference accepts str | list[str] (batched single-kind lookup)
+# Reference accepts str | list[str] (batched single-kind lookup)
 # ===========================================================================
 
 _BLOCK_SEP = "\n\n---\n\n"
@@ -457,7 +457,7 @@ class TestCliBatch:
     def test_parser_accepts_multiple_positionals(
         self, cli_storage: YAMLStorage, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # End-to-end: ``slayer inspect c1 c2 --type column`` must parse two
+        # End-to-end: ``slayer inspect c1 c2 --type field`` must parse two
         # positionals (nargs="+") and batch them.
         storage_dir = os.path.join(str(tmp_path), "store")
         os.makedirs(storage_dir, exist_ok=True)

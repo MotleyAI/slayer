@@ -1,4 +1,4 @@
-"""SLayer emits only the functional aggregation spelling: importer formulas, tool descriptions, help and docs."""
+"""SLayer emits only the functional aggregation spelling: importer expressions, tool descriptions, help and docs."""
 
 import json
 import re

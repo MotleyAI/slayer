@@ -1,4 +1,4 @@
-"""A list's element type survives stages, query-backed models and re-rooted producers (design D1)."""
+"""A list's element type survives stages, query-backed datasets and re-rooted producers (design D1)."""
 
 from __future__ import annotations
 

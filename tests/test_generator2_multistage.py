@@ -34,7 +34,7 @@ import slayer.engine.bundle_builder
 
 # ---------------------------------------------------------------------------
 # Executable harness: a file-backed SQLite seeded with orders + customers,
-# a YAMLStorage with the matching models, and an engine over both.
+# a YAMLStorage with the matching datasets, and an engine over both.
 # ---------------------------------------------------------------------------
 
 
@@ -188,7 +188,7 @@ async def test_three_stage_chain_matches_legacy(harness: Tuple[SlayerQueryEngine
 
 
 async def test_cross_model_intermediate_stage_matches_legacy(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
-    """An intermediate stage with a cross-model aggregate emits its own
+    """An intermediate stage with a cross-dataset aggregate emits its own
     ``_cm_`` CTE — the chain must nest it inside the stage CTE and still
     execute / match legacy rows.
     """
@@ -212,9 +212,9 @@ async def test_cross_model_intermediate_stage_matches_legacy(harness: Tuple[Slay
 
 
 async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
-    """Intermediate stage mixes a LOCAL aggregate with a cross-model one.
+    """Intermediate stage mixes a LOCAL aggregate with a cross-dataset one.
 
-    The cross-model renderer emits base columns before cross-model columns,
+    The cross-dataset renderer emits base columns before cross-dataset columns,
     which diverges from ``public_projection`` order — a positional CTE
     column list would silently swap the downstream values. The by-name
     rename wrapper must map each column correctly; row-set parity with
@@ -246,7 +246,7 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness: 
 
 
 # ---------------------------------------------------------------------------
-# User ``name`` on a join-traversed measure governs the stage
+# User ``alias`` on a relationship-traversed metric governs the stage
 # column alias and downstream references resolve it.
 # ---------------------------------------------------------------------------
 
@@ -314,7 +314,7 @@ async def test_dev1449_dotted_form_raises(harness: Tuple[SlayerQueryEngine, YAML
         "dimensions": ["customers.region"],
         "metrics": [{"metric": "sum(amount)"}],
     })
-    # The dotted form reads a model no join path reaches from the flat upstream stage.
+    # The dotted form reads a dataset no relationship path reaches from the flat upstream stage.
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers.region"],
@@ -396,7 +396,7 @@ async def test_multistage_tsql_root_emit_mangles_bracketed_aliases(harness: Tupl
 async def test_opaque_dim_grouped_in_downstream_stage_rejected(tmp_path):
     """An opaque column projected raw in one stage and GROUPED in the next must
     still be rejected — the opaque-dimension guard resolves the declared type
-    across the ``StageSchema`` boundary, not only at the ``ModelScope`` origin.
+    across the ``StageSchema`` boundary, not only at the ``DatasetScope`` origin.
 
     Regression for the downstream-grouping gap that allowing raw-row opaque
     projection (``distinct_dimension_values=False``) opened: stage 1

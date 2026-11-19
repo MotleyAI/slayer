@@ -464,7 +464,7 @@ class TestMemories:
 
     @staticmethod
     async def _two_datasources(tmp_path, shop_ds: DatasourceConfig, *, backend: str, clash: bool) -> StorageBackend:
-        """``m_tier`` over ``shop`` and a copy datasource sorting first; ``clash`` makes ``tier_label`` a column there."""
+        """``m_tier`` over ``shop`` and a copy datasource sorting first; ``clash`` makes ``tier_label`` a field there."""
         storage = await _store(tmp_path, shop_ds, backend,
                                memories=(memory_v2(memory_id="m_tier", query=_TIER, version=_MEMORY_V),))
         await storage.save_datasource(shop_ds.model_copy(update={"name": _OTHER_DS}))

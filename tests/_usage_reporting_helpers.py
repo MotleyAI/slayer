@@ -289,7 +289,7 @@ def build_storage(base_dir: Path) -> str:
 
 
 def build_sentinel_storage(base_dir: Path) -> str:
-    """A storage whose datasource, model, column, aggregation and description carry the sentinel."""
+    """A storage whose datasource, dataset, field, aggregation and description carry the sentinel."""
     db_path = base_dir / f"{SENT}.db"
 
     async def build() -> None:
@@ -315,7 +315,7 @@ def build_sentinel_storage(base_dir: Path) -> str:
 
 
 def save_datasets(storage_dir: str, *, count: int) -> None:
-    """Add ``count`` trivial models over the ``orders`` table of datasource ``test``."""
+    """Add ``count`` trivial datasets over the ``orders`` table of datasource ``test``."""
 
     async def build() -> None:
         storage = YAMLStorage(base_dir=storage_dir)

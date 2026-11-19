@@ -1,4 +1,4 @@
-"""Numeric and temporal profiling reads the model's own columns with plain ``min`` / ``max``, no extension.
+"""Numeric and temporal profiling reads the dataset's own fields with plain ``min`` / ``max``, no extension.
 
 Spec: queries/extensions (profiling is no longer an extension producer); usage-reporting/collection.
 """
@@ -120,7 +120,7 @@ async def test_profiling_sends_no_extension(run: _Run, monkeypatch: pytest.Monke
 
 
 def _restricted_dataset() -> SlayerDataset:
-    """``_model`` with most range columns' ``allowed_aggregations`` excluding ``min`` / ``max``."""
+    """``_dataset`` with most range fields' ``allowed_aggregations`` excluding ``min`` / ``max``."""
     whitelist = {"amount": ["sum"], "double_amount": ["sum"], "qty": ["sum"], "ordered_at": ["count"]}
     model = _dataset(arrays=False)
     return model.model_copy(update={"fields": [

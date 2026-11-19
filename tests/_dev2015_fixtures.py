@@ -1,4 +1,4 @@
-"""Shared fixtures for the time spine and custom granularities: seeds, models, engines, row helpers."""
+"""Shared fixtures for the time spine and custom granularities: seeds, datasets, engines, row helpers."""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def orders_dataset(*, date_type: DataType = DataType.DATE, extra_joins: Iterable
 
 def returns_dataset(*, default_time_dimension: Optional[str] = None,
                   extra_joins: Iterable[DatasetRelationship] = ()) -> SlayerDataset:
-    """No declared default: ``return_date`` is the sole temporal column."""
+    """No declared default: ``return_date`` is the sole temporal field."""
     return SlayerDataset(
         name="returns", sql_table="returns", data_source="test",
         default_time_dimension=default_time_dimension,
@@ -136,7 +136,7 @@ def order_items_dataset() -> SlayerDataset:
 
 
 def shipments_two_dates_dataset() -> SlayerDataset:
-    """Two temporal columns and no declared default: no axis."""
+    """Two temporal fields and no declared default: no axis."""
     return SlayerDataset(
         name="shipments", sql_table="shipments", data_source="test",
         fields=[
@@ -149,7 +149,7 @@ def shipments_two_dates_dataset() -> SlayerDataset:
 
 
 def shipments_two_parents_dataset() -> SlayerDataset:
-    """No temporal column; joins both facts, so two equal-length spine routes."""
+    """No temporal field; relates to both facts, so two equal-length spine routes."""
     return SlayerDataset(
         name="shipments", sql_table="shipments", data_source="test",
         fields=[
@@ -207,7 +207,7 @@ def spine_datasets(*, signed_up_at: bool = False, shipments: Optional[str] = Non
 
 
 def calendar_datasets() -> list[SlayerDataset]:
-    """The hand-made calendar pattern: each fact joins ``calendar`` by its date."""
+    """The hand-made calendar pattern: each fact relates to ``calendar`` by its date."""
     return [
         customers_dataset(),
         orders_dataset(extra_joins=[_to_calendar("order_date")]),
@@ -285,7 +285,7 @@ def events_dataset() -> SlayerDataset:
 
 
 def bucketed_dataset(*, name: str, source: str, column: str, granularity: str) -> SlayerDataset:
-    """A query-backed model whose ``column`` is bucketed at ``granularity``."""
+    """A query-backed dataset whose ``column`` is bucketed at ``granularity``."""
     return SlayerDataset.model_validate({
         "name": name, "data_source": "test",
         "source_queries": [{

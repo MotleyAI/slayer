@@ -1,4 +1,4 @@
-"""An unnamed expression aggregate's result key is the sanitized formula text of its source."""
+"""An unnamed expression aggregate's result key is the sanitized expression text of its source."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def q(**kw) -> SlayerQuery:
 
 
 async def only_value(engine: SlayerQueryEngine, expression: str, key: str, **kw):
-    """Execute ``formula`` as the query's one measure; assert its key, return the single value."""
+    """Execute ``formula`` as the query's one metric; assert its key, return the single value."""
     resp = await engine.execute(q(metrics=[expression], **kw))
     assert key in resp.columns, resp.columns
     assert len(resp.data) == 1, resp.data

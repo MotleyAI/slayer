@@ -77,8 +77,8 @@ class TestDirectAndNestedHits:
         assert substitute_value_keys(ik, MAPPING).field == PLACEHOLDER
 
     def test_column_to_column_inside_time_trunc(self) -> None:
-        # TimeTruncKey.source is typed ColumnKey/ColumnSqlKey — a column-to-
-        # column mapping must reach through it.
+        # TimeTruncKey.source is typed FieldKey/FieldSqlKey — a field-to-
+        # field mapping must reach through it.
         other = FieldKey(path=(), leaf="shipped_at")
         tt = TimeTruncKey(source=FieldKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         out = substitute_value_keys(tt, {FieldKey(path=(), leaf="ordered_at"): other})

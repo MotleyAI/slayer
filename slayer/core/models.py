@@ -1325,7 +1325,7 @@ class SlayerDataset(DatasetPart):
 
     @property
     def awaits_fields(self) -> bool:
-        """Query-backed with its output columns not yet populated."""
+        """Query-backed with its output fields not yet populated."""
         return bool(self.source_queries) and not self.fields
 
     @property

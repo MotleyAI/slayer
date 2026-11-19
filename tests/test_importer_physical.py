@@ -1,4 +1,4 @@
-"""Which logical column reads an importer's physical reference: an exact-name column wins over a case-only namesake."""
+"""Which field reads an importer's physical reference: an exact-name field wins over a case-only namesake."""
 
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 
 Covers the behaviour added alongside slayer.dbt.sql_resolver: when a
 semantic_model points at a regular dbt model with raw SQL on disk, the
-resulting SlayerModel carries sql= (the resolved SELECT) instead of
+resulting SlayerDataset carries sql= (the resolved SELECT) instead of
 sql_table=. Semantic models pointing at source tables (no .sql file)
 keep sql_table= exactly as before.
 """

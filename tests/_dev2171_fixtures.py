@@ -141,7 +141,7 @@ def convert_osi(docs: list[OSIDocument], *, db: Path, target_dialect: str = "duc
     return converter.convert()
 
 
-# ── model inspection ──────────────────────────────────────────────────────
+# ── dataset inspection ────────────────────────────────────────────────────
 
 def datasets_of(result: CubeConversionResult | ConversionResult) -> dict[str, SlayerDataset]:
     return {m.name: m for m in result.datasets}
@@ -149,14 +149,14 @@ def datasets_of(result: CubeConversionResult | ConversionResult) -> dict[str, Sl
 
 def column(dataset: SlayerDataset, name: str) -> DatasetField:
     col = dataset.get_field(name)
-    assert col is not None, f"column {name!r} missing on {dataset.name}: {[c.name for c in dataset.fields]}"
+    assert col is not None, f"field {name!r} missing on {dataset.name}: {[c.name for c in dataset.fields]}"
     return col
 
 
 def source_column(dataset: SlayerDataset, metric: str) -> DatasetField:
-    """The column a single-aggregation measure aggregates."""
+    """The field a single-aggregation metric aggregates."""
     found = dataset.get_metric(metric)
-    assert found is not None, f"measure {metric!r} missing on {dataset.name}"
+    assert found is not None, f"metric {metric!r} missing on {dataset.name}"
     parsed = parse_expr(found.expression)
     assert isinstance(parsed, AggCall), found.expression
     assert isinstance(parsed.source, Ref), found.expression
@@ -193,12 +193,12 @@ def typing_notes(messages: Iterable[str]) -> list[str]:
 # ── execution ─────────────────────────────────────────────────────────────
 
 def _save_order(datasets: Iterable[SlayerDataset]) -> list[SlayerDataset]:
-    """Join targets before the models joining them, cube views last."""
+    """Relationship targets before the datasets relating to them, cube views last."""
     return sorted(datasets, key=lambda m: ((m.meta or {}).get("cube_kind") == "view", bool(m.relationships)))
 
 
 async def rows(*, datasets: Iterable[SlayerDataset], db: Path, payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Save ``models`` (validated) over ``db`` and run one query, disposing every engine."""
+    """Save ``datasets`` (validated) over ``db`` and run one query, disposing every engine."""
     engine = await build_exec_engine(str(db), dialect="duckdb", datasets=_save_order(datasets), datasource=DS,
                                      validate=True)
     try:
@@ -210,7 +210,7 @@ async def rows(*, datasets: Iterable[SlayerDataset], db: Path, payload: dict[str
 
 async def value(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, expression: str,
                 variables: dict[str, Any] | None = None) -> Any:
-    """The single value of ``formula`` over ``model``."""
+    """The single value of ``expression`` over ``dataset``."""
     payload: dict[str, Any] = {"population": dataset, "metrics": [{"metric": expression, "alias": "v"}]}
     if variables is not None:
         payload["variables"] = variables
@@ -220,7 +220,7 @@ async def value(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, ex
 
 async def counts_by(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, dimension: str,
                     variables: dict[str, Any] | None = None) -> dict[Any, int]:
-    """Row counts of ``model`` grouped by ``dimension``."""
+    """Row counts of ``dataset`` grouped by ``dimension``."""
     payload: dict[str, Any] = {"population": dataset, "dimensions": [dimension],
                                "metrics": [{"metric": "count(*)", "alias": "n"}]}
     if variables is not None:
@@ -230,14 +230,14 @@ async def counts_by(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str
 
 
 async def by_id(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, dimension: str) -> list[Any]:
-    """``dimension`` per row of ``model``, ordered by ``id``."""
+    """``dimension`` per row of ``dataset``, ordered by ``id``."""
     out = await rows(datasets=datasets, db=db, payload={
         "population": dataset, "dimensions": ["id", dimension], "order": [{"field": "id"}]})
     return [r[f"{dataset}.{dimension}"] for r in out]
 
 
 async def drift_entries(*, datasets: Iterable[SlayerDataset], db: Path, base_dir: Path) -> list[dict[str, Any]]:
-    """``validate_models`` findings for ``models`` saved over ``db``."""
+    """``validate_datasets`` findings for ``datasets`` saved over ``db``."""
     ds = DatasourceConfig(name=DS, type="duckdb", database=str(db))
     storage = YAMLStorage(base_dir=str(base_dir))
     await storage.save_datasource(ds)
@@ -285,7 +285,7 @@ def save_datasource(store: Path, *, name: str = DS, database: Path) -> None:
 
 def stored_dataset(store: Path, name: str) -> SlayerDataset:
     model = asyncio.run(YAMLStorage(base_dir=str(store)).get_dataset(name))
-    assert model is not None, f"model {name!r} not saved under {store}"
+    assert model is not None, f"dataset {name!r} not saved under {store}"
     return model
 
 

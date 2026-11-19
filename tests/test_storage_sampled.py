@@ -1,10 +1,10 @@
-"""Per-column sample-value persistence (DEV-1375, extended in DEV-1480).
+"""Per-field sample-value persistence.
 
 Pins ``StorageBackend.update_field_sampled`` semantics across the ABC
 contract, the YAML and SQLite implementations, and the ``resolve_storage``
 factory path.
 
-DEV-1480 extends the signature with two new required kwargs alongside
+The signature carries two required kwargs alongside
 ``sampled``: ``sampled_values: Optional[List[str]]`` (the structured top-N
 list paired with the text summary) and ``distinct_count: Optional[int]``
 (the true total cardinality at profile time). All three round-trip through
@@ -59,7 +59,7 @@ async def test_yaml_update_column_sampled_persists() -> None:
         loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
         assert loaded.get_field("amount").sampled == "0.0 .. 9999.99"
-        # Other columns untouched.
+        # Other fields untouched.
         assert loaded.get_field("id").sampled is None
         assert loaded.get_field("status").sampled is None
 
@@ -184,8 +184,7 @@ async def test_sqlite_update_column_sampled_preserves_other_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
-# resolve_storage factory path (DEV-1853: join_sync wrapper retired — the
-# factory returns the bare backend)
+# resolve_storage factory path (the factory returns the bare backend)
 # ---------------------------------------------------------------------------
 
 
@@ -235,7 +234,7 @@ async def test_factory_storage_sqlite_update_column_sampled() -> None:
 
 @pytest.mark.asyncio
 async def test_two_sampled_updates_to_different_columns_dont_clobber_each_other() -> None:
-    """Sequential updates to different columns must accumulate, not overwrite."""
+    """Sequential updates to different fields must accumulate, not overwrite."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(DatasourceConfig(
@@ -262,7 +261,7 @@ async def test_two_sampled_updates_to_different_columns_dont_clobber_each_other(
 
 
 # ---------------------------------------------------------------------------
-# DEV-1480: sampled_values + distinct_count round-trip alongside sampled
+# sampled_values + distinct_count round-trip alongside sampled
 # ---------------------------------------------------------------------------
 
 
@@ -316,7 +315,7 @@ async def test_yaml_round_trips_values_with_commas() -> None:
 
 @pytest.mark.asyncio
 async def test_yaml_round_trips_empty_list_for_all_null_column() -> None:
-    """All-NULL profiled column: empty list + text="" + distinct_count=0."""
+    """All-NULL profiled field: empty list + text="" + distinct_count=0."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(DatasourceConfig(
@@ -389,7 +388,7 @@ async def test_yaml_clear_sampled_values_independently_of_sampled() -> None:
 
 @pytest.mark.asyncio
 async def test_yaml_preserves_other_columns_when_updating_one() -> None:
-    """Updating column A's new fields must not touch column B's fields."""
+    """Updating field A's new attributes must not touch field B's attributes."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(DatasourceConfig(
@@ -467,7 +466,7 @@ async def test_sqlite_clear_distinct_count_via_none() -> None:
 
 @pytest.mark.asyncio
 async def test_factory_storage_sampled_values_and_distinct_count() -> None:
-    """Both DEV-1480 kwargs round-trip through the factory-returned backend."""
+    """Both new kwargs round-trip through the factory-returned backend."""
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapped = resolve_storage(tmpdir)
         assert isinstance(wrapped, YAMLStorage)
@@ -490,7 +489,7 @@ async def test_factory_storage_sampled_values_and_distinct_count() -> None:
 
 @pytest.mark.asyncio
 async def test_update_does_not_clobber_distinct_count_for_other_columns() -> None:
-    """Sequential per-column updates: each column's distinct_count is independent."""
+    """Sequential per-field updates: each field's distinct_count is independent."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(DatasourceConfig(

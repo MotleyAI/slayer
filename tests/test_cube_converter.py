@@ -24,7 +24,7 @@ from tests._cube_helpers import DS, column, convert, metric, meta
 
 
 def _metric_field(dataset: SlayerDataset, metric_name: str) -> DatasetField:
-    """Return the Column an `<agg>(<col>)` measure formula aggregates."""
+    """Return the field an `<agg>(<col>)` metric expression aggregates."""
     m = metric(dataset, metric_name)
     parsed = parse_expr(m.expression)
     assert isinstance(parsed, AggCall), m.expression
@@ -34,7 +34,7 @@ def _metric_field(dataset: SlayerDataset, metric_name: str) -> DatasetField:
     return column(dataset, col_ref)
 
 
-# ── 4.1 cube → model ───────────────────────────────────────────────────────
+# ── 4.1 cube → dataset ─────────────────────────────────────────────────────
 
 def test_cube_becomes_table_backed_model():
     project = CubeProject(cubes=[CubeCube(
@@ -79,7 +79,7 @@ def test_per_cube_data_source_reported_and_stashed():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    # All models scoped under the single --datasource, NOT the per-cube one.
+    # All datasets scoped under the single --datasource, NOT the per-cube one.
     assert models["orders"].data_source == DS
     assert meta(models["orders"])["cube_unmapped"]["data_source"] == "warehouse_b"
     assert any(i.category == CubeIssueCategory.UNMAPPED_INFRA for i in report.issues)
@@ -438,7 +438,7 @@ def test_rolling_window_leading_or_offset_unsupported(rolling):
 
 def test_window_is_part_of_dedup_key():
     """Codex #4 window half: same sql + same (no) filter but different
-    rolling_window → distinct columns, not a collapsed one."""
+    rolling_window → distinct fields, not a collapsed one."""
     models, _ = convert(_orders_with([
         CubeMeasure(name="rev", type="sum", sql="{CUBE}.amount"),
         CubeMeasure(name="rev_30d", type="sum", sql="{CUBE}.amount",
@@ -452,8 +452,8 @@ def test_window_is_part_of_dedup_key():
 # ── 4.4 joins — physical-column resolution (Codex #2) ──────────────────────
 
 def test_join_member_resolves_to_physical_column():
-    """`{customers.id}` keys the join by member name `id`; the physical `cust_pk`
-    rides on the column's `sql`."""
+    """`{customers.id}` keys the relationship by member name `id`; the physical `cust_pk`
+    rides on the field's `sql`."""
     project = CubeProject(cubes=[
         CubeCube(name="orders", sql_table="public.orders",
                  joins=[CubeJoin(name="customers", relationship="many_to_one",
@@ -499,7 +499,7 @@ def test_percent_format_maps_to_percent():
 def test_unsupported_format_reported_and_dropped(fmt):
     models, report = convert(_orders_with(
         [CubeMeasure(name="m", type="sum", sql="{CUBE}.amount", format=fmt)]))
-    # measure still emitted; format dropped (defaults to FLOAT).
+    # metric still emitted; format dropped (defaults to FLOAT).
     assert models["orders"].get_metric("m") is not None
     assert any(i.category == CubeIssueCategory.UNSUPPORTED_FORMAT for i in report.issues)
 

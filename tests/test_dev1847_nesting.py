@@ -1,4 +1,4 @@
-"""DEV-1847 task 1.4/4.2 — nested producers compose to arbitrary depth (SQLite +
+"""Nested producers compose to arbitrary depth (SQLite +
 DuckDB): depth-three executed values, one flat WITH with closed scopes and no
 placeholder leak, and a producer consumed at two depths that renders once
 (spec: queries/partitioned-aggregates)."""
@@ -83,7 +83,7 @@ class TestDepthThree:
 class TestSharedProducerRendersOnce:
     async def test_one_producer_two_depths_renders_once(self, exec_engine):
         """Scenario: One producer consumed at two depths renders once — a
-        computed dimension bands the city-region total AND a measure
+        computed dimension bands the city-region total AND a metric
         re-aggregates it; a single city-region producer serves both."""
         band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         both = sales_q(
@@ -102,9 +102,9 @@ class TestSharedProducerRendersOnce:
             assert (cell is None) if acr is None else float(cell) == pytest.approx(acr)
 
     async def test_producer_not_duplicated_by_second_consumer(self, exec_engine):
-        """The re-aggregating measure reuses the banded dimension's producer —
+        """The re-aggregating metric reuses the banded dimension's producer —
         the city-region producer CTE count does not grow with the second
-        consumer (interning, DEV-1838)."""
+        consumer (interning)."""
         band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         dialect = "postgres"
         single = sales_q(dimensions=["region", band],
@@ -115,7 +115,7 @@ class TestSharedProducerRendersOnce:
         s_sql = await gen(single, dialect=dialect)
         b_sql = await gen(both, dialect=dialect)
         s_count = _grain_producer_count(s_sql, dialect=dialect)
-        # Interning: the re-aggregating measure reuses the banded dimension's
+        # Interning: the re-aggregating metric reuses the banded dimension's
         # city-region producer, so the second consumer adds no new one. Relative
         # (b == s) rather than absolute, to survive any substring miscount.
         assert s_count >= 1

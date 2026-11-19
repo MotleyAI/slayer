@@ -1,5 +1,5 @@
-"""Execution — change/change_pct (and any transform) over a cross-model
-inner, combined into a composite, executes correctly in measure, filter and
+"""Execution — change/change_pct (and any transform) over a cross-dataset
+inner, combined into a composite, executes correctly in metric, filter and
 order positions.
 
 Two datasets:
@@ -8,11 +8,11 @@ Two datasets:
   ``wscaled_sum(amount)`` crosses a fragment) — for the failing composite class,
   asserted by *invariance*: the composite equals the same expression built from
   its separately-selected operands (which already render today), and selecting an
-  operand on its own changes nothing (semantics Law 7, measure closure);
-* the **attributable** dataset (``_dev1800_fixtures``: the cross-model inner
+  operand on its own changes nothing (semantics Law 7, metric closure);
+* the **attributable** dataset (``_dev1800_fixtures``: the cross-dataset inner
   varies along the customer-signup axis) — for hand-computed absolute oracles.
 
-Measure-position composites raise ``RenderContextMissingFacilityError`` before
+Metric-position composites raise ``RenderContextMissingFacilityError`` before
 this change and execute after; the named single-transform shapes and the
 filter/order positions already render and are pinned here against regression.
 """
@@ -81,7 +81,7 @@ def _approx_or_none(cell, expected) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# The failing measure-position class — asserted by invariance on the dev1750 dataset.
+# The failing metric-position class — asserted by invariance on the dev1750 dataset.
 # --------------------------------------------------------------------------- #
 class TestTransformPlusHiddenAggregate:
     """``change(cm) + sum(amount)`` and its variants: the composite equals the sum
@@ -118,7 +118,7 @@ class TestTransformPlusHiddenAggregate:
         await self._assert_sum_invariant(dev1750_engine, transform=f"cumsum({CM})", operand="sum(amount)")
 
     async def test_change_of_wscaled_plus_sum(self, dev1750_engine) -> None:
-        """The inner crosses a join fragment (``wscaled_sum(amount)``)."""
+        """The inner crosses a relationship fragment (``wscaled_sum(amount)``)."""
         await self._assert_sum_invariant(dev1750_engine, transform="change(wscaled_sum(amount))", operand="sum(amount)")
 
     async def test_transform_plus_transform(self, dev1750_engine) -> None:
@@ -221,9 +221,9 @@ class TestAttributableComposite:
 
 
 class TestInnerVaryingAlongTimeAxis:
-    """Scenario: the cross-model inner is attributable to the query's time axis;
+    """Scenario: the cross-dataset inner is attributable to the query's time axis;
     the change and change_pct percentages are correct per period, and adding the
-    measure changes no row and no other column."""
+    metric changes no row and no other column."""
 
     async def test_change_of_orders_amount_by_customer_signup(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
@@ -277,7 +277,7 @@ class TestNamedShapes:
             _approx_or_none(got[m]["orders.d"], want)
 
     async def test_change_of_broadcast_spend_is_zero_after_first_period(self, dev1750_engine) -> None:
-        """The broadcast cross-model inner (spend constant across ordered_at)
+        """The broadcast cross-dataset inner (spend constant across ordered_at)
         yields a zero delta and zero percentage after the first period."""
         for formula in (f"change({CM})", f"change_pct({CM})"):
             got = _by_month(await _orders(dev1750_engine, metrics=[
@@ -360,7 +360,7 @@ class TestTermAloneExecutionParity:
 
 
 class TestMaskPlacementExecuted:
-    """A row-typed mask filters rows before aggregation (WHERE); a measure-typed
+    """A row-typed mask filters rows before aggregation (WHERE); a metric-typed
     mask filters groups after aggregation (HAVING) — distinct results confirm the
     placement is by mask typing, not text (executed on SQLite + DuckDB)."""
 

@@ -1,6 +1,6 @@
-"""Shared fixtures for DEV-1935 — boolean-total semi-join pushdown: the DEV-1900
+"""Shared fixtures for boolean-total semi-join pushdown: the ``_dev1900_fixtures``
 graph and dual-engine dataset (rows documented in ``tests/_dev1840_fixtures.py``)
-plus three model variants (named reverse edge, unproven plans hop, event-less
+plus three dataset variants (named reverse edge, unproven plans hop, event-less
 region mini-graph)."""
 
 from __future__ import annotations
@@ -41,11 +41,11 @@ OR_MIX_LOCAL = "tier = 'bronze' or orders.status = 'ok'"
 GOLD_OR_OK = "tier = 'gold' or orders.status = 'ok'"
 #: Negation over a local-and-crosspath conjunction — existential reading.
 NOT_GOLD_AND_OK = "not (tier = 'gold' and orders.status = 'ok')"
-#: A null-test on a related column reads as absence (no orders).
+#: A null-test on a related field reads as absence (no orders).
 NO_ORDERS = "orders.id is null"
 #: Two independent fanning branches under OR (orders, regions.region_events).
 NEW_OR_EVENT = "orders.status = 'new' or regions.region_events.value >= 50"
-#: A single atom comparing columns of two branches -> judged on their product.
+#: A single atom comparing fields of two branches -> judged on their product.
 ATOM_TWO_BRANCH = "orders.amount < regions.region_events.value"
 #: A materialised branch (orders.id dimension) OR a to-one branch (regions.name).
 MATERIALISED_OR = "orders.status = 'ok' or regions.name = 'South'"
@@ -60,7 +60,7 @@ ASSOC_OR = "customers.tier = 'gold' OR channel = 'app'"
 #: Association-arm mixed OR whose second leg crosses an unproven plans hop.
 ASSOC_OR_ABSENT = "customers.tier = 'gold' OR customers.plans.level = 'basic'"
 
-# Oracles — hand-computed from the DEV-1840/1900 dataset.
+# Oracles — hand-computed from the ``_dev1840``/``_dev1900`` fixtures' dataset.
 #: bronze {c4} OR >=1 ok order {c1,c2,c3,c5,c6} = {c1..c6} spend 460 (never 560).
 OR_MIX_SPEND = 460.0
 OR_MIX_SPEND_FAN_DEFECT = 560.0
@@ -111,12 +111,12 @@ EVENTLESS_COALESCE_LT40 = 170.0
 
 
 # --------------------------------------------------------------------------- #
-# Model variants.
+# Dataset variants.
 # --------------------------------------------------------------------------- #
 def two_spellings_datasets() -> List[SlayerDataset]:
-    """DEV-1840 graph with the single ``customers -> orders`` edge NAMED
+    """``_dev1840_fixtures`` graph with the single ``customers -> orders`` edge NAMED
     ``purchases`` (1:N). ``purchases.status`` (edge name) and ``orders.channel``
-    (target model) then name one physical edge two ways."""
+    (target dataset) then name one physical edge two ways."""
     models = dev1840_datasets(declare_reverse=True)
     cust = next(m for m in models if m.name == "customers")
     for join in cust.relationships:
@@ -126,14 +126,14 @@ def two_spellings_datasets() -> List[SlayerDataset]:
 
 
 def unproven_plans_datasets() -> List[SlayerDataset]:
-    """DEV-1900 graph with the ``customers -> plans`` hop unproven (plans.code not
+    """``_dev1900_fixtures`` graph with the ``customers -> plans`` hop unproven (plans.code not
     a PK), so a ``customers.plans.level`` filter must restrict by semi-join."""
     models = dev1900_datasets()
     return [plans_dataset(strong=False) if m.name == "plans" else m for m in models]
 
 
 def disconnected_dataset_datasets() -> List[SlayerDataset]:
-    """DEV-1900 graph plus a standalone ``promos`` model with no join path from any
+    """``_dev1900_fixtures`` graph plus a standalone ``promos`` dataset with no relationship path from any
     root — a genuinely unreachable filter reference (``promos.discount``) is
     refused at resolution with a typed error in every mode (D12)."""
     models = dev1900_datasets()
@@ -152,7 +152,7 @@ def event_less_datasets(
     """A self-contained ``customers -> regions -> region_events`` graph. The
     fanning ``regions -> region_events`` hop is LEFT by default; ``inner_events``
     declares it INNER, so an event-less region contributes no product row;
-    ``derived_events`` adds one derived event column per Mode-A fragment shape."""
+    ``derived_events`` adds one derived event field per Mode-A fragment shape."""
     events_join = DatasetRelationship(
         to="region_events", from_columns=["id"], to_columns=["region_id"],
         cardinality=RelationshipCardinality.ONE_TO_MANY,
@@ -175,7 +175,7 @@ def event_less_datasets(
     event_joins: List[DatasetRelationship] = []
     extra_models: List[SlayerDataset] = []
     if derived_events:
-        # A to-one LEFT hop for a Column.filter to cross: the filter's OR leg
+        # A to-one LEFT hop for a DatasetField.filter to cross: the filter's OR leg
         # holds when event_kinds is absent, so the masked value stays non-NULL.
         event_columns.append(DatasetField(name="kind_id", datatype=DataType.INTEGER))
         event_joins.append(

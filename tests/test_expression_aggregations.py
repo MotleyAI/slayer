@@ -1,10 +1,10 @@
-"""Same-model expression aggregation — ``sum(amount - cost)`` (DEV-1826 task 1.4).
+"""Same-dataset expression aggregation — ``sum(amount - cost)``.
 
-Aggregating a row-level scalar expression built from bare host-model columns,
+Aggregating a row-level scalar expression built from bare host-dataset fields,
 scalar-allowlist calls, arithmetic, and literals; deterministic auto-naming via
 the shared computed-dimension sanitizer; loud errors for the unsupported shapes
-(cross-model refs, filtered-column operands, nested aggregations/transforms);
-per-column gates advisory for expressions.
+(cross-dataset refs, filtered-field operands, nested aggregations/transforms);
+per-field gates advisory for expressions.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from tests._engine_helpers import _norm
 
 
 # ===========================================================================
-# Model + harness.
+# Dataset + harness.
 # ===========================================================================
 
 
@@ -342,7 +342,7 @@ class TestExpressionNaming:
     async def test_display_classification(self) -> None:
         # Decision 11: classification derives from the inferred value class,
         # defaulting to plain numeric — identical display metadata to a plain
-        # sum over an unformatted column (both preserving-unformatted, so both
+        # sum over an unformatted field (both preserving-unformatted, so both
         # omit the attributes entry, per the response-meta contract);
         # count-class expressions format as integers.
         resp = await _dry(
@@ -370,8 +370,7 @@ class TestExpressionNaming:
 
 
 # ===========================================================================
-# Key traversal — the expression source variant must not be a fail-open leaf
-# (DEV-1827 lesson; design Risks).
+# Key traversal — the expression source variant must not be a fail-open leaf.
 # ===========================================================================
 
 
@@ -421,20 +420,20 @@ class TestExpressionKeyTraversal:
 
 class TestExpressionErrors:
     async def test_cross_model_expression_accepted(self) -> None:
-        # DEV-1832 lifts the cross-model boundary (covered in test_dev1832_*).
+        # The cross-dataset boundary is lifted (covered in test_dev1832_*).
         resp = await _dry(_q(metrics=["sum(amount - customers.discount)"]))
         assert resp.sql
 
     async def test_filtered_column_operand_accepted(self) -> None:
-        # DEV-1832: a filtered operand desugars to CASE WHEN, not a rejection.
+        # A filtered operand desugars to CASE WHEN, not a rejection.
         resp = await _dry(_q(metrics=["sum(ok_amount - cost)"]))
         assert resp.sql
         assert "CASE WHEN" in resp.sql.upper()
 
     async def test_mixed_row_and_attached_source_accepted(self) -> None:
-        # ``sum(sum(amount))`` is a degenerate re-aggregation (DEV-1847); a
-        # source mixing a row leaf with an attached value is now a row-grain
-        # aggregation and compiles (DEV-1859), not the expression gate.
+        # ``sum(sum(amount))`` is a degenerate re-aggregation; a source mixing
+        # a row leaf with an attached value is a row-grain aggregation and
+        # compiles, not the expression gate.
         q = _q(metrics=["sum(amount + sum(amount))"])
         resp = await _dry(q)
         assert resp.sql
@@ -493,7 +492,7 @@ async def _classify(query) -> tuple[str, str]:
 
 
 class TestExpressionPartitionAttribution:
-    """Partition-key attribution over joins must treat expression sources like their plain-column twin (no AttributeError)."""
+    """Partition-key attribution over relationships must treat expression sources like their plain-field twin (no AttributeError)."""
 
     async def test_joined_partition_by_matches_column_twin(self) -> None:
         expr = await _classify(

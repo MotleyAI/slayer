@@ -1,9 +1,9 @@
-"""DEV-1865 — the typed mask plan representation.
+"""The typed mask plan representation.
 
-Filter conjuncts compile to typed mask entries (stable slot id, field/measure
+Filter conjuncts compile to typed mask entries (stable slot id, field/metric
 typing, stratum) over hidden slots, and ``OrderEntry`` drops its plan-side
 ``scope`` (classification relocates to emission-side lowering). The materialized
-value equalling the measure's is pinned by the executed twin-query law in
+value equalling the metric's is pinned by the executed twin-query law in
 ``test_dev1865_value_parity``; here we pin the plan IR shape.
 """
 
@@ -99,7 +99,7 @@ class TestOrderEntryScopeRemoved:
 
 class TestDev1840DispositionUnchanged:
     """task 2.4 / axiom D: the reachability re-plumbing must not change the
-    semi-join dispositions on the DEV-1840 fixture shapes."""
+    semi-join dispositions on the filter-pushdown fixture shapes."""
 
     def test_root_local_filter_stays_inline(self) -> None:
         att = _dev1840_attach(plan_query(query=_dev1840_q(

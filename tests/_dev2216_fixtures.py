@@ -1,5 +1,5 @@
 """Ossie Appendix B.1 data over a keyless ``customers`` (no primary or unique key) and an
-``orders → customers`` join with no declared cardinality, seeded into SQLite, DuckDB or Postgres.
+``orders → customers`` relationship with no declared cardinality, seeded into SQLite, DuckDB or Postgres.
 
 customers (id, region, spend):  C1 EAST 10 | C2 EAST 20 | C3 WEST 30 | C4 NORTH 40 (no orders)
 orders (id, customer_id, status, amount):
@@ -51,7 +51,7 @@ FILTERED_SPEND_BY_STATUS = {"completed": 40.0, "pending": 20.0}
 
 
 def customers_dataset(*, keyed: bool = False, unique: bool = False) -> SlayerDataset:
-    """``keyed`` declares ``id`` the primary key; ``unique`` declares it a standalone unique column."""
+    """``keyed`` declares ``id`` the primary key; ``unique`` declares it a standalone unique field."""
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
@@ -144,7 +144,7 @@ def metric(expression: str, name: str) -> QueryMetric:
 
 
 def cells(resp: SlayerResponse, dim: str, value: str) -> dict:
-    """``{dimension value: measure value}`` keyed on the result column ending in ``dim``."""
+    """``{dimension value: metric value}`` keyed on the result column ending in ``dim``."""
     out: dict = {}
     for row in resp.data:
         d = next(k for k in row if k.endswith(dim))

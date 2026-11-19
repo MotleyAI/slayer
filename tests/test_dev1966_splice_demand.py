@@ -1,4 +1,4 @@
-"""A query-backed model is spliced only when a stage reads it; reach is never a dependency.
+"""A query-backed dataset is spliced only when a stage reads it; reach is never a dependency.
 
 Spec: openspec …/specs/queries/query-backed-inline — "Reaching is not reading", "Reads through
 stored joins at any depth".

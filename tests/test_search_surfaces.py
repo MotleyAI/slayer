@@ -240,7 +240,7 @@ def test_cli_datasources_refresh_samples_subcommand_help(monkeypatch: pytest.Mon
 
 
 def _seed_cli_storage(tmp_path) -> str:
-    """Set up a one-datasource, one-model, one-memory storage tree and
+    """Set up a one-datasource, one-dataset, one-memory storage tree and
     return its directory. Shared by the CLI-search surface tests."""
     storage_dir = str(tmp_path / "storage")
     storage = resolve_storage(storage_dir)

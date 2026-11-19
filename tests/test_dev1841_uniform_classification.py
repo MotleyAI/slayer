@@ -1,5 +1,5 @@
 """Local aggregates over a fanning dimension route
-through the same attribution classification as cross-model ones, in every
+through the same attribution classification as cross-dataset ones, in every
 consumer role. The naive join-multiplied value must be unrepresentable.
 
 Spec: openspec …/specs/queries/semantics — "No double counting" (local
@@ -79,7 +79,7 @@ class TestAssociateGivesDistinctEntityValue:
 
 class TestEveryConsumerRoleAvoidsTheFan:
     """Scenario: fanned local aggregates are caught in every consumer context —
-    each resolves per the mode exactly as a directly selected measure."""
+    each resolves per the mode exactly as a directly selected metric."""
 
     async def test_arithmetic_composite_leaf(self, exec_backend):
         _, engine = exec_backend

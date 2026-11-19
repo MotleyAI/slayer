@@ -1,5 +1,5 @@
-"""SlayerModel v10 → v11: stored physical spellings of renamed join keys are
-canonicalised to ``Column.name`` on load (both sides, before the exact-inverse
+"""SlayerDataset v10 → v11: stored physical spellings of renamed join keys are
+canonicalised to ``DatasetField.name`` on load (both sides, before the exact-inverse
 dedup) and written back; YAML and SQLite backends."""
 
 from __future__ import annotations
@@ -158,7 +158,7 @@ class TestLeftAlone:
         assert (stored["relationships"][0]["from_columns"], stored["relationships"][0]["to_columns"]) == (["customer_id"], ["id"])
 
     async def test_declared_name_wins_over_a_rename(self, seed: Seeder):
-        # ``cust_fk`` is both a declared name and another column's rename.
+        # ``cust_fk`` is both a declared name and another field's rename.
         doc = _orders(joins=[_join("customers", [["cust_fk", "id"]])])
         doc["columns"].append({"name": "cust_fk", "type": "INT", "sql": "legacy_fk"})
         storage = await seed([doc, _customers()])

@@ -1,11 +1,11 @@
 """A path-less derived partition key fanning from its host fails closed
 in every mode.
 
-A ``partition_by=`` naming a host-local derived column whose definition crosses the
+A ``partition_by=`` naming a host-local derived field whose definition crosses the
 1:N ``regions → region_events`` hop (e.g. ``bad_pop = pop + region_events.value``)
 is not single-valued at the host grain, so no ``to_many_handling`` mode can count it
 inline — it is a mode-invariant input-safety error, distinct from a dimension merely
-unattributable from a further (cross-model) root, which still resolves by mode. The
+unattributable from a further (cross-dataset) root, which still resolves by mode. The
 guard runs at bind (mode-unaware, one chokepoint), so it fires uniformly across every
 position the key can appear in. On the shared fixture graph, dual-engine.
 
@@ -38,7 +38,7 @@ MODES = ["broadcast", "error", "associate"]
 
 
 def _orders_fan_datasets():
-    """dev1900 graph + an orders-local derived column whose definition crosses the
+    """dev1900 graph + an orders-local derived field whose definition crosses the
     fanning ``regions → region_events`` hop — a path-less key on an orders host that
     also carries a time axis (``ordered_at``) for the windowed position."""
     models = dev1900_datasets()
@@ -50,7 +50,7 @@ def _orders_fan_datasets():
 
 
 def _island_datasets():
-    """dev1900 graph + an isolated model with no join to anything — a partition key
+    """dev1900 graph + an isolated dataset with no relationship to anything — a partition key
     naming it has no route, so it fails closed upstream at dimension resolution,
     never reaching the fanning guard (nor falsely naming its hop)."""
     models = dev1900_datasets()
@@ -125,8 +125,8 @@ async def _assert_fails_naming_hop(eng, query: SlayerQuery) -> str:
 
 
 def _status_xmodel_q(mode: str) -> SlayerQuery:
-    """Host-safe key: ``status`` is a plain orders column (safe from the orders host),
-    unattributable only from the cross-model ``customers`` root — the mode-aware case."""
+    """Host-safe key: ``status`` is a plain orders field (safe from the orders host),
+    unattributable only from the cross-dataset ``customers`` root — the mode-aware case."""
     return orders_q(
         dimensions=["status"],
         metrics=[QueryMetric(metric="sum(customers.spend, partition_by=status)", alias="w")],
@@ -243,7 +243,7 @@ class TestHostSafeKeyStaysModeAware:
         query = _status_xmodel_q(mode)
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        # the mode-aware cross-model check (root=customers), NOT the fanning-from-host guard
+        # the mode-aware cross-dataset check (root=customers), NOT the fanning-from-host guard
         assert "attributable from customers" in str(ei.value), str(ei.value)
 
     async def test_safe_local_derived_partition_key_executes(self, engine):

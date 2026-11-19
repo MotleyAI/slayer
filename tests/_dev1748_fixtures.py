@@ -1,4 +1,4 @@
-"""Shared fixtures for the DEV-1748 first/last (§5.8) pinning matrix.
+"""Shared fixtures for the first/last (§5.8) pinning matrix.
 
 Underscore-prefixed (like ``tests/_dev1746_fixtures.py`` and
 ``tests/_dev1747_fixtures.py``) so pytest skips it during collection while
@@ -18,11 +18,11 @@ built around one thing a wrong implementation would get wrong:
 * ``nullval`` — the winning row's VALUE is NULL. ``last`` must be NULL, not the
   largest non-NULL value in the group; this is what separates
   ``MAX(CASE WHEN rn = 1 THEN v END)`` from ``MAX(v)``.
-* ``filt`` — the newest row does NOT match the measure's ``Column.filter`` and
+* ``filt`` — the newest row does NOT match the metric's ``DatasetField.filter`` and
   an older one does, so a filtered first/last that ranked before filtering
   returns the wrong row (or NULL) instead of the right one.
 * ``nomatch`` — NO row matches the filter. The group must survive with a NULL
-  measure, which is the case that separates a WHERE inside an isolated CTE
+  metric, which is the case that separates a WHERE inside an isolated CTE
   (rows vanish, LEFT JOIN restores the group) from a broken inner join.
 * ``NULL`` status — a NULL GRAIN member, so the null-safe join-back (P-I) has
   something to match.
@@ -30,7 +30,7 @@ built around one thing a wrong implementation would get wrong:
 ``order_tags`` is the 1:N fan-out: order 15 carries FOUR tag rows (``rush``
 twice, plus ``gift`` and ``fragile``) while orders 1, 2 and 16 carry one each.
 The duplicate ``rush`` is what makes multiply-per-match observable — a join
-pulled in for one measure changes another's value if it leaks into the wrong
+pulled in for one metric changes another's value if it leaks into the wrong
 scope.
 
 ``empty_orders`` is a structurally identical but EMPTY table. An ungrouped
@@ -63,7 +63,7 @@ PAID_LAST = 13.0
 
 #: The ``paid`` rows belong to DIFFERENT customers, and their customers' signup
 #: order is the REVERSE of their own ``created_at`` order. So ranking ``paid``
-#: by a time column reached through the customers join picks the row that
+#: by a time field reached through the customers relationship picks the row that
 #: ranking by ``created_at`` rejects — which is what makes a test of the joined
 #: derived time arg able to fail. Without the inversion every row of a group
 #: would share one signup timestamp, the ranking would be a tie, and an
@@ -102,7 +102,7 @@ FAN_RUSH_DUPLICATES = 2
 #: ``sum`` over the ``fan`` group when filtered to ``rush``: order 15 counted
 #: twice plus order 16 once.
 FAN_RUSH_MULTIPLIED_SUM = FAN_FIRST * FAN_RUSH_DUPLICATES + FAN_LAST
-#: DEV-1909: a fanning ``rush`` population filter restricts by association, so the
+#: A fanning ``rush`` population filter restricts by association, so the
 #: sibling sum counts each order once — order 15 and order 16, no duplicate.
 FAN_RUSH_ASSOC_SUM = FAN_FIRST + FAN_LAST
 
@@ -124,7 +124,7 @@ _ORDERS_DDL = """
 
 
 def seed_dev1748_sqlite(db_path: str) -> None:
-    """Create + seed the DEV-1748 SQLite corpus at ``db_path``."""
+    """Create + seed the SQLite corpus at ``db_path``."""
     with transaction(db_path) as con:
         con.executescript(
             f"""
@@ -169,7 +169,7 @@ def seed_dev1748_sqlite(db_path: str) -> None:
             [
                 # paid — the plain ordered pair. The customers are INVERTED against
                 # the created_at order (customer 101 signed up LAST, customer 100
-                # FIRST), so ranking this group through the customers join reverses
+                # FIRST), so ranking this group through the customers relationship reverses
                 # the winner. See PAID_BY_JOINED_SIGNUP.
                 (1, 101, "paid", "2024-01-01", "2024-01-02", PAID_FIRST),
                 (2, 100, "paid", "2024-03-01", "2024-03-02", PAID_LAST),
@@ -209,7 +209,7 @@ def seed_dev1748_sqlite(db_path: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 
 
@@ -217,7 +217,7 @@ def dev1748_datasets() -> List[SlayerDataset]:
     """``orders -> customers -> regions`` plus 1:N ``order_tags`` and an empty
     twin of ``orders``.
 
-    Returned host-first; ``[0]`` is the host and the rest are ``extra_models``.
+    Returned host-first; ``[0]`` is the host and the rest are ``extra_datasets``.
     """
     regions = SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
@@ -237,12 +237,12 @@ def dev1748_datasets() -> List[SlayerDataset]:
             DatasetField(name="tier", datatype=DataType.STRING),
             DatasetField(name="spend", datatype=DataType.FLOAT),
             DatasetField(name="signup_at", datatype=DataType.DATETIME),
-            # A LOCAL derived time column on the target — the explicit
-            # cross-model time arg that needs no further join.
+            # A LOCAL derived time field on the target — the explicit
+            # cross-dataset time arg that needs no further relationship.
             DatasetField(
                 name="signup_alias", datatype=DataType.DATETIME, sql="signup_at",
             ),
-            # A derived time column whose sql CROSSES customers -> regions.
+            # A derived time field whose sql CROSSES customers -> regions.
             # Used as an explicit time arg this is the residual-hop shape.
             DatasetField(
                 name="deep_opened", datatype=DataType.DATETIME,
@@ -269,17 +269,17 @@ def dev1748_datasets() -> List[SlayerDataset]:
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(name="shipped_at", datatype=DataType.DATETIME),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            # Filtered on a LOCAL column.
+            # Filtered on a LOCAL field.
             DatasetField(
                 name="big_amount", datatype=DataType.FLOAT, sql="amount",
                 filter=f"amount > {BIG_AMOUNT_THRESHOLD}",
             ),
-            # Filtered on a JOINED column.
+            # Filtered on a JOINED field.
             DatasetField(
                 name="gold_amount", datatype=DataType.FLOAT, sql="amount",
                 filter="customers.tier = 'gold'",
             ),
-            # Filtered on a DERIVED column (``amount_x2`` is local-derived).
+            # Filtered on a DERIVED field (``amount_x2`` is local-derived).
             DatasetField(
                 name="doubled_big", datatype=DataType.FLOAT, sql="amount",
                 filter=f"amount * 2 > {BIG_AMOUNT_THRESHOLD * 2}",
@@ -291,7 +291,7 @@ def dev1748_datasets() -> List[SlayerDataset]:
             ),
             # A local derived value — the non-crossing control.
             DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
-            # A local derived TIME column, for an explicit derived time arg.
+            # A local derived TIME field, for an explicit derived time arg.
             DatasetField(
                 name="created_alias", datatype=DataType.DATETIME, sql="created_at",
             ),

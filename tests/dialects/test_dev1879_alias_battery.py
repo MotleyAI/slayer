@@ -1,6 +1,6 @@
-"""Alias validity and result-key uniformity for unnamed formula measures.
+"""Alias validity and result-key uniformity for unnamed expression metrics.
 
-A fixed battery of unnamed-measure shapes crossed with every supported
+A fixed battery of unnamed-metric shapes crossed with every supported
 dialect: emitted projection aliases must be valid identifiers for the
 dialect after its emission rewrites, and derived result keys must be
 identical across dialects.
@@ -107,7 +107,7 @@ async def test_aliases_valid_per_dialect(shape: str, dialect: str) -> None:
         f"invalid {dialect} alias {alias!r} in:\n{sql}"
     )
     assert alias in _projection_aliases(sql, dialect), (
-        f"measure alias {alias!r} not projected in:\n{sql}"
+        f"metric alias {alias!r} not projected in:\n{sql}"
     )
 
 
@@ -150,5 +150,5 @@ async def test_bigquery_unnamed_formula_measures() -> None:
         assert key in resp.columns
         mangled = key.replace(".", "___")
         assert mangled in _projection_aliases(sql, "bigquery"), (
-            f"measure alias {mangled!r} not projected in:\n{sql}"
+            f"metric alias {mangled!r} not projected in:\n{sql}"
         )

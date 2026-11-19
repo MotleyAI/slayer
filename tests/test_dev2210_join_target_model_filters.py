@@ -1,4 +1,4 @@
-"""A model's ``filters`` define its dataset: every read of the model sees only its passing rows, restricted before any join."""
+"""A dataset's ``filters`` define its rows: every read of the dataset sees only its passing rows, restricted before any join."""
 
 from __future__ import annotations
 

@@ -1,11 +1,11 @@
 """SQLGenerator-surface tests exercising the per-dialect dispatch path.
 
-DEV-1542 cleanup: lifted from ``tests/test_sql_generator.py``. The
+Lifted from ``tests/test_sql_generator.py``. The
 strategy-class tests in ``tests/dialects/test_<dialect>.py`` pin emission
 from ``<Dialect>().build_*`` with raw column-SQL inputs. This file pins
 the additional wrapping that happens when ``SQLGenerator`` dispatches
 through the dialect: ``_resolve_sql`` qualification, ``AggRenderSpec``
-filter wrapping, ``agg_kwargs`` parameter validation, model-level
+filter wrapping, ``agg_kwargs`` parameter validation, dataset-level
 default propagation, and full end-to-end query integration on T-SQL.
 """
 
@@ -24,7 +24,7 @@ from tests._engine_helpers import _engine_generate, orders_agg_sql
 
 
 class TestSqliteJsonExtractInGenerator:
-    """DEV-1331: ``json_extract(col, '$.path')`` in ``Column.sql`` must not be
+    """``json_extract(col, '$.path')`` in ``DatasetField.sql`` must not be
     rewritten to ``col -> '$.path'`` on SQLite — the operator returns the
     JSON-quoted form, silently breaking equality / CASE WHEN matches.
     """
@@ -126,7 +126,7 @@ class TestSqliteJsonExtractInGenerator:
 
 
 def _percentile_default(p: str) -> list[Aggregation]:
-    """A model-level override of ``percentile``'s ``p`` default."""
+    """A dataset-level override of ``percentile``'s ``p`` default."""
     return [Aggregation(name="percentile", params=[AggregationParam(name="p", sql=p)])]
 
 
@@ -231,18 +231,18 @@ class TestMedianPercentilePerDialect:
             await orders_agg_sql("percentile(amount, p='0.5); DROP TABLE x; --')")
 
     async def test_build_percentile_uses_model_level_default_p(self) -> None:
-        """Model-level Aggregation(name='percentile', params=[p=...]) supplies the default."""
+        """Dataset-level Aggregation(name='percentile', params=[p=...]) supplies the default."""
         sql = await orders_agg_sql("percentile(amount)", aggregations=_percentile_default("0.9"))
         assert "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)" in sql
 
     async def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
-        """Query-time kwargs win over the model-level default."""
+        """Query-time kwargs win over the dataset-level default."""
         sql = await orders_agg_sql(
             "percentile(amount, p=0.25)", aggregations=_percentile_default("0.9"))
         assert "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)" in sql
 
     async def test_build_percentile_rejects_non_literal_p(self) -> None:
-        """`percentile(measure, p=quantity)` fails with a clear validation error, never a column in PERCENTILE_CONT(p)'s direct-arg slot."""
+        """`percentile(field, p=quantity)` fails with a clear validation error, never a column in PERCENTILE_CONT(p)'s direct-arg slot."""
         with pytest.raises(ValueError, match="numeric literal"):
             await orders_agg_sql("percentile(amount, p=quantity)")
 
@@ -255,21 +255,21 @@ class TestMedianPercentilePerDialect:
             await orders_agg_sql("percentile(amount, p='-0.1')")
 
     async def test_build_percentile_rejects_non_literal_p_via_model_default(self) -> None:
-        """A model-level ``p`` default that is not a number (``pg_sleep(10)``) is rejected too."""
+        """A dataset-level ``p`` default that is not a number (``pg_sleep(10)``) is rejected too."""
         aggregations = _percentile_default("pg_sleep(10)")
         with pytest.raises(ValueError, match="numeric literal"):
             await orders_agg_sql("percentile(amount)", aggregations=aggregations)
 
 class TestStatAggsPerDialect:
-    """Per-dialect SQL emission for the new statistical aggregations
-    (DEV-1317): stddev_samp, stddev_pop, var_samp, var_pop, corr,
+    """Per-dialect SQL emission for the statistical aggregations:
+    stddev_samp, stddev_pop, var_samp, var_pop, corr,
     covar_samp, covar_pop.
 
     These pin the observed SQL output for each dialect — including
     sqlglot's transpilation quirks (e.g., var_samp → VARIANCE on SQLite,
     var_pop → VARIANCE_POP on SQLite/MySQL) — so the SQLite UDF
     registration knows which names to alias. The expected outputs use
-    fully model-qualified column references (``orders.amount`` etc.) —
+    fully dataset-qualified column references (``orders.amount`` etc.) —
     pinning the post-refactor invariant that all three dialect-aware
     builders go through ``_resolve_sql`` for the value column AND for
     the second column on two-arg stats, matching the standard
@@ -452,7 +452,7 @@ class TestStatAggsPerDialect:
 
     def test_build_stddev_samp_over_a_masked_value(self) -> None:
         gen = SQLGenerator(dialect="postgres")
-        # DEV-1832: a Column.filter arrives pre-masked in ``sql`` (its ColumnSqlKey
+        # A DatasetField.filter arrives pre-masked in ``sql`` (its FieldSqlKey
         # expansion), so the stat agg embeds the CASE value as-is.
         m = AggRenderSpec(
             name="amount",
@@ -467,7 +467,7 @@ class TestStatAggsPerDialect:
         assert "STDDEV_SAMP" in sql
 
     async def test_build_corr_masks_only_the_value_not_the_other_column(self) -> None:
-        # DEV-1832: a Column.filter masks only its own value; ``other=`` is never wrapped by it.
+        # A DatasetField.filter masks only its own value; ``other=`` is never wrapped by it.
         sql = await orders_agg_sql("corr(completed_amount, other=quantity)")
         assert sql.count("CASE WHEN orders.status = 'completed'") == 1
         assert "CORR(" in sql
@@ -475,7 +475,7 @@ class TestStatAggsPerDialect:
         assert "quantity" in sql
 
 class TestTsqlDialect:
-    """DEV-1520: T-SQL (SQL Server) dialect-specific SQL generation tests."""
+    """T-SQL (SQL Server) dialect-specific SQL generation tests."""
 
     @pytest.fixture
     def gen(self) -> SQLGenerator:
@@ -557,9 +557,9 @@ class TestTsqlDialect:
         assert "MONTH" in sql.upper()
 
     def test_build_time_offset_week_sunday_normalises_to_week(self, gen: SQLGenerator) -> None:
-        """DEV-1716 (Codex review): a time_shift over a WEEK_SUNDAY time
+        """A time_shift over a WEEK_SUNDAY time
         dimension must emit ``DATEADD(WEEK, ...)`` — a one-period Sunday-week
-        shift is one week (DEV-1572). Without the ``week_sunday`` normalization
+        shift is one week. Without the ``week_sunday`` normalization
         in the T-SQL unit map, ``DATEADD(WEEK_SUNDAY, ...)`` is invalid T-SQL."""
         col = exp.column("created_at")
         sql = gen._date_offset(col, count=-1, unit=TimeGranularity("week_sunday"), operand=DataType.DATETIME).sql(dialect="tsql")

@@ -1,8 +1,8 @@
 """OSI -> SLayer conversion (slayer/osi/converter.py), with live introspection.
 
 A file-backed SQLite DB provides real column types / PKs; the converter overlays
-OSI semantic metadata (labels, descriptions, is_time, relationships->joins,
-metrics->measures) on top.
+OSI semantic metadata (labels, descriptions, is_time, relationships,
+metrics) on top.
 """
 
 import contextlib
@@ -80,7 +80,7 @@ def _reported(result) -> bool:
 
 
 def _single_agg(expression: str) -> tuple[str, str]:
-    """``(agg, column)`` of a single-aggregation formula over a bare column."""
+    """``(agg, field)`` of a single-aggregation expression over a bare field."""
     parsed = parse_expr(expression)
     assert isinstance(parsed, AggCall)
     assert isinstance(parsed.source, Ref)
@@ -91,7 +91,7 @@ def _expr(sql: str, dialect: str = "ANSI_SQL") -> OSIExpression:
     return OSIExpression(dialects=[OSIDialectExpression(dialect=dialect, expression=sql)])
 
 
-# ─────────────────────────── datasets -> models ────────────────────────────
+# ─────────────────────────── OSI datasets -> datasets ────────────────────────────
 
 def test_one_model_per_dataset(shop_engine):
     models = _by_name(_shop_result(shop_engine))
@@ -134,7 +134,7 @@ def test_model_and_semantic_model_ai_context(shop_engine):
     assert "One row per order." in orders.description
     assert "sales" in orders.description
     assert orders.meta["osi_ai_context"]["instructions"] == "One row per order."
-    # semantic-model-level ai_context lands on every derived model's meta.
+    # semantic-model-level ai_context lands on every derived dataset's meta.
     assert "osi_semantic_model" in orders.meta
 
 
@@ -163,7 +163,7 @@ def test_db_comments_fill_gaps_curated_wins(shop_engine, monkeypatch: pytest.Mon
     assert cols["customer_id"].description == "db comment customer_id"
 
 
-# ─────────────────────────── relationships -> joins ─────────────────────────
+# ─────────────────────────── OSI relationships -> relationships ─────────────────────────
 
 def test_joins_from_relationships(shop_engine):
     models = _by_name(_shop_result(shop_engine))
@@ -181,7 +181,7 @@ def test_join_carries_relationship_ai_context(shop_engine):
     assert "Each order has one customer." in (cj.description or "")
 
 
-# ─────────────────────────── metrics -> measures ────────────────────────────
+# ─────────────────────────── OSI metrics -> metrics ────────────────────────────
 
 def test_simple_and_ratio_measures(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
@@ -248,7 +248,7 @@ def test_illegal_dataset_name_clean_fails(shop_engine):
 
 
 def test_dataset_name_with_path_separator_clean_fails(shop_engine):
-    # A model name becomes a filename in YAML storage; path separators must be
+    # A dataset name becomes a filename in YAML storage; path separators must be
     # rejected so an OSI config can't write files outside the storage tree.
     doc = _mini_doc(
         datasets=[
@@ -338,7 +338,7 @@ def test_missing_column_field_clean_fails(shop_engine):
 
 
 def test_aliased_field_expression_pointing_at_real_column(shop_engine):
-    # field name != a table column, but expression names a real column -> derived col added.
+    # field name != a table column, but expression names a real column -> derived field added.
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -383,7 +383,7 @@ def test_per_dataset_failure_isolation(shop_engine):
 
 
 def test_quoted_alias_field_preserves_quoting(shop_engine):
-    # An aliased quoted column keeps its quoting in Column.sql (matters on
+    # An aliased quoted column keeps its quoting in DatasetField.sql (matters on
     # case-folding dialects); the unquoted name is used only for lookup.
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
@@ -406,7 +406,7 @@ def test_invalid_osi_primary_key_keeps_introspected(shop_engine):
 
 
 def test_invalid_derived_overlay_reverts_to_physical_column(shop_engine):
-    # An overlay on a physical column (order_id) with an unresolvable cross-model
+    # An overlay on a physical column (order_id) with an unresolvable cross-dataset
     # ref must revert to the physical column (keep it + PK), not delete it.
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
@@ -450,8 +450,8 @@ def test_osi_primary_key_overrides_introspected(shop_engine):
 
 
 def test_join_using_dropped_derived_column_is_pruned(shop_engine):
-    # A join key that is a derived field dropped by cross-model validation must
-    # not leave a stale join referencing the removed column.
+    # A relationship key that is a derived field dropped by cross-dataset validation must
+    # not leave a stale relationship referencing the removed field.
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -483,7 +483,7 @@ def test_unique_keys_into_meta(shop_engine):
     assert orders.meta["osi_unique_keys"] == [["order_id"]]
 
 
-# ─────────────── anchoring: bridge model + COUNT(*) fact-root ────────────────
+# ─────────────── anchoring: bridge dataset + COUNT(*) fact-root ────────────────
 
 def test_bridge_anchor_metric(shop_engine):
     # Only the unmentioned orders bridge reaches products and customers without a fanning hop.
@@ -519,7 +519,7 @@ def test_count_star_anchors_on_fact_root(shop_engine):
 
 def test_orphan_count_star_errors(shop_engine):
     # Two datasets, no relationship -> no unique fact table -> COUNT(*) is an
-    # orphan (ambiguous grain) and is clean-failed, not guessed onto a model.
+    # orphan (ambiguous grain) and is clean-failed, not guessed onto a dataset.
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -659,7 +659,7 @@ def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
 
 def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
     # A derived field expression referencing a nonexistent column must clean-fail
-    # rather than import a column that fails at query time.
+    # rather than import a field that fails at query time.
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -735,7 +735,7 @@ def test_duplicate_relationship_to_same_target_skipped(shop_engine):
 
 
 def test_valid_cross_model_derived_field_kept(shop_engine):
-    # A derived field with a valid cross-model ref (join exists, column exists)
+    # A derived field with a valid cross-dataset ref (relationship exists, field exists)
     # survives the post-join validation pass.
     doc = _mini_doc(
         datasets=[
@@ -755,8 +755,8 @@ def test_valid_cross_model_derived_field_kept(shop_engine):
 
 
 def test_cross_model_derived_field_inherits_target_type(shop_engine):
-    # A derived field that is a single cross-model ref (customers.segment) takes
-    # the resolved target column's TEXT type, not the DOUBLE local-probe fallback.
+    # A derived field that is a single cross-dataset ref (customers.segment) takes
+    # the resolved target field's TEXT type, not the DOUBLE local-probe fallback.
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -799,7 +799,7 @@ def _two_hop_doc():
 
 def test_two_hop_cross_model_derived_field_inherits_target_type(shop_engine):
     # FAIL-FIRST (CR): a 2-hop dotted ref (customers.regions.name) must resolve
-    # through BOTH hops and inherit the target column's TEXT type — not drop the
+    # through BOTH hops and inherit the target field's TEXT type — not drop the
     # intermediate `customers` hop (reading only exp.Column.table) and fall back
     # to the DOUBLE local-probe default.
     result = _convert(shop_engine, _two_hop_doc())
@@ -838,11 +838,11 @@ def test_two_hop_cross_model_ref_to_unknown_column_dropped(shop_engine):
 
 
 def test_physical_multipart_ref_whose_first_hop_is_not_a_join_is_kept(shop_engine):
-    # Precedence lock (Codex): the multi-hop physical/join classification mirrors
-    # the runtime resolver — a qualifier whose FIRST hop is NOT a join target is an
+    # Precedence lock (Codex): the multi-hop physical/relationship classification mirrors
+    # the runtime resolver — a qualifier whose FIRST hop is NOT a relationship target is an
     # opaque physical ``schema.table.column`` ref and is left alone (kept), NOT
-    # flagged. (The collision case — first hop IS a join but the walk is broken —
-    # is a broken join walk and IS dropped, per the sibling unknown-column test.)
+    # flagged. (The collision case — first hop IS a relationship but the walk is broken —
+    # is a broken relationship walk and IS dropped, per the sibling unknown-column test.)
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders", fields=[
@@ -877,8 +877,8 @@ def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
 
 
 def test_dropped_time_default_dimension_is_reset(shop_engine):
-    # If the model's default_time_dimension is a cross-model time field that gets
-    # dropped, the default must not keep pointing at the removed column.
+    # If the dataset's default_time_dimension is a cross-dataset time field that gets
+    # dropped, the default must not keep pointing at the removed field.
     doc = _mini_doc(datasets=[OSIDataset(
         name="orders", source="orders",
         fields=[OSIField(name="ts", expression=_expr("customers.no_such_ts"),
@@ -963,8 +963,8 @@ def test_bare_alias_field_shadowing_physical_column_replaces(shop_engine):
 
 
 def test_materialized_name_avoids_existing_measure(shop_engine):
-    # A materialized operand name must avoid an existing MEASURE name too
-    # (SLayer columns and measures share one namespace).
+    # A materialized operand name must avoid an existing METRIC name too
+    # (SLayer fields and metrics share one namespace).
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -1015,8 +1015,8 @@ def test_ambiguous_unqualified_column_clean_fails(shop_engine):
 
 
 def test_materialized_name_avoids_existing_column(shop_engine):
-    # A materialized operand name must not collide with an existing column,
-    # else the metric would aggregate the wrong column.
+    # A materialized operand name must not collide with an existing field,
+    # else the metric would aggregate the wrong field.
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -1082,8 +1082,8 @@ def test_relationship_nonexistent_join_column_clean_fails(shop_engine):
 
 
 def test_qualified_metric_ref_to_nonexistent_column_clean_fails(shop_engine):
-    # A qualified ref whose column does not exist on the qualified model must
-    # clean-fail, not import a measure that fails at query time.
+    # A qualified ref whose field does not exist on the qualified dataset must
+    # clean-fail, not import a metric that fails at query time.
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],

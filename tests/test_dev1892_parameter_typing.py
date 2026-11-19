@@ -1,5 +1,5 @@
-"""DEV-1892 task 1.1 — executed values (SQLite + DuckDB) for the parameter
-shapes the one rule types as legal: column-reference and aggregate-valued
+"""Executed values (SQLite + DuckDB) for the parameter
+shapes the one rule types as legal: field-reference and aggregate-valued
 parameters lifted onto the association and re-aggregation kernels, with
 hand-computed oracles and the manual two-stage encoding as the independent
 reference. All fail until the lift lands (the three gates reject them today).
@@ -74,7 +74,7 @@ def _region_vals(resp, metric):
 
 class TestAssociationColumnParameter:
     async def test_weighted_avg_by_status(self, assoc_engine):
-        """Scenario: parameter determined by the entity key — the weight column
+        """Scenario: parameter determined by the entity key — the weight field
         is picked once per distinct customer (never join-multiplied)."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
@@ -146,8 +146,8 @@ class TestAssociationColumnParameter:
             assert lo <= float(by[(status,)]["orders.p"]) <= hi
 
     async def test_adding_weighted_measure_keeps_sibling(self, assoc_engine):
-        """The weighted measure is cardinality-neutral — adding it changes
-        neither the row set nor the sibling plain measure."""
+        """The weighted metric is cardinality-neutral — adding it changes
+        neither the row set nor the sibling plain metric."""
         base = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="sum(amount)", alias="m")]))
@@ -183,7 +183,7 @@ class TestReaggregationOperandParameter:
 
     async def test_matches_manual_two_stage_encoding(self, reagg_engine: SlayerQueryEngine):
         """The re-aggregation equals the manual stage-1-sum/count →
-        stage-2-weighted_avg ``source_queries`` model, region by region."""
+        stage-2-weighted_avg ``source_queries`` dataset, region by region."""
         reagg = await reagg_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))

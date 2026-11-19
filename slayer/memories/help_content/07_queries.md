@@ -14,7 +14,7 @@ The `query` tool takes one of:
 ## Stages
 
 Every stage but the last carries a `name`; later stages name it as `population`
-(or join it through an inline extension). A stage name shadows a saved dataset of the
+(or reach it through an inline extension's relationship). A stage name shadows a saved dataset of the
 same name inside its list. Define before you reference: a stage sees only what its
 source defines or an earlier stage returned.
 

@@ -1,6 +1,6 @@
-"""Integration tests for the MCP model ``inspect`` against a real SQLite database.
+"""Integration tests for the MCP dataset ``inspect`` against a real SQLite database.
 
-Exercises the bits of the model ``inspect`` that need a live DB: row count, the
+Exercises the bits of the dataset ``inspect`` that need a live DB: row count, the
 per-dim profile (distinct values + batched min/max), and end-to-end markdown
 output.
 
@@ -39,7 +39,7 @@ class InspectEnv(TypedDict):
 
 
 async def _profile(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> dict[str, DatasetField]:
-    """Profile every column of ``dataset`` through the owner; ``{name: refreshed column}``."""
+    """Profile every field of ``dataset`` through the owner; ``{name: refreshed field}``."""
     outcome = await ensure_samples_fresh(
         dataset=dataset, fields=list(dataset.fields), engine=engine, storage=engine.storage,
     )
@@ -48,7 +48,7 @@ async def _profile(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> dict
 
 @pytest.fixture
 async def env(tmp_path: Path) -> InspectEnv:
-    """Real SQLite DB + YAMLStorage + a saved ``orders`` model."""
+    """Real SQLite DB + YAMLStorage + a saved ``orders`` dataset."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
         cur = conn.cursor()
@@ -244,7 +244,7 @@ class TestCollectDimProfile:
 
 
 class TestInspectModelEndToEnd:
-    """Full model ``inspect`` run against the SQLite fixture — confirms every
+    """Full dataset ``inspect`` run against the SQLite fixture — confirms every
     section of the markdown output is produced end-to-end."""
 
     async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
@@ -262,7 +262,7 @@ class TestInspectModelEndToEnd:
         assert "**sql_table:** `orders`" in result
         assert "**row_count:** 6" in result
 
-        # Columns table (7 declared; v2 has a unified columns table).
+        # Fields table (7 declared; v2 has a unified fields table).
         # The `sampled` column is folded in, so the same section now carries the
         # enumerated values for string/boolean cols and `min .. max` for numeric
         # and temporal cols.
@@ -275,21 +275,21 @@ class TestInspectModelEndToEnd:
         assert "completed" in col_section
         assert "pending" in col_section
         assert "cancelled" in col_section
-        # is_paid (boolean) is in the column table; sample values render
+        # is_paid (boolean) is in the fields table; sample values render
         assert "| is_paid |" in col_section
         # amount (number) shows as "<min> .. <max>"
         assert " .. " in col_section
-        # ordered_at (timestamp) is present in the columns section
+        # ordered_at (timestamp) is present in the fields section
         assert "ordered_at" in col_section
         # The sampled column header appears
         assert "| sampled |" in col_section
 
-        # Measures table (formula list — empty by default in v2)
+        # Metrics table (expression list — empty by default in v2)
         assert "## Metrics (0)" in result
-        # Per-column description for revenue lives in the Columns table now.
+        # Per-field description for revenue lives in the Fields table now.
         assert "Revenue per order" in result
 
-        # Joins table (empty model has no joins but header always rendered)
+        # Relationships table (empty dataset has no relationships but header always rendered)
         assert "## Relationships (0)" in result
 
         # No standalone dim-profile section anymore
@@ -318,7 +318,7 @@ class TestInspectModelSectionGatingIntegration:
     """End-to-end ``sections``/``descriptions_max_chars`` against a real DB.
 
     These tests confirm the gating semantics work against a live datasource
-    (not just mocked storage), so the column-profile / sample-query
+    (not just mocked storage), so the field-profile / sample-query
     short-circuits actually take effect when sections are dropped.
     """
 
@@ -327,24 +327,24 @@ class TestInspectModelSectionGatingIntegration:
         return content[0].text
 
     async def test_columns_only_short_circuits_samples(self, env: InspectEnv) -> None:
-        """sections=['columns'] keeps the columns table populated and skips
+        """sections=['fields'] keeps the fields table populated and skips
         sample-data entirely; the footer documents what was trimmed."""
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
             server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "sections": ["fields"]},
         )
-        # Columns full table is rendered — `sampled` column populated by the
-        # live profile query (proves columns-section is fully included).
+        # Fields full table is rendered — `sampled` column populated by the
+        # live profile query (proves fields-section is fully included).
         assert "## Fields (7)" in result
         col_section = result.split("## Fields")[1]
-        # Profile data still in the columns table when columns is included
+        # Profile data still in the fields table when fields is included
         assert "completed" in col_section
         # No sample data section; the removed reachable-via-joins heading must never appear.
         assert "## Data Profile" not in result
         assert "## Reachable" not in result
-        # Empty list-only headings for the rest are OK (model has no measures /
-        # aggregations / joins, so they render nothing); footer should still
+        # Empty list-only headings for the rest are OK (dataset has no metrics /
+        # aggregations / relationships, so they render nothing); footer should still
         # document what was omitted.
         assert "> Sections shown: fields." in result
         assert "> Omitted: samples, learnings, saved_queries." in result
@@ -362,7 +362,7 @@ class TestInspectModelSectionGatingIntegration:
         )
         # Long description "Revenue per order" (17 chars) → truncates to 5 + marker
         assert "Reven ... [truncated]" in result
-        # The column itself still renders
+        # The field itself still renders
         assert "| amount |" in result
 
 
@@ -403,7 +403,7 @@ class TestMeasureTypeInference:
         assert types["price"].type == DataType.FLOAT
 
     async def test_type_appears_in_model_inspect(self, env: InspectEnv) -> None:
-        """The model inspect columns table includes a type column with declared types."""
+        """The dataset inspect fields table includes a type column with declared types."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
             name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 0},
@@ -414,7 +414,7 @@ class TestMeasureTypeInference:
         assert "Float" in columns_section
 
     async def test_measure_sampled_shows_min_max(self, env: InspectEnv) -> None:
-        """Measures with data show min .. max in the sampled column."""
+        """Numeric fields with data show min .. max in the sampled column."""
         profile = await _profile(dataset=env["dataset"], engine=env["engine"])
         amount, quantity = profile["amount"].sampled, profile["quantity"].sampled
         assert amount is not None
@@ -428,7 +428,7 @@ class TestMeasureTypeInference:
         assert "6" in quantity
 
     async def test_measure_sampled_all_null(self, tmp_path) -> None:
-        """Measures with all-NULL data show 'all NULL' in the sampled column."""
+        """Numeric fields with all-NULL data show 'all NULL' in the sampled column."""
         db_path = tmp_path / "nulls.db"
         with transaction(str(db_path)) as conn:
             conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val REAL)")
@@ -453,11 +453,10 @@ DatasetField(name="val", sql="val", datatype=DataType.FLOAT)
 
 
 class TestStringAggregationRejection:
-    """Validation: numeric-only aggregations on string measures are rejected
+    """Validation: numeric-only aggregations on string fields are rejected
     during query enrichment, before SQL is generated or executed.
 
-    The orders fixture has a string column `status` that auto-ingestion also
-    exposes as a measure (one measure per non-ID column is the default).
+    The orders fixture has a string field `status`.
     Triggering ``sum(status)`` / ``avg(status)`` etc. should produce a clear
     ValueError, not a database-level type error."""
 
@@ -492,7 +491,7 @@ class TestStringAggregationRejection:
         assert result.data
 
     async def test_numeric_aggregations_allowed_on_numeric_measure(self, env: InspectEnv) -> None:
-        """avg/sum on the numeric `amount` measure must still work."""
+        """avg/sum on the numeric `amount` field must still work."""
         q = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "sum(amount)"}, {"metric": "avg(amount)"}],
@@ -502,11 +501,11 @@ class TestStringAggregationRejection:
 
 
 class TestPrimaryKeyAggregationRule:
-    """v2 contract: primary-key columns are restricted to count/count_distinct
+    """v2 contract: primary-key fields are restricted to count/count_distinct
     regardless of type or any explicit ``allowed_aggregations`` whitelist."""
 
     async def test_sum_on_pk_rejected(self, env: InspectEnv) -> None:
-        """`:sum` on a numeric primary-key column is rejected at enrichment."""
+        """`:sum` on a numeric primary-key field is rejected at enrichment."""
         q = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "sum(id)"}],
@@ -515,7 +514,7 @@ class TestPrimaryKeyAggregationRule:
             await env["engine"].execute(query=q)
 
     async def test_count_on_pk_allowed(self, env: InspectEnv) -> None:
-        """`:count` on a primary-key column is always allowed."""
+        """`:count` on a primary-key field is always allowed."""
         q = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "count(id)"}],
@@ -525,10 +524,10 @@ class TestPrimaryKeyAggregationRule:
 
 
 class TestIngestDatasourceModelsTool:
-    """Pin the success-message format of the ``ingest_datasource_models`` MCP
+    """Pin the success-message format of the ``ingest_datasource`` MCP
     tool. Pre-v2 the message read ``X dims`` and referenced the long-removed
     ``SlayerModel.dimensions`` attribute, which would AttributeError on every
-    successful ingest. v2 unifies dims+measures into ``columns``.
+    successful ingest. v2 unifies dims+measures into ``fields``.
     """
 
     async def test_success_message_uses_columns_not_dims(self, tmp_path) -> None:
@@ -550,7 +549,7 @@ class TestIngestDatasourceModelsTool:
         )
         text = content[0].text
 
-        # Idempotent ingest renders "Created N new model(s):" for new
+        # Idempotent ingest renders "Created N new dataset(s):" for new
         # tables (replaces the legacy "Ingested N model(s):" wording).
         assert "Created 1 new dataset(s):" in text
         assert "widgets" in text
@@ -564,7 +563,7 @@ class TestIngestDatasourceModelsTool:
 
 
 class TestInspectModelSampledValuesAndDistinctCount:
-    """End-to-end sampled_values + distinct_count contract through the model ``inspect``."""
+    """End-to-end sampled_values + distinct_count contract through the dataset ``inspect``."""
 
     async def _call_json(self, server, *, dataset_name: str) -> dict:
         content, _ = await server.call_tool(
@@ -576,25 +575,25 @@ class TestInspectModelSampledValuesAndDistinctCount:
     async def test_json_output_includes_sampled_values_and_distinct_count(
         self, env: InspectEnv,
     ) -> None:
-        """JSON model inspect output carries both new fields per column."""
+        """JSON dataset inspect output carries both new keys per field."""
         server = create_mcp_server(storage=env["storage"])
         payload = await self._call_json(server, dataset_name="orders")
         cols_by_name = {c["name"]: c for c in payload["fields"]}
-        # Categorical column: both new fields populated.
+        # Categorical field: both new keys populated.
         status = cols_by_name["status"]
         assert "sampled_values" in status
         assert "distinct_count" in status
         assert isinstance(status["sampled_values"], list)
         assert status["distinct_count"] == 3
-        # Numeric column: both new fields None.
+        # Numeric field: both new keys None.
         amount = cols_by_name["amount"]
         assert amount["sampled_values"] is None
         assert amount["distinct_count"] is None
 
     async def test_markdown_table_unchanged_no_new_column(self, env: InspectEnv) -> None:
-        """The markdown ``## Columns`` table must not gain new headers — the
+        """The markdown ``## Fields`` table must not gain new headers — the
         issue explicitly says the text format does not change. New data is
-        carried only in JSON (and in the persisted model)."""
+        carried only in JSON (and in the persisted dataset)."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
             name="inspect",
@@ -611,8 +610,8 @@ class TestInspectModelSampledValuesAndDistinctCount:
     async def test_v6_stale_cache_re_profiles_to_populate_sampled_values(
         self, env: InspectEnv,
     ) -> None:
-        """A v6 model with ``sampled`` set but no ``sampled_values`` is
-        cache-miss and re-profiles on the next model ``inspect``. Pins
+        """A v6 dataset with ``sampled`` set but no ``sampled_values`` is
+        cache-miss and re-profiles on the next dataset ``inspect``. Pins
         ``_is_sample_cached`` validity rule."""
         storage = env["storage"]
         # Simulate a v6-era persisted state: ``sampled`` set, structured field
@@ -626,7 +625,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         )
         server = create_mcp_server(storage=storage)
         await self._call_json(server, dataset_name="orders")
-        # After the model inspect runs, the structured field has been populated.
+        # After the dataset inspect runs, the structured field has been populated.
         reloaded = await storage.get_dataset("orders", data_source="test_sqlite")
         assert reloaded is not None
         status = reloaded.get_field("status")
@@ -637,7 +636,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
     async def test_all_null_categorical_outputs_empty_string_not_all_null(
         self, tmp_path,
     ) -> None:
-        """All-NULL categorical column: text ``sampled=""``, NOT ``"all NULL"``
+        """All-NULL categorical field: text ``sampled=""``, NOT ``"all NULL"``
         (the latter is the numeric-fallback marker). JSON shows the structured
         ``sampled_values=[]``."""
         db_path = tmp_path / "nulls.db"
@@ -670,7 +669,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         )
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["fields"] if c["name"] == "notes")
-        # All-NULL categorical column contract:
+        # All-NULL categorical field contract:
         assert notes["sampled_values"] == []
         assert notes["distinct_count"] == 0
         # Text sampled is empty string, NOT the numeric-fallback "all NULL".
@@ -679,10 +678,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
     async def test_markdown_table_caps_sampled_at_20_values(
         self, tmp_path,
     ) -> None:
-        """Per-column markdown rendering must still show at most
-        20 values per column (via the persisted ``Column.sampled`` text)
+        """Per-field markdown rendering must still show at most
+        20 values per field (via the persisted ``DatasetField.sampled`` text)
         even when ``sampled_values`` holds the full 50. The markdown table
-        is the all-columns-at-once surface and stays readable."""
+        is the all-fields-at-once surface and stays readable."""
         db_path = tmp_path / "wide_values.db"
         with transaction(str(db_path)) as conn:
             conn.cursor().execute(
@@ -729,12 +728,12 @@ class TestInspectModelSampledValuesAndDistinctCount:
         # Values past the 20-cap MUST NOT appear.
         assert "k_21" not in kind_row, (
             "Regression: markdown table leaked the 21st sample value "
-            "for one column — the 20-cap is broken."
+            "for one field — the 20-cap is broken."
         )
         assert "k_29" not in kind_row, (
             "Regression: markdown table leaked the 29th sample value "
-            "for one column. The full 50 belongs only on per-column search "
-            "hits, not the all-columns model inspect markdown surface."
+            "for one field. The full 50 belongs only on per-field search "
+            "hits, not the all-fields dataset inspect markdown surface."
         )
         # And the persisted ``sampled_values`` still carries the full set.
         reloaded = await storage.get_dataset("many_values", data_source="mv_ds")
@@ -748,7 +747,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         self, env: InspectEnv, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When profiling fails, the markdown ``sampled`` cell still shows the
-        LEGACY persisted text: the owner returns the input column on failure,
+        LEGACY persisted text: the owner returns the input field on failure,
         and the render reads from it. Don't surface an empty cell."""
         storage = env["storage"]
         # Pre-populate a v6-style legacy state: ``sampled`` set, no list.
@@ -783,15 +782,15 @@ class TestInspectModelSampledValuesAndDistinctCount:
         status_row = col_section[status_row_start:col_section.find("\n", status_row_start)]
         # Legacy text MUST appear in the cell so the agent still sees data.
         assert "legacy text from v6" in status_row, (
-            "legacy ``Column.sampled`` text must survive a profiling "
-            "failure in the model inspect; an empty cell is a regression."
+            "legacy ``DatasetField.sampled`` text must survive a profiling "
+            "failure in the dataset inspect; an empty cell is a regression."
         )
 
     async def test_profiles_more_than_10_categorical_columns(
         self, tmp_path,
     ) -> None:
-        """The model ``inspect`` must persist ``sampled`` for every categorical
-        column, not just the first 10. Pins the ``max_dims`` cap removal on
+        """The dataset ``inspect`` must persist ``sampled`` for every categorical
+        field, not just the first 10. Pins the ``max_dims`` cap removal on
         the persistence path."""
         db_path = tmp_path / "wide.db"
         col_count = 15
@@ -824,7 +823,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await self._call_json(server, dataset_name="wide")
 
         reloaded = await storage.get_dataset("wide", data_source="wide_ds")
-        # Every one of the 15 categorical columns has structured profile.
+        # Every one of the 15 categorical fields has structured profile.
         for i in range(col_count):
             col = reloaded.get_field(f"c{i}")
             assert col.sampled_values is not None, (
@@ -833,7 +832,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
 
 
 class TestCollectMeasureProfileTypeRestriction:
-    """Text/boolean columns are served only by the categorical query (structured
+    """Text/boolean fields are served only by the categorical query (structured
     ``sampled_values``); numeric/temporal only by the min/max query."""
 
     async def test_text_and_boolean_columns_skipped(self, env: InspectEnv) -> None:
@@ -846,7 +845,7 @@ class TestCollectMeasureProfileTypeRestriction:
 
 
 class TestInspectModelEmptyStringSampledNotClobberedByFallback:
-    """An all-NULL categorical column renders ``sampled=""`` — never a fallback value."""
+    """An all-NULL categorical field renders ``sampled=""`` — never a fallback value."""
 
     async def test_empty_string_sampled_survives_fallback_injection(
         self, tmp_path,
