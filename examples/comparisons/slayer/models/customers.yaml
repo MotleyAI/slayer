@@ -9,6 +9,6 @@ fields:
   - {name: tier, datatype: String}
   - {name: credit, datatype: Float}
   - {name: discount, datatype: Float}
-  - {name: tags, datatype: ARRAY, element_type: TEXT}
+  - {name: tags, datatype: Array, element_type: String, db_type: 'VARCHAR[]'}
 relationships:
   - {to: regions, from_columns: [region_id], to_columns: [id], cardinality: many_to_one}

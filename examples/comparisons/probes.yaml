@@ -11,7 +11,10 @@
 #                 expect: match | {error} | {warning} | {known_bug, buggy_rows, buggy_row_count, buggy_error};
 #                 or steps (MCP tool calls {tool, args} and {sql} edits on a private database copy; "{db_path}" in
 #                 args is that copy) with setup: datasets | datasource | empty, and expect: match (last step a json
-#                 query) | {error} | {contains: [...], lacks: [...]} (substrings the last step's output has / lacks)
+#                 query) | {error} | {contains: [...], lacks: [...]} (substrings the last step's output has / lacks);
+#                 or osi_roundtrip {extensions (default true)}, optionally with a query: export-osi, then import-osi
+#                 into a fresh store, and expect: match (the query on the re-imported store) | {same_datasets: true}
+#                 (each dataset equals its re-imported twin, ignoring osi_* meta) | {contains, lacks} (the export report)
 #   malloy:       query (appended to malloy/model.malloy), flatten (nest name), keys/values overrides,
 #                 expect: match | {compile_error} | {db_error} | {warning} | {known_bug, buggy_rows, buggy_error, buggy_row_count}
 #   cube:         rest (a /load query) or sql (SQL API), planners (default [tesseract, legacy]), model_declared,
@@ -43,7 +46,7 @@ probes:
     compare: {keys: [region, city], values: [region_total]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city],
-              metrics: [{expression: "sum(amount, partition_by=region)", name: region_total}]}
+              metrics: [{metric: "sum(amount, partition_by=region)", alias: region_total}]}
     malloy:
       query: |
         run: orders_flat -> { group_by: region, city; aggregate: region_total is all(revenue, region) }
@@ -77,7 +80,7 @@ probes:
     compare: {keys: [region, city], values: [grand]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city],
-              metrics: [{expression: "sum(amount, partition_by=[])", name: grand}]}
+              metrics: [{metric: "sum(amount, partition_by=[])", alias: grand}]}
     malloy:
       query: |
         run: orders_flat -> { group_by: region, city; aggregate: grand is all(revenue) }
@@ -94,7 +97,7 @@ probes:
     compare: {keys: [region, city], values: [region_total]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name, customers.city],
-              metrics: [{expression: "sum(amount, partition_by=customers.regions.name)", name: region_total}]}
+              metrics: [{metric: "sum(amount, partition_by=customers.regions.name)", alias: region_total}]}
       keys: [customers.regions.name, customers.city]
     malloy:
       query: |
@@ -109,7 +112,7 @@ probes:
     compare: {keys: [region, city], values: [region_total]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city], filter: ["status = 'ok'"],
-              metrics: [{expression: "sum(amount, partition_by=region)", name: region_total}]}
+              metrics: [{metric: "sum(amount, partition_by=region)", alias: region_total}]}
     malloy:
       query: |
         run: orders_flat -> { where: status = 'ok'; group_by: region, city; aggregate: region_total is all(revenue, region) }
@@ -128,8 +131,8 @@ probes:
     compare: {keys: [region, city], values: [region_total]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city], filter: ["sum(amount) > 250"],
-              metrics: [{expression: "sum(amount)", name: revenue},
-                         {expression: "sum(amount, partition_by=region)", name: region_total}]}
+              metrics: [{metric: "sum(amount)", alias: revenue},
+                         {metric: "sum(amount, partition_by=region)", alias: region_total}]}
     malloy:
       query: |
         run: orders_flat -> { group_by: region, city; aggregate: revenue, region_total is all(revenue, region); having: revenue > 250 }
@@ -145,7 +148,7 @@ probes:
     slayer:
       query: {population: orders_flat, dimensions: [region, city], limit: 2,
               order: [{field: "sum(amount)", direction: desc}],
-              metrics: [{expression: "sum(amount)", name: revenue}, {expression: "sum(amount, partition_by=[])", name: grand}]}
+              metrics: [{metric: "sum(amount)", alias: revenue}, {metric: "sum(amount, partition_by=[])", alias: grand}]}
     malloy:
       query: |
         run: orders_flat -> { group_by: region, city; aggregate: revenue, grand is all(revenue); order_by: revenue desc; limit: 2 }
@@ -200,7 +203,7 @@ probes:
     compare: {keys: [region, city], values: [share]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city],
-              metrics: [{expression: "sum(amount) / sum(amount, partition_by=region)", name: share}]}
+              metrics: [{metric: "sum(amount) / sum(amount, partition_by=region)", alias: share}]}
     malloy:
       query: |
         run: orders_flat -> { group_by: region, city; aggregate: share is revenue / all(revenue, region) }
@@ -215,7 +218,7 @@ probes:
     compare: {keys: [region, city], values: [share]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city],
-              metrics: [{expression: "sum(amount) / sum(amount, partition_by=[])", name: share}]}
+              metrics: [{metric: "sum(amount) / sum(amount, partition_by=[])", alias: share}]}
     malloy:
       query: |
         run: orders_flat -> { group_by: region, city; aggregate: share is revenue / all(revenue) }
@@ -242,7 +245,7 @@ probes:
     compare: {keys: [region, city], values: [d]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city],
-              metrics: [{expression: "sum(amount, partition_by=region) - sum(amount, partition_by=city)", name: d}]}
+              metrics: [{metric: "sum(amount, partition_by=region) - sum(amount, partition_by=city)", alias: d}]}
     malloy:
       query: |
         run: orders_flat -> { group_by: region, city; aggregate: d is all(revenue, region) - all(revenue, city) }
@@ -257,14 +260,14 @@ probes:
     compare: {keys: [region, city], values: [rk]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city],
-              metrics: [{expression: "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')", name: rk}]}
+              metrics: [{metric: "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')", alias: rk}]}
 
   - id: F4
     row: Q2
     title: a bare finer-grain aggregate (partition_by=city, dims [region]) is rejected
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "sum(amount, partition_by=city)", name: v}]}
+              metrics: [{metric: "sum(amount, partition_by=city)", alias: v}]}
       expect: {error: PartitionKeyError}
 
   - id: F5
@@ -272,7 +275,7 @@ probes:
     title: finer-grain aggregate in arithmetic is rejected
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "sum(amount, partition_by=city) / sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount, partition_by=city) / sum(amount)", alias: v}]}
       expect: {error: PartitionKeyError}
 
   - id: F5b
@@ -281,7 +284,7 @@ probes:
     slayer:
       query: {population: orders_flat, dimensions: [region],
               time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "cumsum(sum(amount, partition_by=city))", name: v}]}
+              metrics: [{metric: "cumsum(sum(amount, partition_by=city))", alias: v}]}
       expect: {error: PartitionKeyError}
 
   - id: F10
@@ -289,7 +292,7 @@ probes:
     title: filter on a finer-grain aggregate is rejected
     slayer:
       query: {population: orders_flat, dimensions: [region], filter: ["sum(amount, partition_by=city) > 300"],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
       expect: {error: PartitionKeyError}
 
   - id: F11
@@ -298,7 +301,7 @@ probes:
     slayer:
       query: {population: orders_flat, dimensions: [region],
               order: [{field: "sum(amount, partition_by=city)", direction: desc}],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
       expect: {error: PartitionKeyError}
 
   - id: F13
@@ -307,7 +310,7 @@ probes:
     slayer:
       query: {population: orders_flat, dimensions: [region],
               time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "time_shift(sum(amount, partition_by=[city, region, order_date]), -1)", name: v}]}
+              metrics: [{metric: "time_shift(sum(amount, partition_by=[city, region, order_date]), -1)", alias: v}]}
       expect: {error: PartitionKeyError}
 
   - id: X5
@@ -317,7 +320,7 @@ probes:
     compare: {keys: [customers.regions.name], values: [share]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name],
-              metrics: [{expression: "sum(amount) / sum(amount, partition_by=[])", name: share}]}
+              metrics: [{metric: "sum(amount) / sum(amount, partition_by=[])", alias: share}]}
 
   - id: Q2-cube-share-of-region
     row: Q2
@@ -344,7 +347,7 @@ probes:
     compare: {keys: [region], values: [avg_city]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "avg(sum(amount, partition_by=[city, region]))", name: avg_city}]}
+              metrics: [{metric: "avg(sum(amount, partition_by=[city, region]))", alias: avg_city}]}
     malloy:
       note: two-stage pipeline; a single stage is aggregate-of-aggregate (Q3a-one-stage)
       query: |
@@ -368,7 +371,7 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "count(sum(amount, partition_by=[city, region]))", name: v}]}
+              metrics: [{metric: "count(sum(amount, partition_by=[city, region]))", alias: v}]}
 
   - id: F1c
     row: Q3
@@ -378,7 +381,7 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "max(sum(amount, partition_by=[customer_id, region]))", name: v}]}
+              metrics: [{metric: "max(sum(amount, partition_by=[customer_id, region]))", alias: v}]}
 
   - id: F2
     row: Q3
@@ -389,7 +392,7 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "sum(amount * avg(amount, partition_by=city))", name: v}]}
+              metrics: [{metric: "sum(amount * avg(amount, partition_by=city))", alias: v}]}
 
   - id: F2b
     row: Q3
@@ -400,7 +403,7 @@ probes:
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name],
-              metrics: [{expression: "sum(amount * avg(amount, partition_by=customers.city))", name: v}]}
+              metrics: [{metric: "sum(amount * avg(amount, partition_by=customers.city))", alias: v}]}
 
   - id: F3
     row: Q3
@@ -411,7 +414,7 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "weighted_avg(amount, weight=sum(amount, partition_by=city))", name: v}]}
+              metrics: [{metric: "weighted_avg(amount, weight=sum(amount, partition_by=city))", alias: v}]}
 
   - id: F7
     row: Q3
@@ -421,7 +424,7 @@ probes:
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name],
-              metrics: [{expression: "max(sum(amount, partition_by=customer_id))", name: v}]}
+              metrics: [{metric: "max(sum(amount, partition_by=customer_id))", alias: v}]}
 
   - id: F9
     row: Q3
@@ -429,7 +432,7 @@ probes:
     slayer:
       query: {population: orders_flat, dimensions: [region],
               time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{expression: "avg(sum(amount, partition_by=[region, month(order_date)]))", name: v}]}
+              metrics: [{metric: "avg(sum(amount, partition_by=[region, month(order_date)]))", alias: v}]}
       expect: {error: PartitionKeyError}
 
   - id: F9b
@@ -441,7 +444,7 @@ probes:
     slayer:
       query: {population: orders_flat, dimensions: [region],
               time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{expression: "avg(sum(amount, partition_by=[region, order_date]))", name: v}]}
+              metrics: [{metric: "avg(sum(amount, partition_by=[region, order_date]))", alias: v}]}
       expect: {warning: degenerate_reaggregation}
 
   - id: F9c
@@ -452,7 +455,7 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "avg(sum(amount, partition_by=[region, order_date]))", name: v}]}
+              metrics: [{metric: "avg(sum(amount, partition_by=[region, order_date]))", alias: v}]}
 
   - id: F9d
     row: Q3
@@ -467,7 +470,7 @@ probes:
       query: {population: {source_name: orders_flat,
                              fields: [{name: order_month, sql: "date_trunc('month', order_date)", datatype: date}]},
               dimensions: [region], time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{expression: "avg(sum(amount, partition_by=[region, order_month]))", name: v}]}
+              metrics: [{metric: "avg(sum(amount, partition_by=[region, order_month]))", alias: v}]}
       options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
 
@@ -482,7 +485,7 @@ probes:
       query: {population: {source_name: orders_flat,
                              fields: [{name: order_month, sql: "date_trunc('month', order_date)", datatype: date}]},
               dimensions: [region], time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{expression: "avg(sum(amount, partition_by=[region, order_month, order_date]))", name: v}]}
+              metrics: [{metric: "avg(sum(amount, partition_by=[region, order_month, order_date]))", alias: v}]}
 
   - id: F9f
     row: Q3
@@ -494,9 +497,9 @@ probes:
     slayer:
       query:
         - {name: mstage, population: orders_flat, dimensions: [region],
-           time_dimensions: [{field: order_date, granularity: month}], metrics: [{expression: "sum(amount)", name: s}]}
+           time_dimensions: [{field: order_date, granularity: month}], metrics: [{metric: "sum(amount)", alias: s}]}
         - {population: mstage, dimensions: [region], time_dimensions: [{field: order_date, granularity: year}],
-           metrics: [{expression: "avg(s)", name: v}]}
+           metrics: [{metric: "avg(s)", alias: v}]}
 
   - id: X6
     row: Q3
@@ -504,7 +507,7 @@ probes:
     truth_sql: select status, median(amount) from orders group by 1
     compare: {keys: [status], values: [v]}
     slayer:
-      query: {population: orders, dimensions: [status], metrics: [{expression: "median(amount)", name: v}]}
+      query: {population: orders, dimensions: [status], metrics: [{metric: "median(amount)", alias: v}]}
     cube:
       model_declared: true
       schema: [model_declared/multi_stage.yml]
@@ -610,7 +613,7 @@ probes:
     slayer:
       query: {population: orders,
               time_dimensions: [{field: order_date, granularity: month, date_range: ["2025-01-01", "2025-03-31"]}],
-              metrics: [{expression: "time_shift(sum(amount), -1, 'year')", name: prev_year}]}
+              metrics: [{metric: "time_shift(sum(amount), -1, 'year')", alias: prev_year}]}
     malloy:
       note: workaround, a self-join on a query source with m - 12 months
       query: |
@@ -647,7 +650,7 @@ probes:
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
               filter: ["order_date >= '2025-01-01' and order_date <= '2025-03-31'"],
-              metrics: [{expression: "time_shift(sum(amount), -1, 'year')", name: prev_year}]}
+              metrics: [{metric: "time_shift(sum(amount), -1, 'year')", alias: prev_year}]}
     metricflow:
       model_declared: true
       query:
@@ -669,7 +672,7 @@ probes:
     slayer:
       query: {population: orders,
               time_dimensions: [{field: order_date, granularity: month, date_range: ["2025-04-01", "2025-06-30"]}],
-              metrics: [{expression: "time_shift(sum(amount), -1, 'year')", name: prev_year}]}
+              metrics: [{metric: "time_shift(sum(amount), -1, 'year')", alias: prev_year}]}
 
   - id: Q4c
     row: Q4
@@ -680,7 +683,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "change(sum(amount))", name: v}]}
+              metrics: [{metric: "change(sum(amount))", alias: v}]}
 
   - id: Q4d
     row: Q4
@@ -691,7 +694,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "change_pct(sum(amount))", name: v}]}
+              metrics: [{metric: "change_pct(sum(amount))", alias: v}]}
 
   - id: Q4e
     row: Q4
@@ -702,7 +705,7 @@ probes:
     compare: {keys: [order_date], values: [cum]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "cumsum(sum(amount))", name: cum}]}
+              metrics: [{metric: "cumsum(sum(amount))", alias: cum}]}
     malloy:
       query: |
         run: orders -> { group_by: m is order_date.month; aggregate: revenue; calculate: cum is sum_cumulative(revenue); order_by: m }
@@ -720,7 +723,7 @@ probes:
     compare: {keys: [order_date], values: [prev]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "lag(sum(amount), 1)", name: prev}]}
+              metrics: [{metric: "lag(sum(amount), 1)", alias: prev}]}
     malloy:
       query: |
         run: orders -> { group_by: m is order_date.month; aggregate: revenue; calculate: prev is lag(revenue); order_by: m }
@@ -738,7 +741,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "lead(sum(amount), 1)", name: v}]}
+              metrics: [{metric: "lead(sum(amount), 1)", alias: v}]}
 
   - id: Q4f-where
     row: Q4
@@ -793,7 +796,7 @@ probes:
     slayer:
       query: {population: orders,
               time_dimensions: [{field: order_date, granularity: month, date_range: ["2025-01-01", "2025-03-31"]}],
-              metrics: [{expression: "change(sum(amount))", name: v}]}
+              metrics: [{metric: "change(sum(amount))", alias: v}]}
 
   - id: Q4h
     row: Q4
@@ -805,7 +808,7 @@ probes:
     slayer:
       query: {population: orders,
               time_dimensions: [{field: order_date, granularity: month, date_range: ["2025-01-01", "2025-06-30"]}],
-              metrics: [{expression: "cumsum(sum(amount))", name: v}]}
+              metrics: [{metric: "cumsum(sum(amount))", alias: v}]}
 
   - id: Q4i
     row: Q4
@@ -818,7 +821,7 @@ probes:
     slayer:
       query: {population: orders, dimensions: [customers.regions.name],
               time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "change(sum(amount))", name: v}]}
+              metrics: [{metric: "change(sum(amount))", alias: v}]}
 
   - id: Q4j
     row: Q4
@@ -829,7 +832,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              filter: ["status = 'ok'"], metrics: [{expression: "change(sum(amount))", name: v}]}
+              filter: ["status = 'ok'"], metrics: [{metric: "change(sum(amount))", alias: v}]}
 
   - id: Q4k
     row: Q4
@@ -840,7 +843,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "time_shift(sum(amount), -1, 'quarter')", name: v}]}
+              metrics: [{metric: "time_shift(sum(amount), -1, 'quarter')", alias: v}]}
 
   - id: S2
     row: Q4
@@ -924,8 +927,8 @@ probes:
     compare: {keys: [band], values: [revenue]}
     slayer:
       query: {population: orders,
-              dimensions: [{expression: "CASE WHEN sum(amount, partition_by=customer_id) > 250 THEN 'high' ELSE 'low' END", name: band}],
-              metrics: [{expression: "sum(amount)", name: revenue}]}
+              dimensions: [{field: "CASE WHEN sum(amount, partition_by=customer_id) > 250 THEN 'high' ELSE 'low' END", alias: band}],
+              metrics: [{metric: "sum(amount)", alias: revenue}]}
     malloy:
       note: a query-derived source joined back with join_one, then a pick band
       query: |
@@ -952,8 +955,8 @@ probes:
     compare: {keys: [band], values: [order_count]}
     slayer:
       query: {population: orders,
-              dimensions: [{expression: "CASE WHEN sum(amount, partition_by=customer_id) > 250 THEN 'high' ELSE 'low' END", name: band}],
-              metrics: [{expression: "count(*)", name: order_count}]}
+              dimensions: [{field: "CASE WHEN sum(amount, partition_by=customer_id) > 250 THEN 'high' ELSE 'low' END", alias: band}],
+              metrics: [{metric: "count(*)", alias: order_count}]}
     malloy:
       query: |
         query: cust_facts is orders -> { group_by: customer_id; aggregate: cust_rev is revenue }
@@ -980,7 +983,7 @@ probes:
     compare: {keys: [customers.name], values: [v]}
     slayer:
       query: {population: orders, dimensions: [customers.name], filter: ["rank(sum(amount), direction='desc') <= 2"],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
     metricflow:
       note: order by the selected metric plus a global limit
       query:
@@ -1043,7 +1046,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              filter: ["change(sum(amount)) > 0"], metrics: [{expression: "sum(amount)", name: v}]}
+              filter: ["change(sum(amount)) > 0"], metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: F8
     row: Q5
@@ -1054,8 +1057,8 @@ probes:
     compare: {keys: [region, band], values: [v]}
     slayer:
       query: {population: orders_flat,
-              dimensions: [region, {expression: "CASE WHEN sum(amount, partition_by=city) > 400 THEN 'big' ELSE 'small' END", name: band}],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              dimensions: [region, {field: "CASE WHEN sum(amount, partition_by=city) > 400 THEN 'big' ELSE 'small' END", alias: band}],
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: X4
     row: Q5
@@ -1067,8 +1070,8 @@ probes:
     compare: {keys: [status, band], values: [v]}
     slayer:
       query: {population: orders, filter: ["band = 'high'"],
-              dimensions: [status, {expression: "CASE WHEN sum(amount, partition_by=customer_id) > 250 THEN 'high' ELSE 'low' END", name: band}],
-              metrics: [{expression: "count(*)", name: v}]}
+              dimensions: [status, {field: "CASE WHEN sum(amount, partition_by=customer_id) > 250 THEN 'high' ELSE 'low' END", alias: band}],
+              metrics: [{metric: "count(*)", alias: v}]}
 
   - id: Q5-cube-sub-query
     row: Q5
@@ -1104,7 +1107,7 @@ probes:
     truth_sql: select status, (select sum(credit) from customers) from orders group by 1
     compare: {keys: [status], values: [v]}
     slayer:
-      query: {population: orders, dimensions: [status], metrics: [{expression: "sum(customers.credit)", name: v}]}
+      query: {population: orders, dimensions: [status], metrics: [{metric: "sum(customers.credit)", alias: v}]}
       options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
     metricflow:
@@ -1122,7 +1125,7 @@ probes:
       join customers c on o.customer_id = c.id group by 1
     compare: {keys: [status], values: [v]}
     slayer:
-      query: {population: orders, dimensions: [status], metrics: [{expression: "sum(customers.credit)", name: v}]}
+      query: {population: orders, dimensions: [status], metrics: [{metric: "sum(customers.credit)", alias: v}]}
       options: {to_many_handling: associate}
       expect: {warning: associated}
     cube:
@@ -1135,7 +1138,7 @@ probes:
     row: Q6
     title: same with to_many_handling=error
     slayer:
-      query: {population: orders, dimensions: [status], metrics: [{expression: "sum(customers.credit)", name: v}]}
+      query: {population: orders, dimensions: [status], metrics: [{metric: "sum(customers.credit)", alias: v}]}
       options: {to_many_handling: error}
       expect: {error: would broadcast}
 
@@ -1149,7 +1152,7 @@ probes:
       group by 1
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
-      query: {population: orders, dimensions: [customers.regions.name], metrics: [{expression: "sum(customers.credit)", name: v}]}
+      query: {population: orders, dimensions: [customers.regions.name], metrics: [{metric: "sum(customers.credit)", alias: v}]}
     metricflow:
       query:
         metrics: [credit_total]
@@ -1163,7 +1166,7 @@ probes:
     truth_sql: select region, count(*) from orders_flat group by 1
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
-      query: {population: orders, dimensions: [customers.regions.name], metrics: [{expression: "count(*)", name: v}]}
+      query: {population: orders, dimensions: [customers.regions.name], metrics: [{metric: "count(*)", alias: v}]}
     metricflow:
       query:
         metrics: [order_count]
@@ -1178,7 +1181,7 @@ probes:
       select r.name, count(c.id) from customers c left join regions r on c.region_id = r.id group by 1
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
-      query: {population: orders, dimensions: [customers.regions.name], metrics: [{expression: "count(customers.id)", name: v}]}
+      query: {population: orders, dimensions: [customers.regions.name], metrics: [{metric: "count(customers.id)", alias: v}]}
     metricflow:
       query:
         metrics: [customer_count]
@@ -1193,7 +1196,7 @@ probes:
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name],
-              metrics: [{expression: "count_distinct(customer_id)", name: v}]}
+              metrics: [{metric: "count_distinct(customer_id)", alias: v}]}
     metricflow:
       query:
         metrics: [ordering_customers]
@@ -1209,7 +1212,7 @@ probes:
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name],
-              metrics: [{expression: "sum(amount)", name: revenue}, {expression: "avg(customers.credit)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: revenue}, {metric: "avg(customers.credit)", alias: v}]}
 
   - id: Q6-locality
     row: Q6
@@ -1242,9 +1245,9 @@ probes:
     compare: {keys: [name], values: [rev, n_orders, n_customers]}
     slayer:
       query: {population: regions, dimensions: [name],
-              metrics: [{expression: "sum(customers.orders.amount)", name: rev},
-                         {expression: "count(customers.orders.id)", name: n_orders},
-                         {expression: "count(customers.id)", name: n_customers}]}
+              metrics: [{metric: "sum(customers.orders.amount)", alias: rev},
+                         {metric: "count(customers.orders.id)", alias: n_orders},
+                         {metric: "count(customers.id)", alias: n_customers}]}
     metricflow:
       note: region_count sees region__name, revenue only customer__region__name; no common group-by
       query:
@@ -1261,7 +1264,7 @@ probes:
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name], filter: ["status = 'ok'"],
-              metrics: [{expression: "sum(customers.credit)", name: v}]}
+              metrics: [{metric: "sum(customers.credit)", alias: v}]}
     metricflow:
       note: order__status is not reachable from customers, so a to-many filter is refused
       query:
@@ -1277,7 +1280,7 @@ probes:
       select o.status, count(distinct c.city) from orders o join customers c on o.customer_id = c.id group by 1
     compare: {keys: [status], values: [v]}
     slayer:
-      query: {population: orders, dimensions: [status], metrics: [{expression: "count_distinct(customers.city)", name: v}]}
+      query: {population: orders, dimensions: [status], metrics: [{metric: "count_distinct(customers.city)", alias: v}]}
       options: {to_many_handling: associate}
       expect: {warning: associated}
 
@@ -1341,7 +1344,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "cumsum(change(sum(amount)))", name: v}]}
+              metrics: [{metric: "cumsum(change(sum(amount)))", alias: v}]}
 
   - id: Q7b
     row: Q7
@@ -1353,14 +1356,14 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "change(cumsum(sum(amount)))", name: v}]}
+              metrics: [{metric: "change(cumsum(sum(amount)))", alias: v}]}
 
   - id: Q7c
     row: Q7
     title: a transform over order_date cells with no time dimension needs a time axis
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "sum(cumsum(sum(amount, partition_by=[region, order_date])) - 1)", name: v}]}
+              metrics: [{metric: "sum(cumsum(sum(amount, partition_by=[region, order_date])) - 1)", alias: v}]}
       expect: {error: TimeAxisError}
 
   - id: Q7c2
@@ -1373,7 +1376,7 @@ probes:
     compare: {keys: [region, order_date], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region], time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{expression: "sum(cumsum(sum(amount, partition_by=[region, order_date])) - 1)", name: v}]}
+              metrics: [{metric: "sum(cumsum(sum(amount, partition_by=[region, order_date])) - 1)", alias: v}]}
       expect: {warning: degenerate_reaggregation}
 
   - id: Q7d
@@ -1388,7 +1391,7 @@ probes:
     compare: {keys: [region, order_date], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region], time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "time_shift(sum(amount) / sum(amount, partition_by=[order_date]), -1)", name: v}]}
+              metrics: [{metric: "time_shift(sum(amount) / sum(amount, partition_by=[order_date]), -1)", alias: v}]}
 
   - id: Q7e
     row: Q7
@@ -1401,7 +1404,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "cumsum(sum(amount, window='90d'))", name: v}]}
+              metrics: [{metric: "cumsum(sum(amount, window='90d'))", alias: v}]}
 
   - id: Q7f
     row: Q7
@@ -1413,7 +1416,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "sum(amount, window='90d') / 2", name: v}]}
+              metrics: [{metric: "sum(amount, window='90d') / 2", alias: v}]}
 
   - id: Q7g
     row: Q7
@@ -1426,7 +1429,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "sum(amount, window='90d') / sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount, window='90d') / sum(amount)", alias: v}]}
 
   - id: Q7h
     row: Q7
@@ -1439,7 +1442,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "time_shift(sum(amount, window='90d'), -1)", name: v}]}
+              metrics: [{metric: "time_shift(sum(amount, window='90d'), -1)", alias: v}]}
 
   - id: Q7i
     row: Q7
@@ -1451,7 +1454,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "last(change(sum(amount)))", name: v}]}
+              metrics: [{metric: "last(change(sum(amount)))", alias: v}]}
 
   - id: Q9c-1
     row: Q7
@@ -1462,7 +1465,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "sum(cumsum(sum(amount)))", name: v}]}
+              metrics: [{metric: "sum(cumsum(sum(amount)))", alias: v}]}
 
   - id: Q9c-2
     row: Q7
@@ -1473,14 +1476,14 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "max(rank(sum(amount, partition_by=[region, customer_id]), partition_by=region, direction='desc'))", name: v}]}
+              metrics: [{metric: "max(rank(sum(amount, partition_by=[region, customer_id]), partition_by=region, direction='desc'))", alias: v}]}
 
   - id: Q9c-3
     row: Q7
     title: avg(lag(...)) over order_date cells with no time dimension needs a time axis
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "avg(lag(sum(amount, partition_by=[region, order_date]), 1))", name: v}]}
+              metrics: [{metric: "avg(lag(sum(amount, partition_by=[region, order_date]), 1))", alias: v}]}
       expect: {error: TimeAxisError}
 
   - id: Q7-lag-of-calc
@@ -1634,7 +1637,7 @@ probes:
       left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [regions.name], values: [rev]}
     slayer:
-      query: {dimensions: [regions.name], metrics: [{expression: "sum(orders.amount)", name: rev}]}
+      query: {dimensions: [regions.name], metrics: [{metric: "sum(orders.amount)", alias: rev}]}
     cube:
       planners: [tesseract]
       rest: {dimensions: [regions.name], measures: [orders.revenue]}
@@ -1649,7 +1652,7 @@ probes:
     compare: {keys: [customers.name], values: [rev, n]}
     slayer:
       query: {dimensions: [customers.name],
-              metrics: [{expression: "sum(orders.amount)", name: rev}, {expression: "count(orders.id)", name: n}]}
+              metrics: [{metric: "sum(orders.amount)", alias: rev}, {metric: "count(orders.id)", alias: n}]}
     metricflow:
       query:
         metrics: [revenue, order_count, customer_count]
@@ -1677,7 +1680,7 @@ probes:
       left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [customers.regions.name], values: [rev]}
     slayer:
-      query: {dimensions: [customers.regions.name], metrics: [{expression: "sum(orders.amount)", name: rev}]}
+      query: {dimensions: [customers.regions.name], metrics: [{metric: "sum(orders.amount)", alias: rev}]}
     metricflow:
       query:
         metrics: [revenue]
@@ -1785,7 +1788,7 @@ probes:
     compare: {keys: [name], values: [n]}
     slayer:
       query: {population: customers, dimensions: [name],
-              metrics: [{expression: "count(orders.id)", name: n}, {expression: "sum(orders.amount)", name: rev}]}
+              metrics: [{metric: "count(orders.id)", alias: n}, {metric: "sum(orders.amount)", alias: rev}]}
     malloy:
       query: |
         run: customers -> { group_by: name; aggregate: n is count(orders.id) }
@@ -1917,7 +1920,7 @@ probes:
     compare: {keys: [name]}
     slayer:
       query: {population: customers, dimensions: [name], filter: ["orders.id is null"],
-              metrics: [{expression: "count(*)", name: n}]}
+              metrics: [{metric: "count(*)", alias: n}]}
     malloy:
       note: count(orders.id) = 0 works; orders.count() = 0 does not (Q10-antijoin-count)
       query: |
@@ -1937,7 +1940,7 @@ probes:
     compare: {keys: [tier], values: [total_credit]}
     slayer:
       query: {population: customers, dimensions: [tier],
-              metrics: [{expression: "sum(credit)", name: total_credit}, {expression: "count(orders.id)", name: n}]}
+              metrics: [{metric: "sum(credit)", alias: total_credit}, {metric: "count(orders.id)", alias: n}]}
     cube:
       rest: {dimensions: [customers.tier], measures: [customers.credit_sum, orders.count]}
       keys: [customers.tier]
@@ -1950,7 +1953,7 @@ probes:
     compare: {keys: [tier], values: [n]}
     slayer:
       query: {population: customers, dimensions: [tier],
-              metrics: [{expression: "sum(credit)", name: total_credit}, {expression: "count(orders.id)", name: n}]}
+              metrics: [{metric: "sum(credit)", alias: total_credit}, {metric: "count(orders.id)", alias: n}]}
     cube:
       rest: {dimensions: [customers.tier], measures: [customers.credit_sum, orders.count]}
       keys: [customers.tier]
@@ -1964,7 +1967,7 @@ probes:
     compare: {keys: [tier], values: [v]}
     slayer:
       query: {population: customers, dimensions: [tier], filter: ["orders.amount > 0"],
-              metrics: [{expression: "avg(credit)", name: v}]}
+              metrics: [{metric: "avg(credit)", alias: v}]}
 
   - id: Q9d
     row: Q9
@@ -1974,7 +1977,7 @@ probes:
       from (select distinct o.status from customers c left join orders o on o.customer_id = c.id) s
     compare: {keys: [orders.status], values: [total_credit]}
     slayer:
-      query: {population: customers, dimensions: [orders.status], metrics: [{expression: "sum(credit)", name: total_credit}]}
+      query: {population: customers, dimensions: [orders.status], metrics: [{metric: "sum(credit)", alias: total_credit}]}
       options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
 
@@ -1986,7 +1989,7 @@ probes:
       left join (select distinct customer_id, status from orders) o on o.customer_id = c.id group by 1
     compare: {keys: [orders.status], values: [total_credit]}
     slayer:
-      query: {population: customers, dimensions: [orders.status], metrics: [{expression: "sum(credit)", name: total_credit}]}
+      query: {population: customers, dimensions: [orders.status], metrics: [{metric: "sum(credit)", alias: total_credit}]}
       options: {to_many_handling: associate}
       expect: {warning: associated}
     malloy:
@@ -2007,7 +2010,7 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "sum(sum(amount, partition_by=city))", name: v}]}
+              metrics: [{metric: "sum(sum(amount, partition_by=city))", alias: v}]}
       options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
 
@@ -2020,7 +2023,7 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "sum(sum(amount, partition_by=city))", name: v}]}
+              metrics: [{metric: "sum(sum(amount, partition_by=city))", alias: v}]}
       options: {to_many_handling: associate}
       expect: {warning: associated}
 
@@ -2029,7 +2032,7 @@ probes:
     title: same with error
     slayer:
       query: {population: orders_flat, dimensions: [region],
-              metrics: [{expression: "sum(sum(amount, partition_by=city))", name: v}]}
+              metrics: [{metric: "sum(sum(amount, partition_by=city))", alias: v}]}
       options: {to_many_handling: error}
       expect: {error: ReaggregationError}
 
@@ -2047,8 +2050,8 @@ probes:
     compare: {keys: [regions.name], values: [rev, n_orders, n_customers]}
     slayer:
       query: {population: customers, dimensions: [regions.name],
-              metrics: [{expression: "sum(orders.amount)", name: rev}, {expression: "count(orders.id)", name: n_orders},
-                         {expression: "count(*)", name: n_customers}]}
+              metrics: [{metric: "sum(orders.amount)", alias: rev}, {metric: "count(orders.id)", alias: n_orders},
+                         {metric: "count(*)", alias: n_customers}]}
 
   - id: B1-assoc
     row: Q9
@@ -2063,7 +2066,7 @@ probes:
       left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [regions.name], values: [rev]}
     slayer:
-      query: {population: customers, dimensions: [regions.name], metrics: [{expression: "sum(orders.amount)", name: rev}]}
+      query: {population: customers, dimensions: [regions.name], metrics: [{metric: "sum(orders.amount)", alias: rev}]}
       options: {to_many_handling: associate}
 
   - id: B1-tier
@@ -2072,7 +2075,7 @@ probes:
     truth_sql: select c.tier, sum(o.amount) from customers c left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [tier], values: [rev]}
     slayer:
-      query: {population: customers, dimensions: [tier], metrics: [{expression: "sum(orders.amount)", name: rev}]}
+      query: {population: customers, dimensions: [tier], metrics: [{metric: "sum(orders.amount)", alias: rev}]}
     cube:
       planners: [tesseract]
       rest: {dimensions: [customers.tier], measures: [orders.revenue]}
@@ -2097,7 +2100,7 @@ probes:
     compare: {keys: [name], values: [n, nd]}
     slayer:
       query: {population: customers, dimensions: [name],
-              metrics: [{expression: "count(orders.*)", name: n}, {expression: "count_distinct(orders.id)", name: nd}]}
+              metrics: [{metric: "count(orders.*)", alias: n}, {metric: "count_distinct(orders.id)", alias: nd}]}
 
   - id: B2-coalesce
     row: Q9
@@ -2106,7 +2109,7 @@ probes:
     compare: {keys: [name], values: [n]}
     slayer:
       query: {population: customers, dimensions: [name], filter: ["name = 'Frank'"],
-              metrics: [{expression: "coalesce(count(orders.id), 0)", name: n}]}
+              metrics: [{metric: "coalesce(count(orders.id), 0)", alias: n}]}
 
   - id: Q9-cube-no-pk
     row: Q9
@@ -2124,7 +2127,7 @@ probes:
     compare: {values: [n, total_credit]}
     slayer:
       query: {population: customers, filter: ["orders.status = 'ok'"],
-              metrics: [{expression: "count(*)", name: n}, {expression: "sum(credit)", name: total_credit}]}
+              metrics: [{metric: "count(*)", alias: n}, {metric: "sum(credit)", alias: total_credit}]}
     malloy:
       query: |
         run: customers -> { where: orders.status = 'ok'; aggregate: n is customer_count, total_credit is credit.sum() }
@@ -2163,7 +2166,7 @@ probes:
     compare: {values: [n, total_credit]}
     slayer:
       query: {population: customers, filter: ["tier = 'gold' or orders.status = 'ok'"],
-              metrics: [{expression: "count(*)", name: n}, {expression: "sum(credit)", name: total_credit}]}
+              metrics: [{metric: "count(*)", alias: n}, {metric: "sum(credit)", alias: total_credit}]}
     malloy:
       note: or is evaluated per joined row
       query: |
@@ -2191,7 +2194,7 @@ probes:
     compare: {values: [n, total_credit]}
     slayer:
       query: {population: customers, filter: ["tier = 'bronze' or orders.status = 'bad'"],
-              metrics: [{expression: "count(*)", name: n}, {expression: "sum(credit)", name: total_credit}]}
+              metrics: [{metric: "count(*)", alias: n}, {metric: "sum(credit)", alias: total_credit}]}
     malloy:
       query: |
         run: customers -> { where: tier = 'bronze' or orders.status = 'bad'; aggregate: n is customer_count, total_credit is credit.sum() }
@@ -2211,7 +2214,7 @@ probes:
     compare: {values: [n, total_credit]}
     slayer:
       query: {population: customers, filter: ["not (orders.status = 'bad')"],
-              metrics: [{expression: "count(*)", name: n}, {expression: "sum(credit)", name: total_credit}]}
+              metrics: [{metric: "count(*)", alias: n}, {metric: "sum(credit)", alias: total_credit}]}
 
   - id: Q10d-malloy
     row: Q10
@@ -2234,7 +2237,7 @@ probes:
     compare: {values: [n, total_credit]}
     slayer:
       query: {population: customers, filter: ["orders.id is null"],
-              metrics: [{expression: "count(*)", name: n}, {expression: "sum(credit)", name: total_credit}]}
+              metrics: [{metric: "count(*)", alias: n}, {metric: "sum(credit)", alias: total_credit}]}
     malloy:
       query: |
         run: customers -> { where: orders.id is null; aggregate: n is customer_count, total_credit is credit.sum() }
@@ -2252,7 +2255,7 @@ probes:
     compare: {values: [n, total_credit]}
     slayer:
       query: {population: customers, filter: ["orders.amount > 250 and orders.status = 'bad'"],
-              metrics: [{expression: "count(*)", name: n}, {expression: "sum(credit)", name: total_credit}]}
+              metrics: [{metric: "count(*)", alias: n}, {metric: "sum(credit)", alias: total_credit}]}
 
   - id: Q10g
     row: Q10
@@ -2262,7 +2265,7 @@ probes:
     compare: {values: [n, total_credit]}
     slayer:
       query: {population: customers, filter: ["orders.amount > 250", "orders.status = 'bad'"],
-              metrics: [{expression: "count(*)", name: n}, {expression: "sum(credit)", name: total_credit}]}
+              metrics: [{metric: "count(*)", alias: n}, {metric: "sum(credit)", alias: total_credit}]}
 
   - id: Q10h
     row: Q10
@@ -2272,7 +2275,7 @@ probes:
     compare: {values: [n, total_credit]}
     slayer:
       query: {population: customers, filter: ["orders.status <> 'bad'"],
-              metrics: [{expression: "count(*)", name: n}, {expression: "sum(credit)", name: total_credit}]}
+              metrics: [{metric: "count(*)", alias: n}, {metric: "sum(credit)", alias: total_credit}]}
     cube:
       planners: [tesseract]
       note: measure-only, so the query roots at orders; Frank (no orders) cannot appear
@@ -2309,7 +2312,7 @@ probes:
     compare: {keys: [name], values: [v]}
     slayer:
       query: {population: regions, dimensions: [name], filter: ["customers.orders.status = 'bad'"],
-              metrics: [{expression: "count(*)", name: v}]}
+              metrics: [{metric: "count(*)", alias: v}]}
 
   - id: Q10-cube-not-equals-null
     row: Q10
@@ -2377,7 +2380,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "sum(amount, window='90d')", name: v}]}
+              metrics: [{metric: "sum(amount, window='90d')", alias: v}]}
 
   - id: Q11-count_distinct
     row: Q11
@@ -2389,7 +2392,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "count_distinct(customer_id, window='90d')", name: v}]}
+              metrics: [{metric: "count_distinct(customer_id, window='90d')", alias: v}]}
 
   - id: Q11-min
     row: Q11
@@ -2401,7 +2404,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "min(amount, window='90d')", name: v}]}
+              metrics: [{metric: "min(amount, window='90d')", alias: v}]}
 
   - id: Q11-max
     row: Q11
@@ -2413,7 +2416,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "max(amount, window='90d')", name: v}]}
+              metrics: [{metric: "max(amount, window='90d')", alias: v}]}
 
   - id: Q11-count
     row: Q11
@@ -2425,7 +2428,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "count(*, window='90d')", name: v}]}
+              metrics: [{metric: "count(*, window='90d')", alias: v}]}
 
   - id: Q11-avg
     row: Q11
@@ -2437,7 +2440,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "avg(amount, window='90d')", name: v}]}
+              metrics: [{metric: "avg(amount, window='90d')", alias: v}]}
 
   - id: Q11-last
     row: Q11
@@ -2450,7 +2453,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "last(amount, window='90d')", name: v}]}
+              metrics: [{metric: "last(amount, window='90d')", alias: v}]}
 
   - id: Q11-first
     row: Q11
@@ -2463,7 +2466,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "first(amount, window='90d')", name: v}]}
+              metrics: [{metric: "first(amount, window='90d')", alias: v}]}
 
   - id: Q11-range
     row: Q11
@@ -2476,7 +2479,7 @@ probes:
     slayer:
       query: {population: orders,
               time_dimensions: [{field: order_date, granularity: month, date_range: ["2025-01-01", "2025-03-31"]}],
-              metrics: [{expression: "sum(amount, window='90d')", name: v}]}
+              metrics: [{metric: "sum(amount, window='90d')", alias: v}]}
     cube:
       model_declared: true
       schema: [model_declared/multi_stage.yml]
@@ -2497,7 +2500,7 @@ probes:
     slayer:
       query: {population: orders,
               time_dimensions: [{field: order_date, granularity: month, date_range: ["2025-01-01", "2025-03-31"]}],
-              metrics: [{expression: "count_distinct(customer_id, window='90d')", name: v}]}
+              metrics: [{metric: "count_distinct(customer_id, window='90d')", alias: v}]}
     cube:
       model_declared: true
       schema: [model_declared/multi_stage.yml]
@@ -2517,7 +2520,7 @@ probes:
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
               filter: ["order_date >= '2025-01-01' and status = 'ok'"],
-              metrics: [{expression: "sum(amount, window='90d')", name: v}]}
+              metrics: [{metric: "sum(amount, window='90d')", alias: v}]}
 
   - id: W1
     row: Q11
@@ -2531,7 +2534,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              filter: ["sum(amount, window='90d') > 400 and sum(amount) > 150"], metrics: [{expression: "sum(amount)", name: v}]}
+              filter: ["sum(amount, window='90d') > 400 and sum(amount) > 150"], metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: W3
     row: Q11
@@ -2544,7 +2547,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "change(sum(amount, window='90d'))", name: v}]}
+              metrics: [{metric: "change(sum(amount, window='90d'))", alias: v}]}
 
   - id: Q11-moving
     row: Q11
@@ -2619,7 +2622,7 @@ probes:
     compare: {keys: [region], values: [net]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name],
-              metrics: [{expression: "sum(amount - customers.discount)", name: net}]}
+              metrics: [{metric: "sum(amount - customers.discount)", alias: net}]}
       keys: [customers.regions.name]
     malloy:
       query: |
@@ -2643,7 +2646,7 @@ probes:
     compare: {keys: [status], values: [v]}
     slayer:
       query: {population: orders, dimensions: [status],
-              metrics: [{expression: "weighted_avg(amount, weight=customers.credit)", name: v}]}
+              metrics: [{metric: "weighted_avg(amount, weight=customers.credit)", alias: v}]}
 
   - id: Q12c
     row: Q12
@@ -2654,7 +2657,7 @@ probes:
     compare: {keys: [status], values: [v]}
     slayer:
       query: {population: orders, dimensions: [status],
-              metrics: [{expression: "weighted_avg(amount, weight=sum(amount, partition_by=customers.regions.name))", name: v}]}
+              metrics: [{metric: "weighted_avg(amount, weight=sum(amount, partition_by=customers.regions.name))", alias: v}]}
 
   - id: Q12d
     row: Q12
@@ -2663,7 +2666,7 @@ probes:
     compare: {keys: [customers.regions.name], values: [v]}
     slayer:
       query: {population: orders, dimensions: [customers.regions.name],
-              metrics: [{expression: "weighted_avg(customers.credit, weight=sum(amount, partition_by=customers.regions.name))", name: v}]}
+              metrics: [{metric: "weighted_avg(customers.credit, weight=sum(amount, partition_by=customers.regions.name))", alias: v}]}
 
   # ------------------------------------------------------------------ Q13 order by what you don't show
   - id: Q13a
@@ -2675,7 +2678,7 @@ probes:
     compare: {keys: [customers.name], values: [order_count]}
     slayer:
       query: {population: orders, dimensions: [customers.name], limit: 3,
-              order: [{field: "sum(amount) / count(*)", direction: desc}], metrics: [{expression: "count(*)", name: order_count}]}
+              order: [{field: "sum(amount) / count(*)", direction: desc}], metrics: [{metric: "count(*)", alias: order_count}]}
     metricflow:
       query:
         metrics: [order_count]
@@ -2693,7 +2696,7 @@ probes:
     compare: {keys: [name], values: [order_count], ordered: true, columns_exact: true}
     slayer:
       query: {population: orders, dimensions: [customers.name], limit: 3,
-              order: [{field: "sum(amount) / count(*)", direction: desc}], metrics: [{expression: "count(*)", name: order_count}]}
+              order: [{field: "sum(amount) / count(*)", direction: desc}], metrics: [{metric: "count(*)", alias: order_count}]}
       keys: [customers.name]
     malloy:
       note: two-stage workaround, sort in stage 1 then select
@@ -2733,7 +2736,7 @@ probes:
     compare: {keys: [customers.name], values: [order_count]}
     slayer:
       query: {population: orders, dimensions: [customers.name], limit: 3,
-              order: [{field: "rank(sum(amount), direction='desc')", direction: asc}], metrics: [{expression: "count(*)", name: order_count}]}
+              order: [{field: "rank(sum(amount), direction='desc')", direction: asc}], metrics: [{metric: "count(*)", alias: order_count}]}
 
   - id: Q13c
     row: Q13
@@ -2742,7 +2745,7 @@ probes:
     compare: {keys: [status], values: [order_count], columns_exact: true}
     slayer:
       query: {population: orders, dimensions: [status],
-              order: [{field: "sum(customers.credit)", direction: desc}], metrics: [{expression: "count(*)", name: order_count}]}
+              order: [{field: "sum(customers.credit)", direction: desc}], metrics: [{metric: "count(*)", alias: order_count}]}
 
   - id: Q13-cube-order-measure
     row: Q13
@@ -2778,7 +2781,7 @@ probes:
     slayer:
       query: {population: orders, dimensions: [customers.regions.name, customers.name],
               filter: ["rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1"],
-              metrics: [{expression: "sum(amount)", name: revenue}]}
+              metrics: [{metric: "sum(amount)", alias: revenue}]}
       keys: [customers.regions.name, customers.name]
     malloy:
       note: rank() in one stage, filter in the next
@@ -2809,7 +2812,7 @@ probes:
     compare: {keys: [region, city], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [region, city],
-              filter: ["dense_rank(sum(amount), partition_by=region, direction='desc') <= 1"], metrics: [{expression: "sum(amount)", name: v}]}
+              filter: ["dense_rank(sum(amount), partition_by=region, direction='desc') <= 1"], metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: W2
     row: Q14
@@ -2822,7 +2825,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "rank(sum(amount, window='90d'), direction='desc')", name: v}]}
+              metrics: [{metric: "rank(sum(amount, window='90d'), direction='desc')", alias: v}]}
 
   - id: Q14c
     row: Q14
@@ -2837,7 +2840,7 @@ probes:
     compare: {keys: [order_date], values: [streak]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "consecutive_periods(sum(amount) > 100)", name: streak}]}
+              metrics: [{metric: "consecutive_periods(sum(amount) > 100)", alias: streak}]}
     malloy:
       note: four stages (lag the month, flag run starts, number the runs, cumulate within a run)
       query: |
@@ -2861,7 +2864,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              filter: ["consecutive_periods(sum(amount) > 100) >= 2"], metrics: [{expression: "sum(amount)", name: v}]}
+              filter: ["consecutive_periods(sum(amount) > 100) >= 2"], metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: Q14-cube-rank
     row: Q14
@@ -2912,8 +2915,8 @@ probes:
     compare: {values: [avg_rev]}
     slayer:
       query:
-        - {name: by_cust, population: orders, dimensions: [customer_id], metrics: [{expression: "sum(amount)", name: rev}]}
-        - {population: by_cust, metrics: [{expression: "avg(rev)", name: avg_rev}]}
+        - {name: by_cust, population: orders, dimensions: [customer_id], metrics: [{metric: "sum(amount)", alias: rev}]}
+        - {population: by_cust, metrics: [{metric: "avg(rev)", alias: avg_rev}]}
     malloy:
       query: |
         run: orders -> { group_by: customer_id; aggregate: rev is revenue } -> { aggregate: avg_rev is rev.avg() }
@@ -2928,10 +2931,10 @@ probes:
     compare: {values: [best]}
     slayer:
       query:
-        - {name: joined, population: {source_name: customers, relationships: [{to: by_cust, from_columns: [id], to_columns: [customer_id]}]},
-           dimensions: [tier], metrics: [{expression: "sum(by_cust.rev)", name: tier_rev}]}
-        - {name: by_cust, population: orders, dimensions: [customer_id], metrics: [{expression: "sum(amount)", name: rev}]}
-        - {population: joined, metrics: [{expression: "max(tier_rev)", name: best}]}
+        - {name: joined, population: customers, extensions: [{dataset: customers, relationships: [{to: by_cust, from_columns: [id], to_columns: [customer_id]}]}],
+           dimensions: [tier], metrics: [{metric: "sum(by_cust.rev)", alias: tier_rev}]}
+        - {name: by_cust, population: orders, dimensions: [customer_id], metrics: [{metric: "sum(amount)", alias: rev}]}
+        - {population: joined, metrics: [{metric: "max(tier_rev)", alias: best}]}
 
   - id: Q15c
     row: Q15
@@ -2941,8 +2944,8 @@ probes:
     slayer:
       query:
         - {name: monthly, population: orders, time_dimensions: [{field: order_date, granularity: month}],
-           metrics: [{expression: "sum(amount)", name: rev}]}
-        - {population: monthly, time_dimensions: [{field: order_date, granularity: year}], metrics: [{expression: "sum(rev)", name: yr}]}
+           metrics: [{metric: "sum(amount)", alias: rev}]}
+        - {population: monthly, time_dimensions: [{field: order_date, granularity: year}], metrics: [{metric: "sum(rev)", alias: yr}]}
 
   - id: Q15d
     row: Q15
@@ -2954,9 +2957,9 @@ probes:
     slayer:
       query:
         - {name: monthly, population: orders, time_dimensions: [{field: order_date, granularity: month}],
-           metrics: [{expression: "sum(amount)", name: rev}]}
+           metrics: [{metric: "sum(amount)", alias: rev}]}
         - {population: monthly, time_dimensions: [{field: order_date, granularity: month}],
-           metrics: [{expression: "change(sum(rev))", name: ch}, {expression: "time_shift(sum(rev), -1, 'year')", name: yoy}]}
+           metrics: [{metric: "change(sum(rev))", alias: ch}, {metric: "time_shift(sum(rev), -1, 'year')", alias: yoy}]}
 
   - id: Q15e
     row: Q15
@@ -2968,9 +2971,9 @@ probes:
     slayer:
       query:
         - {name: monthly, population: orders, time_dimensions: [{field: order_date, granularity: month}],
-           metrics: [{expression: "sum(amount)", name: rev}]}
+           metrics: [{metric: "sum(amount)", alias: rev}]}
         - {population: monthly, time_dimensions: [{field: order_date, granularity: month}],
-           metrics: [{expression: "change(sum(rev))", name: ch}, {expression: "time_shift(sum(rev), -1, 'year')", name: yoy}]}
+           metrics: [{metric: "change(sum(rev))", alias: ch}, {metric: "time_shift(sum(rev), -1, 'year')", alias: yoy}]}
 
   - id: Q15f
     row: Q15
@@ -2978,9 +2981,9 @@ probes:
     slayer:
       query:
         - {name: monthly, population: orders, time_dimensions: [{field: order_date, granularity: month}],
-           metrics: [{expression: "sum(amount)", name: rev}]}
-        - {population: monthly, time_dimensions: [{field: order_date, granularity: day}], metrics: [{expression: "sum(rev)", name: x}]}
-      expect: {error: TimeDimensionColumnError}
+           metrics: [{metric: "sum(amount)", alias: rev}]}
+        - {population: monthly, time_dimensions: [{field: order_date, granularity: day}], metrics: [{metric: "sum(rev)", alias: x}]}
+      expect: {error: TimeDimensionFieldError}
 
   - id: Q15g
     row: Q15
@@ -2988,9 +2991,9 @@ probes:
     slayer:
       query:
         - {name: monthly, population: orders, time_dimensions: [{field: order_date, granularity: month}],
-           metrics: [{expression: "sum(amount)", name: rev}]}
-        - {population: monthly, time_dimensions: [{field: order_date, granularity: week}], metrics: [{expression: "sum(rev)", name: x}]}
-      expect: {error: TimeDimensionColumnError}
+           metrics: [{metric: "sum(amount)", alias: rev}]}
+        - {population: monthly, time_dimensions: [{field: order_date, granularity: week}], metrics: [{metric: "sum(rev)", alias: x}]}
+      expect: {error: TimeDimensionFieldError}
 
   - id: Q15h
     row: Q15
@@ -3000,8 +3003,8 @@ probes:
     slayer:
       query:
         - {name: monthly, population: orders, time_dimensions: [{field: order_date, granularity: month}],
-           metrics: [{expression: "sum(amount)", name: rev}]}
-        - {population: monthly, time_dimensions: [{field: order_date, granularity: quarter}], metrics: [{expression: "sum(rev)", name: rev_q}]}
+           metrics: [{metric: "sum(amount)", alias: rev}]}
+        - {population: monthly, time_dimensions: [{field: order_date, granularity: quarter}], metrics: [{metric: "sum(rev)", alias: rev_q}]}
     malloy:
       query: |
         query: monthly is orders -> { group_by: d is order_date.month; aggregate: revenue }
@@ -3017,7 +3020,7 @@ probes:
     slayer:
       query: {population: {source_name: orders,
                              fields: [{name: size, sql: "CASE WHEN amount > 100 THEN 'big' ELSE 'small' END", datatype: string}]},
-              dimensions: [size], metrics: [{expression: "count(*)", name: order_count}]}
+              dimensions: [size], metrics: [{metric: "count(*)", alias: order_count}]}
     malloy:
       query: |
         run: orders -> { extend: { dimension: size is pick 'big' when amount > 100 else 'small' } group_by: size; aggregate: order_count }
@@ -3031,8 +3034,8 @@ probes:
     truth_sql: select c.tier, sum(o.amount) from customers c left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [tier], values: [v]}
     slayer:
-      query: {population: {source_name: customers, relationships: [{to: orders_flat, from_columns: [id], to_columns: [customer_id]}]},
-              dimensions: [tier], metrics: [{expression: "sum(orders_flat.amount)", name: v}]}
+      query: {population: customers, extensions: [{dataset: customers, relationships: [{to: orders_flat, from_columns: [id], to_columns: [customer_id]}]}],
+              dimensions: [tier], metrics: [{metric: "sum(orders_flat.amount)", alias: v}]}
 
   - id: Q16c
     row: Q16
@@ -3040,8 +3043,8 @@ probes:
     truth_sql: select status, sum(amount) / (select sum(amount) from orders) from orders group by 1
     compare: {keys: [status], values: [v]}
     slayer:
-      query: {population: {source_name: orders, metrics: [{name: big_share, expression: "sum(amount) / sum(amount, partition_by=[])"}]},
-              dimensions: [status], metrics: [{expression: "big_share", name: v}]}
+      query: {population: orders, extensions: [{dataset: orders, metrics: [{name: big_share, expression: "sum(amount) / sum(amount, partition_by=[])"}]}],
+              dimensions: [status], metrics: [{metric: "big_share", alias: v}]}
 
   - id: Q16-cube-dow
     row: Q16
@@ -3066,7 +3069,7 @@ probes:
     compare: {keys: [order_date], values: [aov]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "aov", name: aov}]}
+              metrics: [{metric: "aov", alias: aov}]}
     malloy:
       query: |
         run: orders -> { group_by: m is order_date.month; aggregate: aov }
@@ -3091,7 +3094,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "cumsum(aov)", name: v}]}
+              metrics: [{metric: "cumsum(aov)", alias: v}]}
 
   - id: Q17c
     row: Q17
@@ -3102,7 +3105,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "aov_chg", name: v}]}
+              metrics: [{metric: "aov_chg", alias: v}]}
 
   - id: Q17d
     row: Q17
@@ -3111,7 +3114,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "aov * 1.1", name: v}]}
+              metrics: [{metric: "aov * 1.1", alias: v}]}
     malloy:
       note: in calculate; the same expression works under aggregate
       query: |
@@ -3143,7 +3146,7 @@ probes:
     truth_sql: select c.tier, sum(o.amount) / count(o.id) from customers c join orders o on o.customer_id = c.id group by 1
     compare: {keys: [tier], values: [v]}
     slayer:
-      query: {population: customers, dimensions: [tier], metrics: [{expression: "orders.aov", name: v}]}
+      query: {population: customers, dimensions: [tier], metrics: [{metric: "orders.aov", alias: v}]}
 
   # ------------------------------------------------------------------ Q18 time-bucket safety
   - id: Q18-create
@@ -3155,17 +3158,17 @@ probes:
       create_dataset_from_query:
         name: monthly_rev_created
         query: {population: orders, dimensions: [status], time_dimensions: [{field: order_date, granularity: month}],
-                metrics: [{expression: "sum(amount)", name: rev}]}
+                metrics: [{metric: "sum(amount)", alias: rev}]}
       query: {population: monthly_rev_created, time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{expression: "sum(rev)", name: v}]}
+              metrics: [{metric: "sum(rev)", alias: v}]}
 
   - id: Q18a
     row: Q18
     title: a day breakdown of a month-truncated field
     slayer:
       query: {population: monthly_rev, time_dimensions: [{field: order_date, granularity: day}],
-              metrics: [{expression: "sum(rev)", name: v}]}
-      expect: {error: TimeDimensionColumnError}
+              metrics: [{metric: "sum(rev)", alias: v}]}
+      expect: {error: TimeDimensionFieldError}
     metricflow:
       query:
         metrics: [revenue]
@@ -3228,8 +3231,8 @@ probes:
     title: a week breakdown of a month-truncated field
     slayer:
       query: {population: monthly_rev, time_dimensions: [{field: order_date, granularity: week}],
-              metrics: [{expression: "sum(rev)", name: v}]}
-      expect: {error: TimeDimensionColumnError}
+              metrics: [{metric: "sum(rev)", alias: v}]}
+      expect: {error: TimeDimensionFieldError}
     metricflow:
       query:
         metrics: [revenue]
@@ -3243,7 +3246,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: monthly_rev, time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{expression: "sum(rev)", name: v}]}
+              metrics: [{metric: "sum(rev)", alias: v}]}
     metricflow:
       query:
         metrics: [revenue]
@@ -3259,7 +3262,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: monthly_rev, dimensions: [order_date], filter: ["order_date >= '2025-01-15'"],
-              metrics: [{expression: "sum(rev)", name: v}]}
+              metrics: [{metric: "sum(rev)", alias: v}]}
     metricflow:
       query:
         metrics: [revenue]
@@ -3277,7 +3280,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: monthly_rev, time_dimensions: [{field: order_date, granularity: month}],
-              metrics: [{expression: "change(sum(rev))", name: v}]}
+              metrics: [{metric: "change(sum(rev))", alias: v}]}
 
   - id: Q18-cube-day
     row: Q18
@@ -3392,8 +3395,8 @@ probes:
     slayer:
       query: {population: orders, dimensions: [customers.regions.name, customers.name],
               filter: ["rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 2"],
-              metrics: [{expression: "sum(amount, partition_by=customers.regions.name)", name: region_rev},
-                         {expression: "sum(amount)", name: cust_rev}]}
+              metrics: [{metric: "sum(amount, partition_by=customers.regions.name)", alias: region_rev},
+                         {metric: "sum(amount)", alias: cust_rev}]}
       keys: [customers.regions.name, customers.name]
       values: [region_rev, cust_rev]
     malloy:
@@ -3416,7 +3419,7 @@ probes:
     slayer:
       query: {population: orders, dimensions: [customers.regions.name, customers.name],
               filter: ["rank(count(*), partition_by=customers.regions.name, direction='desc') <= 2"],
-              metrics: [{expression: "count(*)", name: n}]}
+              metrics: [{metric: "count(*)", alias: n}]}
 
   - id: Q24-sibling-customers
     row: Q24
@@ -3458,7 +3461,7 @@ probes:
     contrast_sql: select avg(c.credit) from orders o join customers c on o.customer_id = c.id
     compare: {values: [v]}
     slayer:
-      query: {population: orders, metrics: [{expression: "avg(customers.credit)", name: v}]}
+      query: {population: orders, metrics: [{metric: "avg(customers.credit)", alias: v}]}
 
   - id: Q25-measure-on-orders
     row: Q25
@@ -3467,8 +3470,8 @@ probes:
     contrast_sql: select avg(c.credit) from orders o join customers c on o.customer_id = c.id
     compare: {values: [v]}
     slayer:
-      query: {population: {source_name: orders, metrics: [{name: avg_credit, expression: "avg(customers.credit)"}]},
-              metrics: [{expression: avg_credit, name: v}]}
+      query: {population: orders, extensions: [{dataset: orders, metrics: [{name: avg_credit, expression: "avg(customers.credit)"}]}],
+              metrics: [{metric: avg_credit, alias: v}]}
 
   - id: Q25-customers-with-orders
     row: Q25
@@ -3477,7 +3480,7 @@ probes:
     contrast_sql: select avg(credit) from customers
     compare: {values: [v]}
     slayer:
-      query: {population: orders, filter: ["id is not null"], metrics: [{expression: "avg(customers.credit)", name: v}]}
+      query: {population: orders, filter: ["id is not null"], metrics: [{metric: "avg(customers.credit)", alias: v}]}
       expect: {warning: semi_join_pushed}
     malloy:
       query: |
@@ -3491,7 +3494,7 @@ probes:
     compare: {values: [v]}
     slayer:
       query: {population: {source_name: orders, fields: [{name: credit, sql: customers.credit, datatype: number}]},
-              metrics: [{expression: "avg(credit)", name: v}]}
+              metrics: [{metric: "avg(credit)", alias: v}]}
     malloy:
       query: |
         run: orders -> { aggregate: v is source.avg(customers.credit) }
@@ -3504,7 +3507,7 @@ probes:
     truth_sql: select name, (select count(*) from events) from customers
     compare: {keys: [name], values: [n]}
     slayer:
-      query: {population: customers, dimensions: [name], metrics: [{expression: "count(events.id)", name: n}]}
+      query: {population: customers, dimensions: [name], metrics: [{metric: "count(events.id)", alias: n}]}
       expect: {warning: unrelated_dataset}
     malloy:
       query: |
@@ -3524,7 +3527,7 @@ probes:
     truth_sql: select (select count(*) from events) / (select count(*) from customers)
     compare: {values: [r]}
     slayer:
-      query: {population: customers, metrics: [{expression: "count(events.id) / count(*)", name: r}]}
+      query: {population: customers, metrics: [{metric: "count(events.id) / count(*)", alias: r}]}
       expect: {warning: unrelated_dataset}
     malloy:
       query: |
@@ -3545,7 +3548,7 @@ probes:
     truth_sql: select (select count(*) from events), (select count(*) from customers)
     compare: {values: [e, c]}
     slayer:
-      query: {population: customers, metrics: [{expression: "count(events.id)", name: e}, {expression: "count(*)", name: c}]}
+      query: {population: customers, metrics: [{metric: "count(events.id)", alias: e}, {metric: "count(*)", alias: c}]}
       expect: {warning: unrelated_dataset}
     malloy:
       query: |
@@ -3571,7 +3574,7 @@ probes:
     compare: {keys: [mo], values: [v, n]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2025-01-01", "2025-03-31"]}],
-              metrics: [{expression: "sum(orders.amount)", name: v}, {expression: "coalesce(count(events.id), 0)", name: n}]}
+              metrics: [{metric: "sum(orders.amount)", alias: v}, {metric: "coalesce(count(events.id), 0)", alias: n}]}
       keys: [timestamp]
       note: no unrelated_dataset warning; events reach the spine through event_ts
     malloy:
@@ -3613,7 +3616,7 @@ probes:
     slayer:
       query: {dimensions: [customers.regions.name],
               time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2025-01-01", "2025-03-31"]}],
-              metrics: [{expression: "coalesce(count(events.id), 0)", name: n}]}
+              metrics: [{metric: "coalesce(count(events.id), 0)", alias: n}]}
       keys: [customers.regions.name, timestamp]
       expect: {warning: unrelated_dataset}
     malloy:
@@ -3642,7 +3645,7 @@ probes:
     row: Q26
     title: grouping by an events field next to a customer field is a typed error
     slayer:
-      query: {population: customers, dimensions: [name, events.amount], metrics: [{expression: "count(*)", name: n}]}
+      query: {population: customers, dimensions: [name, events.amount], metrics: [{metric: "count(*)", alias: n}]}
       expect: {error: UnrelatedDatasetError}
 
   - id: Q26-cube-fake-join
@@ -3688,7 +3691,7 @@ probes:
     compare: {keys: [name], values: [c]}
     slayer:
       query: {population: customers, dimensions: [name], filter: ["tags.value = 'vip'"],
-              metrics: [{expression: "sum(credit)", name: c}]}
+              metrics: [{metric: "sum(credit)", alias: c}]}
     malloy:
       query: |
         run: customers -> { where: tags.each = 'vip'; group_by: name; aggregate: c is credit.sum() }
@@ -3733,7 +3736,7 @@ probes:
     contrast_sql: select t, count(*) from customers c, unnest(c.tags) u(t) where t is not null group by 1
     compare: {keys: [tags.value], values: [n]}
     slayer:
-      query: {population: customers, dimensions: [tags.value], metrics: [{expression: "count(*)", name: n}]}
+      query: {population: customers, dimensions: [tags.value], metrics: [{metric: "count(*)", alias: n}]}
       options: {to_many_handling: associate}
       expect: {warning: associated}
     malloy:
@@ -3761,7 +3764,7 @@ probes:
     contrast_sql: select t, count(distinct c.id) from customers c, unnest(c.tags) u(t) where t is not null group by 1
     compare: {keys: [tags], values: [n]}
     slayer:
-      query: {population: customers, dimensions: [tags], metrics: [{expression: "count(*)", name: n}]}
+      query: {population: customers, dimensions: [tags], metrics: [{metric: "count(*)", alias: n}]}
       expect: {error: ListTypeError}
     malloy:
       query: |
@@ -3789,7 +3792,7 @@ probes:
     compare: {keys: [regions.name], values: [d, n]}
     slayer:
       query: {population: customers, dimensions: [regions.name],
-              metrics: [{expression: "count_distinct(tags.value)", name: d}, {expression: "count(*)", name: n}]}
+              metrics: [{metric: "count_distinct(tags.value)", alias: d}, {metric: "count(*)", alias: n}]}
     malloy:
       query: |
         run: customers -> { group_by: name is regions.name; aggregate: d is count(tags.each), n is count() }
@@ -3820,7 +3823,7 @@ probes:
       where t is not null
     compare: {keys: [regions.name, tag]}
     slayer:
-      query: {population: customers, dimensions: [regions.name, {expression: tags.value, name: tag}]}
+      query: {population: customers, dimensions: [regions.name, {field: tags.value, alias: tag}]}
     malloy:
       query: |
         run: customers -> { group_by: name is regions.name; nest: tag_set is { where: tags.each != null; group_by: tag is tags.each } }
@@ -3845,7 +3848,7 @@ probes:
     truth_sql: select count(*), sum(amount) from orders o join customers c on o.customer_id = c.id where c.region_id = 1
     compare: {values: [n, rev]}
     slayer:
-      query: {population: orders, metrics: [{expression: "count(*)", name: n}, {expression: "sum(amount)", name: rev}]}
+      query: {population: orders, metrics: [{metric: "count(*)", alias: n}, {metric: "sum(amount)", alias: rev}]}
       options: {policy: north}
 
   - id: C3b
@@ -3854,7 +3857,7 @@ probes:
     truth_sql: select 0
     compare: {values: [n]}
     slayer:
-      query: {population: orders, filter: ["customers.region_id = 2"], metrics: [{expression: "count(*)", name: n}]}
+      query: {population: orders, filter: ["customers.region_id = 2"], metrics: [{metric: "count(*)", alias: n}]}
       options: {policy: north}
 
   - id: C3c
@@ -3868,7 +3871,7 @@ probes:
     compare: {keys: [name], values: [total_credit, rev]}
     slayer:
       query: {population: regions, dimensions: [name],
-              metrics: [{expression: "sum(customers.credit)", name: total_credit}, {expression: "sum(customers.orders.amount)", name: rev}]}
+              metrics: [{metric: "sum(customers.credit)", alias: total_credit}, {metric: "sum(customers.orders.amount)", alias: rev}]}
       options: {policy: north}
 
   - id: C3d
@@ -3879,15 +3882,15 @@ probes:
     compare: {values: [t, n]}
     slayer:
       query:
-        - {name: s1, population: orders, dimensions: [customer_id], metrics: [{expression: "sum(amount)", name: rev}]}
-        - {population: s1, metrics: [{expression: "sum(rev)", name: t}, {expression: "count(*)", name: n}]}
+        - {name: s1, population: orders, dimensions: [customer_id], metrics: [{metric: "sum(amount)", alias: rev}]}
+        - {population: s1, metrics: [{metric: "sum(rev)", alias: t}, {metric: "count(*)", alias: n}]}
       options: {policy: north}
 
   - id: C3e
     row: C3
     title: a table the policy does not cover (the orders_flat view) fails closed
     slayer:
-      query: {population: orders_flat, metrics: [{expression: "count(*)", name: n}]}
+      query: {population: orders_flat, metrics: [{metric: "count(*)", alias: n}]}
       options: {policy: north}
       expect: {error: ForcedFilterError}
 
@@ -3897,7 +3900,7 @@ probes:
     truth_sql: select sum(amount) from orders o join customers c on o.customer_id = c.id where c.region_id = 1
     compare: {values: [v]}
     slayer:
-      query: {population: monthly_rev, metrics: [{expression: "sum(rev)", name: v}]}
+      query: {population: monthly_rev, metrics: [{metric: "sum(rev)", alias: v}]}
       options: {policy: north}
 
   # ------------------------------------------------------------------ C9 portable expression library (SLayer)
@@ -3909,7 +3912,7 @@ probes:
     compare: {keys: [name], values: [initial]}
     slayer:
       query: {population: customers, distinct_dimension_values: false, filter: ["name ~ '^[A-E]'"],
-              dimensions: [name, {expression: "regexp_extract(name, '^([A-Z])[a-z]+$', 1)", name: initial}]}
+              dimensions: [name, {field: "regexp_extract(name, '^([A-Z])[a-z]+$', 1)", alias: initial}]}
 
   - id: C9-slayer-strings
     row: C9
@@ -3919,8 +3922,8 @@ probes:
     compare: {keys: [name], values: [short, tail]}
     slayer:
       query: {population: customers, distinct_dimension_values: false,
-              dimensions: [name, {expression: "lpad(left(name, -1), 4, '.')", name: short},
-                           {expression: "split_part(city, 'o', -1)", name: tail}]}
+              dimensions: [name, {field: "lpad(left(name, -1), 4, '.')", alias: short},
+                           {field: "split_part(city, 'o', -1)", alias: tail}]}
 
   - id: C9-slayer-json
     row: C9
@@ -3929,9 +3932,9 @@ probes:
     compare: {keys: [name], values: [city_json, city_len]}
     slayer:
       query: {population: customers, distinct_dimension_values: false,
-              dimensions: [name, {expression: "'{\"c\": \"' || city || '\"}' ->> 'c'", name: city_json},
-                           {expression: "json_value('{\"n\": ' || length(city) || '}', '$.n' RETURNING INT)",
-                            name: city_len}]}
+              dimensions: [name, {field: "'{\"c\": \"' || city || '\"}' ->> 'c'", alias: city_json},
+                           {field: "json_value('{\"n\": ' || length(city) || '}', '$.n' RETURNING INT)",
+                            alias: city_len}]}
 
   - id: C9-slayer-text-number
     row: C9
@@ -3949,7 +3952,7 @@ probes:
     compare: {keys: [name], values: [g]}
     slayer:
       query: {population: customers, distinct_dimension_values: false,
-              dimensions: [name, {expression: "greatest(nullif(discount, 0) * 100, 250)", name: g}]}
+              dimensions: [name, {field: "greatest(nullif(discount, 0) * 100, 250)", alias: g}]}
 
   # ------------------------------------------------------------------ C11 curated semantic surfaces (SLayer)
   - id: C11-facade-listing
@@ -3960,13 +3963,13 @@ probes:
         - &facade
           tool: create_dataset
           args: {name: sales, sql_table: orders, data_source: probe,
-                 fields: [{name: id, datatype: number, primary_key: true}, {name: customer_id, datatype: number, hidden: true},
-                           {name: amount, datatype: number}, {name: status, datatype: string}]}
+                 fields: [{name: id, datatype: Float, primary_key: true}, {name: customer_id, datatype: Float, hidden: true},
+                           {name: amount, datatype: Float}, {name: status, datatype: String}]}
         - &facade_edge
           tool: edit_dataset
           args: {dataset_name: sales,
                  relationships: [{name: buyer, to: customers, from_columns: [customer_id], to_columns: [id], cardinality: many_to_one}],
-                 fields: [{name: region, sql: buyer.regions.name, datatype: string}, {name: customer, sql: buyer.name, datatype: string}],
+                 fields: [{name: region, sql: buyer.regions.name, datatype: String}, {name: customer, sql: buyer.name, datatype: String}],
                  metrics: [{name: revenue, expression: "sum(amount)"}]}
         - &hide_orders {tool: edit_dataset, args: {dataset_name: orders, hidden: true}}
         - &hide_customers {tool: edit_dataset, args: {dataset_name: customers, hidden: true}}
@@ -4462,7 +4465,7 @@ probes:
     slayer:
       query: {population: orders,
               time_dimensions: [{field: order_date, granularity: month, date_range: "last 3 months"}],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: Q20-slayer-ago
     row: Q20
@@ -4471,7 +4474,7 @@ probes:
     compare: {keys: [status], values: [v]}
     slayer:
       query: {population: orders, dimensions: [status], filter: ["order_date in '2 months ago'"],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: Q20-slayer-this-year
     row: Q20
@@ -4480,7 +4483,7 @@ probes:
     compare: {keys: [status], values: [v]}
     slayer:
       query: {population: orders, dimensions: [status], filter: ["order_date in 'this year'"],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: Q20-slayer-quarter-literal
     row: Q20
@@ -4489,7 +4492,7 @@ probes:
     compare: {keys: [status], values: [v]}
     slayer:
       query: {population: orders, dimensions: [status], filter: ["order_date = '2025-Q1'"],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: Q20-slayer-period-upper
     row: Q20
@@ -4498,7 +4501,7 @@ probes:
     compare: {keys: [status], values: [v]}
     slayer:
       query: {population: orders, dimensions: [status], filter: ["order_date <= '2024-12'"],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: Q20-slayer-open-ended
     row: Q20
@@ -4508,7 +4511,7 @@ probes:
     slayer:
       query: {population: orders,
               time_dimensions: [{field: order_date, granularity: month, date_range: ["2025-05", null]}],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   # ------------------------------------------------------------------ Q23 saved-query refinement
   # monthly_rev: status x month(order_date), rev = sum(amount); avg_customer_rev: two stages.
@@ -4572,7 +4575,7 @@ probes:
     title: a same-named metric with another expression is a typed conflict
     slayer:
       run_by_name: monthly_rev
-      refine: {metrics: [{expression: "count(*)", name: rev}]}
+      refine: {metrics: [{metric: "count(*)", alias: rev}]}
       expect: {error: RefinementConflictError}
 
   # ------------------------------------------------------------------ C20 gap filling (time spine)
@@ -4586,7 +4589,7 @@ probes:
     compare: {keys: [timestamp], values: [n, v]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "count(orders.id)", name: n}, {expression: "sum(orders.amount)", name: v}]}
+              metrics: [{metric: "count(orders.id)", alias: n}, {metric: "sum(orders.amount)", alias: v}]}
 
   - id: C20-spine-fill-coalesce
     row: C20
@@ -4598,14 +4601,14 @@ probes:
     compare: {keys: [timestamp], values: [v]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "coalesce(sum(orders.amount), 0)", name: v}]}
+              metrics: [{metric: "coalesce(sum(orders.amount), 0)", alias: v}]}
 
   - id: C20-spine-no-lower-bound
     row: C20
     title: a spine query without a lower bound is a typed error
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month}],
-              metrics: [{expression: "sum(orders.amount)", name: v}]}
+              metrics: [{metric: "sum(orders.amount)", alias: v}]}
       expect: {error: TimeSpineError}
 
   - id: C20-spine-per-group
@@ -4622,7 +4625,7 @@ probes:
     slayer:
       query: {dimensions: [customers.regions.name],
               time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "sum(orders.amount)", name: v}]}
+              metrics: [{metric: "sum(orders.amount)", alias: v}]}
 
   - id: C20-spine-fact-filter
     row: C20
@@ -4634,7 +4637,7 @@ probes:
     compare: {keys: [timestamp], values: [v]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              filter: ["orders.status = 'bad'"], metrics: [{expression: "sum(orders.amount)", name: v}]}
+              filter: ["orders.status = 'bad'"], metrics: [{metric: "sum(orders.amount)", alias: v}]}
 
   - id: C20-spine-change
     row: C20
@@ -4647,7 +4650,7 @@ probes:
     compare: {keys: [timestamp], values: [c]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "change(sum(orders.amount))", name: c}]}
+              metrics: [{metric: "change(sum(orders.amount))", alias: c}]}
 
   - id: C20-spine-cumsum
     row: C20
@@ -4660,7 +4663,7 @@ probes:
     compare: {keys: [timestamp], values: [c]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "cumsum(coalesce(sum(orders.amount), 0))", name: c}]}
+              metrics: [{metric: "cumsum(coalesce(sum(orders.amount), 0))", alias: c}]}
 
   - id: C20-spine-consecutive
     row: C20
@@ -4674,7 +4677,7 @@ probes:
     compare: {keys: [timestamp], values: [streak]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "consecutive_periods(count(orders.id) > 0)", name: streak}]}
+              metrics: [{metric: "consecutive_periods(count(orders.id) > 0)", alias: streak}]}
 
   - id: C20-spine-window
     row: C20
@@ -4687,7 +4690,7 @@ probes:
     compare: {keys: [timestamp], values: [w]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "sum(orders.amount, window='2m')", name: w}]}
+              metrics: [{metric: "sum(orders.amount, window='2m')", alias: w}]}
 
   - id: C20-spine-lag
     row: C20
@@ -4700,7 +4703,7 @@ probes:
     compare: {keys: [timestamp], values: [l]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "lag(sum(orders.amount))", name: l}]}
+              metrics: [{metric: "lag(sum(orders.amount))", alias: l}]}
 
   - id: C20-spine-stage
     row: C20
@@ -4711,8 +4714,8 @@ probes:
       query:
         - {name: monthly,
            time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-           metrics: [{expression: "sum(orders.amount)", name: o}]}
-        - {population: monthly, metrics: [{expression: "sum(o)", name: t}, {expression: "count(*)", name: months}]}
+           metrics: [{metric: "sum(orders.amount)", alias: o}]}
+        - {population: monthly, metrics: [{metric: "sum(o)", alias: t}, {metric: "count(*)", alias: months}]}
 
   # ------------------------------------------------------------------ C19 shared time axis across facts
   - id: C19-axis-two-facts
@@ -4730,7 +4733,7 @@ probes:
     compare: {keys: [timestamp], values: [o, r]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "sum(orders.amount)", name: o}, {expression: "sum(returns.amount)", name: r}]}
+              metrics: [{metric: "sum(orders.amount)", alias: o}, {metric: "sum(returns.amount)", alias: r}]}
 
   - id: C19-axis-two-facts-region
     row: C19
@@ -4749,7 +4752,7 @@ probes:
     slayer:
       query: {dimensions: [customers.regions.name],
               time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "sum(orders.amount)", name: o}, {expression: "sum(returns.amount)", name: r}]}
+              metrics: [{metric: "sum(orders.amount)", alias: o}, {metric: "sum(returns.amount)", alias: r}]}
 
   - id: C19-axis-ambiguous-route
     row: C19
@@ -4757,7 +4760,7 @@ probes:
     slayer:
       extra_datasets: [order_links.yaml]
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "count(order_links.id)", name: n}]}
+              metrics: [{metric: "count(order_links.id)", alias: n}]}
       expect: {error: order_links}
 
   - id: C19-calendar-model-parity
@@ -4772,7 +4775,7 @@ probes:
       extra_datasets: [calendar.yaml]
       query: {population: calendar, time_dimensions: [{field: day, granularity: month}],
               filter: ["orders.id is not null or returns.id is not null"],
-              metrics: [{expression: "sum(orders.amount)", name: o}, {expression: "sum(returns.amount)", name: r}]}
+              metrics: [{metric: "sum(orders.amount)", alias: o}, {metric: "sum(returns.amount)", alias: r}]}
 
   # ------------------------------------------------------------------ C14 custom granularities
   # Datasource granularities (run_slayer.py): fiscal_year = 12 months from 2024-04-01; quarter_hour = 15 minutes.
@@ -4785,7 +4788,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: fiscal_year}],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: C14-slayer-fiscal-year-shift
     row: C14
@@ -4797,7 +4800,7 @@ probes:
     compare: {keys: [order_date], values: [prev]}
     slayer:
       query: {population: orders, time_dimensions: [{field: order_date, granularity: fiscal_year}],
-              metrics: [{expression: "time_shift(sum(amount), -1, 'fiscal_year')", name: prev}]}
+              metrics: [{metric: "time_shift(sum(amount), -1, 'fiscal_year')", alias: prev}]}
 
   - id: C14-slayer-fiscal-year-spine
     row: C14
@@ -4812,7 +4815,7 @@ probes:
     compare: {keys: [timestamp], values: [o, r]}
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: fiscal_year, date_range: ["2024-01-01", "2025-06-30"]}],
-              metrics: [{expression: "sum(orders.amount)", name: o}, {expression: "sum(returns.amount)", name: r}]}
+              metrics: [{metric: "sum(orders.amount)", alias: o}, {metric: "sum(returns.amount)", alias: r}]}
 
   - id: C14-slayer-quarter-hour
     row: C14
@@ -4821,7 +4824,7 @@ probes:
     compare: {keys: [event_ts], values: [v]}
     slayer:
       query: {population: events, time_dimensions: [{field: event_ts, granularity: quarter_hour}],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
 
   - id: C14-slayer-quarter-hour-spine
     row: C14
@@ -4834,7 +4837,7 @@ probes:
     slayer:
       query: {time_dimensions: [{field: time_spine.timestamp, granularity: quarter_hour,
                                  date_range: ["2025-03-01 09:00:00", "2025-03-01 10:59:59"]}],
-              metrics: [{expression: "sum(events.amount)", name: v}]}
+              metrics: [{metric: "sum(events.amount)", alias: v}]}
 
   # ------------------------------------------------------------------ MetricFlow: shared axis and time-spine fill
   - id: C19-mf-two-facts
@@ -4933,8 +4936,8 @@ probes:
     truth_sql: select isodow(order_date), count(*) from orders group by 1
     compare: {keys: [dow], values: [n]}
     slayer:
-      query: {population: orders, dimensions: [{expression: "date_part('day_of_week', order_date)", name: dow}],
-              metrics: [{expression: "count(*)", name: n}]}
+      query: {population: orders, dimensions: [{field: "date_part('day_of_week', order_date)", alias: dow}],
+              metrics: [{metric: "count(*)", alias: n}]}
 
   - id: Q21-slayer-date-diff
     row: Q21
@@ -4943,7 +4946,7 @@ probes:
     compare: {keys: [status], values: [m]}
     slayer:
       query: {population: orders, dimensions: [status],
-              metrics: [{expression: "sum(date_diff('month', order_date, '2025-07-01'))", name: m}]}
+              metrics: [{metric: "sum(date_diff('month', order_date, '2025-07-01'))", alias: m}]}
 
   - id: Q21-slayer-date-add
     row: Q21
@@ -4953,8 +4956,8 @@ probes:
       where order_date between date '2025-01-01' and date '2025-03-31' group by 1
     compare: {keys: [due], values: [n]}
     slayer:
-      query: {population: orders, dimensions: [{expression: "date_add(order_date, 1, 'month')", name: due}],
-              filter: ["order_date in '2025-Q1'"], metrics: [{expression: "count(*)", name: n}]}
+      query: {population: orders, dimensions: [{field: "date_add(order_date, 1, 'month')", alias: due}],
+              filter: ["order_date in '2025-Q1'"], metrics: [{metric: "count(*)", alias: n}]}
 
   - id: Q21-slayer-interval
     row: Q21
@@ -4963,7 +4966,58 @@ probes:
     compare: {values: [v]}
     slayer:
       query: {population: orders, filter: ["order_date + interval(7, 'day') > '2025-06-25'"],
-              metrics: [{expression: "sum(amount)", name: v}]}
+              metrics: [{metric: "sum(amount)", alias: v}]}
+
+  # ------------------------------------------------------------------ C23 Ossie round trip (SLayer)
+  # Each exports the probe datasets with `slayer export-osi` and re-imports them into a fresh store.
+  - id: C23-ossie-roundtrip-models
+    row: C23
+    title: an unedited Ossie export re-imports to the same datasets
+    slayer:
+      osi_roundtrip: {}
+      expect: {same_datasets: true}
+
+  - id: C23-ossie-roundtrip-transform
+    row: C23
+    title: the transform aov_chg by month and region after the round trip
+    truth_sql: |
+      with a as (
+        select r.name region, date_trunc('month', o.order_date) as month, sum(o.amount) / count(*) aov, sum(o.amount) rev
+        from orders o left join customers c on o.customer_id = c.id left join regions r on c.region_id = r.id
+        group by 1, 2)
+      select x.region, x.month, (x.aov - y.aov) / y.aov, x.rev from a x
+      left join a y on y.region is not distinct from x.region and y.month = x.month - interval 1 month
+    compare: {keys: [regions.name, order_date], values: [chg, rev]}
+    slayer:
+      osi_roundtrip: {extensions: true}
+      query: {population: orders, dimensions: [customers.regions.name],
+              time_dimensions: [{field: order_date, granularity: month}],
+              metrics: [{metric: "aov_chg", alias: chg}, {metric: "sum(amount)", alias: rev}]}
+
+  - id: C23-ossie-roundtrip-query-backed
+    row: C23
+    title: the query-backed dataset monthly_rev after the round trip
+    truth_sql: select status, date_trunc('month', order_date), sum(amount) from orders group by 1, 2
+    compare: {keys: [status, order_date], values: [v]}
+    slayer:
+      osi_roundtrip: {extensions: true}
+      query: {population: monthly_rev, dimensions: [status],
+              time_dimensions: [{field: order_date, granularity: month}],
+              metrics: [{metric: "sum(rev)", alias: v}]}
+
+  - id: C23-ossie-report-extension
+    row: C23
+    title: the export report lists aov_chg as carried only in the SLAYER extension
+    slayer:
+      osi_roundtrip: {extensions: true}
+      expect: {contains: ["## extension_only (1)", "[info] aov_chg:"], lacks: ["[dropped]"]}
+
+  - id: C23-ossie-report-plain
+    row: C23
+    title: with --no-extensions the export report says aov_chg is not exported
+    slayer:
+      osi_roundtrip: {extensions: false}
+      expect: {contains: ["## slayer_only (1)", "[dropped] aov_chg:"], lacks: [extension_only]}
 
   # ------------------------------------------------------------------ C24-C29: MCP sessions (SLayer)
   # Each runs MCP tool calls on its own copy of the database; `setup` is what its storage starts with.
@@ -4977,7 +5031,7 @@ probes:
       steps:
         - {tool: create_datasource, args: {name: probe, type: duckdb, database: "{db_path}"}}
         - tool: query
-          args: {format: json, query: {population: orders, dimensions: [status], metrics: [{expression: "count(*)", name: n}]}}
+          args: {format: json, query: {population: orders, dimensions: [status], metrics: [{metric: "count(*)", alias: n}]}}
 
   - id: C24-mcp-help
     row: C24
@@ -5016,7 +5070,7 @@ probes:
         - tool: save_memory
           args:
             learning: Fulfilled revenue counts only orders with status ok.
-            linked_entities: {population: orders, metrics: [{expression: "sum(amount)"}], filter: ["status = 'ok'"]}
+            linked_entities: {population: orders, metrics: [{metric: "sum(amount)"}], filter: ["status = 'ok'"]}
         - {tool: search, args: {question: "fulfilled revenue", max_results: 3}}
       expect: {contains: ["Fulfilled revenue counts only", "status = 'ok'"]}
 
@@ -5051,7 +5105,7 @@ probes:
         - {tool: ingest_datasource, args: {datasource_name: probe}}
         - tool: query
           args: {format: json, query: {population: orders, dimensions: [customers.regions.name],
-                                       metrics: [{expression: "sum(amount)", name: revenue}]}}
+                                       metrics: [{metric: "sum(amount)", alias: revenue}]}}
 
   - id: C27-ingest-comments
     row: C27
@@ -5071,9 +5125,9 @@ probes:
     compare: {keys: [status], values: [net]}
     slayer:
       steps:
-        - {tool: edit_dataset, args: {dataset_name: orders, fields: [{name: net_amount, sql: "amount * 0.8", datatype: number}]}}
+        - {tool: edit_dataset, args: {dataset_name: orders, fields: [{name: net_amount, sql: "amount * 0.8", datatype: Float}]}}
         - tool: query
-          args: {format: json, query: {population: orders, dimensions: [status], metrics: [{expression: "sum(net_amount)", name: net}]}}
+          args: {format: json, query: {population: orders, dimensions: [status], metrics: [{metric: "sum(net_amount)", alias: net}]}}
 
   - id: C28-saved-measure-then-query
     row: C28
@@ -5086,7 +5140,7 @@ probes:
       steps:
         - {tool: edit_dataset, args: {dataset_name: orders, metrics: [{name: aov, expression: "sum(amount) / count(*)"}]}}
         - tool: query
-          args: {format: json, query: {population: orders, metrics: [{expression: aov, name: aov}],
+          args: {format: json, query: {population: orders, metrics: [{metric: aov, alias: aov}],
                                        time_dimensions: [{field: order_date, granularity: month,
                                                           date_range: ["2025-01-01", "2025-03-31"]}]}}
 
@@ -5116,8 +5170,8 @@ probes:
     compare: {keys: [channel], values: [v]}
     slayer:
       steps:
-        - {tool: edit_dataset, args: {dataset_name: events, fields: [{name: amount_x2, sql: "amount * 2", datatype: number}]}}
+        - {tool: edit_dataset, args: {dataset_name: events, fields: [{name: amount_x2, sql: "amount * 2", datatype: Float}]}}
         - {sql: "ALTER TABLE events ADD COLUMN channel VARCHAR DEFAULT 'web'"}
         - {tool: ingest_datasource, args: {datasource_name: probe}}
         - tool: query
-          args: {format: json, query: {population: events, dimensions: [channel], metrics: [{expression: "sum(amount_x2)", name: v}]}}
+          args: {format: json, query: {population: events, dimensions: [channel], metrics: [{metric: "sum(amount_x2)", alias: v}]}}

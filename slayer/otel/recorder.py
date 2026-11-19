@@ -29,9 +29,12 @@ SHUTDOWN_WAIT_SECONDS = 1.0
 _listener: OtelProbeListener | None = None
 _owned: list[Any] = []
 _log_handlers: list[logging.Handler] = []
-_lingering: list[threading.Thread] = []  # shutdowns that outlived their bound
+_lingering: list[threading.Thread] = []  # provider shutdowns still running
+_export_text_hidden = False
 # One lifecycle change at a time, so the listener, providers and handlers stay in step; re-entrant for start().
 _lifecycle = threading.RLock()
+# Guards _owned, _lingering and the export-text redaction, which shutdown threads also update.
+_redaction = threading.Lock()
 
 
 def _locked(fn: Callable[P, R]) -> Callable[P, R]:
@@ -63,7 +66,7 @@ def is_active() -> bool:
 @_locked
 def start() -> None:
     """Activate in a process started by the ``slayer`` CLI, if ``SLAYER_OTEL=on``."""
-    global _owned, _log_handlers
+    global _owned, _log_handlers, _export_text_hidden
     if _listener is not None or not settings.enabled():
         return
     try:
@@ -71,10 +74,14 @@ def start() -> None:
     except ImportError:
         logger.debug("otel: SLAYER_OTEL is on but the otel extra is missing; pip install 'motley-slayer[otel]'")
         return
+    reset()  # a start after uninstrument() closes the previous providers and handlers first
     content = settings.capture_content()
     configured = exporters.configure()
-    if configured.owned:
-        logs.hide_export_text()  # our exporters' failure logs can quote the endpoint URL
+    with _redaction:
+        _owned = configured.owned
+        if _owned:
+            logs.hide_export_text()  # our exporters' failure logs can quote the endpoint URL
+            _export_text_hidden = True
     try:
         if configured.logger_provider is not None:
             _log_handlers = logs.attach(logger_provider=configured.logger_provider, full=content)
@@ -85,10 +92,8 @@ def start() -> None:
         )
     except Exception:
         _detach_logs()
-        if exporters.shutdown_all(configured.owned):
-            logs.show_export_text()
+        _close_owned()
         raise
-    _owned = configured.owned
 
 
 @_locked
@@ -122,37 +127,76 @@ def shutdown() -> None:
 @_locked
 def reset() -> None:
     """Like :func:`shutdown`, but errors propagate: remove the listener, then close the owned providers."""
-    global _owned
     uninstrument()
     _detach_logs()
-    providers, _owned = _owned, []
-    if close_providers(providers) and providers:  # a shutdown still running may still log the URL
-        from slayer.otel import logs  # ALLOW(import-not-top): optional extra
+    _close_owned()
 
-        logs.show_export_text()
+
+def _close_owned() -> None:
+    global _owned
+    with _redaction:  # the providers move from owned to pending in one step
+        providers, _owned = _owned, []
+        workers = _pending_shutdowns(providers)
+    _await_shutdowns(workers)
 
 
 def close_providers(providers: list[Any]) -> bool:
     """Shut each provider down in its own thread, so a slow backend delays no other signal's final batch.
 
-    Returns whether no shutdown, of this call or an earlier one, is still running.
+    Returns whether no shutdown, of this call or an earlier one, is still pending.
     """
+    with _redaction:
+        workers = _pending_shutdowns(providers)
+    return _await_shutdowns(workers)
+
+
+def _pending_shutdowns(providers: list[Any]) -> list[threading.Thread]:
+    """One shutdown thread per provider, counted in ``_lingering`` until it ends; holds ``_redaction``."""
     workers = [
         threading.Thread(target=_shutdown_one, kwargs={"provider": provider}, name="slayer-otel-shutdown", daemon=True)
         for provider in providers
     ]
-    for worker in workers:
-        worker.start()
+    _lingering.extend(workers)
+    return workers
+
+
+def _await_shutdowns(workers: list[threading.Thread]) -> bool:
     deadline = time.monotonic() + SHUTDOWN_WAIT_SECONDS
-    for worker in workers:
-        worker.join(timeout=max(0.0, deadline - time.monotonic()))
-    _lingering[:] = [worker for worker in (*_lingering, *workers) if worker.is_alive()]
-    return not _lingering
+    with _redaction:  # one starter at a time; a worker an earlier call could not start gets another try
+        started = [worker for worker in _lingering if worker.ident is None and _started(worker)]
+    for worker in dict.fromkeys([*workers, *started]):
+        if worker.ident is not None:
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+    with _redaction:
+        _show_export_text_when_idle()
+        return not _lingering
+
+
+def _started(worker: threading.Thread) -> bool:
+    try:
+        worker.start()
+    except RuntimeError:  # no thread to spare: its provider stays open, and pending
+        return False
+    return True
 
 
 def _shutdown_one(*, provider: Any) -> None:
     with contextlib.suppress(Exception):
         provider.shutdown()
+    with _redaction:
+        with contextlib.suppress(ValueError):
+            _lingering.remove(threading.current_thread())
+        _show_export_text_when_idle()
+
+
+def _show_export_text_when_idle() -> None:
+    """Undo :func:`start`'s redaction once no owned provider is open or still shutting down; holds ``_redaction``."""
+    global _export_text_hidden
+    if _export_text_hidden and not _owned and not _lingering:
+        from slayer.otel import logs  # ALLOW(import-not-top): optional extra
+
+        logs.show_export_text()
+        _export_text_hidden = False
 
 
 def _detach_logs() -> None:

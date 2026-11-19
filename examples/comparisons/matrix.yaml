@@ -633,7 +633,7 @@ rows:
   origin: all
   slayer:
     verdict: 'yes'
-    text: "8 engines tested live, 4 more by SQL generation."
+    text: "9 engines tested live, 4 more by SQL generation."
   malloy:
     verdict: 'yes'
     text: 8 engines plus files via DuckDB.
@@ -994,8 +994,10 @@ rows:
   intent: Import and export semantic definitions in a shared format.
   origin: MetricFlow
   slayer:
-    verdict: partial
-    text: "Imports OSI, dbt and Cube; no export."
+    verdict: 'yes'
+    how: "`slayer export-osi`"
+    text: "Writes an Ossie document that re-imports unedited to the same datasets (verified); imports Ossie, dbt and Cube."
+    caveat: "What Ossie can't express (transforms, windowed and multi-dataset metrics) travels in a SLayer extension and is reported (verified)."
   malloy:
     verdict: 'no'
     text: None.
@@ -1005,7 +1007,7 @@ rows:
   metricflow:
     verdict: 'yes'
     text: "Writes an Open Semantic Interchange document (verified); cumulative and conversion metrics can't be represented."
-  comment: OSI has been renamed Apache Ossie.
+  comment: "SLayer and MetricFlow write Ossie; OSI has been renamed Apache Ossie."
 - id: C24
   group: Beyond query semantics
   name: Built-in MCP server
