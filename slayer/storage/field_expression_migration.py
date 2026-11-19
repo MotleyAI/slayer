@@ -2,7 +2,7 @@
 a sibling field is written as that field's path. A field's ``sql`` converts on load (``slayer.core.models``,
 ``slayer.sql.definitions``); ``source.`` paths are respelled in the storage load pipeline, which knows the peers."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
 from slayer.core.syntax import respell_path_heads
@@ -24,39 +24,41 @@ def _source_hop_target(relationships: list[Any]) -> str | None:
     return None
 
 
-def _respelled_texts(data: dict, *, mode_b: Callable[[str], str], native: Callable[[str], str]) -> list[tuple[str, dict]]:
-    """Rewrite ``data``'s definitions in place; ``(label, changed?)`` pairs name each definition that changed."""
-    changed: list[tuple[str, dict]] = []
+def _field_definitions(field: dict) -> Iterator[tuple[dict, str, bool]]:
+    """``(owner, key, is_mode_b)`` for each definition text of one stored field."""
+    yield field, "sql", False
+    yield field, "filter", False
+    expression = field.get("expression")
+    if not isinstance(expression, dict):
+        yield field, "expression", True
+        return
+    yield expression, "sql", True
+    yield from ((entry, "expression", False) for entry in expression.get("dialects") or [] if isinstance(entry, dict))
 
-    def apply(owner: dict, key: str, fn: Callable[[str], str], label: str) -> None:
-        text = owner.get(key)
-        if isinstance(text, str) and (new := fn(text)) != text:
-            owner[key] = new
-            changed.append((label, owner))
 
-    for field in data.get("fields") or []:
-        if not isinstance(field, dict):
-            continue
+def _definitions(data: dict) -> Iterator[tuple[dict, str, bool, str]]:
+    """``(owner, key, is_mode_b, label)`` for each definition text of a stored dataset; filters are held by index."""
+    for field in (f for f in data.get("fields") or [] if isinstance(f, dict)):
         label = f"field {field.get('name')!r}"
-        apply(field, "sql", native, label)
-        apply(field, "filter", native, label)
-        expression = field.get("expression")
-        if isinstance(expression, dict):
-            apply(expression, "sql", mode_b, label)
-            for entry in expression.get("dialects") or []:
-                if isinstance(entry, dict):
-                    apply(entry, "expression", native, label)
-        else:
-            apply(field, "expression", mode_b, label)
-    for metric in data.get("metrics") or []:
-        if isinstance(metric, dict):
-            apply(metric, "expression", mode_b, f"metric {metric.get('name')!r}")
+        yield from ((owner, key, mode_b, label) for owner, key, mode_b in _field_definitions(field))
+    for metric in (m for m in data.get("metrics") or [] if isinstance(m, dict)):
+        yield metric, "expression", True, f"metric {metric.get('name')!r}"
     filters = data.get("filters")
     if isinstance(filters, list):
         holder = {str(i): f for i, f in enumerate(filters)}
-        for key in list(holder):
-            apply(holder, key, native, f"dataset filter {holder[key]!r}")
+        for key in holder:
+            yield holder, key, False, f"dataset filter {holder[key]!r}"
         data["filters"] = list(holder.values())
+
+
+def _respelled_texts(data: dict, *, mode_b: Callable[[str], str], native: Callable[[str], str]) -> list[tuple[str, dict]]:
+    """Rewrite ``data``'s definitions in place; ``(label, owner)`` pairs name each definition that changed."""
+    changed: list[tuple[str, dict]] = []
+    for owner, key, is_mode_b, label in _definitions(data):
+        text = owner.get(key)
+        if isinstance(text, str) and (new := (mode_b if is_mode_b else native)(text)) != text:
+            owner[key] = new
+            changed.append((label, owner))
     return changed
 
 

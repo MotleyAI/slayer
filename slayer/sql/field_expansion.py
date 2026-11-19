@@ -7,7 +7,7 @@ runs during binding/planning, so the SQL generator never sees unresolved field r
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Dict, List, Optional, Protocol, Set, Tuple
 
 import sqlglot
@@ -160,8 +160,9 @@ def resolve_ref_target(
     qualifiers: Tuple[str, ...],
     source_dataset: SlayerDataset,
     datasets_by_name: DatasetsByName,
+    quoted: Sequence[bool] = (),
 ) -> Optional[SlayerDataset]:
-    """Resolve a Mode-A qualifier chain to its target dataset for best-effort
+    """Resolve a Mode-A qualifier chain (``quoted`` flags each quoted hop) to its target dataset for best-effort
     save-time inspectors (schema-drift cascade, field-dependency cycle walk).
 
     Exact-name-first: an empty chain or the host's own name → the host; a single
@@ -174,8 +175,9 @@ def resolve_ref_target(
     quals = drop_root_hop(qualifiers, source_dataset.spelling, head_quoted=True)
     if not quals:
         return source_dataset
+    flags = tuple(quoted)[len(qualifiers) - len(quals):]
     try:
-        walked = walk_terminal(root=source_dataset, path=quals, datasets_by_name=datasets_by_name)
+        walked = walk_terminal(root=source_dataset, path=quals, datasets_by_name=datasets_by_name, quoted=flags)
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
     return walked[0] if walked is not None else None

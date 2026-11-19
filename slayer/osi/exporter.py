@@ -451,15 +451,18 @@ class _Exporter:
         if not isinstance(tree, Expression):
             return None
         root = root_scope_field_ids(parsed=tree)
-        for col in list(tree.find_all(exp.Column)):
-            if id(col) not in root or not col.table:
-                continue
-            ref = dataset.get_field(col.name) if col.table == dataset.name and not col.args.get("db") else None
-            inner = self._portable(dataset, ref, seen=seen | {field.name}) if ref is not None else None
+        paths = [col for col in tree.find_all(exp.Column) if id(col) in root and col.table]
+        for col in paths:
+            inner = self._portable_path(dataset, col, seen=seen | {field.name})
             if inner is None:
                 return None
             col.replace(exp.Paren(this=sqlglot.parse_one(inner, read=PORTABLE_READER)))
         return tree.sql(dialect=PORTABLE_READER)
+
+    def _portable_path(self, dataset: SlayerDataset, col: exp.Column, *, seen: frozenset[str]) -> str | None:
+        """The portable form of the field of ``dataset`` that path ``col`` names, else ``None``."""
+        ref = dataset.get_field(col.name) if col.table == dataset.name and not col.args.get("db") else None
+        return self._portable(dataset, ref, seen=seen) if ref is not None else None
 
     def _field(self, ds: _Dataset, field: DatasetField, tree: exp.Expr) -> dict[str, Any]:
         stored = ds.fields[field.name]

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import itertools
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, Optional, TypeVar
 
 import sqlglot
@@ -27,6 +27,7 @@ from slayer.core.enums import DataType, RelationshipCardinality, finer_datatype
 from slayer.core.field_expression import OSSIE_SQL, DialectEntry, ExpressionObject, portable_text, unquoted_identifier
 from slayer.core.field_expression import Expression as FieldExpression
 from slayer.core.errors import (
+    AmbiguousReferenceError,
     AmbiguousRelationshipPathError,
     UnknownReferenceError,
     UnresolvableDimensionRelationshipError,
@@ -35,7 +36,7 @@ from slayer.core.errors import (
 from slayer.core.syntax import parse_expr
 from slayer.core.relationship_walker import resolve_hop
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset, relationship_key_error
-from slayer.core.names import name_taken
+from slayer.core.names import match_name, name_taken
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.binding import bind_dataset_expression
@@ -688,29 +689,16 @@ class OsiToSlayerConverter:
         """``(expression to store, SQL it runs on the target, that SQL parsed)`` for one field: its Ossie expression
         as written (an entry for the target's dialect folded), plus a translated target entry when no form runs."""
         label = f"Field {field.name!r} on {ds.name!r}"
-        token = self._target.upper()
         entries = [DialectEntry(dialect=d.dialect, expression=d.expression) for d in field.expression.dialects]
-        own = [i for i, e in enumerate(entries) if e.dialect.strip().upper() == token]
-        running: str | None
+        own = self._own_entry(entries, label=label, ds=ds)
         tree: exp.Expr | None = None
-        if own:
-            if len(own) > 1:
-                self._warn(f"{label}: {len(own)} {token} entries; using the first.", dataset_name=ds.name,
-                           category="dialect", severity="info")
-                entries = [e for i, e in enumerate(entries) if i not in own[1:]]
-            running = self._folded(entries[own[0]].expression, read=self._target, ds=ds)
-            entries[own[0]] = DialectEntry(dialect=entries[own[0]].dialect, expression=running)
+        if own is not None:
+            running = own
         else:
-            portable = self._portable(field, label=label, ds=ds)
-            running = self._portable_running(portable, field=field, ds=ds) if portable is not None else None
-            if running is not None and portable is not None:
-                tree = self._parsed(Candidate(dialect=OSSIE_SQL, text=self._folded(portable, read=PORTABLE_READER, ds=ds)))
-            else:
-                translated = self._translated(field, label=label, ds=ds)
-                if translated is None:
-                    return None
-                running, tree = translated
-                entries.append(DialectEntry(dialect=token, expression=running))
+            found = self._portable_or_translated(field, entries, label=label, ds=ds)
+            if found is None:
+                return None
+            running, tree = found
         try:
             tree = tree if tree is not None else sqlglot.parse_one(running, read=self._target)
         except SqlglotError:
@@ -721,6 +709,36 @@ class OsiToSlayerConverter:
         stored: FieldExpression = sql if sql is not None and not entries else ExpressionObject(
             sql=sql, dialects=entries or None)
         return stored, running, tree
+
+    def _own_entry(self, entries: list[DialectEntry], *, label: str, ds: OSIDataset) -> str | None:
+        """The target's own entry folded, written back into ``entries`` (later duplicates dropped, noted), else
+        ``None``."""
+        token = self._target.upper()
+        own = [i for i, e in enumerate(entries) if e.dialect.strip().upper() == token]
+        if not own:
+            return None
+        if len(own) > 1:
+            self._warn(f"{label}: {len(own)} {token} entries; using the first.", dataset_name=ds.name,
+                       category="dialect", severity="info")
+            entries[:] = [e for i, e in enumerate(entries) if i not in own[1:]]
+        running = self._folded(entries[own[0]].expression, read=self._target, ds=ds)
+        entries[own[0]] = DialectEntry(dialect=entries[own[0]].dialect, expression=running)
+        return running
+
+    def _portable_or_translated(self, field: OSIField, entries: list[DialectEntry], *, label: str,
+                                ds: OSIDataset) -> tuple[str, exp.Expr | None] | None:
+        """``(running SQL, its tree or None)`` from the portable form, else from a translation appended to
+        ``entries``; ``None`` when reported."""
+        portable = self._portable(field, label=label, ds=ds)
+        running = self._portable_running(portable, field=field, ds=ds) if portable is not None else None
+        if running is not None and portable is not None:
+            return running, self._parsed(Candidate(dialect=OSSIE_SQL, text=self._folded(portable, read=PORTABLE_READER,
+                                                                                      ds=ds)))
+        translated = self._translated(field, label=label, ds=ds)
+        if translated is None:
+            return None
+        entries.append(DialectEntry(dialect=self._target.upper(), expression=translated[0]))
+        return translated
 
     def _portable(self, field: OSIField, *, label: str, ds: OSIDataset) -> str | None:
         """The field's portable form: its ``sql``, else its first ``OSSIE_SQL_2026`` entry (noting duplicates)."""
@@ -1068,8 +1086,7 @@ class OsiToSlayerConverter:
             dataset.fields[dataset.fields.index(col)] = original
             self._warn(
                 f"Derived overlay for {col.name!r} on {dataset.name!r} references "
-                f"unresolvable cross-dataset field(s) {bad}; reverting to the "
-                f"physical column.",
+                f"unresolvable field path(s) {bad}; reverting to the physical column.",
                 dataset_name=dataset.name, category="missing_column",
             )
         else:
@@ -1078,7 +1095,7 @@ class OsiToSlayerConverter:
                 dataset.default_time_dimension = _first_time_dimension(dataset)
             self._warn(
                 f"Field {col.name!r} on {dataset.name!r} references unresolvable "
-                f"cross-dataset field(s) {bad}; dropping.",
+                f"field path(s) {bad}; dropping.",
                 dataset_name=dataset.name, category="missing_column",
             )
 
@@ -1130,15 +1147,13 @@ class OsiToSlayerConverter:
         if not isinstance(tree, exp.Column):
             return None
         # The full qualifier chain: a multi-hop ref keeps earlier hops in .db/.catalog.
-        parts = [p.name for p in tree.parts]
-        quals = parts[:-1]
-        if not quals or quals == [dataset.name]:
+        *quals, leaf = tree.parts
+        if not quals or not isinstance(leaf, exp.Identifier) or self._is_self_qualifier(quals, dataset=dataset):
             return None
-        target = self._walk_join_alias(host=dataset, alias=".".join(quals))
-        if target is None:
-            return None
-        field = next((c for c in target.fields if c.name == parts[-1]), None)
-        return None if field is None else (target, field)
+        target = self._walk_join_alias(host=dataset, alias=".".join(q.name for q in quals),
+                                       quoted=self._hop_quoting(quals))
+        field = self._field_reached(target, leaf) if target is not None else None
+        return None if target is None or field is None else (target, field)
 
     def _relationship_fields_missing(self, dataset: SlayerDataset, relationship: DatasetRelationship) -> bool:
         target = self._datasets.get(relationship.to)
@@ -1162,34 +1177,56 @@ class OsiToSlayerConverter:
             return False
 
     def _unresolvable_cross_dataset_refs(self, dataset: SlayerDataset, sql: str) -> list[str]:
-        """Root-scope cross-dataset field refs in ``sql`` that don't resolve to a joined
-        dataset + existing field; physical multi-part refs are skipped."""
+        """Root-scope field paths in ``sql`` (self-qualified or across a relationship) that don't resolve to an
+        existing field; physical multi-part refs are skipped."""
         tree = self._parse_target(sql)
         if not isinstance(tree, Expression):
             return []
         root_ids = root_scope_field_ids(parsed=tree)
         bad = []
         for col in tree.find_all(exp.Column):
-            if id(col) not in root_ids:
-                continue  # nested-scope alias (CTE / sub-query) — not a relationship ref
-            parts = [p.name for p in col.parts]
-            quals, leaf = parts[:-1], parts[-1]
-            if not quals or quals == [dataset.name]:
-                continue  # self / unqualified — validated at field time
-            if self._is_physical_multihop_ref(dataset=dataset, quals=quals):
+            if id(col) not in root_ids or not col.table:
+                continue  # a source column, or a nested-scope alias (CTE / sub-query)
+            *quals, leaf = col.parts
+            if not isinstance(leaf, exp.Identifier):
+                continue  # ``t.*``
+            names = [q.name for q in quals]
+            own = self._is_self_qualifier(quals, dataset=dataset)
+            if not own and self._is_physical_multihop_ref(dataset=dataset, quals=names):
                 continue
-            target = self._walk_join_alias(host=dataset, alias=".".join(quals))
-            if target is None or not any(c.name == leaf for c in target.fields):
-                bad.append(".".join(parts))
+            target = dataset if own else self._walk_join_alias(
+                host=dataset, alias=".".join(names), quoted=self._hop_quoting(quals))
+            if target is None or self._field_reached(target, leaf) is None:
+                bad.append(".".join([*names, leaf.name]))
         return bad
 
-    def _walk_join_alias(self, host: SlayerDataset, alias: str) -> SlayerDataset | None:
-        """Resolve a dotted relationship qualifier to its terminal joined dataset, or None (never ``__``-split)."""
+    @staticmethod
+    def _is_self_qualifier(quals: Sequence[exp.Expr], *, dataset: SlayerDataset) -> bool:
+        """Whether ``quals`` is the one qualifier naming ``dataset`` (exactly when quoted, else in any case)."""
+        return len(quals) == 1 and match_name(
+            name=quals[0].name, declared=[dataset.name], quoted=bool(quals[0].args.get("quoted"))) is not None
+
+    @staticmethod
+    def _field_reached(dataset: SlayerDataset, leaf: exp.Identifier) -> DatasetField | None:
+        """The one field of ``dataset`` that ``leaf`` reaches (exactly when quoted, else in any case), else ``None``."""
+        try:
+            return dataset.get_field(leaf.name, quoted=leaf.quoted)
+        except AmbiguousReferenceError:
+            return None
+
+    def _walk_join_alias(self, host: SlayerDataset, alias: str, quoted: Sequence[bool] = ()) -> SlayerDataset | None:
+        """Resolve a dotted relationship qualifier (``quoted`` hops matched exactly) to its terminal joined dataset, or
+        None (never ``__``-split)."""
         return resolve_ref_target(
             qualifiers=tuple(alias.split(".")),
             source_dataset=host,
             datasets_by_name=self._datasets,
+            quoted=quoted,
         )
+
+    @staticmethod
+    def _hop_quoting(parts: Sequence[exp.Expr]) -> tuple[bool, ...]:
+        return tuple(bool(p.args.get("quoted")) for p in parts)
 
     def _dataset_has_field(self, dataset_name: str, field: str) -> bool:
         dataset = self._datasets.get(dataset_name)

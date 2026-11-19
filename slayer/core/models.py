@@ -511,11 +511,16 @@ def is_source_qualifier(name: str, *, dataset: "SlayerDataset") -> bool:
     return name.casefold() == "source" and not any(c.name.casefold() == "source" for c in dataset.fields)
 
 
-def source_reader(dataset: "SlayerDataset", *, qualifier: str, column: str) -> DatasetField | None:
+def source_reader_name(column: str, *, quoted: bool) -> str:
+    """The runtime reader name of ``source.column``; a quoted leaf keeps its quotes."""
+    return f'{SOURCE_READER_PREFIX}"{column}"' if quoted else f"{SOURCE_READER_PREFIX}{column}"
+
+
+def source_reader(dataset: "SlayerDataset", *, qualifier: str, column: str, quoted: bool) -> DatasetField | None:
     """The runtime reader ``qualifier.column`` names on ``dataset`` when ``qualifier`` is the source qualifier."""
     if not is_source_qualifier(qualifier, dataset=dataset):
         return None
-    return dataset.get_field(f"{SOURCE_READER_PREFIX}{column}", quoted=True)
+    return dataset.get_field(source_reader_name(column, quoted=quoted), quoted=True)
 
 
 def list_operations_hint(field: DatasetField) -> str:

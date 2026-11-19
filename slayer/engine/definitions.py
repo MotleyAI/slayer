@@ -20,6 +20,7 @@ from slayer.core.models import (
     SlayerDataset,
     is_source_qualifier as _is_source_qualifier,
     source_reader,
+    source_reader_name,
 )
 from slayer.core.relationship_walker import dataset_field_element, dataset_field_type
 from slayer.core.scope import DatasetScope
@@ -69,14 +70,15 @@ def portable_columns(text: str, *, dataset: SlayerDataset) -> list[str]:
     return out
 
 
-def _metric_source_columns(dataset: SlayerDataset) -> list[str]:
-    out: list[str] = []
+def _metric_source_columns(dataset: SlayerDataset) -> list[tuple[str, bool]]:
+    """``(column, quoted)`` for each ``source.column`` the dataset's metrics read."""
+    out: list[tuple[str, bool]] = []
     for metric in dataset.metrics:
         try:
             parsed = parse_expr(metric.text)
         except Exception:  # noqa: BLE001 — binding reports it
             continue
-        out += [n.parts[1] for n in walk_parsed(parsed)
+        out += [(n.parts[1], n.quoted_at(1)) for n in walk_parsed(parsed)
                 if isinstance(n, DottedRef) and len(n.parts) == 2 and _is_source_qualifier(n.parts[0], dataset=dataset)]
     return out
 
@@ -85,7 +87,7 @@ def needs_live_types(dataset: SlayerDataset, *, ds_type: str | None) -> bool:
     """Whether a portable definition or a metric of ``dataset`` reads a source column no physical reader declares."""
     token = ossie_token(ds_type)
     declared = {c.physical_name for c in dataset.fields if c.is_physical_reader}
-    columns = _metric_source_columns(dataset)
+    columns = [column for column, _ in _metric_source_columns(dataset)]
     for c in dataset.fields:
         if c.resolved or c.expression is None or dialect_entries(c.expression, token):
             continue
@@ -202,13 +204,16 @@ def check_metric_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:
                 suggestion="Write it as the metric's sql.")
 
 
-def _metric_readers(dataset: SlayerDataset, *, live: ColumnTypes) -> list[DatasetField]:
+def _metric_readers(dataset: SlayerDataset, *, live: ColumnTypes, ds_type: str | None) -> list[DatasetField]:
+    """A reader per ``source.column``: a quoted leaf exactly, an unquoted one as the datasource folds it."""
+    fold = dialect_for_ds_type(ds_type).unquoted_identifier
     taken = {c.name for c in dataset.fields}
     out: dict[str, DatasetField] = {}
-    for column in _metric_source_columns(dataset):
-        name = f"{SOURCE_READER_PREFIX}{column}"
+    for column, quoted in _metric_source_columns(dataset):
+        name = source_reader_name(column, quoted=quoted)
         if name not in taken and name not in out:
-            out[name] = _reader(dataset, name=name, column=column, quoted=False, live=live)
+            exact = column if quoted else fold(column)
+            out[name] = _reader(dataset, name=name, column=exact, quoted=True, live=live)
     return list(out.values())
 
 
@@ -221,4 +226,4 @@ def resolved_dataset(
     check_metric_forms(dataset, ds_type=ds_type)
     fields = [_resolved_field(c, dataset=dataset, datasets=datasets, ds_type=ds_type, live=live)
               for c in dataset.fields]
-    return dataset.model_copy(update={"fields": [*fields, *_metric_readers(dataset, live=live)]})
+    return dataset.model_copy(update={"fields": [*fields, *_metric_readers(dataset, live=live, ds_type=ds_type)]})

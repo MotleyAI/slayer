@@ -128,16 +128,21 @@ def definition_reads(
     source column it reads counts as a read of the host's physical readers of that column."""
     out: list[tuple[str, str]] = []
     for fragment in _arity_reference_sources(field, host=host):
-        text, portable = fragment
-        for quals, leaf in (_portable_refs(text) if portable else _fragment_refs(text)) or []:
-            if reads_source_column(tuple(quals), dataset=host):
-                out += [(host.name, c.name) for c in host.fields
-                        if c.name != field.name and c.is_physical_reader and c.physical_name == leaf]
+        out += _source_column_reads(fragment, field=field, host=host)
         for quals, leaf in _refs(fragment, host=host):
             target = resolve_ref_target(qualifiers=quals, source_dataset=host, datasets_by_name=reachable)
             if target is not None and target.get_field(leaf, quoted=True) is not None:
                 out.append((target.name, leaf))
     return out
+
+
+def _source_column_reads(fragment: tuple[str, bool], *, field: DatasetField, host: SlayerDataset) -> list[tuple[str, str]]:
+    """``(host, reader)`` for each physical reader of a source column ``fragment`` reads, other than ``field``."""
+    text, portable = fragment
+    columns = [leaf for quals, leaf in (_portable_refs(text) if portable else _fragment_refs(text)) or []
+               if reads_source_column(tuple(quals), dataset=host)]
+    return [(host.name, c.name) for leaf in columns for c in host.fields
+            if c.name != field.name and c.is_physical_reader and c.physical_name == leaf]
 
 
 def _field_dependencies(

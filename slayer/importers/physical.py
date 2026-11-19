@@ -196,7 +196,8 @@ def _masked_read_by_path(fields: list[DatasetField], *, dataset: str, dialect: s
         if text is None or not masked or unquoted_identifier(text) is not None:
             continue
         respelled = respelled_columns(
-            text, respell=lambda name: f"{dataset}.{reader(name)}" if name in masked else None, dialect=dialect)
+            text, respell=lambda name, masked=masked: f"{dataset}.{reader(name)}" if name in masked else None,
+            dialect=dialect)
         if respelled != text:
             out[i] = field.model_copy(update={"expression": respelled})
     return out

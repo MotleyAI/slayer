@@ -1050,7 +1050,8 @@ def _resolve_dotted(
     Resolution order: the ``source`` qualifier's source column → root qualifier dropped → declared alias (dotted text)
     → relationship walk → leaf field → saved metric (re-anchored into host coords, eligible position)."""
     if isinstance(scope, DatasetScope) and scope.population is not None and len(parts) == 2:
-        reader = source_reader(scope.population, qualifier=parts[0], column=parts[1])
+        reader = source_reader(scope.population, qualifier=parts[0], column=parts[1],
+                               quoted=len(quoted) > 1 and quoted[1])
         if reader is not None:
             return FieldSqlKey(path=(), dataset=scope.population.name, field_name=reader.name)
     original_parts = parts
