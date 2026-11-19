@@ -36,6 +36,6 @@ None.
 - `slayer/otel/{recorder,exporters,control,middleware}.py`, `slayer/database/client.py`.
 - `tests/test_otel_{guards,controls,scope,collection}.py`, `tests/test_dev2074_save_ambiguity.py`.
 - `examples/comparisons/` (`run_slayer.py`, `probes.yaml`, `matrix.yaml`, `matrix.json`, `export_matrix.py`,
-  `README.md`, `slayer/models/customers.yaml`), `tests/test_comparison_matrix.py`.
+  `README.md`, `slayer/models/{customers,monthly_rev,avg_customer_rev}.yaml`), `tests/test_comparison_matrix.py`.
 - `openspec/forward-merge-ledger.yaml`, `poetry.lock` (re-locked on the merge result).
 - The archived `1.x` change folders for DEV-2314 and DEV-2358 join `main`'s archive.

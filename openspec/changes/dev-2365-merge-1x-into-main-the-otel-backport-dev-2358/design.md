@@ -68,6 +68,9 @@ the forward-merge spec check already guards the two lines' specs against silent 
 15. **`main`'s `db.explain` probe records `db.response.returned_rows`**, as `otel/collection` already requires of
     every database span; the adapted EXPLAIN test asserts it. Options: A add it / B drop the assertion. Taken: A.
     (user)
+16. **`main`'s comparison probes are respelled to DEV-1607's query shapes in this change**, since `main`'s runner
+    refuses their `{expression, name}` metric entries and C23's "(verified)" cells need a working runner. Options: A
+    respell here / B only the C23 probes and the query-backed datasets / C defer 3.5 to a new issue. Taken: A. (user)
 
 ## Risks / Trade-offs
 
