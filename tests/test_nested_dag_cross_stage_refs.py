@@ -1,7 +1,7 @@
 """Nested-DAG multi-hop dotted dim referenced from a downstream stage.
 
 An inner stage projects a multi-hop dotted dim (``customers.regions.name``) as the
-flat column ``customers__regions__name``; downstream stages reference it by that
+flat field ``customers__regions__name``; downstream stages reference it by that
 flat name (the dotted form is rejected). Exercised end-to-end via ``engine.execute``.
 """
 
@@ -28,7 +28,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: orders → customers → regions, with a deeper `countries` model
+# Fixtures: orders → customers → regions, with a deeper `countries` dataset
 # for 3-hop tests.
 # ---------------------------------------------------------------------------
 
@@ -162,8 +162,8 @@ async def _engine_with_real_sqlite(
 # ---------------------------------------------------------------------------
 
 def _assert_reads_unrelated_customers(resp) -> None:
-    """``customers``, which no join path reaches from ``s1``, is aggregated over its own rows — never
-    by re-aggregating an ``s1`` flat column — and announced as an unrelated dataset."""
+    """``customers``, which no relationship path reaches from ``s1``, is aggregated over its own rows — never
+    by re-aggregating an ``s1`` flat field — and announced as an unrelated dataset."""
     assert any(
         w.kind == "unrelated_dataset" and w.dataset == "customers" for w in resp.warnings or []
     ), resp.warnings
@@ -296,7 +296,7 @@ class TestReportedCase:
 
 
 # ===========================================================================
-# Test #2 — 2-stage, 3-hop dimension (deeper join chain).
+# Test #2 — 2-stage, 3-hop dimension (deeper relationship chain).
 # ===========================================================================
 class TestThreeHopDimension:
     async def test_three_hop_cross_stage(self) -> None:
@@ -380,12 +380,12 @@ class TestCrossStageTimeDimension:
 
 
 # ===========================================================================
-# Test #4 — cross-model measure across stages: re-aggregation semantics.
+# Test #4 — cross-dataset metric across stages: re-aggregation semantics.
 # ===========================================================================
 class TestCrossStageCrossModelMeasure:
     async def test_cross_model_measure_reaggregation_sql_shape(self) -> None:
         """Inner stage projects `sum(customers.revenue)`. Outer references
-        same with `:sum` again → emits as a local re-aggregated measure
+        same with `:sum` again → emits as a local re-aggregated metric
         `SUM(s1.customers__revenue_sum)`."""
         engine, tmp = await _engine_with_join_chain()
         try:
@@ -651,12 +651,12 @@ class TestRenamedInnerMeasureCrossStage:
     async def test_renamed_cmm_aggregation_no_longer_resolves_after_rename(
         self,
     ) -> None:
-        """The user-supplied rename propagates to the wrapped virtual model's
-        column: `{formula: sum(customers.revenue), name: rev}` on s1 leaves
-        s1.columns with `rev` (not the canonical flat `customers__revenue_sum`).
+        """The user-supplied rename propagates to the wrapped virtual dataset's
+        field: `{metric: sum(customers.revenue), alias: rev}` on s1 leaves
+        s1.fields with `rev` (not the canonical flat `customers__revenue_sum`).
         The outer's `sum(customers.revenue)` no longer matches the intercept's
         candidate flat name, so it never re-aggregates s1: `customers`, which no
-        join path reaches from s1, is aggregated over its own rows."""
+        relationship path reaches from s1, is aggregated over its own rows."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery.model_validate({
@@ -675,9 +675,9 @@ class TestRenamedInnerMeasureCrossStage:
             tmp.cleanup()
 
     async def test_renamed_cmm_via_rename_resolves(self) -> None:
-        """The rename propagates to s1.columns,
-        so `sum(rev)` on the outer DOES resolve (s1.get_column('rev')
-        finds it as a local column, the standard local-aggregate
+        """The rename propagates to s1.fields,
+        so `sum(rev)` on the outer DOES resolve (s1.get_field('rev')
+        finds it as a local field, the standard local-aggregate
         path emits SUM(s1.rev))."""
         engine, tmp = await _engine_with_join_chain()
         try:
@@ -772,7 +772,7 @@ class TestCrossStageTimeShift:
 # ===========================================================================
 class TestSerializationRoundtripStripsBreadcrumb:
     async def test_yaml_roundtrip_drops_origin(self) -> None:
-        """A SlayerModel with `source_model_origin` set, persisted via
+        """A SlayerDataset with `source_dataset_origin` set, persisted via
         YAMLStorage, loses the field on reload (it's `exclude=True`)."""
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
@@ -790,7 +790,7 @@ class TestSerializationRoundtripStripsBreadcrumb:
         loaded = await storage.get_dataset("virtual_test", data_source="test_ds")
         try:
             assert loaded.source_dataset_origin is None, (
-                f"YAML roundtrip must drop source_model_origin. "
+                f"YAML roundtrip must drop source_dataset_origin. "
                 f"Got: {loaded.source_dataset_origin}"
             )
         finally:
@@ -814,30 +814,30 @@ class TestSerializationRoundtripStripsBreadcrumb:
         await storage.save_dataset(m)
         loaded = await storage.get_dataset("virtual_test", data_source="test_ds")
         assert loaded.source_dataset_origin is None, (
-            f"SQLite roundtrip must drop source_model_origin. "
+            f"SQLite roundtrip must drop source_dataset_origin. "
             f"Got: {loaded.source_dataset_origin}"
         )
 
 
 # ===========================================================================
-# Test #18 — no spurious breadcrumb on a normally-constructed table-backed model.
+# Test #18 — no spurious breadcrumb on a normally-constructed table-backed dataset.
 # ===========================================================================
 class TestNoSpuriousBreadcrumb:
     def test_table_backed_model_has_no_origin(self) -> None:
-        """A real table-backed `SlayerModel` constructed normally has
-        `source_model_origin is None`."""
+        """A real table-backed `SlayerDataset` constructed normally has
+        `source_dataset_origin is None`."""
         m = _orders_dataset()
         assert m.source_dataset_origin is None
 
 
 # ===========================================================================
-# Test #19 — cross-model count(*) cross-stage (alias resolution only).
+# Test #19 — cross-dataset count(*) cross-stage (alias resolution only).
 # ===========================================================================
 class TestCrossModelStarCountCrossStage:
     async def test_star_count_cross_stage_alias_resolution(self) -> None:
         """Inner projects `count(customers.*)`. Outer references same.
         Confirm the intercept matches `customers___count` on s1 and the
-        outer measure resolves to a local count over that column. The
+        outer metric resolves to a local count over that field. The
         outer aggregation must SUM the inner per-group count to roll up
         to total rows — using COUNT on the stage rows would silently
         return the number of groups instead of total rows (CodeRabbit
@@ -896,7 +896,7 @@ class TestCrossModelInterceptSemanticsGate:
     async def test_avg_falls_through_to_cte_path(self) -> None:
         """Cross-stage `avg(customers.revenue)` must NOT be intercepted —
         averaging an inner-aggregated average is not equal to the overall
-        average. `customers`, which no join path reaches from s1, is
+        average. `customers`, which no relationship path reaches from s1, is
         averaged over its own rows instead."""
         engine, tmp = await _engine_with_join_chain()
         try:
@@ -968,14 +968,14 @@ class TestCrossModelInterceptSemanticsGate:
 
 # ===========================================================================
 # CodeRabbit review on PR #137 — rename bookkeeping at the line-896
-# intercept: a renamed intercepted measure must surface under the user
+# intercept: a renamed intercepted metric must surface under the user
 # alias, and filters / ORDER BY using the canonical aggregation
-# must resolve to the renamed measure.
+# must resolve to the renamed metric.
 # ===========================================================================
 class TestCrossModelInterceptRenameBookkeeping:
     async def test_renamed_intercept_surfaces_user_alias(self) -> None:
-        """Outer projects `{formula: sum(customers__revenue_sum), name: rev}`
-        against `s1`. The re-aggregated measure must surface as `s1.rev`
+        """Outer projects `{metric: sum(customers__revenue_sum), alias: rev}`
+        against `s1`. The re-aggregated metric must surface as `s1.rev`
         (the user rename), not the canonical `customers__revenue_sum_sum`."""
         engine, tmp = await _engine_with_join_chain()
         try:
@@ -1001,7 +1001,7 @@ class TestCrossModelInterceptRenameBookkeeping:
             tmp.cleanup()
 
     async def test_renamed_intercept_filter_via_aggregation(self) -> None:
-        """Outer renames the re-aggregated flat measure to `rev` AND
+        """Outer renames the re-aggregated flat metric to `rev` AND
         filters via the aggregation. The filter may use
         either the aggregation or the user alias; both resolve to the
         rename."""
@@ -1061,18 +1061,18 @@ class TestCrossModelInterceptRenameBookkeeping:
 # Codex review round 2 on PR #137 — refuse two intercepted qfields that
 # canonicalise to the same cross-stage aggregate with different `name`s.
 # Without the guard, the second rename mutates the first call's projected
-# measure alias and `user_projection` is left pointing at an orphan.
+# metric alias and `user_projection` is left pointing at an orphan.
 # ===========================================================================
 class TestCrossModelInterceptDuplicateQfieldGuard:
     async def test_intercepted_unrenamed_works_as_middle_stage_in_three_stage_dag(
         self,
     ) -> None:
         """Typed contract end-to-end across a 3-stage DAG:
-        stage 1 projects a cross-model measure (legal — has joins),
+        stage 1 projects a cross-dataset metric (legal — has relationships),
         stage 2 re-aggregates the flat inner alias, stage 3
         re-aggregates the stage-2 flat alias. The contract requires
         every downstream stage to address its predecessor by flat
-        column name; aggregation suffixes stack predictably
+        field name; aggregation suffixes stack predictably
         (`*_sum`, then `*_sum_sum`)."""
         engine, tmp = await _engine_with_join_chain()
         try:
@@ -1114,19 +1114,19 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         self,
     ) -> None:
         """Codex review on PR #137 round 10: a user-named local
-        measure whose name coincidentally matches a cross-model
+        metric whose name coincidentally matches a cross-dataset
         canonical-flat shape must NOT be picked up by the cross-stage
         intercept. The intercept's `agg_column_names` set only
-        includes auto-derived cross-model canonical-flats, so a
-        renamed local measure like
-        `{"formula": "sum(amount)", "name": "customers__revenue_sum"}`
-        on the inner stage stays distinct from a cross-model
+        includes auto-derived cross-dataset canonical-flats, so a
+        renamed local metric like
+        `{"metric": "sum(amount)", "alias": "customers__revenue_sum"}`
+        on the inner stage stays distinct from a cross-dataset
         `sum(customers.revenue)` reference on the outer."""
         engine, tmp = await _engine_with_join_chain()
         try:
             # Inner has a local `sum(amount)` renamed to
             # `customers__revenue_sum`. There is NO real
-            # `sum(customers.revenue)` cross-model measure projected.
+            # `sum(customers.revenue)` cross-dataset metric projected.
             inner = SlayerQuery.model_validate({
                 "name": "s1",
                 "population": "orders",
@@ -1135,10 +1135,10 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             })
             # Outer references `sum(customers.revenue)` — the intercept
             # candidate computes `customers__revenue_sum` and the
-            # column exists on s1, BUT it isn't an auto-derived cross-
-            # model canonical-flat (it's the user-renamed local
-            # measure). The intercept must skip it: `customers`, which no
-            # join path reaches from s1, is aggregated over its own rows.
+            # field exists on s1, BUT it isn't an auto-derived cross-
+            # dataset canonical-flat (it's the user-renamed local
+            # metric). The intercept must skip it: `customers`, which no
+            # relationship path reaches from s1, is aggregated over its own rows.
             outer = SlayerQuery.model_validate({
                 "population": "s1",
                 "metrics": [{"metric": "sum(customers.revenue)"}],
@@ -1152,13 +1152,13 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         self,
     ) -> None:
         """Codex round 7: a `sum(customers.revenue) > 100` filter on an
-        outer query whose intercepted measure is unrenamed must NOT be
+        outer query whose intercepted metric is unrenamed must NOT be
         silently rewritten to `WHERE s1.customers__revenue_sum > 100`
         — that applies the predicate BEFORE the outer SUM, not as
-        HAVING on the re-aggregated measure.
+        HAVING on the re-aggregated metric.
 
         The fallback gating recognises the aggregation-canonical leaf
-        and skips the dim-style rewrite: `customers`, which no join path
+        and skips the dim-style rewrite: `customers`, which no relationship path
         reaches from s1, is aggregated over its own rows and the filter
         applies to that value."""
         engine, tmp = await _engine_with_join_chain()
@@ -1183,7 +1183,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         self,
     ) -> None:
         """D-D variant 1: an AGGREGATED outer stage may order by
-        an EXPLICIT re-aggregation of an inner-stage column
+        an EXPLICIT re-aggregation of an inner-stage field
         (``max(customers__revenue_sum)``) that is not re-projected. It
         materialises as a hidden aggregate on s1 and orders at the outer
         wrap — valid grouped SQL, resolving on s1, never a bare `customers`
@@ -1232,10 +1232,10 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         self,
     ) -> None:
         """D-D variant 2, as the typed pipeline resolves it: an
-        AGGREGATED outer stage ordering by a BARE inner-stage row column
+        AGGREGATED outer stage ordering by a BARE inner-stage field
         (``customers__revenue_sum``, not re-aggregated) is not in the outer
         GROUP BY. Stage 8 rejected it; the sort key now materialises as a
-        hidden ``:max`` over the stage column and orders on that alias.
+        hidden ``:max`` over the stage field and orders on that alias.
 
         The stage boundary is the point of this test: the wrap must resolve
         against the ``s1`` rowset (``MIN(s1.customers__revenue_sum)`` — the
@@ -1275,7 +1275,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         self,
     ) -> None:
         """D-D variant 3: a NON-aggregating outer stage (dedup off)
-        ordering by a bare inner-stage column emits a valid SPLIT reference
+        ordering by a bare inner-stage field emits a valid SPLIT reference
         against the s1 rowset — resolving on s1, never a bare `customers`
         table."""
         engine, tmp = await _engine_with_join_chain()
@@ -1348,9 +1348,9 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
 
 
 # ===========================================================================
-# Test #20 dropped — was for Mode A lenient model-filter path on virtual
-# stages, but query-backed expansion does not propagate inner-model
-# `filters` to the wrapped virtual model, so the lenient path is dead code
+# Test #20 dropped — was for Mode A lenient dataset-filter path on virtual
+# stages, but query-backed expansion does not propagate inner-dataset
+# `filters` to the wrapped virtual dataset, so the lenient path is dead code
 # for virtual stages. The strict path (DSL query filters) is the actual
 # integration site for cross-stage dotted refs and is covered by tests
 # in `TestCrossStageFilter` (#5).
@@ -1358,9 +1358,9 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
 
 
 # ===========================================================================
-# The cross-model-INTERCEPT rename site.
+# The cross-dataset-INTERCEPT rename site.
 #
-# A downstream-stage formula that references an intercepted cross-model
+# A downstream-stage expression that references an intercepted cross-dataset
 # aggregate BEFORE that same aggregate is selected+renamed must not orphan
 # the frozen reference. This exercises the second rename site of the fix
 # (the intercept branch), distinct from the local-agg site covered in
@@ -1378,15 +1378,15 @@ def _dev1779_undeclared(sql: str) -> set[str]:
 
 class TestInterceptRename:
     async def test_formula_before_renamed_intercept_ref(self, tmp_path) -> None:
-        """Across a stage boundary: the outer stage lists a FORMULA
-        over the re-aggregated intercept measure FIRST (which, on the old
+        """Across a stage boundary: the outer stage lists an EXPRESSION
+        over the re-aggregated intercept metric FIRST (which, on the old
         enrichment pipeline, froze the intercept's flat alias), then selects
         the same aggregate under an explicit rename. The branch's structural
         re-aggregation must keep both references pointing at one column
         regardless of declaration order.
 
         Downstream stages see a FLAT schema, so the outer stage
-        references the inner cross-model aggregate by its flat path-mangled
+        references the inner cross-dataset aggregate by its flat path-mangled
         name ``customers__revenue_sum`` — the dotted ``customers.revenue``
         form is intentionally illegal past a stage boundary."""
         engine = await _engine_with_real_sqlite(tmp_path)

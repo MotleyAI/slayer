@@ -1,6 +1,6 @@
-"""Tests for FacadeTable.relationships[] + model_ref (DEV-1565).
+"""Tests for FacadeTable.relationships[] + dataset_ref.
 
-Lives in a sibling file so the FacadeJoin / model_ref imports do not block
+Lives in a sibling file so the FacadeRelationship / dataset_ref imports do not block
 collection of the broader test_catalog.py suite during the TDD-Phase-1
 window (before slayer.facade.catalog gains these symbols)."""
 
@@ -89,9 +89,9 @@ def test_facade_table_joins_preserve_join_type() -> None:
 
 
 def test_facade_table_joins_filter_to_hidden_target() -> None:
-    """Joins whose target is hidden (or absent) are excluded — symmetric
+    """Relationships whose target is hidden (or absent) are excluded — symmetric
     with the BFS dim/metric expansion's hidden-target filter. Otherwise the
-    translator's existence check could match a join that isn't addressable
+    translator's existence check could match a relationship that isn't addressable
     via the rest of the catalog."""
     orders = _dataset(
         name="orders",
@@ -112,8 +112,8 @@ def test_facade_table_joins_filter_to_hidden_target() -> None:
 
 
 def test_facade_table_joins_filter_to_absent_target() -> None:
-    """If a ModelJoin points at a target model that isn't in the catalog at
-    all (typo / cross-datasource / deleted), the join is silently dropped
+    """If a DatasetRelationship points at a target dataset that isn't in the catalog at
+    all (typo / cross-datasource / deleted), the relationship is silently dropped
     from FacadeTable.relationships[] — symmetric with the hidden-target filter and
     with the BFS dim/metric expansion's own filter."""
     orders = _dataset(
@@ -130,8 +130,8 @@ def test_facade_table_joins_filter_to_absent_target() -> None:
 
 
 def test_facade_table_model_ref_carries_underlying_slayer_model() -> None:
-    """Hidden FK columns must remain visible on model_ref.columns so the
-    translator's ON-column existence check (against SlayerModel.fields,
+    """Hidden FK fields must remain visible on dataset_ref.fields so the
+    translator's ON-column existence check (against SlayerDataset.fields,
     not the filtered facade dimensions) keeps working."""
     orders = _dataset(
         name="orders",

@@ -1,4 +1,4 @@
-"""Unit tests for ``SidecarEmbeddingStore`` (DEV-1405).
+"""Unit tests for ``SidecarEmbeddingStore``.
 
 The helper owns a single SQLite file with one ``embeddings`` table.
 Both ``YAMLStorage`` and ``SQLiteStorage`` delegate the embedding CRUD
@@ -238,7 +238,7 @@ async def test_get_many_filters_by_model_name(
 async def test_get_many_chunks_large_id_lists(
     store: SidecarEmbeddingStore,
 ) -> None:
-    """REGRESSION (CodeRabbit DEV-1405): get_many must chunk the IN
+    """REGRESSION (CodeRabbit): get_many must chunk the IN
     clause so it never exceeds SQLite's MAX_VARIABLE_NUMBER (32766 on
     most builds). Use 2000 ids — well above the 900 chunk size — and
     verify every id round-trips intact."""
@@ -315,7 +315,7 @@ async def test_delete_for_canonical_exact_match_only_when_no_descendants(
 async def test_delete_memory_prefix_does_not_match_numeric_siblings(
     store: SidecarEmbeddingStore,
 ) -> None:
-    """REGRESSION (DEV-1405): the previous LIKE 'memory:4%' pattern
+    """REGRESSION: the previous LIKE 'memory:4%' pattern
     nuked memory:42, memory:43, memory:400 along with memory:4. The
     fix matches exact id OR a strict ``.``-descendant — memory ids have
     no descendants, so only memory:4 must go."""
@@ -334,7 +334,7 @@ async def test_delete_memory_prefix_does_not_match_numeric_siblings(
 async def test_delete_datasource_prefix_does_not_match_char_siblings(
     store: SidecarEmbeddingStore,
 ) -> None:
-    """REGRESSION (DEV-1405): deleting ds ``orders`` must not nuke
+    """REGRESSION: deleting ds ``orders`` must not nuke
     ``orders_archive``, ``orders123``, or their descendants."""
     for cid in (
         "orders",
@@ -360,7 +360,7 @@ async def test_delete_datasource_prefix_does_not_match_char_siblings(
 async def test_delete_model_prefix_does_not_match_sibling_models(
     store: SidecarEmbeddingStore,
 ) -> None:
-    """REGRESSION (DEV-1405): deleting model ``orders.customers`` must
+    """REGRESSION: deleting dataset ``orders.customers`` must
     not nuke ``orders.customers_v2`` or ``orders.customers_v2.id``."""
     for cid in (
         "orders.customers",

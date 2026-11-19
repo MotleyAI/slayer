@@ -1,4 +1,4 @@
-"""Result keys for same-column time dimensions; dedupe and metadata conflicts (spec: queries/time-dimensions)."""
+"""Result keys for same-field time dimensions; dedupe and metadata conflicts (spec: queries/time-dimensions)."""
 import pydantic
 import pytest
 
@@ -42,7 +42,7 @@ class TestGranularitySuffixedKeys:
         }
 
     async def test_two_granularities_dotted_column_execution(self, exec_engine: SlayerQueryEngine) -> None:
-        """Joined (dotted) same-column collisions suffix both the SQL alias and the
+        """Joined (dotted) same-field collisions suffix both the SQL alias and the
         result key, so rows carry distinct month/year values (not one collapsed bucket)."""
         resp = await exec_engine.execute(fx.q(
             population="orders",
@@ -104,7 +104,7 @@ class TestGranularitySuffixedKeys:
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
 
     async def test_distinct_columns_keep_unsuffixed_keys(self, exec_engine: SlayerQueryEngine) -> None:
-        """Two TDs on different columns don't collide, so neither key is suffixed."""
+        """Two TDs on different fields don't collide, so neither key is suffixed."""
         resp = await exec_engine.execute(fx.q(
             population="orders",
             dimensions=["date_trunc('year', created_at)", "date_trunc('month', customers.created_at)"],
@@ -198,7 +198,7 @@ class TestDuplicateTimeDimensions:
         assert "month" in msg
 
     def test_diff_spelling_same_metadata_dedupes(self) -> None:
-        """``created_at`` and ``orders.created_at`` are the same column (source-model
+        """``created_at`` and ``orders.created_at`` are the same field (source-dataset
         prefix), so an identical pair dedupes rather than colliding downstream."""
         q = fx.q(
             population="orders",
@@ -213,7 +213,7 @@ class TestDuplicateTimeDimensions:
         ]
 
     def test_diff_spelling_conflicting_metadata_rejected(self) -> None:
-        """Differently-spelled same column+granularity with conflicting metadata is
+        """Differently-spelled same field+granularity with conflicting metadata is
         rejected at construction with the clean conflict message."""
         with pytest.raises(pydantic.ValidationError, match="Conflicting"):
             fx.q(

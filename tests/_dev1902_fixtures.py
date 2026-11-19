@@ -1,4 +1,4 @@
-"""Renamed-key join graph: ``orders → customers → regions``, every key column's
+"""Renamed-key relationship graph: ``orders → customers → regions``, every key field's
 logical ``name`` differing from its physical ``sql`` spelling.
 
 Physical tables::
@@ -150,7 +150,7 @@ async def make_exec_engine(
 
 
 def cells(resp, *, dim_suffix: str, metric: str) -> dict:
-    """``{dimension value: float(measure)}``; both columns found by suffix."""
+    """``{dimension value: float(metric)}``; both columns found by suffix."""
     row = resp.data[0]
     dim = next(k for k in row if k.endswith(dim_suffix))
     val = next(k for k in row if k == metric or k.endswith(f".{metric}"))

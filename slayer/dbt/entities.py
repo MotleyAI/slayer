@@ -1,4 +1,4 @@
-"""Entity registry — resolves dbt entities to SLayer primary keys and joins.
+"""Entity registry — resolves dbt entities to SLayer primary keys and relationships.
 
 dbt entities define the grain (primary) and join relationships (foreign) between
 semantic models. This module scans all models to build an entity→model mapping,
@@ -55,7 +55,7 @@ class EntityRegistry:
         if self._primaries[entity_name]:
             existing_model, _ = self._primaries[entity_name][0]
             logger.debug(
-                "Entity '%s' shared by '%s' and '%s' (peer join will be created)",
+                "Entity '%s' shared by '%s' and '%s' (peer relationship will be created)",
                 entity_name, existing_model, dataset_name,
             )
         self._primaries[entity_name].append((dataset_name, expr))
@@ -76,10 +76,10 @@ class EntityRegistry:
         """For each foreign entity in the model, generate a DatasetRelationship to the primary model.
 
         Returns a list of DatasetRelationship objects. Skips entities whose primary model
-        is the same as the current model (self-joins are not useful).
+        is the same as the current model (self-relationships are not useful).
         """
         relationships: list[DatasetRelationship] = []
-        # Dedupe by full join signature (target + FK columns) so distinct FKs
+        # Dedupe by full relationship signature (target + FK columns) so distinct FKs
         # to the same target — e.g. buyer_id -> users.id AND seller_id -> users.id —
         # each get their own DatasetRelationship instead of silently collapsing.
         seen_signatures: set = set()
@@ -101,7 +101,7 @@ class EntityRegistry:
                 continue  # not a column; the converter reports it
             for target_model_name, primary_expr in primaries:
                 if target_model_name == model.name or not is_base_field_sql(primary_expr):
-                    continue  # self-join, or a non-column key the converter reports
+                    continue  # self-relationship, or a non-column key the converter reports
 
                 signature = (target_model_name, foreign_expr, primary_expr)
                 if signature in seen_signatures:
@@ -118,7 +118,7 @@ class EntityRegistry:
 
         # Peer relationships: models sharing the same primary/unique entity are joinable.
         # Declared once per unordered pair (smaller name wins) — reverse
-        # traversal is automatic (DEV-1853), and the exact-inverse twin would
+        # traversal is automatic, and the exact-inverse twin would
         # be rejected at save time.
         seen_peer_signatures: set = set()
         for entity in model.entities:

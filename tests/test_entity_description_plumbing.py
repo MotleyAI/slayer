@@ -1,4 +1,4 @@
-"""DEV-1549 Codex#2: entity-description plumbing.
+"""Entity-description plumbing.
 
 The compact-mode search renders ``SearchHit.description`` from the
 entity's ``description`` field for every entity kind. To make that
@@ -9,8 +9,8 @@ plumbing path threads ``description`` through:
 * ``Corpus.canonical_to_description: Dict[str, Optional[str]]``
 * ``LookupFound.description: Optional[str]``
 
-Tests pin each layer for every entity kind (datasource, model, column,
-measure, aggregation).
+Tests pin each layer for every entity kind (datasource, dataset, field,
+metric, aggregation).
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ from slayer.storage.base import StorageBackend, resolve_storage
 
 @pytest_asyncio.fixture
 async def storage_rich() -> AsyncIterator[StorageBackend]:
-    """A datasource with one model that exercises every entity kind that
-    can carry a description: datasource, model, column, measure, custom
+    """A datasource with one dataset that exercises every entity kind that
+    can carry a description: datasource, dataset, field, metric, custom
     aggregation. Hidden flag NOT set so all entities are indexed."""
     with tempfile.TemporaryDirectory() as tmpdir:
         s = resolve_storage(tmpdir)
@@ -117,22 +117,22 @@ async def test_collect_model_entity_pairs_propagates_each_kind(
     pairs = collect_dataset_entity_pairs(dataset=model)
     by_id = {p.canonical_id: p for p in pairs}
 
-    # Model node.
+    # Dataset node.
     model_pair = by_id["warehouse.orders"]
     assert model_pair.kind == "dataset"
     assert model_pair.description == "Orders table desc."
 
-    # Column with a description.
+    # Field with a description.
     col_pair = by_id["warehouse.orders.amount_paid"]
     assert col_pair.kind == "field"
     assert col_pair.description == "amount_paid column desc."
 
-    # Column without a description.
+    # Field without a description.
     bare_col = by_id["warehouse.orders.status"]
     assert bare_col.kind == "field"
     assert bare_col.description is None
 
-    # Measure.
+    # Metric.
     measure_pair = by_id["warehouse.orders.revenue"]
     assert measure_pair.kind == "metric"
     assert measure_pair.description == "revenue measure desc."

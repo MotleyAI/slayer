@@ -8,7 +8,7 @@ If you think of left joins as edges of a graph whose vertices are datasets, then
 
 The graph may contain cycles; a path token always binds the edge it names, so from `x` in a cycle `x → y → z → x` the token `z` follows the direct edge between `x` and `z`, never the route through `y`.
 
-The data model for a SLayer relationship is covered in the [Datasets section](../../concepts/models.md#relationships), it consists of a target dataset plus list of column pairs (of the sql expressions underlying the datasets) to join on.
+The data model for a SLayer relationship is covered in the [Datasets section](../../concepts/datasets.md#relationships), it consists of a target dataset plus list of column pairs (of the sql expressions underlying the datasets) to join on.
 
 ## Referencing joined datasets in queries
 
@@ -38,4 +38,4 @@ Finally, it’s worth reminding the reader that relationships can be added to a 
 
 ---
 
-See the [companion notebook](joins_nb.ipynb) for runnable code demonstrating all relationship patterns.
+See the [companion notebook](relationships_nb.ipynb) for runnable code demonstrating all relationship patterns.

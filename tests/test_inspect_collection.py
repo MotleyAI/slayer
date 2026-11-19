@@ -1,21 +1,21 @@
 """``inspect`` null-reference collection views.
 
 A null/omitted ``reference`` (``None`` or ``[]``) with ``entity_type`` in
-``{model, datasource}`` renders the *collection* at that kind:
+``{dataset, datasource}`` renders the *collection* at that kind:
 
-* ``inspect(None, "model")``  — all models, grouped by datasource.
-  - ``compact=True``  (default): one terse line per model
-    (``- `name` (N cols; joins: ...)``) under a
-    ``# Datasource: `<ds>` — <N> model(s)`` header.
-  - ``compact=False``: the full ``models_summary(<ds>, compact=False)`` block
+* ``inspect(None, "dataset")``  — all datasets, grouped by datasource.
+  - ``compact=True``  (default): one terse line per dataset
+    (``- `name` (N fields; relationships: ...)``) under a
+    ``# Datasource: `<ds>` — <N> dataset(s)`` header.
+  - ``compact=False``: the full ``datasets_summary(<ds>, compact=False)`` block
     per datasource, concatenated (single DS → byte-identical to
-    ``models_summary``).
+    ``datasets_summary``).
 * ``inspect(None, "datasource")`` — all datasources.
   - ``compact=True``  (default): byte-identical to ``list_datasources``.
-  - ``compact=False``: per-DS name + description + model skeleton.
+  - ``compact=False``: per-DS name + description + dataset skeleton.
 
 ``[]`` is normalized to ``None`` (no more "reference list must not be empty").
-Null/``[]`` with ``{column, measure, aggregation, memory}`` → ``ValueError``.
+Null/``[]`` with ``{field, metric, aggregation, memory}`` → ``ValueError``.
 Non-null ``str`` / ``list[str]`` keep their existing behaviour.
 
 The collection path is DB-free (no engine needed).
@@ -59,8 +59,8 @@ from tests._cli_inprocess import run_cli_in_process
 
 
 async def _seed_two_ds(storage: YAMLStorage) -> None:
-    """Two datasources: mydb (orders + customers + a hidden model) and
-    otherdb (events, no joins)."""
+    """Two datasources: mydb (orders + customers + a hidden dataset) and
+    otherdb (events, no relationships)."""
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="h")
     )
@@ -86,7 +86,7 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
         name="customers", sql_table="customers", data_source="mydb",
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     ))
-    # A hidden model must NOT appear in any collection view.
+    # A hidden dataset must NOT appear in any collection view.
     await storage.save_dataset(SlayerDataset(
         name="secret", sql_table="secret", data_source="mydb", hidden=True,
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
@@ -102,7 +102,7 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
 
 
 async def _seed_single_ds(storage: YAMLStorage) -> None:
-    """One datasource, for the byte-identity-vs-models_summary tests."""
+    """One datasource, for the byte-identity-vs-datasets_summary tests."""
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="h")
     )
@@ -167,7 +167,7 @@ def _write_broken_datasource(storage: YAMLStorage, name: str) -> None:
 
 
 # ===========================================================================
-# Model collection — compact=True (one-liner index)
+# Dataset collection — compact=True (one-liner index)
 # ===========================================================================
 
 
@@ -182,21 +182,21 @@ class TestModelCollectionCompactMarkdown:
     async def test_oneliner_per_model(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
         assert "- `orders` (3 fields; relationships: `customers`)" in out
-        # Reverse-reachable joins show in Markdown like in JSON.
+        # Reverse-reachable relationships show in Markdown like in JSON.
         assert "- `customers` (1 fields; relationships: `orders`)" in out
         assert "- `events` (2 fields; relationships: _(none)_)" in out
 
     async def test_no_verbose_block(self, two_ds: YAMLStorage) -> None:
-        # The compact index must NOT emit the models_summary 5-line block.
+        # The compact index must NOT emit the datasets_summary 5-line block.
         out = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
-        assert "Columns: 3" not in out
-        assert "Measures: revenue" not in out
+        assert "Fields: 3" not in out
+        assert "Metrics: revenue" not in out
         assert "sum(amount)" not in out
 
     async def test_hidden_model_excluded(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
         assert "secret" not in out
-        # mydb model count reflects only the visible models (2 + the built-in spine).
+        # mydb dataset count reflects only the visible datasets (2 + the built-in spine).
         assert "# Datasource: `mydb` — 3 dataset(s)" in out
 
     async def test_models_sorted_by_name_within_ds(
@@ -248,13 +248,13 @@ class TestModelCollectionCompactJson:
         orders = next(m for m in mydb["datasets"] if m["name"] == "orders")
         assert orders["field_count"] == 3
         assert orders["relationships_to"] == ["customers"]
-        # The terse envelope carries no per-column / formula payload.
+        # The terse envelope carries no per-field / expression payload.
         assert "fields" not in orders
         assert "metrics" not in orders
 
 
 # ===========================================================================
-# Model collection — compact=False (full models_summary blocks)
+# Dataset collection — compact=False (full datasets_summary blocks)
 # ===========================================================================
 
 
@@ -292,7 +292,7 @@ class TestModelCollectionVerbose:
         data = json.loads(out)
         assert data["collection"] is True
         assert len(data["datasources"]) == 1
-        # The single per-DS element IS the models_summary JSON payload.
+        # The single per-DS element IS the datasets_summary JSON payload.
         assert data["datasources"][0] == summary
 
     async def test_multi_ds_concatenates_full_blocks(
@@ -301,7 +301,7 @@ class TestModelCollectionVerbose:
         out = await _svc(two_ds).inspect(
             reference=None, entity_type="dataset", compact=False,
         )
-        # Full models_summary verbose markers, both datasources.
+        # Full datasets_summary verbose markers, both datasources.
         assert "**Fields (3):**" in out          # orders in mydb
         assert "sum(amount)" in out
         assert "# Datasource: `otherdb` — 2 dataset(s)" in out
@@ -319,7 +319,7 @@ class TestModelCollectionVerbose:
 
 
 # ===========================================================================
-# Model collection — empty / error edge cases
+# Dataset collection — empty / error edge cases
 # ===========================================================================
 
 
@@ -352,7 +352,7 @@ class TestModelCollectionEdges:
 
     async def test_compact_false_empty_ds_json_is_valid(self) -> None:
         # CodeRabbit: an empty datasource must be a valid JSON object (not a
-        # plain-text "has no models" sentinel) under format="json", with the
+        # plain-text "has no datasets" sentinel) under format="json", with the
         # same ``datasource_name`` shape as populated datasources.
         with tempfile.TemporaryDirectory() as tmp:
             st = YAMLStorage(base_dir=tmp)
@@ -424,7 +424,7 @@ class TestDatasourceCollection:
         )
         assert "mydb" in out
         assert "otherdb" in out
-        # A model skeleton is present under a datasource.
+        # A dataset skeleton is present under a datasource.
         assert "orders" in out
 
     async def test_empty_storage_message(
@@ -497,7 +497,7 @@ class TestNonCollectionUnchanged:
         out = await _svc(two_ds).inspect(
             reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         # Not batch-framed.
         assert "## mydb.orders.amount" not in out
 
@@ -549,7 +549,7 @@ class TestMcpCollection:
         # reference must be optional (omittable) now...
         assert "reference" not in required
         # ...but entity_type stays REQUIRED — omitting it must not silently
-        # default to a model collection (Codex, cross-surface consistency).
+        # default to a dataset collection (Codex, cross-surface consistency).
         assert "entity_type" in required
 
     async def test_inspect_datasource_collection(
@@ -686,13 +686,13 @@ class TestCliCollection:
                 storage=cli_storage,
             )
         out = buf.getvalue()
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         assert "## mydb.orders.amount" not in out
 
     def test_parser_allows_zero_positionals(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # End-to-end: ``slayer inspect --type model`` (no positional) must parse
+        # End-to-end: ``slayer inspect --type dataset`` (no positional) must parse
         # and dispatch to the collection view (nargs="*").
 
 
@@ -848,8 +848,8 @@ class TestModelOnlyArgsIgnored:
 
 
 class TestHiddenColumnCount:
-    """Codex #5: ``N cols`` counts NON-hidden columns only (distinct from the
-    hidden-model exclusion)."""
+    """Codex #5: ``N fields`` counts NON-hidden fields only (distinct from the
+    hidden-dataset exclusion)."""
 
     async def test_hidden_column_excluded_from_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -915,7 +915,7 @@ class TestSortedJoins:
 
 
 class TestVerboseEmptyDsInheritance:
-    """Codex #6: compact=False model collection inherits models_summary's
+    """Codex #6: compact=False dataset collection inherits datasets_summary's
     native empty-DS string (no bespoke header)."""
 
     async def test_compact_false_zero_model_ds_native_string(self) -> None:
@@ -986,7 +986,7 @@ class TestEnvelopeCoverage:
         mydb = next(d for d in data["datasources"] if d["name"] == "mydb")
         assert "description" in mydb
         assert "datasets" in mydb
-        # Model skeletons carry names.
+        # Dataset skeletons carry names.
         assert any(m.get("name") == "orders" for m in mydb["datasets"])
 
 

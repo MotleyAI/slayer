@@ -50,7 +50,7 @@ class TestGrainGuards:
 
     async def test_cross_model_partition_outside_derived_grain_raises(self) -> None:
         # The key is checked for attributability from the aggregate's
-        # root — `region` is a host column, unreachable from `customers`.
+        # root — `region` is a host field, unreachable from `customers`.
         q = _q(
             dimensions=["region", "customers.tier"],
             metrics=[
@@ -67,7 +67,7 @@ class TestGrainGuards:
 
 class TestDeferredShapeGuards:
     async def test_window_plus_partition_lifted(self) -> None:
-        # A LOCAL window=+partition_by measure renders: its
+        # A LOCAL window=+partition_by metric renders: its
         # producer is a windowed aggregate at the (partition ∪ active-TD) grain
         # (D5). (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
@@ -83,7 +83,7 @@ class TestDeferredShapeGuards:
     async def test_first_last_plus_partition_lifted(self, agg: str) -> None:
         # The LOCAL shape is lifted — the producer computes the
         # ranked pick at the partition grain and attaches (executed values in
-        # tests/test_dev1824_partitioned_execution.py); cross-model stays deferred.
+        # tests/test_dev1824_partitioned_execution.py); cross-dataset stays deferred.
         q = _q(
             dimensions=["region", "city"],
             metrics=[QueryMetric(metric=f"{agg}(amount, partition_by=region)")],
@@ -95,7 +95,7 @@ class TestDeferredShapeGuards:
         # regroup producer and the transform runs at the query grain over the
         # attached value. Executed-value coverage lives in
         # tests/test_dev1824_partitioned_execution.py::TestTransformOverPartitioned;
-        # a cross-model source stays deferred (test_dev1824_remaining_guards.py).
+        # a cross-dataset source stays deferred (test_dev1824_remaining_guards.py).
         q = _q(
             dimensions=["region"],
             time_dimensions=month_td(),

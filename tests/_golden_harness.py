@@ -1,7 +1,7 @@
 """The golden-SQL harness, once.
 
-Three DEV-1742 PRs each pin the emitted SQL for the shapes they change —
-DEV-1745, DEV-1747, DEV-1748 — and each carried its own copy of the same
+Several suites each pin the emitted SQL for the shapes they change, and each
+carried its own copy of the same
 machinery: build a baseline, merge it under an allowed-delta manifest, compare,
 and assert the manifest is empty and honest. Sonar measured the result at 36%
 duplication on the newest copy. The MATRIX is what differs between them; the
@@ -216,8 +216,7 @@ class GoldenSuite:
             f"emitted SQL changed for {key}.\n"
             f"--- golden ---\n{render_value(baseline[key])}\n"
             f"--- actual ---\n{render_value(actual)}\n"
-            f"If this change is intended, get it approved per the DEV-1742 "
-            f"per-test protocol, add {key!r} to ALLOWED_DELTAS with the reason, "
+            f"If this change is intended, get it approved per test, add {key!r} to ALLOWED_DELTAS with the reason, "
             f"regenerate with SLAYER_UPDATE_GOLDEN=1, then delete the entry."
         )
 
@@ -249,7 +248,7 @@ class GoldenSuite:
 
 
 #: A ``(query, dialect) -> SQL string`` (or recorded raise) generator, bound to
-#: one module's model fixtures. The query param is ``Any`` so a module's
+#: one module's dataset fixtures. The query param is ``Any`` so a module's
 #: concretely-typed ``_generate_one(SlayerQuery, str)`` binds without variance
 #: friction; the return is a coroutine so ``asyncio.run`` accepts it.
 GenerateOne = Callable[[Any, str], Coroutine[Any, Any, object]]
@@ -270,7 +269,7 @@ def bind_golden_tests(
     Every golden module ran the SAME blessing-loop wiring — a module-scoped
     ``baseline`` fixture, a parametrised match test, and the four
     coverage/orphan/manifest guards — differing only in its case matrix, dialect
-    list, baseline path, and which model fixtures ``generate_one`` renders
+    list, baseline path, and which dataset fixtures ``generate_one`` renders
     against. This binds that wiring once; a caller keeps only what is genuinely
     its own (the matrix, the path, and any invariant specific to what it pins,
     which it defines normally alongside the injected names).

@@ -1,6 +1,6 @@
-"""DEV-1853 — ``ModelJoin.name`` rules and save-time join validation.
+"""``DatasetRelationship.name`` rules and save-time relationship validation.
 
-Save-time: edge names must not collide with datasource model names or with
+Save-time: edge names must not collide with datasource dataset names or with
 another edge name incident to either endpoint; unnamed parallel edges warn;
 declaring the exact inverse of an existing edge is rejected (reverse
 traversal is automatic).
@@ -149,8 +149,8 @@ class TestSaveTimeEdgeNames:
 
 class TestModelNameVsEdgeNameCollision:
     async def test_model_named_like_an_existing_edge_rejected(self) -> None:
-        # The symmetric direction of the edge-name/model-name namespace rule:
-        # once an edge is named "billing", a MODEL named "billing" would make
+        # The symmetric direction of the edge-name/dataset-name namespace rule:
+        # once an edge is named "billing", a DATASET named "billing" would make
         # every "billing" path token resolve to the edge, silently shadowing.
         with tempfile.TemporaryDirectory() as d:
             storage = await _storage(d)

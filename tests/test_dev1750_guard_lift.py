@@ -1,8 +1,8 @@
-"""DEV-1750/1836 — the ``time_shift`` / ``consecutive_periods`` × cross-model
-shapes all render now: (a) local inner + a cross-model sibling; (b) host-rooted
-crossing-fragment inner; (c) target-grain cross-model inner (lifted by DEV-1836);
-``consecutive_periods`` over any inner; ``change`` / ``change_pct``. DEV-1846
-adds a composite-input ``time_shift`` case at the bottom.
+"""The ``time_shift`` / ``consecutive_periods`` × cross-dataset
+shapes all render now: (a) local inner + a cross-dataset sibling; (b) host-rooted
+crossing-fragment inner; (c) target-grain cross-dataset inner;
+``consecutive_periods`` over any inner; ``change`` / ``change_pct``. Plus
+a composite-input ``time_shift`` case at the bottom.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def _q(*, metrics) -> SlayerQuery:
 
 class TestLiftedShapesRender:
     async def test_a_local_time_shift_with_cross_model_sibling(self) -> None:
-        """(a) A local ``time_shift`` beside a cross-model sibling: the shift's
+        """(a) A local ``time_shift`` beside a cross-dataset sibling: the shift's
         own inner is local and re-aggregates host-rooted."""
         sql = await gen(_q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
@@ -62,7 +62,7 @@ class TestLiftedShapesRender:
 
     async def test_consecutive_periods_over_target_grain_inner(self) -> None:
         """cp has no target-grain failure mode: it reads the materialised
-        cross-model alias and never re-aggregates, so it renders."""
+        cross-dataset alias and never re-aggregates, so it renders."""
         sql = await gen(_q(metrics=[
             QueryMetric(
                 metric="consecutive_periods(sum(customers.spend) > 0)",
@@ -88,7 +88,7 @@ class TestLiftedShapesRender:
 
 class TestTargetGrainCrossModelRenders:
     async def test_c_target_grain_inner_renders(self) -> None:
-        """(c) DEV-1836 broadcasts the target-grain cross-model aggregate from a
+        """(c) The target-grain cross-dataset aggregate from a
         target-rooted producer, so the row-multiplying re-aggregation is gone."""
         sql = await gen(_q(metrics=[
             QueryMetric(metric="time_shift(sum(customers.spend), -1)", alias="prev"),
@@ -135,7 +135,7 @@ class TestTargetGrainCrossModelRenders:
 
 class TestWindowOpsUnaffected:
     async def test_cumsum_over_cross_model_still_renders(self) -> None:
-        """``cumsum`` (a window op, never guarded) over a cross-model aggregate
+        """``cumsum`` (a window op, never guarded) over a cross-dataset aggregate
         must keep rendering — the narrowing must not disturb the window arm."""
         sql = await gen(_q(metrics=[
             QueryMetric(metric="cumsum(sum(customers.spend))", alias="run"),

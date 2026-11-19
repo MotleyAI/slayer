@@ -23,7 +23,7 @@ The Node versions are pinned exactly in each `package.json` and `package-lock.js
 | `dataset.sql` | The shared dataset: `regions`, `customers`, `orders`, `returns`, `events` and the `orders_flat` view |
 | `probes.yaml` | One entry per probe, with one block per engine (field reference at the top of the file) |
 | `slayer/models/` | SLayer datasets, including the saved query-backed `monthly_rev` and `avg_customer_rev` |
-| `slayer/extra_models/` | SLayer datasets saved only for the probes that name them (`extra_datasets`), since they add relationship cycles |
+| `slayer/extra_datasets/` | SLayer datasets saved only for the probes that name them (`extra_datasets`), since they add relationship cycles |
 | `malloy/model.malloy` | Malloy sources; each probe's query is appended to it |
 | `cube/model/` | Cube base cubes: plain dimensions, base measures and joins |
 | `cube/model_declared/` | Cube multi-stage measures, rolling windows and `sub_query` dimensions, layered on `cube/model/` |

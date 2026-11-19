@@ -1,13 +1,13 @@
-"""Stage 2 (DEV-1450) — typed scope and stage-schema types (P5, P6).
+"""Typed scope and stage-schema types (P5, P6).
 
-``ModelScope`` is the scope kind used while binding refs against a model
-with joins; dotted refs walk the join graph. ``StageSchema`` is the
+``DatasetScope`` is the scope kind used while binding refs against a dataset
+with relationships; dotted refs walk the relationship graph. ``StageSchema`` is the
 typed projection of a query stage — downstream stages bind against it
-as a *flat* namespace (P5: no join syntax through StageSchema).
+as a *flat* namespace (P5: no relationship syntax through StageSchema).
 
-Per I2, ``ModelScope.population`` is ``Optional`` from day one so a
-future anchor-less mode is a type-additive change. DEV-1450's binder
-will assert ``source_model is not None`` at use sites.
+Per I2, ``DatasetScope.population`` is ``Optional`` from day one so a
+future anchor-less mode is a type-additive change. The binder asserts
+``source_model is not None`` at use sites.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ class TestStageSchema:
 
     def test_flat_namespace_dunder_names_ok(self):
         # P5: __-bearing identifiers are FLAT names in StageSchema scope —
-        # they're not interpreted as join-path aliases here.
+        # they're not interpreted as relationship-path aliases here.
         s = StageSchema(
             relation_name="s",
             fields=[StageField(
@@ -147,7 +147,7 @@ class TestStageSchema:
 
 
 # ---------------------------------------------------------------------------
-# ModelScope
+# DatasetScope
 # ---------------------------------------------------------------------------
 
 

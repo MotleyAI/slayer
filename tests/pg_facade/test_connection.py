@@ -344,7 +344,7 @@ async def test_token_empty_password_errors() -> None:
 
 
 async def test_any_database_name_accepted_as_logical_db() -> None:
-    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # The database parameter is a logical DB name, not a datasource
     # selector — an arbitrary name connects successfully (no 3D000).
     writer = await _run(_startup(user="u", database="nope") + _query("SELECT 1") + _terminate())
     msgs = _messages(writer.buffer)
@@ -402,7 +402,7 @@ async def test_multi_statement_begin_select_commit_tx_cycle() -> None:
 
 async def test_begin_read_only_tx_cycle() -> None:
     # Metabase wraps reads in BEGIN READ ONLY; sqlglot can't parse that, so the
-    # facade recognises it pre-parse (DEV-1594). Whole cycle must succeed.
+    # facade recognises it pre-parse. Whole cycle must succeed.
     inp = (
         _startup(user="u", database="jaffle")
         + _query("BEGIN READ ONLY; SELECT 1; COMMIT;")
@@ -474,7 +474,7 @@ async def test_extended_query_with_bound_param_substitutes() -> None:
     # `SELECT $1` → the bound literal becomes the projection. The probe path
     # won't match, but INFORMATION_SCHEMA filtering with a param is the real
     # use; here we assert the bind succeeds and a row is produced.
-    # DEV-1558: `catalog_name` in INFORMATION_SCHEMA rows is the
+    # `catalog_name` in INFORMATION_SCHEMA rows is the
     # connection's datasource (jaffle here), not the static `slayer`
     # name — Postgres-compatible semantics for `current_database()`.
     inp = (
@@ -1039,7 +1039,7 @@ class TestIterParamPlaceholders:
         )
         out = conn._substitute_params(stmt, bind)
         assert out == "WHERE note = '$1' AND status = 'active'"
-# --- DEV-1558: catalog SQL via the DuckDB executor over the extended protocol
+# --- Catalog SQL via the DuckDB executor over the extended protocol
 
 
 def _parse_row_description(body: bytes):
@@ -1148,7 +1148,7 @@ async def test_extended_protocol_catalog_query_binary_format() -> None:
 
 
 async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
-    """DEV-1558 regression: asyncpg sends Parse + Describe-Statement BEFORE
+    """Regression: asyncpg sends Parse + Describe-Statement BEFORE
     Bind. With a $N parameter in the SQL, the catalog executor would
     previously fail on Describe (unsubstituted $N → DuckDB bind error),
     emit NoData, then Execute would emit a populated RowDescription —
@@ -1203,7 +1203,7 @@ async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
 
 
 async def test_describe_int_param_against_int_column_no_conversion_error() -> None:
-    """DEV-1558 live-Metabase repro (round 19): when pgjdbc binds a
+    """Live-Metabase repro: when pgjdbc binds a
     parameter against an INT column (e.g. ``WHERE objsubid = $1``) but
     didn't declare the param OID, ``_resolve_param_oids`` defaults to
     ``OID_TEXT``. The round-13 literal sentinel ``''`` then made the
@@ -1240,7 +1240,7 @@ async def test_describe_int_param_against_int_column_no_conversion_error() -> No
 
 
 async def test_simple_query_catalog_union_routes_to_executor() -> None:
-    """DEV-1558 round 19: Metabase corpus #12 is a top-level
+    """Metabase corpus #12 is a top-level
     ``UNION ALL`` between info-schema and pg_catalog branches. Before
     the fix the translator rejected ``exp.Union`` as ``Unsupported
     statement: Union`` before the catalog-executor branch fired.
@@ -1264,7 +1264,7 @@ async def test_simple_query_catalog_union_routes_to_executor() -> None:
     assert "D" in type_seq  # at least one DataRow
 
 
-# --- DEV-1569: per-connection SET state ---
+# --- Per-connection SET state ---
 
 
 def _show_value(msgs: list[tuple[str, bytes]]) -> str:
@@ -1603,7 +1603,7 @@ async def test_set_session_qualifier_round_trip() -> None:
 
 async def test_set_local_treated_as_session_scope() -> None:
     """Scope cut: `SET LOCAL` is NOT restored at transaction end. Pins the
-    current behavior — DEV-1569 doesn't implement transaction-bound SET."""
+    current behavior — transaction-bound SET is not implemented."""
     inp = (
         _startup(user="u", database="jaffle")
         + _query("SET LOCAL application_name = 'localval'")
@@ -1762,7 +1762,7 @@ async def test_two_connections_isolated_under_set_config() -> None:
     assert _show_value(_messages(writer_b.buffer)) == "sc-B"
 
 
-# --- DEV-1569 Codex round 2 follow-ups ---
+# --- SET state: edge cases ---
 
 
 def _index_of_first(msgs: list[tuple[str, bytes]], pred) -> int:
@@ -1999,7 +1999,7 @@ async def test_set_config_with_cast_value_mutates_session() -> None:
 
 async def test_set_config_with_is_local_true_does_not_mutate() -> None:
     """`set_config('app', 'x', true)` must NOT persist — `is_local=true` is
-    out of scope for DEV-1569."""
+    not supported."""
     inp = (
         _startup(user="u", database="jaffle")
         + _query("SELECT set_config('application_name', 'transient', true)")
@@ -2041,7 +2041,7 @@ async def test_set_pushes_parameter_status_for_all_reportable_names(
     # the seed value; only the LAST push for this name should be the SET.
     assert len(post) >= 1
     assert post[-1] == (expected_name, expected_value)
-# --- DEV-1570: empty-string-vs-non-text Bind rewrite -----------------------
+# --- Empty-string-vs-non-text Bind rewrite -----------------------
 
 
 async def _run_capturing(
@@ -2065,7 +2065,7 @@ async def _run_capturing(
 
 
 async def test_bind_empty_string_to_int_column_in_pg_catalog_no_error() -> None:
-    """DEV-1570: pgjdbc's empty-string-for-null-text convention against an
+    """pgjdbc's empty-string-for-null-text convention against an
     INT column previously produced ``WHERE objsubid = ''`` → DuckDB
     ``Conversion Error: Could not convert string '' to INT64`` at Execute.
     The Bind-time rewrite swaps the literal to ``NULL`` so the query runs."""
@@ -2140,7 +2140,7 @@ async def test_bind_empty_string_to_boolean_column_substitutes_null() -> None:
 
 
 async def test_bind_empty_string_to_date_column_user_model_substitutes_null() -> None:
-    """DATE-typed user-model column. Verifies the user-model branch of the
+    """DATE-typed user-dataset column. Verifies the user-dataset branch of the
     column-type index resolves under PUBLIC_SCHEMA."""
     sql = "SELECT id FROM orders WHERE order_date = $1"
     engine = _CapturingEngine([])
@@ -2285,7 +2285,7 @@ async def test_bind_nonempty_string_against_int_column_preserves_literal() -> No
 async def test_bind_empty_string_declared_oid_int8_is_bind_error() -> None:
     """When the client explicitly declares OID_INT8 in Parse and binds
     `b""`, the existing `value_from_text` path raises ValueError → bind
-    error. The DEV-1570 rewrite is gated on OID_TEXT only."""
+    error. The empty-string rewrite is gated on OID_TEXT only."""
     sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
     inp = (
         _startup(user="u", database="jaffle")
@@ -2367,7 +2367,7 @@ async def test_bind_empty_string_via_cte_alias_falls_through() -> None:
 
 
 async def test_bind_empty_string_user_model_int_column() -> None:
-    """User-model branch via PUBLIC_SCHEMA — `orders.id` is INT primary key."""
+    """User-dataset branch via PUBLIC_SCHEMA — `orders.id` is INT primary key."""
     sql = "SELECT id FROM orders WHERE id = $1"
     inp = (
         _startup(user="u", database="jaffle")
@@ -2378,11 +2378,11 @@ async def test_bind_empty_string_user_model_int_column() -> None:
     )
     _writer, conn = await _run_capturing(inp)
     portal_sql = conn._portals[""].sql
-    assert "NULL" in portal_sql, f"user-model INT column must rewrite: {portal_sql!r}"
+    assert "NULL" in portal_sql, f"user-dataset INT column must rewrite: {portal_sql!r}"
     assert "''" not in portal_sql
 
 
-# --- DEV-1594: multi-datasource catalog + per-connection scoping -------------
+# --- Multi-datasource catalog + per-connection scoping -------------
 
 
 def _employees_dataset():
@@ -2634,7 +2634,7 @@ async def test_refresh_rebuilds_catalog_when_fingerprint_changes() -> None:
     await _seed_catalog(conn, storage)
     before = conn._catalog
 
-    # A model edit that also bumps the storage fingerprint.
+    # A dataset edit that also bumps the storage fingerprint.
     storage._models_by_ds["jaffle"][0].description = "edited"
     storage.fingerprint = "v2"
 

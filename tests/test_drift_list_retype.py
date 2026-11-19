@@ -1,4 +1,4 @@
-"""Any non-list column over a live list is a report-only re-type finding that re-ingest applies
+"""Any non-list field over a live list is a report-only re-type finding that re-ingest applies
 (spec: models/schema-drift)."""
 
 from __future__ import annotations

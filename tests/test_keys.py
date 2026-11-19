@@ -1,5 +1,4 @@
-"""Stage 1 (DEV-1450) — typed identity primitives for the new resolution
-pipeline.
+"""Typed identity primitives for the resolution pipeline.
 
 These keys identify slots structurally (P2). Two expression occurrences with
 the same key intern to the same slot. The keys carry only identity — no
@@ -453,7 +452,7 @@ class TestBoolDecimalDisambiguation:
 
 class TestIdentityInterning:
     def test_three_occurrences_share_one_slot(self):
-        # P2: revenue:sum as a declared measure, as the inner ref of
+        # P2: revenue:sum as a declared metric, as the inner ref of
         # change(revenue:sum), and as a filter occurrence all bind to one
         # slot via structural identity.
         rev_sum_a = AggregateKey(
@@ -473,7 +472,7 @@ class TestIdentityInterning:
         assert registry[rev_sum_c] == "slot_1"
 
     def test_local_and_cross_model_share_class(self):
-        # P3: local and cross-model aggregates have the same shape; only
+        # P3: local and cross-dataset aggregates have the same shape; only
         # source.path differs.
         local = AggregateKey(
             source=FieldKey(path=(), leaf="revenue"), agg="sum"
@@ -489,7 +488,7 @@ class TestIdentityInterning:
         assert cross.source.path == ("customers",)
 
     def test_transform_wrapping_preserves_inner_identity(self):
-        # C2 / DEV-1446: change(revenue:sum) wraps the same inner slot.
+        # C2: change(revenue:sum) wraps the same inner slot.
         inner_a = AggregateKey(
             source=FieldKey(path=(), leaf="revenue"), agg="sum"
         )

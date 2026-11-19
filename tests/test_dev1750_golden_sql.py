@@ -1,4 +1,4 @@
-"""Golden SQL baseline for the time_shift/cp × cross-model shapes.
+"""Golden SQL baseline for the time_shift/cp × cross-dataset shapes.
 
 Same harness and four-step blessing loop as ``tests/test_dev1748_golden_sql.py``
 (read ``tests/_golden_harness.py`` for the mechanics); only the matrix differs.
@@ -44,7 +44,7 @@ def _q(**kw) -> SlayerQuery:
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
-        # (a) local time_shift beside a cross-model sibling.
+        # (a) local time_shift beside a cross-dataset sibling.
         "a/local_ts_cm_sibling": _q(to_many_handling="broadcast", metrics=[
             {"metric": "sum(customers.spend)", "alias": "cm"},
             {"metric": "time_shift(sum(amount), -1)", "alias": "prev"},
@@ -61,7 +61,7 @@ def _cases() -> dict:
             {"metric": "sum(amount)", "alias": "s"},
             {"metric": "time_shift(wscaled_sum(amount), -1)", "alias": "prev"},
         ]),
-        # (b) crossing a 1:N join — the shifted CTE must pull the fan-out join.
+        # (b) crossing a 1:N relationship — the shifted CTE must pull the fan-out join.
         "b/liscaled_one_to_many": _q(metrics=[
             {"metric": "sum(amount)", "alias": "s"},
             {"metric": "time_shift(liscaled_sum(amount), -1)", "alias": "prev"},
@@ -86,12 +86,12 @@ def _cases() -> dict:
         "c/target_grain_guarded": _q(to_many_handling="broadcast", metrics=[
             {"metric": "time_shift(sum(customers.spend), -1)", "alias": "prev"},
         ]),
-        # window op over cross-model — never guarded; a regression anchor.
+        # window op over cross-dataset — never guarded; a regression anchor.
         "window/cumsum_cross_model": _q(to_many_handling="broadcast", metrics=[
             {"metric": "cumsum(sum(customers.spend))", "alias": "run"},
         ]),
         # composite-input transform — lifted; it now renders a
-        # shifted-CTE re-aggregation beside the cross-model sibling.
+        # shifted-CTE re-aggregation beside the cross-dataset sibling.
         "composite/lifted": _q(to_many_handling="broadcast", metrics=[
             {"metric": "sum(customers.spend)", "alias": "cm"},
             {"metric": "time_shift(sum(amount) + sum(amount), -1)", "alias": "prev"},

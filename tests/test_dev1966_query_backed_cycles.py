@@ -1,4 +1,4 @@
-"""A self- or transitively-referencing query-backed model raises one cycle error everywhere.
+"""A self- or transitively-referencing query-backed dataset raises one cycle error everywhere.
 
 Spec: openspec …/specs/queries/query-backed-inline — "Query-backed cycles are rejected";
 …/specs/models/save-validation — "Self-referencing query-backed models are rejected at save time".
@@ -25,7 +25,7 @@ def _qb(name: str, source: str) -> SlayerDataset:
         query(population=source, metrics=[m("sum(amount)", "amount")])])
 
 
-#: shape → (stored models, the model the surface starts from, the expected ordered path).
+#: shape → (stored datasets, the dataset the surface starts from, the expected ordered path).
 _SHAPES = {
     "direct": ([_qb("cyc_s", "cyc_s")], "cyc_s", "cyc_s -> cyc_s"),
     "transitive": ([_qb("cyc_a", "cyc_b"), _qb("cyc_b", "cyc_a")], "cyc_a", "cyc_a -> cyc_b -> cyc_a"),
@@ -61,7 +61,7 @@ async def _engine(tmp: str, datasets: List[SlayerDataset], *, omit: str = "") ->
 async def test_cycle_raises_naming_the_ordered_path(surface, shape) -> None:
     models, start, path = _SHAPES[shape]
     with tempfile.TemporaryDirectory() as tmp:
-        # save_model starts from an unsaved model; the rest find it in storage.
+        # save_model starts from an unsaved dataset; the rest find it in storage.
         engine, storage = await _engine(tmp, models, omit=start if surface == "save_model" else "")
         exc = await _raise_via(surface, engine, models, start)
         assert type(exc) is not SlayerError

@@ -1,7 +1,7 @@
-"""DEV-1865 — the materialize-and-filter fallback for unlowered masks.
+"""The materialize-and-filter fallback for unlowered masks.
 
 Correctness never depends on a lowering rule existing: with the HAVING lowering
-forced off, a measure mask routes through the general outer-WHERE path over
+forced off, a metric mask routes through the general outer-WHERE path over
 materialized hidden columns and produces identical results.
 """
 
@@ -14,7 +14,7 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1865_fixtures import make_exec_engine, q
 
-# A combined-select shape (the partitioned measure attaches a producer CTE), so
+# A combined-select shape (the partitioned metric attaches a producer CTE), so
 # the outer scope the fallback routes to actually exists.
 _QUERY_KWARGS = dict(
     dimensions=["region", "city"],

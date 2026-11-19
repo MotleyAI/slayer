@@ -1,4 +1,4 @@
-"""The built-in spine is reached in any case, its name is reserved in any case, and no stored join targets it
+"""The built-in spine is reached in any case, its name is reserved in any case, and no stored relationship targets it
 (spec: queries/time-spine)."""
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ async def outcome(engine: SlayerQueryEngine, query: Any) -> tuple:
     return ("ok", resp.columns, sorted(map(str, resp.data)), sorted(map(str, resp.warnings or [])))
 
 
-#: Each query-written model-name position: a query builder over the spine spelling, and the canonical outcome.
+#: Each query-written dataset-name position: a query builder over the spine spelling, and the canonical outcome.
 POSITIONS = {
     "source-model": (lambda s: {"population": s, "time_dimensions": [td(s)], **sum_orders()}, "ok"),
     "time-dimension": (lambda s: {"time_dimensions": [td(s)], **sum_orders()}, "ok"),
@@ -206,7 +206,7 @@ class TestReservedName:
 
 
 # --------------------------------------------------------------------------- #
-# A stored join never targets the spine
+# A stored relationship never targets the spine
 # --------------------------------------------------------------------------- #
 @pytest.fixture(params=("yaml", "sqlite"))
 async def storage(request, tmp_path) -> StorageBackend:

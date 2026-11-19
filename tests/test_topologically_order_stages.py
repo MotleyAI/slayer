@@ -46,7 +46,7 @@ def test_engine_shim_delegates() -> None:
 
 
 def test_reorders_simple_forward_reference() -> None:
-    # b depends on a via joins.target_model; input order is [b, a, root].
+    # b depends on a via relationships[].to; input order is [b, a, root].
     a = SlayerQuery(name="a", population="orders")
     b = SlayerQuery(
         name="b",
@@ -133,7 +133,7 @@ def test_duplicate_name_raises() -> None:
 
 
 def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
-    """A ``ModelExtension`` join to a sibling adds an edge."""
+    """A ``DatasetExtension`` relationship to a sibling adds an edge."""
     a = SlayerQuery(name="a", population="orders")
     b = SlayerQuery(
         name="b",

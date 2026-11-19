@@ -1,7 +1,7 @@
-"""DEV-1865 — cross-model aggregates compose in expressions and dimensions.
+"""Cross-dataset aggregates compose in expressions and dimensions.
 
-Pins the modified cross-model requirement's composition scenarios that
-DEV-1865 restates but does not change (the filter/order scenarios live in
+Pins the modified cross-dataset requirement's composition scenarios that
+are restated but not changed (the filter/order scenarios live in
 test_dev1865_newly_legal / test_dev1865_cross_model_keyless). Run on
 SQLite + DuckDB.
 """

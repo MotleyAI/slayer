@@ -1,22 +1,22 @@
 """Tests for the two-mode reference semantics.
 
-Mode A — SQL expression: Column.sql, Column.filter, SlayerModel.filters.
+Mode A — SQL expression: DatasetField.sql, DatasetField.filter, SlayerDataset.filters.
     Free SQL via sqlglot. Bare names = underlying-table columns; ``__``-paths
-    = joined-model aliases (with the leaf following a single dot, e.g.
+    = joined-dataset aliases (with the leaf following a single dot, e.g.
     ``customers__regions.name``). Rejects aggregation colon syntax, transform
-    calls, ModelMeasure refs, and (for filters) raw OVER (...).
+    calls, DatasetMetric refs, and (for filters) raw OVER (...).
 
-Mode B — DSL expression: ModelMeasure.expression, SlayerQuery.{measures,
+Mode B — DSL expression: DatasetMetric.expression, SlayerQuery.{metrics,
     filters, dimensions, time_dimensions, order, main_time_dimension}.
-    Pure DSL via Python AST. Accepts only Column / ModelMeasure references,
+    Pure DSL via Python AST. Accepts only DatasetField / DatasetMetric references,
     aggregation colon syntax, transforms, single-dot dotted paths, and
     arithmetic / boolean / comparison ops. Rejects raw SQL function calls,
-    ``__`` in user input, and bare names that don't resolve to a Column or
-    ModelMeasure on the model (strict resolution at enrichment time).
+    ``__`` in user input, and bare names that don't resolve to a DatasetField or
+    DatasetMetric on the dataset (strict resolution at enrichment time).
 
-The internal ``__`` carve-out on ``Column.name`` (used by the query-backed
-virtual-model expansion to flatten joined-model columns into virtual-model
-columns) is preserved.
+The internal ``__`` carve-out on ``DatasetField.name`` (used by the query-backed
+virtual-dataset expansion to flatten joined-dataset fields into virtual-dataset
+fields) is preserved.
 """
 
 import pytest
@@ -51,7 +51,7 @@ def _make_planets_dataset(*, with_window_column: bool = False) -> SlayerDataset:
 
 
 # ---------------------------------------------------------------------------
-# Mode A — SQL expression mode (Column.sql, Column.filter, SlayerModel.filters)
+# Mode A — SQL expression mode (DatasetField.sql, DatasetField.filter, SlayerDataset.filters)
 # ---------------------------------------------------------------------------
 
 
@@ -141,12 +141,12 @@ class TestSqlModeAcceptance:
 
 
 class TestSqlModeRuntime:
-    """Mode A SQL filters (``Column.filter`` /
-    ``SlayerModel.filters``) must not just construct cleanly — they
+    """Mode A SQL filters (``DatasetField.filter`` /
+    ``SlayerDataset.filters``) must not just construct cleanly — they
     have to flow through enrichment without the DSL parser rejecting
     arbitrary SQL function calls. Once, the construction
     tests passed but the engine failed at first query against any
-    such model.
+    such dataset.
     """
 
     async def test_model_filter_with_json_extract_enriches(self) -> None:
@@ -165,11 +165,11 @@ class TestSqlModeRuntime:
             metrics=[QueryMetric(metric="sum(amount)")],
         )
         # This once raised "Unknown filter function 'json_extract'" at enrichment
-        # time; it renders — the Mode A model filter survives into the WHERE of
-        # the model's filtered dataset.
+        # time; it renders — the Mode A dataset filter survives into the WHERE of
+        # the dataset's filtered scan.
         sql = await _engine_generate(query=query, dataset=model)
         assert "json_extract" in _dataset_where_text(sql).lower(), (
-            f"model filter dropped from WHERE clause:\n{sql}"
+            f"dataset filter dropped from WHERE clause:\n{sql}"
         )
 
     async def test_column_filter_with_lower_enriches(self) -> None:
@@ -193,18 +193,18 @@ class TestSqlModeRuntime:
             metrics=[QueryMetric(metric="sum(active_amount)")],
         )
         sql = await _engine_generate(query=query, dataset=model)
-        # The Column.filter goes onto the measure as a CASE WHEN wrapper
+        # The DatasetField.filter goes onto the metric as a CASE WHEN wrapper
         # inside the aggregate — the lowercase ``lower(...)`` predicate must
         # appear within the SUM expression.
-        assert "lower" in sql.lower(), f"column filter dropped:\n{sql}"
-        assert "CASE" in sql.upper(), f"column filter not wrapped in CASE:\n{sql}"
+        assert "lower" in sql.lower(), f"field filter dropped:\n{sql}"
+        assert "CASE" in sql.upper(), f"field filter not wrapped in CASE:\n{sql}"
 
     async def test_model_filter_with_double_underscore_join_path_enriches(self) -> None:
-        # ``customers__regions.name`` is a ``__``-delimited join path —
+        # ``customers__regions.name`` is a ``__``-delimited relationship path —
         # parse_sql_predicate must preserve it as one column ref so the
-        # downstream join detection in _scan_filter_column_ref recognises the
-        # path and pulls the two-hop ``m → customers → regions`` join chain.
-        # With a real join target the ``__``-alias resolves to a bound
+        # downstream relationship detection in _scan_filter_column_ref recognises the
+        # path and pulls the two-hop ``m → customers → regions`` relationship chain.
+        # With a real relationship target the ``__``-alias resolves to a bound
         # ``LEFT JOIN r AS customers__regions``, so the emitted SQL is
         # scope-closed AND the ``__``-path survives into it.
         regions = SlayerDataset(
@@ -241,7 +241,7 @@ class TestSqlModeRuntime:
             query=query, dataset=model, extra_datasets=[customers, regions],
         )
         assert "customers__regions.name" in sql, (
-            f"__-delimited join path dropped from emitted SQL:\n{sql}"
+            f"__-delimited relationship path dropped from emitted SQL:\n{sql}"
         )
         assert "AS customers__regions" in sql, (
             f"__-path did not resolve to a bound join alias:\n{sql}"
@@ -250,7 +250,7 @@ class TestSqlModeRuntime:
 
 class TestSqlModeRejection:
     """DSL constructs (aggregation colon, transforms, OVER) are rejected on
-    the model side. SQL is free, but it cannot reach into the DSL."""
+    the dataset side. SQL is free, but it cannot reach into the DSL."""
 
     def test_column_filter_rejects_aggregation_colon(self) -> None:
         with pytest.raises(ValueError, match="(?i)aggregat|colon|measure|DSL"):
@@ -293,7 +293,7 @@ class TestSqlModeRejection:
             )
 
     def test_model_filter_rejects_raw_over(self) -> None:
-        """Raw OVER (...) in a model filter is rejected (existing behavior preserved)."""
+        """Raw OVER (...) in a dataset filter is rejected (existing behavior preserved)."""
         columns = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
             SlayerDataset(
@@ -315,7 +315,7 @@ class TestSqlModeRejection:
 
 
 # ---------------------------------------------------------------------------
-# Mode B — DSL expression mode (queries + ModelMeasure)
+# Mode B — DSL expression mode (queries + DatasetMetric)
 # ---------------------------------------------------------------------------
 
 
@@ -359,22 +359,22 @@ class TestDslModeAcceptance:
         assert q.filter == ["status = '{status_val}'"]
 
     def test_model_measure_accepts_cross_model_dotted_ref(self) -> None:
-        """Cross-model dotted refs in ModelMeasure formulas remain supported (per spec)."""
+        """Cross-dataset dotted refs in DatasetMetric expressions remain supported (per spec)."""
         m = DatasetMetric(name="cust_rev", expression="sum(customers.revenue)")
         assert m.expression == "sum(customers.revenue)"
 
 
 class TestDslModeRejection:
     """DSL-mode rejection rules. Raw ``OVER (...)`` is rejected at
-    SlayerQuery / ModelMeasure construction (Python AST cannot parse it).
+    SlayerQuery / DatasetMetric construction (Python AST cannot parse it).
     Raw SQL function calls and unresolved bare names — including
-    ``__``-prefixed tokens that don't resolve to a virtual-model column
+    ``__``-prefixed tokens that don't resolve to a virtual-dataset field
     — are rejected at enrichment time, where the parser has full
-    custom-aggregation and named-measure context.
+    custom-aggregation and named-metric context.
     """
 
     async def test_query_filter_rejects_raw_sql_function_at_enrichment(self) -> None:
-        """A function outside the Mode-B library (``initcap``) must be a Column on the model,
+        """A function outside the Mode-B library (``initcap``) must be a DatasetField on the dataset,
         referenced from the DSL. The rejection fires at enrichment time, where the DSL parser has
         full custom-aggregation context and can produce an accurate ``Unknown filter function`` error.
         """
@@ -396,9 +396,9 @@ class TestDslModeRejection:
             await _engine_generate(query=query, dataset=model)
 
     async def test_query_filter_rejects_unknown_double_underscore_at_enrichment(self) -> None:
-        """``customers__region`` is a typo (no virtual column with that name on
-        the source model). Strict resolution at bind time catches it. Note:
-        ``__`` is NOT rejected at construction because virtual-model columns
+        """``customers__region`` is a typo (no virtual field with that name on
+        the source dataset). Strict resolution at bind time catches it. Note:
+        ``__`` is NOT rejected at construction because virtual-dataset fields
         produced by query-backed expansion legitimately contain ``__`` in their
         names (e.g. ``kpis__total_amount_sum``)."""
         model = SlayerDataset(
@@ -423,9 +423,9 @@ class TestDslModeRejection:
             )
 
     async def test_model_measure_rejects_raw_sql_function_at_enrichment(self) -> None:
-        """ModelMeasure is DSL — ``json_extract`` has no place there. The
+        """DatasetMetric is DSL — ``json_extract`` has no place there. The
         rejection fires at enrichment time (where the DSL parser runs with
-        full custom-aggregation context), not at ModelMeasure construction.
+        full custom-aggregation context), not at DatasetMetric construction.
         """
         model = SlayerDataset(
             name="m",
@@ -449,8 +449,8 @@ class TestDslModeRejection:
 
 
 class TestStrictResolution:
-    """A bare name in a query field that doesn't resolve to a defined Column,
-    a ModelMeasure, or a {variable} raises ReferenceError at enrichment.
+    """A bare name in a query field that doesn't resolve to a defined DatasetField,
+    a DatasetMetric, or a {variable} raises ReferenceError at enrichment.
     """
 
     async def test_unknown_filter_name_raises_at_enrichment(self) -> None:
@@ -491,11 +491,11 @@ class TestStrictResolution:
 
     async def test_filter_referencing_unjoined_model_raises(self) -> None:
         """A filter like ``transportation_assets.total_vehicles >= 3``
-        where ``transportation_assets`` is **not** in the source model's
-        ``joins`` used to silently render SQL with an unbound table reference
+        where ``transportation_assets`` is **not** in the source dataset's
+        ``relationships`` used to silently render SQL with an unbound table reference
         in the WHERE clause and fail at execution with a cryptic database
         error. The strict-resolution check now raises at enrichment with
-        a clear "not in joins" message so agents can recover on retry.
+        a clear "no relationship" message so agents can recover on retry.
         """
         households = SlayerDataset(
             name="households",
@@ -504,7 +504,7 @@ class TestStrictResolution:
             fields=[
                 DatasetField(name="housenum", sql="housenum", datatype=DataType.INTEGER, primary_key=True),
             ],
-            # Note: NO join to ``transportation_assets``.
+            # Note: NO relationship to ``transportation_assets``.
         )
         query = SlayerQuery(
             population="households",
@@ -526,7 +526,7 @@ class TestStrictResolution:
     # inheritance (tests/test_dev1836_filter_inheritance, test_dev1747_reroot_filter_routing).
 
     async def test_known_filter_name_passes(self) -> None:
-        """Control: a filter naming a defined Column enriches without error."""
+        """Control: a filter naming a defined DatasetField enriches without error."""
         model = SlayerDataset(
             name="m",
             sql_table="t",
@@ -551,7 +551,7 @@ class TestStrictResolution:
 
 
 class TestPredicatePromotionRemoved:
-    """A query filter referencing a Column whose `sql` contains a window
+    """A query filter referencing a DatasetField whose `sql` contains a window
     function used to auto-promote to a post-aggregation outer WHERE. That
     escape hatch is dropped — users use rank-family transforms instead.
     """
@@ -572,7 +572,7 @@ class TestPredicatePromotionRemoved:
         )
 
     async def test_select_only_on_windowed_column_still_works(self) -> None:
-        """A windowed Column.sql is still legal as a *projection* — only as a
+        """A windowed DatasetField.sql is still legal as a *projection* — only as a
         filter target does it now error."""
         model = _make_planets_dataset(with_window_column=True)
         query = SlayerQuery(
@@ -584,16 +584,16 @@ class TestPredicatePromotionRemoved:
 
 
 # ---------------------------------------------------------------------------
-# Internal __ carve-out for virtual-model columns
+# Internal __ carve-out for virtual-dataset fields
 # ---------------------------------------------------------------------------
 
 
 class TestVirtualModelColumnCarveOut:
-    """Query-backed virtual-model expansion flattens joined-model columns
-    into virtual-model column names like `stores__name`. The Column-level
+    """Query-backed virtual-dataset expansion flattens joined-dataset fields
+    into virtual-dataset field names like `stores__name`. The DatasetField-level
     validator must keep accepting `__` so that path keeps working. The
-    user-input dunder check fires at SlayerQuery / ModelMeasure
-    construction, not at Column construction (which is also used internally).
+    user-input dunder check fires at SlayerQuery / DatasetMetric
+    construction, not at DatasetField construction (which is also used internally).
     """
 
     def test_column_with_double_underscore_name_accepted(self) -> None:

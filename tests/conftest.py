@@ -220,7 +220,7 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
     Two reasons:
 
     * Without this, tests that exercise the real write paths
-      (``save_memory`` / ``ingest`` / ``edit_model``) would attempt
+      (``save_memory`` / ``ingest`` / ``edit_dataset``) would attempt
       live ``litellm.aembedding`` calls — costing money on a dev
       machine that has ``OPENAI_API_KEY`` set, and emitting per-entity
       bubble-up warnings on CI that doesn't.
@@ -303,7 +303,7 @@ def sample_datasource() -> DatasourceConfig:
 @pytest.fixture
 async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
     """A YAMLStorage seeded with a single ``mydb`` datasource
-    and a minimal ``orders`` model (id PK + amount column). Shared by
+    and a minimal ``orders`` dataset (id PK + amount field). Shared by
     every memory-reference test that just needs *some* live entity to resolve
     memory references against; centralised here to keep the per-test
     setup blocks from drifting into Sonar duplication-density failures.
@@ -331,7 +331,7 @@ async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_engine(request):
-    """Executing engine over the shared dev1739-family models, one per backend.
+    """Executing engine over the shared dev1739-family datasets, one per backend.
 
     Modules built on another fixture family override this locally.
     """

@@ -1,4 +1,4 @@
-"""DEV-1858 — the MCP ``query`` tool is a thin ``engine.execute`` wrapper.
+"""The MCP ``query`` tool is a thin ``engine.execute`` wrapper.
 
 Spec: openspec/changes/dev-1858-tidy-up-mcp-query-tools/specs/mcp/query-tool.
 One polymorphic ``query`` argument (string / object / list) mirroring the
@@ -63,8 +63,8 @@ def _seed_orders_db(db_path: str) -> None:
 
 @pytest.fixture
 async def orders_server(tmp_path):
-    """MCP server over a live SQLite ``orders`` model plus a query-backed
-    ``qb_by_status`` model. ``status`` carries a label so the run-by-name
+    """MCP server over a live SQLite ``orders`` dataset plus a query-backed
+    ``qb_by_status`` dataset. ``status`` carries a label so the run-by-name
     result exposes dimension attribute metadata."""
     db_path = str(tmp_path / "orders.db")
     _seed_orders_db(db_path)
@@ -98,8 +98,8 @@ async def _call(server, *, name: str = "query", **arguments: Any) -> str:
 
 
 def _rows(out: str) -> list:
-    """Extract the data rows from strict json output. Since DEV-1858 folded
-    attributes/warnings into the payload, json output is a single
+    """Extract the data rows from strict json output. With
+    attributes/warnings folded into the payload, json output is a single
     ``json.loads``-able value: a bare array, or a ``{"data", "warnings"?,
     "attributes"?}`` envelope once either is present."""
     decoded = json.loads(out)
@@ -190,13 +190,13 @@ class TestQueryDispatch:
         rows = _rows(out)
         assert isinstance(rows, list)
         assert len(rows) == 3  # grouped by the three distinct statuses
-        # Result keys keep the underlying model prefix; totals sum to 750.0.
+        # Result keys keep the underlying dataset prefix; totals sum to 750.0.
         assert sum(float(r["orders.amount_sum"]) for r in rows) == pytest.approx(750.0)
 
     async def test_non_query_backed_string_raises_not_query_backed(
         self, orders_server,
     ) -> None:
-        """A bare table-backed model name is exact engine string semantics:
+        """A bare table-backed dataset name is exact engine string semantics:
         it raises the engine's 'not query-backed' error (which names the
         ``source_model=`` remedy), not a silent wrap."""
         with pytest.raises(ToolError) as ei:
@@ -254,7 +254,7 @@ class TestInQueryControlFields:
 
 @pytest.fixture
 async def broadcast_server(tmp_path):
-    """MCP server over the DEV-1836 cross-model fixture, where an implicit-grain
+    """MCP server over the cross-dataset fixture, where an implicit-grain
     broadcast warns in the default mode and errors under in-query
     ``to_many_handling='error'``."""
     db_path = str(tmp_path / "data.sqlite")

@@ -156,7 +156,7 @@ def mixed_dataset() -> SlayerDataset:
 
 
 def daily_stage_dataset() -> SlayerDataset:
-    """A multi-stage (``source_queries``) model with a TIMESTAMP stage column ``ts``."""
+    """A multi-stage (``source_queries``) dataset with a TIMESTAMP stage column ``ts``."""
     return SlayerDataset(
         name="daily", data_source="test",
         source_queries=[SlayerQuery.model_validate({
@@ -219,7 +219,7 @@ def bucket_text(value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 async def ids(engine: SlayerQueryEngine, *filters: str, dataset: str = "ev", **extra: Any) -> set[int]:
-    """Row ids of ``model`` passing ``filters`` (plus any extra query fields)."""
+    """Row ids of ``dataset`` passing ``filters`` (plus any extra query fields)."""
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": dataset, "dimensions": ["id"], "filter": list(filters), **extra,
     }))
@@ -242,7 +242,7 @@ async def monthly(
     engine: SlayerQueryEngine, *, metrics: list[Any], filters: Optional[list[str]] = None,
     date_range: Any = None, whole_periods_only: bool = False, column: str = "ts", dataset: str = "ev",
 ) -> dict[str, dict[str, Any]]:
-    """Monthly buckets → {measure name: value}."""
+    """Monthly buckets → {metric name: value}."""
     td: dict[str, Any] = {"field": column, "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range

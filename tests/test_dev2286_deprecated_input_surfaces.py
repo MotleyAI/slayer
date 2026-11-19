@@ -1,4 +1,4 @@
-"""Deprecated-input reports on REST ``strict: null``, two forms in one query, MCP dry runs and MCP model saves.
+"""Deprecated-input reports on REST ``strict: null``, two forms in one query, MCP dry runs and MCP dataset saves.
 
 Spec: compatibility/removal-tripwire › Deprecated input forms convert with a structured warning;
 mcp/query-tool › Execution wrappers and output shaping; mcp/response-row-cap › Explain plan rows capped without a limit.

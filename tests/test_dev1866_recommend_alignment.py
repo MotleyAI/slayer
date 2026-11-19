@@ -1,6 +1,6 @@
-"""DEV-1866 — recommend_root_model shares the population selection core.
+"""recommend_root_model shares the population selection core.
 
-Columns are determination items (to-one, hop-counted); saved measures and
+Fields are determination items (to-one, hop-counted); saved metrics and
 aggregation-suffixed items are reachability-only attachments that never steer
 the recommendation. The recommended root must equal the inferred population for
 the same dimension items, so the two surfaces cannot disagree.
@@ -29,10 +29,10 @@ def _path_for(rec, input_item: str):
 
 class TestRecommendAlignment:
     async def test_saved_measures_are_attachments_and_dont_steer(self, engine: SlayerQueryEngine) -> None:
-        """dim on regions + saved measures on orders. The old all-items objective
-        min-hops over mentioned models {regions, orders} and picks orders; the
+        """dim on regions + saved metrics on orders. The old all-items objective
+        min-hops over mentioned datasets {regions, orders} and picks orders; the
         dimension-only rule determines only regions.name (0 hops) ⇒ regions, with
-        the reachable-only measures marked as attachments."""
+        the reachable-only metrics marked as attachments."""
         rec = await engine.recommend_population(
             ["regions.name", "orders.revenue", "orders.avg_amt"],
             data_source=DS_CHAIN,
@@ -74,7 +74,7 @@ class TestRecommendAlignment:
         assert rec.population == "orders"
 
     async def test_feasible_root_hint_with_determination_and_attachment(self, engine: SlayerQueryEngine) -> None:
-        """A bridge that determines the dimension and reaches the measure is feasible."""
+        """A bridge that determines the dimension and reaches the metric is feasible."""
         rec = await engine.recommend_population(
             ["regions.name", "orders.revenue"],
             data_source=DS_CHAIN, root_hint="customers",

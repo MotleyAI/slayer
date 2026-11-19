@@ -1,4 +1,4 @@
-"""An ``sql``-mode model's stale non-list column over a live Postgres list (spec: models/schema-drift)."""
+"""An ``sql``-mode dataset's stale non-list field over a live Postgres list (spec: models/schema-drift)."""
 
 from typing import Any
 

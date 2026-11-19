@@ -1,4 +1,4 @@
-"""DEV-1847 tasks 1.2–1.4 — executed-value re-aggregation tests (SQLite +
+"""Executed-value re-aggregation tests (SQLite +
 DuckDB). The headline oracle and its distinguishable wrong value, the outer
 operator family, to-one chain attribution, and the null / all-null / keyless
 pins. All fail until the feature lands (the parse gate rejects the outer wrap).
@@ -63,8 +63,8 @@ class TestHeadlineOracle:
             assert float(vals[region]) != pytest.approx(wrong)
 
     async def test_adding_reaggregated_measure_is_cardinality_neutral(self, exec_engine):
-        """Adding the re-aggregated measure changes neither the row set nor the
-        sibling plain measure (the core SLayer invariant)."""
+        """Adding the re-aggregated metric changes neither the row set nor the
+        sibling plain metric (the core SLayer invariant)."""
         base = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
@@ -152,7 +152,7 @@ class TestOuterOperatorFamily:
         assert 45.0 < north <= 60.0
 
     async def test_custom_model_defined_outer_aggregation(self, exec_engine):
-        """Requirement: a model-defined custom aggregation is a valid OUTER
+        """Requirement: a dataset-defined custom aggregation is a valid OUTER
         aggregation — ``dsum`` (SUM) of the city totals equals the region total."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
@@ -229,7 +229,7 @@ class TestNullEmptyKeyless:
 
 class TestCrossModelInner:
     async def test_cross_model_inner_aggregate_executes(self, exec_engine):
-        """Deferred from stage 2: a cross-model inner aggregate (corders.amount
+        """Deferred from stage 2: a cross-dataset inner aggregate (corders.amount
         summed from customers at the region_id grain) re-aggregates over its
         cells — region 1 orders 10+20+40, region 2 order 100."""
         resp = await exec_engine.execute(SlayerQuery(

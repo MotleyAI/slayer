@@ -187,7 +187,7 @@ class TestBigQueryCommentIngestion:
         models, _ = bq_datasets
         cols = {c.name: c for c in models["orders"].fields}
         assert cols["payload"].description == "Structured payload"
-        # Flattened RECORD subfields (dotted names) never become columns.
+        # Flattened RECORD subfields (dotted names) never become fields.
         assert not any("." in name for name in cols)
 
     def test_types_sanity(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
@@ -428,13 +428,13 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage: StorageBackend
 
 
 # ---------------------------------------------------------------------------
-# List columns: REPEATED fields (spec: models/list-columns, models/schema-drift, queries/list-functions,
+# List fields: REPEATED fields (spec: models/list-columns, models/schema-drift, queries/list-functions,
 # queries/list-children, aggregations/collect)
 # ---------------------------------------------------------------------------
 
 
 def _stale_contractors(data_source: str) -> SlayerDataset:
-    """``contractors`` as stored before list columns: ``skills`` as TEXT."""
+    """``contractors`` as stored before list fields: ``skills`` as TEXT."""
     return SlayerDataset(name="stale", sql_table="contractors", data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="skills", datatype=DataType.STRING)])
 
@@ -513,7 +513,7 @@ async def test_collect_over_exact_numerics(bq_amounts) -> None:
     assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_COLUMNS), resp.data
 
 
-# Last in the module: re-ingest re-types the shared ``stale`` model too. The BigQuery driver reports a
+# Last in the module: re-ingest re-types the shared ``stale`` dataset too. The BigQuery driver reports a
 # REPEATED result column by its element type, so only sqlglot typing finds the list (no untypeable shape).
 @pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores", untypeable=None))
 async def test_sql_mode_list_retype(bq_lists: tuple[StorageBackend, Any], sql: str, column: str, element: DataType) -> None:

@@ -1,7 +1,7 @@
-"""DEV-1595: filtered-aggregate count semantics.
+"""Filtered-aggregate count semantics.
 
 The MetricFlow filter push-down (importer Part 3.4) relies on SLayer's
-``Column.filter`` emitting the correct CASE-inside-aggregate forms for count
+``DatasetField.filter`` emitting the correct CASE-inside-aggregate forms for count
 aggregations:
 
   col:count           -> COUNT(CASE WHEN f THEN col END)
@@ -11,10 +11,10 @@ aggregations:
 These are regression guards: a future change to the filter wrapper that broke
 count semantics would silently corrupt every filtered metric.
 
-``region`` is referenced by the filters but not declared as a model column.
+``region`` is referenced by the filters but not declared as a dataset field.
 Since every Mode-A fragment enters through the one door, such a reference is
 qualified against the scope root (``orders.region``) like any other — the old
-path qualified only DECLARED columns and left this one bare, which bound it to
+path qualified only DECLARED fields and left this one bare, which bound it to
 whatever table happened to be in scope once the filter was re-rendered inside a
 rerooted CTE. The subject of these guards is the CASE-inside-aggregate shape,
 which is unchanged.
@@ -60,10 +60,10 @@ async def test_filtered_sum_uses_case_inside_sum() -> None:
 
 
 async def test_filtered_count_distinct_approx_wraps_case_in_exact_fallback() -> None:
-    # DEV-1595: count_distinct_approx routes through its own builder, which must
+    # count_distinct_approx routes through its own builder, which must
     # compose with the filter CASE wrapper. Postgres has no native approximate
-    # distinct, so the exact COUNT(DISTINCT ...) fallback is emitted. DEV-1832: the
-    # filter now rides the source column's expansion (no _wrap_filter parens), so
+    # distinct, so the exact COUNT(DISTINCT ...) fallback is emitted. The
+    # filter rides the source field's expansion (no _wrap_filter parens), so
     # the fallback emits COUNT(DISTINCT CASE WHEN ... THEN col END).
     sql = re.sub(r"\s+", "", (await _gen("count_distinct_approx(cust)")).upper())
     assert "COUNT(DISTINCTCASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND)" in sql

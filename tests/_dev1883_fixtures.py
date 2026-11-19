@@ -1,4 +1,4 @@
-"""Shared fixtures for the DEV-1883 functional time-granularity tests."""
+"""Shared fixtures for the functional time-granularity tests."""
 from slayer.storage.sqlite_conn import transaction
 from typing import Any
 
@@ -20,7 +20,7 @@ def td(**kw: Any) -> TimeDimension:
 
 
 def dataset(**kw: Any) -> SlayerDataset:
-    """Build a ``SlayerModel`` from shorthand kwargs (dict columns/aggregations coerced by validators)."""
+    """Build a ``SlayerDataset`` from shorthand kwargs (dict fields/aggregations coerced by validators)."""
     return SlayerDataset(**kw)
 
 # Orders span three month buckets across two years so month vs year bucketing

@@ -80,6 +80,6 @@ It also collects a field of a joined dataset, one list per parent row. Here are 
 }
 ```
 
-The [notebook](list_columns_nb.ipynb) runs every query on this page; the full rules are in [List fields](../../concepts/queries.md#list-fields) and [Lists](../../concepts/references.md#lists).
+The [notebook](list_fields_nb.ipynb) runs every query on this page; the full rules are in [List fields](../../concepts/queries.md#list-fields) and [Lists](../../concepts/references.md#lists).
 
 So next time you need to ask a question that involves a list-valued field, fear not: SLayer can do that for you!

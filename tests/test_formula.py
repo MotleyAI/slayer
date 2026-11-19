@@ -1,4 +1,4 @@
-"""Formula-level parse checks: functional aggregation spellings, order-column normalization,
+"""Expression-level parse checks: functional aggregation spellings, order-field normalization,
 filter injection hardening and string hygiene, all over the one Mode-B parser."""
 
 import warnings
@@ -98,16 +98,16 @@ class TestAggregationNameValidation:
 
     def test_allows_builtin_override(self) -> None:
         """Built-in names like 'sum' that are also in ALL_TRANSFORMS (first/last) are fine."""
-        agg = Aggregation(name="sum")  # built-in override, no formula needed
+        agg = Aggregation(name="sum")  # built-in override, no expression needed
         assert agg.name == "sum"
 
 
 class TestOrderColumnNormalization:
-    """Order column normalization with function-style syntax."""
+    """Order field normalization with function-style syntax."""
 
     def test_funcstyle_sum(self) -> None:
         # The author's functional spelling is preserved — the item
-        # carries a placeholder + raw_formula, resolved at binding.
+        # carries a placeholder + raw_expression, resolved at binding.
         item = OrderItem(field="sum(revenue)", direction="desc")
         assert item.ref is None
         assert item.raw_expression == "sum(revenue)"

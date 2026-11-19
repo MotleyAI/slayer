@@ -52,7 +52,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 CACHE_DIR = _THIS_DIR / ".cache"
 DBT_CHECKOUT = CACHE_DIR / "semantic-layer-llm-benchmarking"
 DB_PATH = CACHE_DIR / "acme.duckdb"
-MODELS_DIR = CACHE_DIR / "slayer_models"
+DATASETS_DIR = CACHE_DIR / "slayer_datasets"
 _COMPLETE_MARKER = CACHE_DIR / ".complete"
 _CSV_SUBDIR = "ACME_Insurance/data"
 
@@ -234,13 +234,13 @@ def load_csvs_into_duckdb(csv_dir: Path, db_path: Path) -> List[str]:
 
 
 def convert_dbt_to_slayer(
-    dbt_project_path: Path, models_dir: Path, db_path: Path
+    dbt_project_path: Path, datasets_dir: Path, db_path: Path
 ) -> ConversionResult:
     """Convert the dbt MetricFlow project into SLayer datasets and persist them.
 
     Parses ``<dbt_project_path>/models`` for ``semantic_models`` + ``metrics``,
     runs :class:`DbtToSlayerConverter`, and saves each dataset plus a DuckDB
-    datasource config into a fresh ``YAMLStorage`` rooted at ``models_dir``.
+    datasource config into a fresh ``YAMLStorage`` rooted at ``datasets_dir``.
     """
     # Quieten the converter's benign "foreign entity '…' has no matching primary
     # entity" notices so the notebook output stays focused on the demo.
@@ -248,15 +248,15 @@ def convert_dbt_to_slayer(
     # Machine-independent notebook outputs: no paths in warnings (kernel-wide by design).
     warnings.formatwarning = lambda msg, cat, *a, **k: f"{cat.__name__}: {msg}\n"
 
-    if models_dir.exists():
-        shutil.rmtree(models_dir)
+    if datasets_dir.exists():
+        shutil.rmtree(datasets_dir)
 
     project = parse_dbt_project(str(dbt_project_path / "models"))
     result = DbtToSlayerConverter(
         project=project, data_source=DATASOURCE_NAME, target_dialect="duckdb"
     ).convert()
 
-    storage = YAMLStorage(base_dir=str(models_dir))
+    storage = YAMLStorage(base_dir=str(datasets_dir))
     for dataset in result.datasets:
         run_sync(storage.save_dataset(dataset))
     run_sync(
@@ -326,7 +326,7 @@ def ensure_metricflow_demo() -> "tuple[SlayerClient, Path, ConversionResult]":
     """
     dbt_path = ensure_dbt_data()
     result = convert_dbt_to_slayer(
-        dbt_project_path=dbt_path, models_dir=MODELS_DIR, db_path=DB_PATH
+        dbt_project_path=dbt_path, datasets_dir=DATASETS_DIR, db_path=DB_PATH
     )
-    client = SlayerClient(storage=YAMLStorage(base_dir=str(MODELS_DIR)))
+    client = SlayerClient(storage=YAMLStorage(base_dir=str(DATASETS_DIR)))
     return client, DB_PATH, result

@@ -1,4 +1,4 @@
-"""DEV-1740 Part A — the CASE/iif surface at parse time.
+"""Part A — the CASE/iif surface at parse time.
 
 Pins CASE lowering and the reserved-name
 ``ScalarCall(name="iif")`` it lowers to: searched + simple CASE, nesting,
@@ -122,7 +122,7 @@ class TestNestedCase:
 # --------------------------------------------------------------------------- #
 class TestConditionOperatorNormalization:
     def test_sql_equals_in_measure_context(self) -> None:
-        # parse_expr is the MEASURE path (no blanket `=`->`==` rewrite), yet the
+        # parse_expr is the METRIC path (no blanket `=`->`==` rewrite), yet the
         # WHEN condition must still accept SQL `=` and `AND`.
         node = _iif(parse_expr("CASE WHEN a = 5 AND b = 2 THEN 1 ELSE 0 END"))
         cond = node.args[0]

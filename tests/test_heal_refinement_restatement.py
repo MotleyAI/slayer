@@ -1,4 +1,4 @@
-"""A refinement measure restating a saved measure by its bare name (spec: queries/saved-query-refinement)."""
+"""A refinement metric restating a saved metric by its bare name (spec: queries/saved-query-refinement)."""
 
 from __future__ import annotations
 

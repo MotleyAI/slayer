@@ -3,7 +3,7 @@
 Two defect classes, both valid-on-SQLite / invalid-on-Postgres:
 
 * **Flavor A — ORDER BY on an unprojected/renamed column.** The sort key was
-  rendered as a single composite-quoted identifier ``"<model>.<col>"`` (the
+  rendered as a single composite-quoted identifier ``"<dataset>.<col>"`` (the
   projection-alias convention), which resolves only when the column is a
   projected output alias. For a column that is not projected (renamed by a
   ``columns:`` transform, or an inner-stage grouping dim the outer stage
@@ -40,8 +40,8 @@ def _norm(s: str) -> str:
 
 
 def _orders_customers_regions() -> tuple[SlayerDataset, list[SlayerDataset]]:
-    """orders → customers → regions two-hop join graph. Returns
-    ``(orders_root, [customers, regions])`` — the root model plus the join
+    """orders → customers → regions two-hop relationship graph. Returns
+    ``(orders_root, [customers, regions])`` — the root dataset plus the relationship
     targets to register alongside it. Shared by the joined-ORDER-BY reject +
     deferred xfail tests."""
     regions = SlayerDataset(
@@ -94,7 +94,7 @@ def orders_dataset() -> SlayerDataset:
 
 @pytest.fixture
 def accounts_dataset() -> SlayerDataset:
-    """Mirrors the ``fake_account_23`` repro: a derived boolean column whose SQL
+    """Mirrors the ``fake_account_23`` repro: a derived boolean field whose SQL
     references a mixed-case physical column ``StateFlag``."""
     return SlayerDataset(
         name="accounts",
@@ -124,7 +124,7 @@ class TestFlavorAOrderByUnprojected:
     async def test_orderby_nonprojected_column_emits_split_not_composite(
         self, orders_dataset: SlayerDataset
     ) -> None:
-        """A raw-row query ordering by a base column that is not projected must
+        """A raw-row query ordering by a base field that is not projected must
         emit a split ``orders.created_at`` reference, NOT the composite
         ``"orders.created_at"`` (a nonexistent output column on Postgres)."""
         query = SlayerQuery(
@@ -140,7 +140,7 @@ class TestFlavorAOrderByUnprojected:
     async def test_orderby_projected_alias_stays_composite_quoted(
         self, orders_dataset: SlayerDataset
     ) -> None:
-        """Regression guard: ordering by a projected measure alias keeps the
+        """Regression guard: ordering by a projected metric alias keeps the
         whole-quoted composite ``"orders.rev"`` form (that IS the real output
         column name via ``AS "orders.rev"``)."""
         query = SlayerQuery.model_validate({
@@ -155,7 +155,7 @@ class TestFlavorAOrderByUnprojected:
     async def test_orderby_nonprojected_mixed_case_column_split_and_quoted(
         self, orders_dataset: SlayerDataset
     ) -> None:
-        """Flavor A + B together: a non-projected mixed-case sort column emits a
+        """Flavor A + B together: a non-projected mixed-case sort field emits a
         split reference whose column part is quoted: ``orders."CreatedAt"``."""
         model = orders_dataset.model_copy(deep=True)
         model.fields.append(DatasetField(name="CreatedAt", sql="CreatedAt", datatype=DataType.DATETIME))
@@ -189,8 +189,8 @@ class TestFlavorAOrderByUnprojected:
         assert '"orders.created_at"' not in sql
 
     async def test_orderby_projected_alias_combined_cte_path_unchanged(self) -> None:
-        """Regression guard for the combined measure-CTE ORDER BY site
-        (`_assemble_combined_sql`): ordering by a projected cross-model measure
+        """Regression guard for the combined metric-CTE ORDER BY site
+        (`_assemble_combined_sql`): ordering by a projected cross-dataset metric
         alias keeps the whole-quoted composite form."""
         clusters = SlayerDataset(
             name="clusters", sql_table="clusters", data_source="test",
@@ -218,7 +218,7 @@ class TestFlavorAOrderByUnprojected:
         sql = _norm(await _engine_generate(
             query=query, dataset=accts, extra_datasets=[clusters],
         ))
-        # The typed pipeline sorts on the cross-model CTE's own canonical
+        # The typed pipeline sorts on the cross-dataset CTE's own canonical
         # output column, QUALIFIED by the CTE that emits it. It used to be the
         # bare name, which resolved only by falling through to an input column
         # of the FROM — legal on Postgres, not everywhere, and ambiguous the
@@ -237,7 +237,7 @@ class TestFlavorAOrderByUnprojected:
         self,
     ) -> None:
         """An unprojected multi-hop joined ORDER BY binds to no FROM table; a
-        HOST-rooted CTE computes the per-group extreme over the crossed join and
+        HOST-rooted CTE computes the per-group extreme over the crossed relationship and
         the outer query orders on that CTE's column, so nothing is unbound."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
@@ -258,7 +258,7 @@ class TestFlavorAOrderByUnprojected:
     async def test_orderby_joined_column_resolves_when_filter_pulls_join_in(
         self,
     ) -> None:
-        """The same resolution when a filter already pulled the join into the
+        """The same resolution when a filter already pulled the relationship into the
         host base. The CTE re-applies the filter rather than depending on the
         base's copy, so the two scopes agree on which rows the extreme is over."""
         orders, joined = _orders_customers_regions()
@@ -277,7 +277,7 @@ class TestFlavorAOrderByUnprojected:
     async def test_orderby_joined_column_resolves_in_cte_wrapped_scope(
         self,
     ) -> None:
-        """The CTE-wrapped (windowed-measure) path. The sort key's CTE groups on
+        """The CTE-wrapped (windowed-metric) path. The sort key's CTE groups on
         the query grain and joins back NULL-safely, so the outer ORDER BY names a
         column the wrapper actually projects."""
         orders, joined = _orders_customers_regions()
@@ -285,7 +285,7 @@ class TestFlavorAOrderByUnprojected:
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}],  # windowed -> combined CTE path
-            "filter": ["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
+            "filter": ["customers.regions.name == 'US'"],  # pulls the relationship into resolved_joins
             "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
@@ -317,15 +317,15 @@ class TestFlavorAOrderByUnprojected:
 
 
 # ============================================================================
-# Flavor A — joined / cross-model ORDER BY resolution (was DEFERRED)
+# Flavor A — joined / cross-dataset ORDER BY resolution (was DEFERRED)
 # ============================================================================
 
 class TestFlavorAJoinedOrderByResolves:
-    """Ordering by an unprojected JOINED column in a GROUPED query.
+    """Ordering by an unprojected JOINED field in a GROUPED query.
 
     These three cases were ``xfail(strict=True)`` aspiring to a BARE split
     reference, ``ORDER BY customers__regions.name``. That aspiration was wrong
-    for a grouped query — the column is not in GROUP BY, so a bare reference is
+    for a grouped query — the field is not in GROUP BY, so a bare reference is
     invalid SQL on every Tier-1 dialect. The shape below is what the value
     actually requires: computed per group in its own scope, then joined back."""
 
@@ -345,7 +345,7 @@ class TestFlavorAJoinedOrderByResolves:
     async def test_joined_orderby_without_filter_pulls_join_into_the_cte(
         self,
     ) -> None:
-        """With nothing else referencing the join, it is pulled into the sort
+        """With nothing else referencing the relationship, it is pulled into the sort
         key's CTE — and only there."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
@@ -380,8 +380,8 @@ class TestFlavorAJoinedOrderByResolves:
 
 class TestFlavorBMixedCaseQuoting:
     async def test_column_sql_mixed_case_quoted(self, accounts_dataset: SlayerDataset) -> None:
-        """Mixed-case ident inside ``Column.sql`` (CASE WHEN) is quoted; a
-        lowercase sibling column that IS projected stays unquoted.
+        """Mixed-case ident inside ``DatasetField.sql`` (CASE WHEN) is quoted; a
+        lowercase sibling field that IS projected stays unquoted.
 
         The typed pipeline additionally anchors the expanded reference at the
         scope root (Law 1), so the quoted ident arrives relation-qualified as
@@ -407,7 +407,7 @@ class TestFlavorBMixedCaseQuoting:
         self, accounts_dataset: SlayerDataset
     ) -> None:
         """The headline ``fake_account_23`` repro: a filter referencing a
-        derived column whose SQL holds a mixed-case ident flows through
+        derived field whose SQL holds a mixed-case ident flows through
         ``_parse_predicate`` and must emit the quoted form in the WHERE."""
         query = SlayerQuery.model_validate({
             "population": "accounts",
@@ -419,7 +419,7 @@ class TestFlavorBMixedCaseQuoting:
         assert '"StateFlag"' in sql
 
     async def test_model_filter_mixed_case_quoted(self) -> None:
-        """A model-level always-applied filter with a mixed-case ident is quoted."""
+        """A dataset-level always-applied filter with a mixed-case ident is quoted."""
         model = SlayerDataset(
             name="accounts",
             sql_table="public.accounts",
@@ -433,7 +433,7 @@ class TestFlavorBMixedCaseQuoting:
         assert '"StateFlag"' in sql
 
     async def test_column_filter_mixed_case_quoted(self) -> None:
-        """A ``Column.filter`` (CASE-WHEN at aggregation time) with a mixed-case
+        """A ``DatasetField.filter`` (CASE-WHEN at aggregation time) with a mixed-case
         ident is quoted."""
         model = SlayerDataset(
             name="accounts",
@@ -454,7 +454,7 @@ class TestFlavorBMixedCaseQuoting:
         assert '"StateFlag"' in sql
 
     async def test_resolved_join_key_mixed_case_quoted(self) -> None:
-        """A join whose join_pairs reference a mixed-case key (``CLSTR_PIN``)
+        """A relationship whose join_pairs reference a mixed-case key (``CLSTR_PIN``)
         emits the quoted form in the ON clause (the ``fake_account_15`` repro)."""
         cluster = SlayerDataset(
             name="cluster_analysis",
@@ -475,7 +475,7 @@ class TestFlavorBMixedCaseQuoting:
             ],
             relationships=[DatasetRelationship(to="cluster_analysis", from_columns=["clu_ref"], to_columns=["CLSTR_PIN"])],
         )
-        # A cross-model dimension forces a visible LEFT JOIN ... ON <keys>,
+        # A cross-dataset dimension forces a visible LEFT JOIN ... ON <keys>,
         # matching the fake_account_15 shape (`ON ... = cluster_analysis.CLSTR_PIN`).
         query = SlayerQuery(
             population="account_clusters",
@@ -490,9 +490,9 @@ class TestFlavorBMixedCaseQuoting:
         assert '"CLSTR_PIN"' in _norm(sql)
 
     async def test_bare_mixed_case_dimension_quoted(self) -> None:
-        """A dimension referencing a bare mixed-case column (``_resolve_sql``
+        """A dimension referencing a bare mixed-case field (``_resolve_sql``
         direct-construction path) quotes both qualifier-free column and any
-        model qualifier consistently."""
+        dataset qualifier consistently."""
         model = SlayerDataset(
             name="accounts",
             sql_table="public.accounts",
@@ -542,7 +542,7 @@ class TestFlavorBMixedCaseQuoting:
         assert 'events."RegionCode" AS "events.RegionCode"' in sql, sql
 
     async def test_standard_agg_inner_mixed_case_column_quoted(self) -> None:
-        """A standard aggregation over a bare mixed-case column quotes the inner
+        """A standard aggregation over a bare mixed-case field quotes the inner
         column (the ``_resolve_sql`` / standard-agg inner construction path):
         ``SUM(accounts."MixedAmt")``."""
         model = SlayerDataset(
@@ -562,7 +562,7 @@ class TestFlavorBMixedCaseQuoting:
         assert 'SUM(accounts."MixedAmt")' in sql
 
     async def test_resolved_join_target_table_mixed_case_quoted(self) -> None:
-        """A join whose TARGET model has a mixed-case physical ``sql_table`` emits
+        """A relationship whose TARGET dataset has a mixed-case physical ``sql_table`` emits
         a quoted table name in the LEFT JOIN."""
         regions = SlayerDataset(
             name="regions", sql_table="MyRegions", data_source="test",

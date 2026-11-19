@@ -173,7 +173,7 @@ def _store_strict_stage(engine: SlayerQueryEngine) -> None:
 
 
 class TestStoredStages:
-    """A stored stage converted on load reports on every run that reads its model."""
+    """A stored stage converted on load reports on every run that reads its dataset."""
 
     @pytest.fixture
     def stored(self, engine: SlayerQueryEngine) -> SlayerQueryEngine:

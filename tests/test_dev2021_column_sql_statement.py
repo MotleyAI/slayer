@@ -1,4 +1,4 @@
-"""``Column.sql`` parses as exactly one expression (spec: models/column-definitions › Column.sql is one expression)."""
+"""``DatasetField.sql`` parses as exactly one expression (spec: models/column-definitions › Column.sql is one expression)."""
 
 from __future__ import annotations
 

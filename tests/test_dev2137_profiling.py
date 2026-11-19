@@ -1,4 +1,4 @@
-"""List columns are profiled over their elements (spec: models/sample-profiling)."""
+"""List fields are profiled over their elements (spec: models/sample-profiling)."""
 
 from __future__ import annotations
 

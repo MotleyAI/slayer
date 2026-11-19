@@ -1,9 +1,9 @@
-"""DEV-1853 — edge names as path segments, in either direction.
+"""Edge names as path segments, in either direction.
 
 A path token matching an incident edge's name traverses that edge from either
 endpoint; result keys keep the path as typed; downstream consumers (time
-dimensions, ordering, filters, Mode-A SQL) resolve the terminal model from
-the resolved edge, never by reading the token as a model name.
+dimensions, ordering, filters, Mode-A SQL) resolve the terminal dataset from
+the resolved edge, never by reading the token as a dataset name.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ class TestNamedTerminalMetadata:
         assert months == sorted(PARALLEL_BILLING_MONTH_AMOUNTS)
         got = {m: r["orders.t"] for m, r in zip(months, resp.data)}
         assert got == PARALLEL_BILLING_MONTH_AMOUNTS
-        # Response metadata resolves the terminal column from the resolved
+        # Response metadata resolves the terminal field from the resolved
         # edge — the label lives on customers.signup_at.
         meta = resp.attributes.dimensions.get(key)
         assert meta is not None
@@ -137,7 +137,7 @@ class TestNamedEdgeValidationConsumers:
 
     @staticmethod
     async def _augment_customers(engine: SlayerQueryEngine) -> None:
-        """Add a filtered column, an agg restriction, and a reverse measure."""
+        """Add a filtered field, an agg restriction, and a reverse metric."""
         storage = engine.storage
         cust = await storage.get_dataset("customers", data_source="test")
         assert cust is not None

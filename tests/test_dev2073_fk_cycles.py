@@ -1,4 +1,4 @@
-"""FK cycles ingest verbatim; one edge per FK relationship; FK-reflection failure loses only joins."""
+"""FK cycles ingest verbatim; one edge per FK relationship; FK-reflection failure loses only relationships."""
 
 from __future__ import annotations
 

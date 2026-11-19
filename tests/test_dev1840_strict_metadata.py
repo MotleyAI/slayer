@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.5 — metadata silence for pushed filters, strict narrowing
+"""Metadata silence for pushed filters, strict narrowing
 (design D8).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Strict mode" and the
@@ -113,7 +113,7 @@ class TestStrictNarrows:
             assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
 
     async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
-        """DEV-1935: a mixed disjunction no longer errors in error mode — the
+        """A mixed disjunction no longer errors in error mode — the
         producer is restricted by a boolean-total semi-join (gold cm = 160)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
@@ -126,8 +126,8 @@ class TestStrictNarrows:
     async def test_strict_still_errors_on_an_ambiguous_path(
         self, exec_backend_amb,
     ):
-        """Ambiguous hop errors under strict — same failure as lenient.
-        DEV-1853 divergences.md class (d)."""
+        """Ambiguous hop errors under strict — same failure as lenient
+        (divergences.md class (d))."""
         _, engine = exec_backend_amb
         query = tq(to_many_handling="error", metrics=[SM], filter=["effort > 2"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
@@ -138,9 +138,9 @@ class TestStrictNarrows:
     async def test_strict_ambiguous_filter_hop_errors(
         self, exec_backend_amb,
     ):
-        """A clean measure path with a filter crossing the ambiguous pair
-        errors under strict — never dropped. DEV-1853 divergences.md
-        class (d)."""
+        """A clean metric path with a filter crossing the ambiguous pair
+        errors under strict — never dropped (divergences.md
+        class (d))."""
         _, engine = exec_backend_amb
         query = tq(to_many_handling="error", metrics=[RV], filter=["agents.name = 'Ann'"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
@@ -151,7 +151,7 @@ class TestStrictNarrows:
 
 class TestBooleanTotalPushdownReplacesTheWarning:
     async def test_mixed_disjunction_pushes_without_warning(self, exec_backend):
-        """DEV-1935: a mixed disjunction is pushed by semi-join (gold cm = 160),
+        """A mixed disjunction is pushed by semi-join (gold cm = 160),
         never dropped-and-warned; no Python-level warning is emitted."""
         _, engine = exec_backend
         with _warnings.catch_warnings(record=True) as caught:
@@ -167,7 +167,7 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         assert hits == []
 
     async def test_cross_branch_atomic_pushes_without_warning(self, exec_backend_weak):
-        """DEV-1935: a cross-branch atom is pushed, not dropped-and-warned."""
+        """A cross-branch atom is pushed, not dropped-and-warned."""
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[CM],
@@ -177,7 +177,7 @@ class TestBooleanTotalPushdownReplacesTheWarning:
 
     async def test_ambiguous_path_errors_in_lenient_mode(self, exec_backend_amb):
         """Ambiguous hop errors in BOTH modes — the drop+warn handling is
-        retired. DEV-1853 divergences.md class (d)."""
+        retired (divergences.md class (d))."""
         _, engine = exec_backend_amb
         query = tq(metrics=[SM], filter=["effort > 2"])
         with pytest.raises(AmbiguousRelationshipPathError):
@@ -187,7 +187,7 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         self, exec_backend_amb,
     ):
         """A filter whose only route crosses the ambiguous pair errors in
-        lenient mode too — never dropped. DEV-1853 divergences.md class (d)."""
+        lenient mode too — never dropped (divergences.md class (d))."""
         _, engine = exec_backend_amb
         query = tq(metrics=[RV], filter=["agents.name = 'Ann'"])
         with pytest.raises(AmbiguousRelationshipPathError):

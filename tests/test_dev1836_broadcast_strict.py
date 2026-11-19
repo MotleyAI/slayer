@@ -50,7 +50,7 @@ class TestBroadcastMetadata:
         dims = {d.dimension for d in w.dimensions}
         assert any("status" in d for d in dims), dims
         assert all(d.reason for d in w.dimensions)
-        # The local measure never warns.
+        # The local metric never warns.
         assert "m" != w.metric
         hits = [c for c in caught
                 if issubclass(c.category, BroadcastGrainWarning)]
@@ -70,7 +70,7 @@ class TestBroadcastMetadata:
         assert not any("tier" in d for d in dims), dims
 
     async def test_same_aggregate_in_several_roles_warns_once(self, exec_backend):
-        """F8 — measure + filter + ORDER BY roles dedup to one warning."""
+        """F8 — metric + filter + ORDER BY roles dedup to one warning."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
@@ -129,8 +129,8 @@ class TestBroadcastMetadata:
     async def test_broadcast_reason_names_the_hop_forward_and_reverse(
         self, exec_backend,
     ):
-        """The per-dimension reason names the actual join hop — an unproven forward
-        hop by its target, a fanning reverse hop by the model it fans back to —
+        """The per-dimension reason names the actual relationship hop — an unproven forward
+        hop by its target, a fanning reverse hop by the dataset it fans back to —
         never 'unreachable' (a prefix-side dimension reached back over a
         fanning hop names that hop, not the old round-trip artifact)."""
         _, engine = exec_backend

@@ -1,4 +1,4 @@
-"""DEV-1935 — boolean-total semi-join pushdown: a root row survives iff the
+"""Boolean-total semi-join pushdown: a root row survives iff the
 conjunct holds on >=1 row of its join product (hops joined as declared, LEFT ->
 null-extended). Executed dual-engine (SQLite + DuckDB); structural pins via
 ``plan_query``."""
@@ -414,9 +414,9 @@ class TestEventLessNullExtension:
 
 
 class TestGenuinelyUnreachableFilterRefused:
-    """DEV-1935 narrows exclusion to a genuinely unreachable reference (no
-    resolvable join path from the root). In the connected reference graph such a
-    reference is refused in every mode (`UnresolvableDimensionJoinError`), never
+    """Exclusion is narrowed to a genuinely unreachable reference (no
+    resolvable relationship path from the root). In the connected reference graph such a
+    reference is refused in every mode (`UnresolvableDimensionRelationshipError`), never
     silently routed as if it crossed nothing — the one retained exclusion. See
     tasks.md §1.5: whether a filter can be dropped-and-warned (rather than hard
     refused) requires a host-reachable/producer-unreachable topology this graph
@@ -547,10 +547,10 @@ _NULL_REJECTION_CASES = [
     ("tier = 'gold' or regions.region_events.value >= 50", True),  # OR w/ DEPENDS
 ]
 
-#: (predicate over a derived event column or an IS operand, expected null_extended):
+#: (predicate over a derived event field or an IS operand, expected null_extended):
 #: the D5 Mode-A fragment rule (on the EXPANDED definition) and the IS rules.
 _FRAGMENT_AND_IS_CASES = [
-    ("regions.region_events.value_bare >= 50", False),     # bare column -> null-valued
+    ("regions.region_events.value_bare >= 50", False),     # bare field -> null-valued
     ("regions.region_events.value_x2 >= 50", False),       # arithmetic -> null-valued
     ("regions.region_events.value_x2_x2 >= 50", False),    # derived-on-derived arithmetic
     ("regions.region_events.value_or_zero >= 50", True),   # COALESCE -> DEPENDS

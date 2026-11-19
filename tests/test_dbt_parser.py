@@ -45,8 +45,8 @@ class TestRegularModelsOptIn:
 
     Plain `parse_dbt_project(path)` should NOT call load_or_generate_manifest,
     which can invoke `dbt parse` (slow) and fail noisily without dbt-core.
-    The manifest is only needed when --include-hidden-models is set, so
-    parse_dbt_project gates it on include_regular_models=True.
+    The manifest is only needed when --include-hidden-datasets is set, so
+    parse_dbt_project gates it on include_regular_datasets=True.
     """
 
     def test_default_does_not_load_manifest(self, tmp_path) -> None:
@@ -199,7 +199,7 @@ class TestParseDbtProject:
         assert m.name == "completed_amount"
         assert m.type == "simple"
         assert m.label == "Completed Amount"
-        # DEV-1595: type_params.measure is now a DbtMetricInputMeasure object
+        # type_params.measure is now a DbtMetricInputMeasure object
         # (string shorthand coerced via before-validator); name lives on .name.
         assert m.type_params.measure_name == "total_amount"
         assert "Dimension" in (m.filter or "")
@@ -253,7 +253,7 @@ class TestParseDbtProject:
 
 class TestParseDbtProjectSqlFiles:
     """.sql file scanning is always on — populates DbtRegularModel.raw_code
-    so the converter can inline regular-model SQL into SlayerModel.sql.
+    so the converter can inline regular-model SQL into SlayerDataset.sql.
     """
 
     def test_populates_raw_code_from_sql_files(self, tmp_path) -> None:

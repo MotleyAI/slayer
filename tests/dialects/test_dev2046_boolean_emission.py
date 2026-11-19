@@ -112,7 +112,7 @@ def _float_cast(node: Expr) -> bool:
 
 
 class TestStatisticalBuildersTakeTheInteger:
-    """The stat, dialect-hook and formula builders read a boolean input as its integer."""
+    """The stat, dialect-hook and expression builders read a boolean input as its integer."""
 
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     @pytest.mark.parametrize("formula", ["stddev_samp(flag)", "weighted_avg(flag, weight=amount)"])

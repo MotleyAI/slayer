@@ -106,7 +106,7 @@ def m(expression: str, name: str) -> Dict[str, str]:
 
 
 # --------------------------------------------------------------------------- #
-# Models.
+# Datasets.
 # --------------------------------------------------------------------------- #
 def regions_dataset(*, aggregations: Sequence[Aggregation] = ()) -> SlayerDataset:
     return SlayerDataset(

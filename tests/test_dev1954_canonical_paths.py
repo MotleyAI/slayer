@@ -1,4 +1,4 @@
-"""A resolved join path is spelled canonically (edge name, else model).
+"""A resolved relationship path is spelled canonically (edge name, else dataset).
 
 Graph: ``orders → customers →(hr) regions → region_events``; ``hr`` may be typed
 as ``hr`` or ``regions``. Every resolution door emits the canonical ``hr`` spelling,
@@ -249,7 +249,7 @@ class TestModeAQualifiersAreCanonical:
 
 
 # --------------------------------------------------------------------------- #
-# End to end — the join-traversal scenarios.
+# End to end — the relationship-traversal scenarios.
 # --------------------------------------------------------------------------- #
 class TestNamedEdgeTypedByModelName:
     async def test_result_keys_follow_the_edge_name(self, engine: SlayerQueryEngine) -> None:

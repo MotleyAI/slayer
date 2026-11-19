@@ -1,4 +1,4 @@
-"""Order-only hidden slots (ORDER BY refs not declared as dims/measures) + the ``rank(partition_by=X, direction='desc')`` grain guard."""
+"""Order-only hidden slots (ORDER BY refs not declared as dims/metrics) + the ``rank(partition_by=X, direction='desc')`` grain guard."""
 from __future__ import annotations
 
 import re
@@ -208,7 +208,7 @@ class TestUngroupedRowColumnSplit:
 
 
 class TestGroupedLocalRowColumnMaxWrapped:
-    """A GROUPED local row column ordered on materialises as a hidden, direction-aware MIN/MAX wrap (DESC→MAX) and is trimmed from the public projection."""
+    """A GROUPED local row field ordered on materialises as a hidden, direction-aware MIN/MAX wrap (DESC→MAX) and is trimmed from the public projection."""
 
     async def test_dedup_on_row_column_order_max_wraps(self, engine) -> None:
         query = SlayerQuery(
@@ -237,7 +237,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
     async def test_time_dimension_order_wraps_underlying_column(
         self, engine,
     ) -> None:
-        """A ``TimeTruncKey`` is not a legal aggregate source, so the wrap targets the underlying column; ``DATE_TRUNC`` is monotonic, so ``MAX(col)`` orders identically."""
+        """A ``TimeTruncKey`` is not a legal aggregate source, so the wrap targets the underlying field; ``DATE_TRUNC`` is monotonic, so ``MAX(col)`` orders identically."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],
@@ -254,7 +254,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
     async def test_order_and_filter_on_same_column_share_one_wrap(
         self, engine,
     ) -> None:
-        """The wrap is interned by structural key, so a column used by a filter and the sort key mints one MAX slot, not two."""
+        """The wrap is interned by structural key, so a field used by a filter and the sort key mints one MAX slot, not two."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],
@@ -280,7 +280,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
         assert order_cols == ["orders.created_at_max", "orders.rev"], sql
 
     async def test_wrap_bypasses_the_aggregation_gate(self, engine) -> None:
-        """The hidden sort wrap is interned post-bind, so a column not whitelisting ``max`` (``id``, a primary key) can still be sorted on."""
+        """The hidden sort wrap is interned post-bind, so a field not whitelisting ``max`` (``id``, a primary key) can still be sorted on."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],
@@ -295,7 +295,7 @@ class TestJoinedRowColumnResolved:
     async def test_joined_row_column_ungrouped_pulls_join_and_splits(
         self, engine,
     ) -> None:
-        """In a raw-rows query a joined sort key is legal; Law 1 pulls its join into the base FROM and the ORDER BY emits the split ``customers.region`` form."""
+        """In a raw-rows query a joined sort key is legal; Law 1 pulls its relationship into the base FROM and the ORDER BY emits the split ``customers.region`` form."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],
@@ -327,7 +327,7 @@ class TestJoinedRowColumnResolved:
     async def test_ungrouped_order_by_derived_crossing_column_resolves(
         self, engine,
     ) -> None:
-        """A hidden order-only derived column whose ``sql`` crosses a join gets its join pulled (Law 1) and emits the same split ref as the bare joined sort key."""
+        """A hidden order-only derived field whose ``sql`` crosses a relationship gets it pulled (Law 1) and emits the same split ref as the bare joined sort key."""
         def _q(column: str) -> SlayerQuery:
             return SlayerQuery(
                 population="orders",
@@ -352,7 +352,7 @@ class TestJoinedRowColumnResolved:
     async def test_joined_order_ref_colliding_local_leaf_stays_joined(
         self, tmp_path,
     ) -> None:
-        """A joined order ref whose leaf collides with a local dimension (``owners.status`` vs local ``status``) must reach ``owners``, not silently rebind to the local column."""
+        """A joined order ref whose leaf collides with a local dimension (``owners.status`` vs local ``status``) must reach ``owners``, not silently rebind to the local field."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=":memory:")
@@ -386,7 +386,7 @@ class TestJoinedRowColumnResolved:
         assert any(
             "owners" in table or "owners" in name for table, name in order_cols
         ), (
-            f"joined order ref silently bound to the local column — the outer "
+            f"joined order ref silently bound to the local field — the outer "
             f"ORDER BY does not reference owners.\nSQL:\n{resp.sql}"
         )
 
@@ -465,7 +465,7 @@ class TestLocalAggregateHiddenOrder:
         assert _outer_order_by_names(sql) == ["orders.id_count"]
 
     async def test_hidden_cross_model_agg_order_in_cumsum_chain(self, engine) -> None:
-        """An order-only CROSS-MODEL aggregate inside a transform chain threads through the step CTEs (which carry it) and the outer wrap does the hidden trim."""
+        """An order-only CROSS-DATASET aggregate inside a transform chain threads through the step CTEs (which carry it) and the outer wrap does the hidden trim."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity="month")],
@@ -476,12 +476,12 @@ class TestLocalAggregateHiddenOrder:
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
         assert outer == ["orders.created_at", "orders.cs"], (
-            f"hidden cross-model agg must not project.\ngot: {outer}\nSQL:\n{sql}"
+            f"hidden cross-dataset agg must not project.\ngot: {outer}\nSQL:\n{sql}"
         )
         assert _outer_order_by_names(sql) == ["customers.revenue_sum"], sql
 
     async def test_hidden_local_agg_order_in_change_chain(self, engine) -> None:
-        """Same contract over a ``change`` self-join chain (``sjoin_`` carries the hidden alias); the order target is a LOCAL aggregate since time_shift + cross-model is a separate deferral."""
+        """Same contract over a ``change`` self-join chain (``sjoin_`` carries the hidden alias); the order target is a LOCAL aggregate since time_shift + cross-dataset is a separate deferral."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity="month")],
@@ -498,7 +498,7 @@ class TestLocalAggregateHiddenOrder:
     async def test_hidden_local_agg_order_in_cross_model_transform_chain(
         self, engine,
     ) -> None:
-        """A hidden LOCAL order aggregate must thread through a chain rooted on a cross-model combined SELECT."""
+        """A hidden LOCAL order aggregate must thread through a chain rooted on a cross-dataset combined SELECT."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity="month")],
@@ -547,7 +547,7 @@ class TestExecutionHiddenOrder:
     async def test_execute_ungrouped_joined_order_pulls_join_and_orders(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """A raw-rows query sorted by a joined column orders by its real values (Law-1 pull) without projecting it."""
+        """A raw-rows query sorted by a joined field orders by its real values (Law-1 pull) without projecting it."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="id"), QueryDimension(field="status")],
@@ -576,7 +576,7 @@ class TestExecutionHiddenOrder:
 
 class TestCrossModelHiddenOrder:
     async def test_two_hidden_cross_model_aggs_distinct_ctes(self, engine) -> None:
-        """Two order-only cross-model aggregates over the same leaf but different aggs get distinct hidden CTE aliases; neither leaks; the ORDER BY names both."""
+        """Two order-only cross-dataset aggregates over the same leaf but different aggs get distinct hidden CTE aliases; neither leaks; the ORDER BY names both."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],
@@ -588,7 +588,7 @@ class TestCrossModelHiddenOrder:
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status"], (
-            f"cross-model aggregates must be hidden.\nSQL:\n{sql}"
+            f"cross-dataset aggregates must be hidden.\nSQL:\n{sql}"
         )
         aliases = _all_aliases_in_sql(sql)
         assert any("revenue_sum" in a for a in aliases), f"aliases: {aliases}\n{sql}"
@@ -602,7 +602,7 @@ class TestCrossModelHiddenOrder:
             assert "SUM(" not in order.sql(dialect="postgres").upper()
 
     async def test_cross_model_hidden_order_postgres_shape(self, engine) -> None:
-        """Postgres shape: the hidden cross-model aggregate lives in a CTE, absent from the outer projection, named in the ORDER BY with no inline aggregate."""
+        """Postgres shape: the hidden cross-dataset aggregate lives in a CTE, absent from the outer projection, named in the ORDER BY with no inline aggregate."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],
@@ -629,7 +629,7 @@ class TestCrossModelHiddenOrder:
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status"], (
-            f"both cross-model aggregates must be hidden.\nSQL:\n{sql}"
+            f"both cross-dataset aggregates must be hidden.\nSQL:\n{sql}"
         )
         aliases = "\n".join(_all_aliases_in_sql(sql))
         assert "customers.revenue_sum" in aliases or "customers__revenue_sum" in aliases, aliases
@@ -641,7 +641,7 @@ class TestCrossModelHiddenOrder:
     async def test_ungrouped_input_cross_model_aggregate_order_rejected(
         self, engine,
     ) -> None:
-        """The raw-rows contradiction via a cross-model aggregate: a measure sort key is rejected, not silently re-grouped."""
+        """The raw-rows contradiction via a cross-dataset aggregate: a metric sort key is rejected, not silently re-grouped."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],
@@ -652,7 +652,7 @@ class TestCrossModelHiddenOrder:
             await _sql(engine, query)
 
     async def test_execute_cross_model_hidden_order_stripped(self, exec_engine: SlayerQueryEngine) -> None:
-        """Executed: an order-only cross-model aggregate is absent from response columns, row keys, and attributes."""
+        """Executed: an order-only cross-dataset aggregate is absent from response columns, row keys, and attributes."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],
@@ -697,7 +697,7 @@ class TestPartitionByGuard:
         assert "PARTITION BY" in sql.upper()
 
     async def test_partition_by_time_dimension_uses_bucket(self, engine) -> None:
-        """partition_by naming a query time-dimension partitions by the truncated bucket, not the raw column, without widening GROUP BY or duplicating an alias."""
+        """partition_by naming a query time-dimension partitions by the truncated bucket, not the raw field, without widening GROUP BY or duplicating an alias."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity="month")],
@@ -838,7 +838,7 @@ class TestTransformOrderSupported:
 
 class TestHostRootedIsolatedHiddenOrder:
     async def test_order_only_filtered_local_aggregate_hidden(self, engine) -> None:
-        """A local aggregate whose ``Column.filter`` crosses a join is host-rooted isolated; order-only it stays hidden while still driving the ORDER BY."""
+        """A local aggregate whose ``DatasetField.filter`` crosses a relationship is host-rooted isolated; order-only it stays hidden while still driving the ORDER BY."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="status")],

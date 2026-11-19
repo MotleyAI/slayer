@@ -1,20 +1,20 @@
-"""``inspect`` (single-entity point-lookup) lazily back-fills column sample
+"""``inspect`` (single-entity point-lookup) lazily back-fills field sample
 values on read, exactly like ``inspect_model`` / ``search``.
 
 Contract pinned here:
 
-* ``inspect(reference, entity_type="field", compact=False)`` on a column
+* ``inspect(reference, entity_type="field", compact=False)`` on a field
   whose persisted sample is missing/stale triggers a live profile via the
   shared ``ensure_samples_fresh`` owner, renders the fresh
   ``Sample values:`` line, AND persists the refreshed sample for later reads.
 * Coverage is full non-regression vs ``inspect_model``: BOTH categorical
-  (distinct-value lists) AND numeric/temporal (min/max ranges) columns.
+  (distinct-value lists) AND numeric/temporal (min/max ranges) fields.
 * ``compact=True`` stays cheap/DB-free: description-only, NO refresh, NO
   profile query — the broad-exploration mode never shows ``Sample values:``.
-* Only ``entity_type="field"`` refreshes; measures / aggregations have no
+* Only ``entity_type="field"`` refreshes; metrics / aggregations have no
   sample concept and never trigger a profile.
 * Engine-guarded: with ``engine=None`` the refresh is a silent no-op.
-* Hidden columns are rendered but never back-filled (system-wide
+* Hidden fields are rendered but never back-filled (system-wide
   ``hidden = never profiled`` convention; parity with ``inspect_model``).
 * Best-effort: a profile or persist failure inside the refresh never turns
   the inspect read into a user-visible error.
@@ -60,8 +60,8 @@ def _stored_col(dataset: SlayerDataset, name: str) -> DatasetField:
 @pytest_asyncio.fixture
 async def inspect_setup(tmp_path) -> AsyncIterator[tuple[InspectService, object]]:
     """Build a SQLite-backed engine + storage + InspectService over a
-    populated ``orders`` table. Columns are saved WITHOUT sampled values so
-    every non-PK column starts uncached (the back-fill trigger)."""
+    populated ``orders`` table. Fields are saved WITHOUT sampled values so
+    every non-PK field starts uncached (the back-fill trigger)."""
     db_file = str(tmp_path / "data.db")
     with transaction(db_file) as conn:
         conn.execute(
@@ -172,7 +172,7 @@ async def test_compact_false_backfills_numeric(inspect_setup: tuple[Any, Storage
 
 @pytest.mark.asyncio
 async def test_compact_false_backfills_temporal(inspect_setup: tuple[Any, StorageBackend]) -> None:
-    """DATE/TIMESTAMP columns route through the numeric/temporal min/max path
+    """DATE/TIMESTAMP fields route through the numeric/temporal min/max path
     too — full non-regression includes temporal ranges."""
     svc, storage = inspect_setup
     out = await svc.inspect(
@@ -211,7 +211,7 @@ async def test_compact_true_does_not_refresh_numeric(
     inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Numeric is back-filled on compact=False — pin that
-    compact=True still does NOT profile/persist a numeric column either."""
+    compact=True still does NOT profile/persist a numeric field either."""
     svc, storage = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
@@ -225,7 +225,7 @@ async def test_compact_true_does_not_refresh_numeric(
 
 
 # ---------------------------------------------------------------------------
-# (4) measures / aggregations never trigger a profile
+# (4) metrics / aggregations never trigger a profile
 # ---------------------------------------------------------------------------
 
 
@@ -237,7 +237,7 @@ async def test_measure_does_not_refresh(inspect_setup, monkeypatch: pytest.Monke
         reference="ds.orders.aov", entity_type="metric", compact=False,
     )
     assert "sum(amount) / count(*)" in out
-    assert calls == [], "measures have no sample concept"
+    assert calls == [], "metrics have no sample concept"
 
 
 @pytest.mark.asyncio
@@ -276,8 +276,8 @@ async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageB
         reference="ds.orders.status", entity_type="field", compact=False,
     )
     assert attempts == [], "engine=None must not attempt a refresh"
-    # Renders the column header but no live samples (uncached + no engine).
-    assert "Column: ds.orders.status" in out
+    # Renders the field header but no live samples (uncached + no engine).
+    assert "Field: ds.orders.status" in out
     assert "Sample values:" not in out
     reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
@@ -285,7 +285,7 @@ async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageB
 
 
 # ---------------------------------------------------------------------------
-# inspect_model routes every column through one owner call
+# inspect_model routes every field through one owner call
 # ---------------------------------------------------------------------------
 
 
@@ -293,7 +293,7 @@ async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageB
 async def test_inspect_model_passes_all_columns_in_one_call(
     inspect_setup, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``inspect_model`` profiles categorical AND numeric/temporal columns through one owner call."""
+    """``inspect_model`` profiles categorical AND numeric/temporal fields through one owner call."""
     svc, _ = inspect_setup
     seen: list = []
 
@@ -311,14 +311,14 @@ async def test_inspect_model_passes_all_columns_in_one_call(
 
 
 # ---------------------------------------------------------------------------
-# (6) already-cached column short-circuits (no profile query)
+# (6) already-cached field short-circuits (no profile query)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_already_cached_does_not_reprofile(inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     svc, storage = inspect_setup
-    # Pre-populate the structured cache so the column reads as cached.
+    # Pre-populate the structured cache so the field reads as cached.
     await storage.update_field_sampled(
         data_source="ds", dataset_name="orders", field_name="status",
         sampled="paid, refunded", sampled_values=["paid", "refunded"],
@@ -328,7 +328,7 @@ async def test_already_cached_does_not_reprofile(inspect_setup: tuple[Any, Stora
     out = await svc.inspect(
         reference="ds.orders.status", entity_type="field", compact=False,
     )
-    assert calls == [], "a cached column must not be re-profiled"
+    assert calls == [], "a cached field must not be re-profiled"
     assert "Sample values:" in out
     assert "paid" in out
 
@@ -371,7 +371,7 @@ async def test_batch_refreshes_both_members(inspect_setup: tuple[Any, StorageBac
 
 
 # ---------------------------------------------------------------------------
-# (9) hidden column renders but is never back-filled
+# (9) hidden field renders but is never back-filled
 # ---------------------------------------------------------------------------
 
 
@@ -384,8 +384,8 @@ async def test_hidden_column_renders_without_refresh(
     out = await svc.inspect(
         reference="ds.orders.secret", entity_type="field", compact=False,
     )
-    assert "Column: ds.orders.secret" in out
-    assert calls == [], "hidden columns are never profiled"
+    assert "Field: ds.orders.secret" in out
+    assert calls == [], "hidden fields are never profiled"
     reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "secret").sampled_values is None
@@ -399,7 +399,7 @@ async def test_hidden_column_renders_without_refresh(
 @pytest.mark.asyncio
 async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch: pytest.MonkeyPatch) -> None:
     """The refresh path runs (proving it is wired) but its query raises;
-    inspect must swallow it and still return a normal column render."""
+    inspect must swallow it and still return a normal field render."""
     svc, _ = inspect_setup
     invoked: list = []
 
@@ -412,8 +412,8 @@ async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch: pytes
         reference="ds.orders.status", entity_type="field", compact=False,
     )
     assert invoked, "the refresh path must have executed"
-    # No crash; column still renders (without fresh samples).
-    assert "Column: ds.orders.status" in out
+    # No crash; field still renders (without fresh samples).
+    assert "Field: ds.orders.status" in out
 
 
 @pytest.mark.asyncio
@@ -439,7 +439,7 @@ async def test_persist_failure_numeric_renders_cleanly(
     inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Numeric variant of the persist-failure path:
-    a persist failure on a numeric column still renders the in-memory min/max
+    a persist failure on a numeric field still renders the in-memory min/max
     range this call."""
     svc, storage = inspect_setup
 

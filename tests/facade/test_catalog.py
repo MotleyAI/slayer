@@ -1,4 +1,4 @@
-"""Tests for slayer.facade.catalog — FacadeCatalog construction (DEV-1390 §5)."""
+"""Tests for slayer.facade.catalog — FacadeCatalog construction."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
     assert "id_count" in metric_names
     assert "id_count_distinct" in metric_names
     assert "id_sum" not in metric_names
-    # Numeric DOUBLE column → full numeric agg suite minus parametrics.
+    # Numeric DOUBLE field → full numeric agg suite minus parametrics.
     assert "revenue_sum" in metric_names
     assert "revenue_avg" in metric_names
     assert "revenue_max" in metric_names
@@ -86,7 +86,7 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
     assert "revenue_weighted_avg" not in metric_names
     assert "revenue_percentile" not in metric_names
     assert "revenue_corr" not in metric_names
-    # TEXT column → count, min, max, first, last only.
+    # TEXT field → count, min, max, first, last only.
     assert "status_count" in metric_names
     assert "status_min" in metric_names
     assert "status_sum" not in metric_names
@@ -97,7 +97,7 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
     by_name = {d.name: d for d in table.dimensions}
     assert by_name["ordered_at"].is_time is True
     assert by_name["status"].is_time is False
-    # PK column is exposed as a dimension despite the metric-agg clamp.
+    # PK field is exposed as a dimension despite the metric-agg clamp.
     assert by_name["id"].dimension_ref == "id"
 
 
@@ -131,7 +131,7 @@ def test_row_count_collision_renames_to_underscore(caplog) -> None:
     model = _dataset(
         name="orders",
         columns=[
-            # User has a literal column named row_count — synthetic must rename.
+            # User has a literal field named row_count — synthetic must rename.
             DatasetField(name="row_count", datatype=DataType.INTEGER),
         ],
     )
@@ -140,7 +140,7 @@ def test_row_count_collision_renames_to_underscore(caplog) -> None:
     table = _find_table(cat, schema="ds1", table="orders")
     metric_names = {m.name for m in table.metrics}
     assert "_row_count" in metric_names
-    # The user's column-derived metrics still exist normally.
+    # The user's field-derived metrics still exist normally.
     assert "row_count_sum" in metric_names
     # The synthetic count(*) is now named _row_count.
     synthetic = next(m for m in table.metrics if m.name == "_row_count")
@@ -245,9 +245,9 @@ def test_single_hop_join_expansion() -> None:
     assert dim_names["customers.region"] == "customers.region"
     assert dim_names["customers.id"] == "customers.id"
     metric_names = {m.name: m.metric_expression for m in table.metrics}
-    # Joined model row_count.
+    # Joined dataset row_count.
     assert metric_names["customers.row_count"] == "count(customers.*)"
-    # Joined column-agg pairing — region is TEXT, count is eligible.
+    # Joined field-agg pairing — region is TEXT, count is eligible.
     assert metric_names["customers.region_count"] == "count(customers.region)"
 
 
@@ -298,7 +298,7 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
 
 def test_reverse_hop_dimensions_enumerated() -> None:
     # orders declares the only edge; the customers table still exposes the
-    # reverse-path orders dims (DEV-1853).
+    # reverse-path orders dims.
     orders = _dataset(
         name="orders",
         columns=[
@@ -325,7 +325,7 @@ def test_reverse_hop_dimensions_enumerated() -> None:
 def test_row_preserving_flags_by_direction_and_cardinality() -> None:
     # Forward m2o/1:1/unknown hops keep the root grain; a declared 1:N, the
     # inverted side of a m2o, an inverted unknown, and any path through a
-    # fan-out hop do not (DEV-1853 browse-mode star scope).
+    # fan-out hop do not (browse-mode star scope).
     orders = _dataset(
         name="orders",
         columns=[
@@ -425,13 +425,13 @@ def test_multiple_datasources_keep_disjoint_schemas() -> None:
     cat = build_catalog(datasets_by_datasource={"dsA": [m1], "dsB": [m2]})
     schemas = {s.name: s for s in cat.schemas}
     assert set(schemas) == {"dsA", "dsB"}
-    # Same model name, different schemas — both surface.
+    # Same dataset name, different schemas — both surface.
     assert {t.name for t in schemas["dsA"].tables} == {"t"}
     assert {t.name for t in schemas["dsB"].tables} == {"t"}
 
 
 def test_no_time_dimension_drops_first_last_aggregations() -> None:
-    """DEV-1558 live-Metabase repro: a model with no time dimension
+    """Live-Metabase repro: a dataset with no time dimension
     must NOT expose ``<col>_first`` / ``<col>_last`` aggregations
     because the engine can't resolve them — Metabase's flat fingerprint
     scan ``SELECT name_first FROM products`` would error with
@@ -489,7 +489,7 @@ def test_metric_data_type_for_aggregations_uses_coarse_inference() -> None:
     cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     by_name = {m.name: m for m in table.metrics}
-    # COUNT-family → INT regardless of column type.
+    # COUNT-family → INT regardless of field type.
     assert by_name["revenue_count"].data_type == DataType.INTEGER
     assert by_name["status_count_distinct"].data_type == DataType.INTEGER
     # SUM of DOUBLE → DOUBLE.
@@ -498,6 +498,6 @@ def test_metric_data_type_for_aggregations_uses_coarse_inference() -> None:
     assert by_name["flag_sum"].data_type == DataType.INTEGER
     # AVG of any numeric → DOUBLE.
     assert by_name["revenue_avg"].data_type == DataType.FLOAT
-    # MIN/MAX preserve column type.
+    # MIN/MAX preserve field type.
     assert by_name["ordered_at_max"].data_type == DataType.DATETIME
     assert by_name["status_min"].data_type == DataType.STRING

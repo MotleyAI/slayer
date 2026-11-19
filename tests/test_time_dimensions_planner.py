@@ -8,8 +8,8 @@ that turns ``query.time_dimensions`` into ``DeclaredMeasure`` rows that
 ``ProjectionPlanner`` materialises.
 
 Public-alias contract (matches legacy ``EnrichedTimeDimension.alias =
-f"{model}.{td.dimension.full_name}"``): the granularity affects only the
-SQL ``DATE_TRUNC``, not the alias. Local TD on column ``created_at``
+f"{dataset}.{td.dimension.full_name}"``): the granularity affects only the
+SQL ``DATE_TRUNC``, not the alias. Local TD on field ``created_at``
 emits ``created_at``; joined TD ``customers.signed_up_at`` flattens to
 ``customers__signed_up_at`` in the stage schema so downstream stages can
 bind it as a flat name.
@@ -128,11 +128,11 @@ def _regions_dataset() -> SlayerDataset:
 
 
 def _orders_with_derived_temporal() -> SlayerDataset:
-    """Host model with a derived (Column.sql) temporal column.
+    """Host dataset with a derived (DatasetField.sql) temporal field.
 
-    Used to pin the 7b.3b rejection contract: derived TD columns route
-    through ``ColumnSqlKey`` and ``TimeTruncKey.source`` is typed as
-    ``ColumnKey``, so the binder must raise rather than silently produce
+    Used to pin the 7b.3b rejection contract: derived TD fields route
+    through ``FieldSqlKey`` and ``TimeTruncKey.source`` is typed as
+    ``FieldKey``, so the binder must raise rather than silently produce
     an ill-typed key. A later issue can widen TimeTruncKey if/when this
     case is needed.
     """
@@ -220,7 +220,7 @@ class TestBindTimeDimension:
         assert bound.bound.value_key.granularity == "day"
 
     def test_non_temporal_column_rejected(self) -> None:
-        # The temporal-column rule moved from the binder to the checker (P9).
+        # The temporal-field rule moved from the binder to the checker (P9).
         with pytest.raises(TimeDimensionFieldError, match="temporal"):
             check_time_dimension_field(
                 name="status", field_type=DataType.STRING,
@@ -289,8 +289,8 @@ class TestBindTimeDimension:
         assert bound.bound.value_key.granularity == "month"
 
     def test_derived_column_sql_td_binds(self) -> None:
-        # A derived (Column.sql) temporal column now
-        # binds to ``TimeTruncKey(source=ColumnSqlKey(...))`` — full support,
+        # A derived (DatasetField.sql) temporal field now
+        # binds to ``TimeTruncKey(source=FieldSqlKey(...))`` — full support,
         # no NotImplementedError. The grain still rides on the TimeTruncKey.
 
         host = _orders_with_derived_temporal()
@@ -329,10 +329,10 @@ class TestPlanningPrimitivesForTimeTruncKey:
 
     def test_iter_slot_deps_does_not_force_inner_column_slot(self) -> None:
         # The TimeTruncKey itself is the materialised slot. The inner
-        # ColumnKey does not need to be a separate slot just because a
-        # TD references it — the generator picks the column expression
+        # FieldKey does not need to be a separate slot just because a
+        # TD references it — the generator picks the field expression
         # out of the TimeTruncKey at render time. (This matches legacy:
-        # adding a time dimension does not auto-add the raw column as a
+        # adding a time dimension does not auto-add the raw field as a
         # separate output column.)
         col = FieldKey(path=(), leaf="created_at")
         key = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
@@ -340,7 +340,7 @@ class TestPlanningPrimitivesForTimeTruncKey:
         assert deps == [key]
 
     def test_canonical_name_local_no_grain_suffix(self) -> None:
-        # Legacy result-key contract: alias is the column name only —
+        # Legacy result-key contract: alias is the field name only —
         # the granularity goes into the SQL DATE_TRUNC, not the alias.
         key = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),
@@ -384,9 +384,9 @@ class TestValueRegistryTimeTrunc:
         assert sid1 == sid2
 
     def test_different_grain_distinct_slots(self) -> None:
-        # TimeTruncKey identity is (column, granularity); different
-        # grains on the same column intern to distinct slots even though
-        # they share an underlying column.
+        # TimeTruncKey identity is (field, granularity); different
+        # grains on the same field intern to distinct slots even though
+        # they share an underlying field.
         reg = ValueRegistry()
         k_month = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),

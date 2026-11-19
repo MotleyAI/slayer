@@ -169,7 +169,7 @@ async def test_spine_literals_leave_the_population_alone(engine: SlayerQueryEngi
 
 
 # --------------------------------------------------------------------------- #
-# A literal naming a query-backed model does not splice it
+# A literal naming a query-backed dataset does not splice it
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def spliced(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -412,7 +412,7 @@ async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQ
 
 
 # --------------------------------------------------------------------------- #
-# Parity pins: the misplaced-measure check
+# Parity pins: the misplaced-metric check
 # --------------------------------------------------------------------------- #
 def _misplaced(resp: Any) -> list[str]:
     return [w.original for w in resp.warnings if isinstance(w, NormalizationWarning) and w.rule_id == "MISPLACED_METRIC"]

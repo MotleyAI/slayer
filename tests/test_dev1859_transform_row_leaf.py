@@ -35,7 +35,7 @@ import slayer.core.enums
 SHIFT_OPS = frozenset({"time_shift", "change", "change_pct"})
 NON_SHIFT_OPS = sorted(slayer.core.enums.ALL_TRANSFORMS - SHIFT_OPS - {"first", "last"})
 
-#: input-shape id -> the formula body around the unprojected row leaf.
+#: input-shape id -> the expression body around the unprojected row leaf.
 SHAPES = {
     "bare": "weight",
     "composite": "weight * qty",
@@ -132,7 +132,7 @@ class TestGrainRefiningLeafRejected:
         _assert_leg_b_message(str(ei.value), "consecutive_periods")
 
     async def test_raw_time_source_column_refines_the_bucket(self, exec_engine):
-        """The bucketed TD's raw source column is not a projected grain key."""
+        """The bucketed TD's raw source field is not a projected grain key."""
         q = _q(time_dimensions=month_td(),
                metrics=[QueryMetric(metric="rank(ordered_at, direction='desc')", alias="t")])
         with pytest.raises(ValueError) as ei:
@@ -216,7 +216,7 @@ class TestWalkerBehaviourUnchanged:
 
 class TestShiftFamilyRejectsRowLeaf:
     """The shift family obeys the one grain-refining row-leaf rule: a bare
-    unprojected row column is rejected, never a multiplied result."""
+    unprojected row field is rejected, never a multiplied result."""
 
     @pytest.mark.parametrize("formula, op", [
         ("time_shift(weight, -1)", "time_shift"),

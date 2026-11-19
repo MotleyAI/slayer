@@ -1,5 +1,5 @@
 """Direct unit tests for the empty-string-to-non-text-column classifier
-that powers DEV-1570's Bind-time rewrite.
+that powers the Bind-time rewrite.
 
 The classifier returns the subset of $N indices whose AST occurrences land
 in a comparison / IN / BETWEEN predicate against a column that resolves
@@ -172,7 +172,7 @@ def test_join_on_predicate_classified(column_type_index):
     assert _classify(sql, column_type_index, [1]) == {1}
 
 
-# --- user model tables (public schema) --------------------------------------
+# --- user dataset tables (public schema) ------------------------------------
 
 
 def test_user_model_int_pk_classified_via_public_qualifier(column_type_index):
@@ -542,7 +542,7 @@ def test_between_with_no_whitespace_after_and_classified(column_type_index):
 
 
 def test_case_distinct_collision_keeps_first_and_warns(caplog):
-    """``id INT`` plus ``"ID" TEXT`` on the same model would collide under
+    """``id INT`` plus ``"ID" TEXT`` on the same dataset would collide under
     case-folded indexing — last-writer-wins would silently swap the type and
     let the empty-string rewrite mis-fire. _record_column_type keeps the
     first entry and warns once."""

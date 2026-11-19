@@ -1,4 +1,4 @@
-"""Join mutations address one edge: MCP ``edit_model`` and engine ``edit_model_remove``."""
+"""Relationship mutations address one edge: MCP ``edit_dataset`` and engine ``edit_dataset_remove``."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Shared fixtures + helpers for the DEV-1747 rerooting / ORDER BY modules.
+"""Shared fixtures + helpers for the rerooting / ORDER BY modules.
 
 Underscore-prefixed (like ``tests/_dev1746_fixtures.py``) so pytest skips it
 during collection while ``from tests._dev1747_fixtures import ...`` works.
@@ -12,14 +12,14 @@ What lives here:
   ``[B, A]`` — so a test cannot pass under the old unconditional-``MAX`` rule by
   accident. The names are deliberately not the group names, so a test reading
   the wrong column fails rather than coincidentally matching.
-* **A 1:N fan-out table** (``order_tags``) so the DEV-1735 containment claim is
+* **A 1:N fan-out table** (``order_tags``) so the containment claim is
   testable: ordering by a tag name must not multiply a sibling ``sum(amount)``.
   Order 1 carries three tags; every other order carries one.
 * **A NULL joined name** (region 4) so null-ordering has real data to sort.
-* **Model builders** — :func:`dev1747_models` (SQLite-shaped, bare
+* **Dataset builders** — :func:`dev1747_datasets` (SQLite-shaped, bare
   ``sql_table``) and :func:`dev1747_pg_models` (same graph, for dry-run SQL
-  shape assertions), including the derived crossing column ``cust_region``
-  whose ``Column.sql`` reaches through a join.
+  shape assertions), including the derived crossing field ``cust_region``
+  whose ``DatasetField.sql`` reaches through a relationship.
 * :func:`make_sqlite_engine` — storage + engine wiring bound to the seeded file.
 * ORDER BY shape helpers the four render sites all have to satisfy.
 """
@@ -50,7 +50,7 @@ REGION_A_LOW = "Alpha"
 REGION_A_HIGH = "Zulu"
 REGION_B_ONLY = "Bravo"
 
-#: Sibling-measure totals. Distinct per group, and neither is a multiple of the
+#: Sibling-metric totals. Distinct per group, and neither is a multiple of the
 #: other, so a fan-out that doubled or tripled one would be unmistakable.
 GROUP_A_AMOUNT = 11.0 + 13.0  # 24.0 — two orders
 GROUP_B_AMOUNT = 17.0         # 17.0 — one order
@@ -62,7 +62,7 @@ ORDER_1_TAG_COUNT = 3
 
 
 def seed_dev1747_sqlite(db_path: str) -> None:
-    """Create + seed the DEV-1747 SQLite corpus at ``db_path``."""
+    """Create + seed the SQLite corpus at ``db_path``."""
     with transaction(db_path) as con:
         con.executescript(
             """
@@ -109,7 +109,7 @@ def seed_dev1747_sqlite(db_path: str) -> None:
                 (102, 3, "silver", 75.0),
                 (103, 4, "silver", 50.0),
                 # Region Alpha's SECOND customer, with NO orders and the other
-                # tier. It exists so a target-side filter can change a cross-model
+                # tier. It exists so a target-side filter can change a cross-dataset
                 # aggregate WITHIN a group that survives the filter, rather than
                 # only removing whole groups: ``customers.tier == 'gold'`` takes
                 # Alpha's spend from 1040 to 1000 while Alpha stays in the result.
@@ -189,27 +189,27 @@ def _orders_dataset(*, data_source: str = "test") -> SlayerDataset:
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
-            # Kept as a plain column; its second edge onto customers is gone —
-            # DEV-1853 makes parallel edges fail closed in BOTH directions, so
+            # Kept as a plain field; its second edge onto customers is gone —
+            # Parallel edges fail closed in BOTH directions, so
             # host-local filters now push down by semi-join over the inverted
             # edge instead of dropping (divergences.md class (c)/(d)).
             DatasetField(name="billed_customer_id", datatype=DataType.INTEGER),
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            # The DEV-1735 "also in scope" shape: a LOCAL derived column whose
-            # ``Column.sql`` reaches THROUGH a join. Ordering by it is rejected
+            # The "also in scope" shape: a LOCAL derived field whose
+            # ``DatasetField.sql`` reaches THROUGH a relationship. Ordering by it is rejected
             # today in both grouped and ungrouped queries even though the bare
-            # ``customers.regions.name`` resolves ungrouped (DEV-1703 Phase 1).
+            # ``customers.regions.name`` resolves ungrouped.
             DatasetField(
                 name="cust_region", datatype=DataType.STRING,
                 sql="customers.regions.name",
             ),
-            # A NON-crossing derived column — the control. Ordering by it must
+            # A NON-crossing derived field — the control. Ordering by it must
             # keep working exactly as it does today.
             DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
-            # A derived column over ANOTHER derived column. Only the expanding
-            # resolver inlines the sibling; resolving the raw ``Column.sql``
+            # A derived field over ANOTHER derived field. Only the expanding
+            # resolver inlines the sibling; resolving the raw ``DatasetField.sql``
             # emits the bare name ``amount_x2``, which is not a database column
             # — so this is what tells the two render paths apart.
             DatasetField(name="amount_x4", datatype=DataType.FLOAT, sql="orders.amount_x2 * 2"),
@@ -224,7 +224,7 @@ def _orders_dataset(*, data_source: str = "test") -> SlayerDataset:
 def dev1747_datasets(*, data_source: str = "test") -> List[SlayerDataset]:
     """``orders -> customers -> regions`` plus the 1:N ``order_tags``.
 
-    Returned host-first; ``[0]`` is the host and the rest are ``extra_models``.
+    Returned host-first; ``[0]`` is the host and the rest are ``extra_datasets``.
     """
     return [
         _orders_dataset(data_source=data_source),
@@ -235,7 +235,7 @@ def dev1747_datasets(*, data_source: str = "test") -> List[SlayerDataset]:
 
 
 def dev1747_bundle():
-    """A ``ResolvedSourceBundle`` over the corpus models, host-first.
+    """A ``ResolvedSourceBundle`` over the corpus datasets, host-first.
 
     Lets the plan-level modules call ``plan_query`` directly instead of going
     through the engine — §5.10's contract is that the PLAN carries the order
@@ -298,7 +298,7 @@ def aggregate_funcs_over(sql: str, column: str, *, dialect: str = "postgres") ->
 
     D10 asserts the order wrap is ``MIN`` on ASC and ``MAX`` on DESC; this
     reads the emitted function rather than grepping, so a ``MIN`` appearing in
-    an unrelated measure cannot satisfy the assertion.
+    an unrelated metric cannot satisfy the assertion.
     """
     tree = sqlglot.parse_one(sql, dialect=dialect)
     found: List[str] = []
@@ -338,7 +338,7 @@ def cte_body_names(sql: str, *, dialect: str = "postgres") -> List[str]:
 def base_from_join_aliases(sql: str, *, dialect: str = "postgres") -> set:
     """Aliases joined into the *host base* relation.
 
-    The DEV-1735 containment claim is that a grouped joined sort key does NOT
+    The containment claim is that a grouped joined sort key does NOT
     pull its join into the host base — it lives inside the isolated CTE. That
     is only checkable by looking at the base's own JOIN list, not the
     statement's.
@@ -381,7 +381,7 @@ def isolated_cte_bodies(
 ) -> Dict[str, exp.Expression]:
     """The CTEs the isolation machinery mints — everything but ``_base``.
 
-    The DEV-1735 containment claim is two-sided: the crossed join must be ABSENT
+    The containment claim is two-sided: the crossed join must be ABSENT
     from the host base AND PRESENT in the isolated CTE. Asserting only the first
     half would also pass if the join vanished entirely and the sort key silently
     resolved to nothing.
@@ -476,7 +476,7 @@ def grain_join_back_predicates(
 ) -> List[exp.Expression]:
     """``ON`` predicates of the joins that attach an isolated CTE.
 
-    Only those: the model joins inside a CTE are plain equalities by design, so
+    Only those: the relationship joins inside a CTE are plain equalities by design, so
     including them would make a null-safety assertion fail for the wrong reason.
     """
     tree = sqlglot.parse_one(sql, dialect=dialect)
@@ -501,7 +501,7 @@ def aggregate_calls_in(
 
     Lets a test say "the sort key is wrapped in MIN" about the SORT KEY rather
     than about the statement — ``"MIN(" in sql`` is satisfied by a MIN over any
-    column at all, including a sibling measure.
+    column at all, including a sibling metric.
 
     Identifier quoting is stripped from the argument so one assertion reads the
     same across dialects (``"a"."b"``, ```a`.`b```, ``[a].[b]``).
@@ -529,7 +529,7 @@ def response_column_values(rows: List[dict], key: str) -> List[Optional[object]]
     return out
 
 
-#: Region Alpha's cross-model spend. The UNFILTERED total spans both of its
+#: Region Alpha's cross-dataset spend. The UNFILTERED total spans both of its
 #: customers; the gold-only total is customer 100 alone. The gap is what makes
 #: "did the re-rooted CTE apply its copy of the filter?" observable inside a
 #: group the filter does not remove.

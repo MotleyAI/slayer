@@ -1,11 +1,11 @@
-"""DEV-1740 Part B2 — grouping by an expression over an aggregate, executed on
+"""Part B2 — grouping by an expression over an aggregate, executed on
 SQLite AND DuckDB.
 
 The flagship: band cities by whether their total crosses 5000, then regroup by
 (region, band) — the aggregate lives at a FINER grain (city) than the query
 (region). The single-stage form must reproduce the verified two-stage workaround
-EXACTLY, and every measure must aggregate the raw rows ONCE (no join-back
-fan-out), so non-additive measures reconcile. Expectations are hand-computed in
+EXACTLY, and every metric must aggregate the raw rows ONCE (no join-back
+fan-out), so non-additive metrics reconcile. Expectations are hand-computed in
 ``tests/_dev1740_fixtures.py``.
 """
 
@@ -88,7 +88,7 @@ class TestFlagship:
 
 
 # --------------------------------------------------------------------------- #
-# Non-additive measures reconcile — proves the join-back does not fan out rows.
+# Non-additive metrics reconcile — proves the join-back does not fan out rows.
 # --------------------------------------------------------------------------- #
 class TestAggregateOncePerGroup:
     async def test_every_measure_matches_oracle(self, exec_engine) -> None:
@@ -124,7 +124,7 @@ class TestAggregateOncePerGroup:
 
 # --------------------------------------------------------------------------- #
 # Partition-key variants — the aggregate stage is synthesized against the
-# original resolved scope (cross-model join; query-time extension column).
+# original resolved scope (cross-dataset relationship; query-time extension field).
 # --------------------------------------------------------------------------- #
 class TestCrossModelPartition:
     async def test_partition_by_joined_column(self, exec_engine) -> None:
@@ -159,7 +159,7 @@ class TestExtensionColumnPartition:
 # --------------------------------------------------------------------------- #
 # Name references — filter / order on the computed dimension (Codex: the band
 # predicate stays in the final stage; an independent base-row filter still
-# reaches the partition CTE per DEV-1739).
+# reaches the partition CTE).
 # --------------------------------------------------------------------------- #
 class TestBandFilterAndOrder:
     async def test_filter_on_band_keeps_only_that_band(self, exec_engine) -> None:
@@ -256,7 +256,7 @@ class TestMultipleAggregatesInOneDimension:
 
 # --------------------------------------------------------------------------- #
 # Sibling-stage source — the desugar must synthesize the aggregate stage
-# against a PRIOR stage's schema, not the base model.
+# against a PRIOR stage's schema, not the base dataset.
 # --------------------------------------------------------------------------- #
 def _suffix(row, suffix):
     (key,) = [k for k in row if k.endswith(suffix)]

@@ -29,7 +29,7 @@ The second form of dynamism is **extending the dataset for the lifetime of one q
 
 The semantic concept is trivial; the SQL that expresses it is a view, a dbt model, or a CTE chain, and making a commit to a source controlled config repo to change any of those for a one-off is disproportionate.
 
-SLayer's answer are dataset extension semantics: when constructing a query, the `population` can be a plain dataset name, or it can be that dataset name plus extra fields, named-expression metrics, filters, and [relationships](../05_joins/joins.md) appended for the lifetime of this single query. 
+SLayer's answer are dataset extension semantics: when constructing a query, the `population` can be a plain dataset name, or it can be that dataset name plus extra fields, named-expression metrics, filters, and [relationships](../05_relationships/relationships.md) appended for the lifetime of this single query. 
 
 The persisted dataset stays untouched.
 
@@ -37,7 +37,7 @@ The persisted dataset stays untouched.
 
 You might reasonably ask why one would want to add *relationships* at query time. If there's a relationship between this dataset and another, shouldn't it live in the dataset definition?
 
-Often, yes. But not always — because **queries themselves can be used as datasets**. A SLayer query resolves to a SQL query, and SLayer's [introspection](../../concepts/ingestion.md) already turns any SQL query into a [query-backed dataset](../../concepts/models.md#query-backed-datasets) by deriving its `fields` from the query's output. 
+Often, yes. But not always — because **queries themselves can be used as datasets**. A SLayer query resolves to a SQL query, and SLayer's [introspection](../../concepts/ingestion.md) already turns any SQL query into a [query-backed dataset](../../concepts/datasets.md#query-backed-datasets) by deriving its `fields` from the query's output. 
 
 Dynamic relationships are what stitch a query-as-dataset back into a bigger query.
 

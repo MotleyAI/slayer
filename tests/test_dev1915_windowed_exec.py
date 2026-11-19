@@ -1,4 +1,4 @@
-"""Executed windowed-aggregation values (DEV-1915): a trailing ``window=`` on
+"""Executed windowed-aggregation values: a trailing ``window=`` on
 every aggregation, run against in-process SQLite and DuckDB and asserted against
 the hand oracles in ``tests/_dev1915_fixtures.py`` (re-derived by the smoke test).
 
@@ -255,9 +255,9 @@ async def test_cardinality_neutrality(exec_backend: tuple[str, SlayerQueryEngine
 
 # --------------------------------------------------------------------------- #
 # Two-stage: a windowed aggregate over the stage's own month axis equals the
-# model-backed evaluation over the same monthly rows (DEV-1471 stage fixture).
+# dataset-backed evaluation over the same monthly rows (stage time-axis fixture).
 # --------------------------------------------------------------------------- #
-# Inner stage rows + query shared with the DEV-1471 stage-axis tests
+# Inner stage rows + query shared with the stage time-axis tests
 # (``D71.MONTHLY_ROWS`` / ``D71.MONTHLY_INNER``).
 def _monthly_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -361,7 +361,7 @@ async def test_windowed_star_count_rejects_stray_args():
 
 async def test_windowed_custom_def_resolves_on_source_owner():
     # `wprod` is defined only on customers; overriding its param with a root
-    # (orders) column widens the home to orders while the def stays on customers.
+    # (orders) field widens the home to orders while the def stays on customers.
     # The renderer must resolve the definition on the source owner, not the root.
     query = F.q(time_dimensions=F.month_td("customers.signup_at"),
                 metrics=[_m("wprod(customers.spend, w=amount, window='1y')", "w")])

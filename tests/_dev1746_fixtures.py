@@ -13,7 +13,7 @@ What lives here:
   two months (so a 90-day window over it has something to sum), ``customers.tier``
   has a NULL group, and ``regions.name`` has one too — the composite-grain case
   needs two independently-nullable members.
-* **SQLite-shaped model builders** (:func:`dev1746_models`) — bare ``sql_table``
+* **SQLite-shaped dataset builders** (:func:`dev1746_datasets`) — bare ``sql_table``
   names, matching the seeded schema.
 * :func:`make_sqlite_engine` — the storage+engine wiring every execution fixture
   in this family repeats.
@@ -113,9 +113,9 @@ def seed_dev1746_sqlite(db_path: str) -> None:
 
 
 def dev1746_datasets() -> List[SlayerDataset]:
-    """SQLite-shaped ``orders -> customers -> regions`` models for the corpus.
+    """SQLite-shaped ``orders -> customers -> regions`` datasets for the corpus.
 
-    Returned host-first; ``[0]`` is the host and the rest are ``extra_models``.
+    Returned host-first; ``[0]`` is the host and the rest are ``extra_datasets``.
     """
     regions = SlayerDataset(
         name="regions", sql_table="regions", data_source="test",

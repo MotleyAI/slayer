@@ -1,7 +1,7 @@
-"""Tests for Cube views → SLayer facade models (slayer/cube/converter.py).
+"""Tests for Cube views → SLayer facade datasets (slayer/cube/converter.py).
 
-Facade measures reference the underlying
-Column (not the Cube measure name); facade source mirrors the root cube's mode.
+Facade metrics reference the underlying
+field (not the Cube measure name); facade source mirrors the root cube's mode.
 """
 
 from slayer.cube.models import (
@@ -58,7 +58,7 @@ def test_view_facade_model_basic_shape():
     view = models["orders_overview"]
     assert view.sql_table == "public.orders"        # rooted on orders
     assert meta(view)["cube_kind"] == "view"
-    # join to customers present on the facade
+    # relationship to customers present on the facade
     assert any(j.to == "customers" for j in view.relationships)
 
 
@@ -79,7 +79,7 @@ def test_view_prefixed_joined_dimension_references_joined_column():
 
 
 def test_view_root_measure_carries_underlying_column():
-    """A root-cube measure re-export needs the underlying column on
+    """A root-cube measure re-export needs the underlying field on
     the facade, referenced by `<agg>(<col>)` (NOT the measure name)."""
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
@@ -90,13 +90,13 @@ def test_view_root_measure_carries_underlying_column():
     source = parsed.source
     assert isinstance(source, (Ref, DottedRef)), m.expression
     col_ref = ".".join(source.parts) if isinstance(source, DottedRef) else source.name
-    assert view.get_field(col_ref) is not None  # underlying column copied onto facade
+    assert view.get_field(col_ref) is not None  # underlying field copied onto facade
     assert m.text.startswith("sum(")
 
 
 def test_view_joined_measure_is_cross_model_underlying_column_ref():
     """Joined-cube measure → `<agg>(customers.<underlying_col>)`
-    (the underlying column `ltv`, never the measure name `lifetime_value`)."""
+    (the underlying field `ltv`, never the measure name `lifetime_value`)."""
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
     view = models["orders_overview"]
@@ -288,7 +288,7 @@ def test_view_calc_measure_reexport_reported():
     view = CubeView(name="ov", cubes=[CubeViewCubeRef(join_path="orders", includes=["aov"])])
     project = CubeProject(cubes=cubes, views=[view])
     models, report = convert(project)
-    # A calculated measure can't be re-exported as a facade cross-model measure
+    # A calculated measure can't be re-exported as a facade cross-dataset metric
     # in Stage 1 → reported, not silently skipped.
     assert models["ov"].get_metric("aov") is None
     assert any(i.category == CubeIssueCategory.COMPLEX_MEASURE for i in report.issues)

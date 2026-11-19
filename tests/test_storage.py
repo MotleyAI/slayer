@@ -241,7 +241,7 @@ class TestModelStorage:
     async def test_empty_model_file_raises_clear_error(
         self, storage: YAMLStorage, sample_dataset: SlayerDataset
     ) -> None:
-        # A zero-byte model file (disk-full / interrupted write) must surface
+        # A zero-byte dataset file (disk-full / interrupted write) must surface
         # an actionable error, not a bare Pydantic model_type failure.
         await storage.save_dataset(sample_dataset)
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")

@@ -1,4 +1,4 @@
-"""Ossie export: joins become FK-direction relationships keyed by field names."""
+"""Ossie export: relationships export in FK direction, keyed by field names."""
 
 from pathlib import Path
 

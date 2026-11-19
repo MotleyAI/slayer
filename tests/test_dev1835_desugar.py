@@ -1,17 +1,17 @@
-"""DEV-1835 desugar (design D1) — a bare windowed / first-last measure behaves
-as a partitioned aggregate at the full projected grain, in measure, order, and
+"""Desugar (design D1) — a bare windowed / first-last metric behaves
+as a partitioned aggregate at the full projected grain, in metric, order, and
 filter roles, with its established public keys and executed values.
 
 Scenario coverage map (spec: openspec …/specs/queries/partitioned-aggregates):
   Bare and explicit partition twins are equivalent ... TestBareExplicitTwins
   Migrated families keep their executed values ....... TestMigratedFamilyValuePins
-  A filtered measure is cardinality-neutral .......... TestFilteredMeasureNeutrality
+  A filtered metric is cardinality-neutral ........... TestFilteredMeasureNeutrality
 (…/specs/queries/computed-dimensions):
   A dual-role aggregate coexists with a bare windowed  TestDualRoleWithBareWindowed
 
 Value pins for already-supported shapes must pass BEFORE and after the
 migration; the twin-combined, order-only-windowed, and dual-role cases fail
-today (duplicate producers / silent window drop / the DEV-1835 arm) and flip
+today (duplicate producers / silent window drop / the windowed-ranked arm) and flip
 with the implementation.
 """
 
@@ -222,7 +222,7 @@ class TestOrderOnlyHiddenProducers:
     ) -> None:
         """An order-only ``sum(amount, window='90d')`` beside a declared plain
         ``sum(amount)`` must order by the WINDOWED value. Today the order ref
-        silently binds to the plain measure (the canonical column name
+        silently binds to the plain metric (the canonical column name
         ``amount_sum`` matches it and the window is dropped — no ``_wm_`` CTE
         is planned); the desugar routes the order role through a hidden
         producer instead (design D1), which moves (South, 2024-03) from last
@@ -264,7 +264,7 @@ class TestOrderOnlyHiddenProducers:
 
 
 class TestFilteredMeasureNeutrality:
-    """Measure-local filters restrict producer rows only (design D8)."""
+    """Metric-local filters restrict producer rows only (design D8)."""
 
     async def test_filtered_windowed_beside_unfiltered(self, exec_backend) -> None:
         _, engine = exec_backend
@@ -285,7 +285,7 @@ class TestFilteredMeasureNeutrality:
 
     async def test_filtered_last_beside_unfiltered(self, exec_backend) -> None:
         """``last(ok_amount)`` masks the value at the latest row (NULL when that
-        row is not ok — DEV-1832: Column.filter masks, it never restricts the
+        row is not ok — DatasetField.filter masks, it never restricts the
         ranking); the all-NULL ``last(nomatch)`` discriminates the filter reaching
         the producer."""
         _, engine = exec_backend
@@ -305,7 +305,7 @@ class TestFilteredMeasureNeutrality:
 
 class TestDerivedColumnDimension:
     """Codex F3 — the "every dimension kind" requirement names derived
-    (``Column.sql``) columns; ``city_key = LOWER(city)`` on the shipped-model
+    (``DatasetField.sql``) fields; ``city_key = LOWER(city)`` on the shipped-dataset
     variant."""
 
     async def test_derived_dimension_with_bare_last(self, shipped_backend) -> None:
@@ -352,8 +352,8 @@ class TestDualRoleWithBareWindowed:
         self, exec_backend,
     ) -> None:
         """D10 subsumption + the lifted coexistence arm in one query: the same
-        region total as a banding dimension AND a measure, next to a bare
-        windowed measure."""
+        region total as a banding dimension AND a metric, next to a bare
+        windowed metric."""
         dialect, engine = exec_backend
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(

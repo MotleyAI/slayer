@@ -320,13 +320,14 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
     if isinstance(key.source, StarKey):
         star_path = source_anchor_path(key.source)
         if star_path:
-            # ``count(customers.*)`` counts the JOINED relation's rows (needs the join graph); a bare ``*`` would count host rows.
+            # ``count(customers.*)`` counts the JOINED relation's rows (needs the relationship graph); a bare ``*``
+            # would count host rows.
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
                     f"cross-dataset star over path {star_path!r} needs the "
-                    f"generator's join-graph routing"
+                    f"generator's relationship-graph routing"
                 ),
             )
         if key.agg != "count":
@@ -381,14 +382,14 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return resolved
 
     if isinstance(key, StarKey):
-        # Like the aggregate branch: a pathed star needs the join graph; a bare ``*`` counts the host's rows.
+        # Like the aggregate branch: a pathed star needs the relationship graph; a bare ``*`` counts the host's rows.
         if key.path:
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
                     f"cross-dataset star over path {key.path!r} needs the "
-                    f"generator's join-graph routing"
+                    f"generator's relationship-graph routing"
                 ),
             )
         return exp.Star()

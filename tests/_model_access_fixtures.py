@@ -1,4 +1,4 @@
-"""A tagged store for model-access tests: ``pub`` (untagged), ``hr`` ({hr}), ``fin`` ({fin}) and their dependents.
+"""A tagged store for dataset-access tests: ``pub`` (untagged), ``hr`` ({hr}), ``fin`` ({fin}) and their dependents.
 
 Physical tables (one SQLite or DuckDB file)::
 
@@ -49,12 +49,12 @@ ACCESS_PARAMS = [
     pytest.param(("sqlite", "duckdb"), id="sqlitestore-duckdb"),
 ]
 
-#: Models a ``{fin}`` caller must not see.
+#: Datasets a ``{fin}`` caller must not see.
 HIDDEN_FROM_FIN = frozenset({
     "hr", "hr_summary", "hr_rollup", "fin_hop", "fin_ordered",
     "pay", "pay_col", "pay_colfilter", "pay_filter", "pay_measure", "pay_agg",
 })
-#: Models a ``{fin}`` caller sees.
+#: Datasets a ``{fin}`` caller sees.
 VISIBLE_TO_FIN = frozenset({"pub", "fin", "fin_report", "pub_link", "dangling"})
 UNTAGGED_PUBLIC = frozenset({"pub", "pub_link", "dangling"})
 ALL_LOADABLE = HIDDEN_FROM_FIN | VISIBLE_TO_FIN
@@ -73,7 +73,7 @@ GHOST_MEMORY = "ghostnote"
 GHOST_HR_MEMORY = "ghostmix"
 HR_LEARNING = "Payroll grades are confidential ZEBRA"
 
-#: Any spelling naming a model or memory hidden from ``{fin}``, or an ``hr`` column (``hr.dept``, ``hr__dept``).
+#: Any spelling naming a dataset or memory hidden from ``{fin}``, or an ``hr`` field (``hr.dept``, ``hr__dept``).
 HIDDEN_TOKEN = re.compile(
     r"(?<!\w)(?:hr(?:_\w+)?|qhop|"
     + "|".join(re.escape(n) for n in sorted(HIDDEN_FROM_FIN - {"hr"}, key=len, reverse=True))
@@ -133,7 +133,7 @@ def _pay(name: str, **extra) -> SlayerDataset:
 
 
 def table_datasets() -> list[SlayerDataset]:
-    """The table-backed models (saved unvalidated, in this order)."""
+    """The table-backed datasets (saved unvalidated, in this order)."""
     hr_dept = DatasetField(name="dept_label", datatype=DataType.STRING, sql="hr.dept")
     masked = DatasetField(name="gross_eng", datatype=DataType.FLOAT, sql="gross", filter="hr.dept = 'eng'")
     hr_total = DatasetMetric(name="hr_salary_total", expression="sum(hr.salary)")
@@ -184,7 +184,7 @@ def table_datasets() -> list[SlayerDataset]:
 
 
 def query_backed_datasets() -> list[SlayerDataset]:
-    """The query-backed models (saved through the engine, in dependency order)."""
+    """The query-backed datasets (saved through the engine, in dependency order)."""
     def qb(name: str, *stages: dict) -> SlayerDataset:
         return SlayerDataset(name=name, source_queries=[SlayerQuery.model_validate(s) for s in stages])
 
@@ -245,7 +245,7 @@ async def _save_embeddings(storage: StorageBackend) -> None:
 
 
 async def _write_unloadable(storage: StorageBackend, *, backend: str, base: str) -> None:
-    """An untagged stored model whose document fails validation (no source)."""
+    """An untagged stored dataset whose document fails validation (no source)."""
     doc = {"version": 14, "name": UNLOADABLE, "data_source": DS, "columns": [{"name": "id"}]}
     if backend == "yaml":
         path = os.path.join(base, "models", DS, f"{UNLOADABLE}.yaml")
@@ -303,7 +303,7 @@ async def access_store(*, backend: str, dialect: str, unloadable: bool = True) -
 
 @asynccontextmanager
 async def reference_store(*, backend: str, dialect: str) -> AsyncGenerator[AccessStore]:
-    """What a ``{fin}`` caller sees, built for real: hidden models deleted and the joins into them dropped."""
+    """What a ``{fin}`` caller sees, built for real: hidden datasets deleted and the relationships into them dropped."""
     async with access_store(backend=backend, dialect=dialect, unloadable=False) as s:
         for name in sorted(HIDDEN_FROM_FIN):
             await s.storage.delete_dataset(name, data_source=DS)

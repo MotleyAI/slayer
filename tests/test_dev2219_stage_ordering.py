@@ -1,4 +1,4 @@
-"""Stage ordering and join-graph membership read every sibling a stage names, expressions included.
+"""Stage ordering and relationship-graph membership read every sibling a stage names, expressions included.
 
 Spec: openspec …/specs/queries/multi-stage — "Stages are ordered by every sibling reference".
 """

@@ -1,4 +1,4 @@
-"""Saved relation joins survive consumption without leaking into ordinary stages."""
+"""Saved relationships survive consumption without leaking into ordinary stages."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
-"""DEV-1853 — ``join_sync`` mirroring and the scoped inversion helper are gone.
+"""``join_sync`` mirroring and the scoped inversion helper are gone.
 
-Reverse traversal is computed, never materialized: saving an INNER join
+Reverse traversal is computed, never materialized: saving an INNER relationship
 creates no mirror, the storage wrapper and dbt mirroring are deleted, and no
 parallel traversal logic survives outside the shared walker.
 """

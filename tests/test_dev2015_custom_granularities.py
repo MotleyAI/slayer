@@ -389,7 +389,7 @@ class TestNesting:
 
 
 # ---------------------------------------------------------------------------
-# Column.granularity accepts a datasource granularity
+# DatasetField.granularity accepts a datasource granularity
 # ---------------------------------------------------------------------------
 
 class TestColumnGranularity:

@@ -1,4 +1,4 @@
-"""What only a stage extension's definitions read — a ``{var}``, a model — counts as read by the stage."""
+"""What only a stage extension's definitions read — a ``{var}``, a dataset — counts as read by the stage."""
 
 from __future__ import annotations
 

@@ -1,16 +1,16 @@
-"""Shared fixtures for DEV-1901 — aggregation parameters bind once.
+"""Shared fixtures for aggregation parameters binding once.
 
-The DEV-1908 graph (``orders → customers → regions → countries``, fanning
+The ``_dev1908_fixtures`` graph (``orders → customers → regions → countries``, fanning
 ``regions → region_events``) plus:
 
-* ``orders.factor`` / ``customers.factor`` — one column name on the root AND the
+* ``orders.factor`` / ``customers.factor`` — one field name on the root AND the
   owner (a bare ``factor`` default must read the owner's);
-* ``customers."group"`` — a reserved-word column that must stay quoted;
+* ``customers."group"`` — a reserved-word field that must stay quoted;
 * ``orders.cust_spend`` — derived ``customers.spend`` (crosses a to-one hop);
-* aggregations whose defaults are a bare / dotted / derived column, a literal, a
+* aggregations whose defaults are a bare / dotted / derived field, a literal, a
   free SQL expression, or unanalysable text.
 
-Dataset extensions (DEV-1908 dataset otherwise verbatim): ``orders.factor = 100 +
+Dataset extensions (``_dev1908_fixtures`` dataset otherwise verbatim): ``orders.factor = 100 +
 id``; ``customers.factor = id``; ``customers."group" = id``.
 """
 
@@ -76,7 +76,7 @@ def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
 
 
 def dev1901_datasets() -> List[SlayerDataset]:
-    """DEV-1908 graph + the DEV-1901 columns and aggregations. Host first (orders)."""
+    """``_dev1908_fixtures`` graph + this module's fields and aggregations. Host first (orders)."""
     models = dev1908_datasets()
     orders = _by_name(models, "orders")
     orders.fields.extend([
@@ -140,7 +140,7 @@ def revisit_datasets() -> List[SlayerDataset]:
 
 
 def window_param_datasets(*, placeholder: bool) -> List[SlayerDataset]:
-    """``orders`` with ``wwin``, whose formula reads ``{window}`` (``placeholder``)
+    """``orders`` with ``wwin``, whose expression reads ``{window}`` (``placeholder``)
     or which declares a ``window`` parameter."""
     agg = (Aggregation(name="wwin", expression="SUM({value}) * {window}",
                        params=[AggregationParam(name="window", sql="2")])

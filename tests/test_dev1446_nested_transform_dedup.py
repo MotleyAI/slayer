@@ -1,9 +1,9 @@
-"""DEV-1450 stage 7b.15e — DEV-1446 acceptance via ``engine.execute``.
+"""Nested-transform dedup, via ``engine.execute``.
 
-DEV-1446: a transform-wrapped aggregate ref of a renamed measure dedupes onto
-the declared slot. With ``{"formula": "amount:sum", "name": "revenue"}`` and a
+A transform-wrapped aggregate ref of a renamed metric dedupes onto
+the declared slot. With ``{"metric": "sum(amount)", "alias": "revenue"}`` and a
 filter ``change(sum(amount)) > 0``, the inner ``sum(amount)`` and the declared
-``revenue`` measure intern to ONE ``AggregateKey(amount, sum)`` slot (P2). The
+``revenue`` metric intern to ONE ``AggregateKey(amount, sum)`` slot (P2). The
 base CTE computes ``SUM(amount)`` once; the ``change`` desugaring reuses that
 slot's alias rather than minting a second ``amount_sum`` column.
 

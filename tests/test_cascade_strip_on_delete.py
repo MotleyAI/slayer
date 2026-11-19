@@ -1,4 +1,4 @@
-"""DEV-1428: cascade-strip dangling entity refs from memories on delete.
+"""Cascade-strip dangling entity refs from memories on delete.
 
 * ``delete_model("orders")`` strips ``mydb.orders`` and ``mydb.orders.*``
 * ``delete_datasource("mydb")`` strips every ``mydb.*``
@@ -25,7 +25,7 @@ from slayer.storage.base import StorageBackend
 
 @pytest.fixture
 async def storage(mydb_orders_storage: StorageBackend) -> StorageBackend:
-    # DEV-1428: cascade tests additionally need a second model
+    # Cascade tests additionally need a second dataset
     # (``orders_archive``) so they can pin that the dotted-namespace
     # rule excludes substring-prefix matches.
     await mydb_orders_storage.save_dataset(

@@ -1,9 +1,9 @@
-"""DEV-1750 Part 1 — the shifted (``time_shift``) CTE must register the joins
-its inner aggregate's template FRAGMENTS (and positional column args) cross,
+"""Part 1 — the shifted (``time_shift``) CTE must register the relationships
+its inner aggregate's template FRAGMENTS (and positional field args) cross,
 through the same one door the host and ``_cm_`` paths use.
 
 Before this, ``_emit_time_shift_ctes_for_planned`` registered source / typed
-column kwargs but never the string fragments, so a
+field kwargs but never the string fragments, so a
 crossing default like ``w='customers__regions.weight'`` would re-aggregate
 ``SUM(orders.amount * customers__regions.weight)`` in the shifted CTE with no
 join to ``regions`` — SQL no database binds.
@@ -45,9 +45,9 @@ def _q(*, metrics) -> SlayerQuery:
 
 
 class TestShiftedCteFragmentDefaultParam:
-    """Shape (b): DEV-1838 D5 — the crossing-fragment inner is a HOST-rooted
+    """Shape (b): the crossing-fragment inner is a HOST-rooted
     producer; the shifted CTE reads the producer's joined-back column, and the
-    fragment's join hops live inside the producer's own ``_cm_`` CTE."""
+    fragment's relationship hops live inside the producer's own ``_cm_`` CTE."""
 
     async def test_shifted_cte_joins_the_fragment_hops(self) -> None:
         sql = await gen(_q(metrics=[
@@ -78,7 +78,7 @@ class TestShiftedCteFragmentDefaultParam:
 
 class TestShiftedCteFragmentUserKwarg:
     """A user-supplied string kwarg that substitutes into the template is a
-    fragment too (parity with the ``_cm_`` path) — its crossing join must land
+    fragment too (parity with the ``_cm_`` path) — its crossing relationship must land
     in the shifted CTE."""
 
     async def test_user_string_kwarg_crossing_join_registers(self) -> None:
@@ -97,7 +97,7 @@ class TestShiftedCteFragmentUserKwarg:
 
 class TestFragmentBindingUnit:
     """An OVERRIDDEN default is replaced at bind: only the override lands on the
-    key, so no path can register the default fragment's join."""
+    key, so no path can register the default fragment's relationship."""
 
     @staticmethod
     def _kwargs(expression: str) -> dict:
@@ -120,13 +120,13 @@ class TestFragmentBindingUnit:
 
 
 class TestShiftedCtePositionalArgRegistration:
-    """DEV-1750 (Codex F2/F3): the shifted block must resolve every crossing
-    positional column arg through the scope, mirroring the ``_cm_`` path's
+    """Codex F2/F3: the shifted block must resolve every crossing
+    positional field arg through the scope, mirroring the ``_cm_`` path's
     ``for _arg in local_agg_key.args`` loop — a first/last explicit time arg is
     the standing case.
 
-    DEV-1835 lift: the first/last now DESUGARS into a ``_cm_`` producer that
-    owns the crossing join and the ranked subquery, so end-to-end this shape now
+    The first/last now DESUGARS into a ``_cm_`` producer that
+    owns the crossing relationship and the ranked subquery, so end-to-end this shape now
     RENDERS (the ranked-in-shifted seam is no longer needed). The contract
     pinned here is unchanged: NO silent scope leak / unbound alias — the crossing
     is bound inside the producer the shifted CTE references, never leaked bare
@@ -141,11 +141,11 @@ class TestShiftedCtePositionalArgRegistration:
                 alias="prev",
             ),
         ])
-        sql = await gen(q)  # DEV-1835 lift: renders via the desugared producer
+        sql = await gen(q)  # renders via the desugared producer
         assert_scope_closed(sql, dialect="duckdb")
         assert "__regroup__" not in sql, sql
         # The crossing does not leak bare into the join-back; the shift reads the
-        # ranked producer, whose crossing join + ORDER BY key live inside it.
+        # ranked producer, whose crossing relationship + ORDER BY key live inside it.
         sjoin = _extract_cte_body(sql, r"sjoin_\w+")
         assert "customers.signup_at" not in sjoin, sjoin
         assert shifted_relation(sql).startswith(f"_cm_orders__amount_{agg}"), sql
@@ -155,18 +155,18 @@ class TestShiftedCtePositionalArgRegistration:
 
 
 class TestCrossModelHiddenAliasReservation:
-    """DEV-1750: a hidden ``time_shift`` placeholder (``_time_shift_inner``)
-    minted inside the cross-model transform chain must never shadow a real user
-    measure of that name. The chain reuses the generation-wide ``_gen_allocator``
+    """A hidden ``time_shift`` placeholder (``_time_shift_inner``)
+    minted inside the cross-dataset transform chain must never shadow a real user
+    metric of that name. The chain reuses the generation-wide ``_gen_allocator``
     (already carrying every projected alias from the ``_cm_`` / combined-SELECT
     build), so ``allocate_cte`` bumps the hidden one to ``_time_shift_inner_2`` —
     the host chain gets the same guarantee via its own explicit reservation on a
     fresh allocator (``test_dev1713_naming``)."""
 
     async def test_hidden_alias_bumped_off_user_column(self) -> None:
-        # ``sum(customers.spend)`` forces the cross-model transform chain; the
+        # ``sum(customers.spend)`` forces the cross-dataset transform chain; the
         # arithmetic-wrapped ``time_shift`` mints a hidden ``_time_shift_inner``
-        # slot that would collide with the like-named user measure.
+        # slot that would collide with the like-named user metric.
         sql = await gen(_q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
             QueryMetric(metric="sum(amount)", alias="_time_shift_inner"),
@@ -174,7 +174,7 @@ class TestCrossModelHiddenAliasReservation:
                 metric="sum(amount) - time_shift(sum(amount), -1)", alias="growth",
             ),
         ]))
-        # The user measure keeps its own key (closing quote pins the exact
+        # The user metric keeps its own key (closing quote pins the exact
         # name, not the ``_2`` suffix).
         assert '"orders._time_shift_inner"' in sql, sql
         # The hidden shift alias was bumped off the user's name, not collided.

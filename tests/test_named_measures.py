@@ -1,8 +1,8 @@
-"""End-to-end tests for bare-name ``ModelMeasure`` resolution.
+"""End-to-end tests for bare-name ``DatasetMetric`` resolution.
 
 These tests exercise the full typed-pipeline (parse → bind → plan → render).
-They prove that a query referencing a saved measure by bare name produces
-the same SQL as the equivalent query with the saved formula inlined.
+They prove that a query referencing a saved metric by bare name produces
+the same SQL as the equivalent query with the saved expression inlined.
 """
 
 import pytest
@@ -35,8 +35,8 @@ async def _generate(query: SlayerQuery, dataset: SlayerDataset) -> str:
 
 class TestNamedMeasureSQL:
     async def test_root_position_matches_inline(self) -> None:
-        """Query with ``{formula: "aov"}`` produces the same SQL as
-        ``{formula: "revenue:sum / *:count"}``.
+        """Query with ``{metric: "aov"}`` produces the same SQL as
+        ``{metric: "sum(revenue) / count(*)"}``.
         """
         formula = "sum(revenue) / count(*)"
         with_saved = _orders_dataset(
@@ -133,7 +133,7 @@ class TestNamedMeasureSQL:
         assert chained_sql == inline_sql
 
     async def test_cycle_raises_at_query_time(self) -> None:
-        """A cyclic chain in a model's saved measures raises with the chain
+        """A cyclic chain in a dataset's saved metrics raises with the chain
         in the error message when a query references it.
         """
         model = _orders_dataset(
@@ -153,7 +153,7 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     async def test_unknown_bare_name_still_errors(self) -> None:
-        """A bare name that is neither a saved measure nor a column still
+        """A bare name that is neither a saved metric nor a field still
         produces the existing helpful error.
         """
         model = _orders_dataset(
@@ -218,7 +218,7 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     async def test_duplicate_saved_measure_name_rejected_at_query_time(self) -> None:
-        """Defense-in-depth: even if a model with duplicate saved-measure names
+        """Defense-in-depth: even if a dataset with duplicate saved-metric names
         slips past the construction-time validator (e.g., direct mutation),
         the storage-to-engine reload path re-validates via Pydantic and
         raises before the query can run. Replaces the legacy
@@ -227,7 +227,7 @@ class TestNamedMeasureSQL:
         model = _orders_dataset(
             metrics=[DatasetMetric(name="aov", expression="sum(revenue)")]
         )
-        # Bypass the model validator by appending after construction.
+        # Bypass the dataset validator by appending after construction.
         model.metrics.append(DatasetMetric(name="aov", expression="avg(revenue)"))
 
         query = SlayerQuery.model_validate({
@@ -240,8 +240,8 @@ class TestNamedMeasureSQL:
 
 
 class TestBareNamedMeasureAliasing:
-    """Regression: bare named-measure ref must surface the measure NAME as
-    the SELECT alias (not the formula-derived canonical), so ORDER BY by
+    """Regression: bare named-metric ref must surface the metric NAME as
+    the SELECT alias (not the expression-derived canonical), so ORDER BY by
     that name and downstream result-key lookups stay consistent.
     """
 
@@ -255,11 +255,11 @@ class TestBareNamedMeasureAliasing:
         )
         sql = await _generate(query, model)
         assert '"orders.rev_total"' in sql
-        # The formula-derived canonical alias must NOT leak into SELECT.
+        # The expression-derived canonical alias must NOT leak into SELECT.
         assert '"orders.revenue_sum"' not in sql
 
     async def test_order_by_resolves_against_measure_name(self) -> None:
-        """The original bug: SELECT aliased by formula, ORDER BY by name."""
+        """The original bug: SELECT aliased by expression, ORDER BY by name."""
         model = _orders_dataset(
             metrics=[
                 DatasetMetric(name="companies_count", expression="count_distinct(revenue)"),
@@ -275,5 +275,5 @@ class TestBareNamedMeasureAliasing:
         # The ORDER BY reference must point at the alias we actually emitted.
         assert '"orders.companies_count"' in sql
         assert "ORDER BY" in sql
-        # And the canonical formula-derived alias must NOT appear at all.
+        # And the canonical expression-derived alias must NOT appear at all.
         assert "revenue_count_distinct" not in sql

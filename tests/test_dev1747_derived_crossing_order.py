@@ -1,28 +1,26 @@
-"""DEV-1747 / DEV-1735 — ORDER BY on a LOCAL DERIVED column whose SQL crosses.
+"""ORDER BY on a LOCAL DERIVED field whose SQL crosses.
 
-``orders.cust_region`` is a local derived column (``path == ()``) whose
-``Column.sql`` is ``customers__regions.name`` — it reaches THROUGH two joins.
+``orders.cust_region`` is a local derived field (``path == ()``) whose
+``DatasetField.sql`` is ``customers__regions.name`` — it reaches THROUGH two relationships.
 
-DEV-1735 recorded this as "rejected in BOTH grouped and ungrouped queries".
-That is **stale for the grouped half**: DEV-1709 widened the Law-3 host-rooted
-isolation trigger to any crossing INPUT, and a derived source whose SQL crosses
+This was once recorded as "rejected in BOTH grouped and ungrouped queries".
+That is **stale for the grouped half**: the Law-3 host-rooted isolation
+trigger covers any crossing INPUT, and a derived source whose SQL crosses
 is such an input, so a grouped query already routes it to a host-rooted CTE
 today. Group 1 pins that shape so the rerooting/ORDER BY consolidation cannot
-regress it — it is the exact reference shape the bare joined column adopts in
+regress it — it is the exact reference shape the bare joined field adopts in
 ``test_dev1747_grouped_joined_order.py``.
 
-The UNGROUPED half is still rejected, and that is the real inconsistency
-DEV-1735 names: ``ORDER BY customers.regions.name`` resolves ungrouped (Law 1
-pulls the join, DEV-1703 Phase 1) but ``ORDER BY cust_region`` — the same
-column reached through a derived definition — raises. Group 2 closes it.
+The UNGROUPED half is still rejected, and that is the real inconsistency:
+``ORDER BY customers.regions.name`` resolves ungrouped (Law 1
+pulls the join) but ``ORDER BY cust_region`` — the same
+field reached through a derived definition — raises. Group 2 closes it.
 
 The fix is plan-side: the crossed paths are already structural (§5.3), so the
 planner registers them and Law 1 pulls the join into the base FROM, exactly as
 it does for the bare joined ref. That is also what lets the render-time
 throwaway-``ScopeFrame`` probe in ``_apply_order_limit_from_planned`` go — it
 exists solely to DETECT this crossing at render time.
-
-Refs: DEV-1747 (D9), DEV-1735 ("Also in scope"), DEV-1709, DEV-1703 Phase 1.
 """
 from __future__ import annotations
 
@@ -104,7 +102,7 @@ class TestGroupedDerivedCrossing:
     async def test_crossed_join_lives_in_the_isolated_cte_not_the_base(self) -> None:
         sql = await _sql(_grouped("asc"))
         assert "customers__regions" not in base_from_join_aliases(sql), (
-            f"the derived column's join leaked into the host base:\n{sql}"
+            f"the derived field's join leaked into the host base:\n{sql}"
         )
         assert "customers__regions" in sql
 
@@ -133,7 +131,7 @@ class TestGroupedDerivedCrossing:
 
 
 # ---------------------------------------------------------------------------
-# Group 2 — ungrouped: the DEV-1735 remainder
+# Group 2 — ungrouped: the remainder
 # ---------------------------------------------------------------------------
 class TestUngroupedDerivedCrossing:
     async def test_ungrouped_derived_crossing_no_longer_rejects(self) -> None:
@@ -151,7 +149,7 @@ class TestUngroupedDerivedCrossing:
         bare joined ref that already works."""
         sql = await _sql(_ungrouped("asc"))
         assert "customers__regions" in base_from_join_aliases(sql), (
-            f"Law 1 did not pull the derived column's join:\n{sql}"
+            f"Law 1 did not pull the derived field's join:\n{sql}"
         )
 
     async def test_ungrouped_emits_no_aggregate_wrap(self) -> None:
@@ -167,8 +165,8 @@ class TestUngroupedDerivedCrossing:
         )
 
     async def test_ungrouped_derived_matches_the_bare_joined_shape(self) -> None:
-        """The consistency DEV-1735 asks for: ``ORDER BY cust_region`` and
-        ``ORDER BY customers.regions.name`` denote the same column, so their
+        """Consistency: ``ORDER BY cust_region`` and
+        ``ORDER BY customers.regions.name`` denote the same field, so their
         emitted sort terms must agree."""
         derived_sql = await _sql(_ungrouped("asc"))
         bare_sql = await _sql(SlayerQuery(
@@ -217,13 +215,13 @@ class TestRenderTimeProbeRemoved:
 
 
 # ---------------------------------------------------------------------------
-# Group 4 — a derived column defined over ANOTHER derived column
+# Group 4 — a derived field defined over ANOTHER derived field
 # ---------------------------------------------------------------------------
 class TestDerivedOfDerivedSortKey:
     """``amount_x4`` is ``amount_x2 * 2``, and ``amount_x2`` is ``amount * 2``.
 
     Only the EXPANDING resolver inlines the sibling. The projection path always
-    used it; the hidden sort-key path resolved the raw ``Column.sql`` instead
+    used it; the hidden sort-key path resolved the raw ``DatasetField.sql`` instead
     and emitted the sibling's NAME — and ``amount_x2`` is not a column in the
     database, so the statement failed there rather than here (CodeRabbit).
 
@@ -249,7 +247,7 @@ class TestDerivedOfDerivedSortKey:
         )
 
     async def test_it_matches_what_the_projection_would_emit(self) -> None:
-        """P-G over the two paths: the same derived column must render the same
+        """P-G over the two paths: the same derived field must render the same
         expression whether it is projected or only sorted on. Compared to the
         PROJECTED expansion rather than to a literal, so the two cannot drift
         apart again without this failing."""
@@ -261,7 +259,7 @@ class TestDerivedOfDerivedSortKey:
             order=[OrderItem(field="amount_x4", direction="asc")],
         ))
         # The projected query sorts by the ALIAS, so compare the sort term
-        # against the projected SELECT expression for the same column.
+        # against the projected SELECT expression for the same field.
         projected_expr = next(
             (
                 s.this.sql(dialect="postgres")

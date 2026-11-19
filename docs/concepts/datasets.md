@@ -170,7 +170,7 @@ fields:
 ```
 
 - **Which form runs**: the entry for the datasource's own dialect (its type's SQL dialect name, upper-cased: `POSTGRES`, `DUCKDB`, `SQLITE`, …), else the portable `sql`, else an `OSSIE_SQL_2026` entry. Entries for other dialects are kept and never run; a field with two entries for its datasource's dialect, or with no form that runs there, is refused at save.
-- **Portable `sql`** is read by SLayer's Mode B grammar with [Ossie's meaning](formulas.md); a dialect entry reaches the database verbatim.
+- **Portable `sql`** is read by SLayer's Mode B grammar with [Ossie's meaning](expressions.md); a dialect entry reaches the database verbatim.
 - **Names**: inside a field's `expression` or `filter`, and a dataset's `filters`, a bare name or `source.x` reads the dataset's **source column**, and a path from the dataset reads a **field** (`orders.gross`, `customers.region`). So a derived field may take a source column's name (`status: UPPER(status)` upper-cases the physical `status`).
 - **Physical reader**: a field whose running form is one bare source column and which has no `filter`; relationship keys, schema drift and live typing read only these.
 - The pre-2.0 `sql` converts to `expression`: one column becomes the shorthand, other text becomes the entry for the datasource's dialect with each sibling it read written as a path, so its results do not change.
@@ -207,7 +207,7 @@ Cycles in the reference graph (e.g., `c1: "orders.c2 + 1"` and `c2: "orders.c1 -
 
 A field's expression may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The field behaves like any other field when used in `dimensions` / SELECT.
 
-> **Filtering on a windowed field is rejected.** A query filter naming a field whose expression contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field defined as `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [formulas.md](formulas.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
+> **Filtering on a windowed field is rejected.** A query filter naming a field whose expression contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field defined as `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [expressions.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
 
 ### SQLite JSON extraction
 
@@ -285,7 +285,7 @@ A saved expression produces the same SQL as writing it out longhand. Cycles (`a 
 
 A dotted `"customers.aov"` reuses a saved metric from the joined `customers` dataset as if its expression were written inline, and a query-backed dataset cannot declare `metrics` directly. A saved metric whose expression crosses back to a dataset already on the path (e.g. `customers.order_total` defined as `sum(customer.amount)`, used from `orders`) evaluates over its own occurrence of that dataset rather than failing.
 
-See [formulas.md](formulas.md) for the full expression grammar — operators, transforms, time-shifted forms, and the `Mode B` DSL rules.
+See [expressions.md](expressions.md) for the full expression grammar — operators, transforms, time-shifted forms, and the `Mode B` DSL rules.
 
 ## Aggregations
 
@@ -324,7 +324,7 @@ fields:
 
 `last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time field is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated field or expression → the dataset's `default_time_dimension` (its only DATE / TIMESTAMP field when unset). Whichever field wins is an input of the aggregation: if it, or a derived definition it names, crosses a relationship hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
 
-Not to be confused with the [`last()` expression function](formulas.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
+Not to be confused with the [`last()` expression function](expressions.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
 ## Custom aggregations
 
@@ -428,7 +428,7 @@ Joined tables use `__`-delimited path aliases in generated SQL so **diamond join
 - `customers.regions.name` → table alias `customers__regions`
 - `warehouses.regions.name` → table alias `warehouses__regions`
 
-You write dotted relationship paths everywhere — in both queries and dataset-internal SQL (`customers.regions.name`). The `__`-delimited alias is purely an emitted-SQL detail SLayer generates for you. See [Diamond Joins](ingestion.md#diamond-relationships) for details.
+You write dotted relationship paths everywhere — in both queries and dataset-internal SQL (`customers.regions.name`). The `__`-delimited alias is purely an emitted-SQL detail SLayer generates for you. See [Diamond relationships](ingestion.md#diamond-relationships) for details.
 
 ## Dataset filters
 
@@ -496,7 +496,7 @@ Or use the saved result as a dataset in another query:
 
 A consumed query-backed dataset is spliced into the consuming query as stages whose names stay private to it, and one that references itself, directly or through other query-backed datasets, is rejected.
 
-Relationships declared on a saved query-backed dataset, keyed on its output columns, stay usable wherever the dataset is consumed. Its final stage also inherits, like any stage, every relationship whose key columns it outputs unchanged (see [Stages inherit edges on pass-through keys](queries.md#query-lists)); a declared relationship wins over an inherited one, and `inspect` lists inherited edges marked `inherited`.
+Relationships declared on a saved query-backed dataset, keyed on its output fields, stay usable wherever the dataset is consumed. Its final stage also inherits, like any stage, every relationship whose key fields it outputs unchanged (see [Stages inherit edges on pass-through keys](queries.md#query-lists)); a declared relationship wins over an inherited one, and `inspect` lists inherited edges marked `inherited`.
 
 ### Variables in dataset SQL
 

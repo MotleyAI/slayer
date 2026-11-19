@@ -1,4 +1,4 @@
-"""Shared data and models for the calendar-aware ``consecutive_periods`` tests.
+"""Shared data and datasets for the calendar-aware ``consecutive_periods`` tests.
 
 ``orders``: customer 1 in 2024-01/02/03/12 and 2025-01/02/03/05/06 (amounts
 150, 500, 120, 220, 140, 200, 140, 225, 210); customer 2 in
@@ -170,7 +170,7 @@ async def calendar_engine(
 
 def orders_query(*, expression: str, filters=None, dimensions=None, date_range=None,
                  granularity: str = "month") -> SlayerQuery:
-    """One measure ``v`` over customer 1's series unless ``filters`` is given."""
+    """One metric ``v`` over customer 1's series unless ``filters`` is given."""
     td: dict = {"field": "order_date", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range

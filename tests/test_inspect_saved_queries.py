@@ -1,4 +1,4 @@
-"""Saved queries are discoverable from the models they read (spec: queries/saved-query-refinement)."""
+"""Saved queries are discoverable from the datasets they read (spec: queries/saved-query-refinement)."""
 
 from __future__ import annotations
 

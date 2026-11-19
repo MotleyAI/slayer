@@ -141,7 +141,7 @@ class ScopeFrame(BaseModel):
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
-        """Anchor ``ref`` in this scope, register the joins it crosses, and —
+        """Anchor ``ref`` in this scope, register the relationship paths it crosses, and —
         when a ``consumer`` scope is named — materialise it and return the bare
         alias for the consumer.
 
@@ -209,8 +209,8 @@ class ScopeFrame(BaseModel):
 
         Both scans are load-bearing (the dual-scan contract): a dotted
         ref whose derived field inlines to a constant vanishes from the
-        expanded AST, so only the pre-expansion scan sees its join; and a bare
-        derived ref only reveals the joins its expansion crosses AFTER
+        expanded AST, so only the pre-expansion scan sees its relationship path; and a bare
+        derived ref only reveals the relationship paths its expansion crosses AFTER
         expanding. Discovery is a side effect of entering — it cannot be
         forgotten by a caller.
 
@@ -227,7 +227,7 @@ class ScopeFrame(BaseModel):
 
         ``owner_path`` anchors the scan/expansion at a to-one SUB-scope — the
         owner of a metric-local ``DatasetField.filter`` or an owner-anchored parameter
-        default — so its refs resolve from that owner and the joins they cross
+        default — so its refs resolve from that owner and the relationship paths they cross
         register relative to it (prefixed by ``owner_path``). Empty (the default)
         is the scope root, byte-identical to before.
         """
@@ -255,7 +255,7 @@ class ScopeFrame(BaseModel):
             prequoted, grammar=grammar, fragment=sql, location=location,
         )
         # Scan the RAW (dotted) form for the relationship paths its references cross;
-        # the expansion below additionally registers any joins revealed only by
+        # the expansion below additionally registers any relationship paths revealed only by
         # inlining a derived field (the dual-discovery contract), now
         # collected STRUCTURALLY via ``crossed_paths`` rather than by re-scanning
         # the internal-alias output.
@@ -466,13 +466,13 @@ class ScopeFrame(BaseModel):
             return self.dialect.read_column(self._parse(expanded), zoned=self.dialect.is_zoned_db_type(col.db_type))
         if isinstance(ref, SqlFragmentKey):
             # A bound parameter expression: each typed ref anchors (and registers
-            # its joins) here, substituted into the parsed template.
+            # its relationship paths) here, substituted into the parsed template.
             template = sql_template(text=ref.template, dialect=self.dialect.sqlglot_name)
             return template.render({f"r{i}": self._anchor(r) for i, r in enumerate(ref.refs)})
         if isinstance(ref, (
                 ArithmeticKey, ScalarCallKey, LiteralKey, ArrayLiteralKey, TimeTruncKey, InKey, CastKey, ListSetKey)):
             # An aggregate's row-level expression source — field
-            # leaves anchor recursively through this scope, so join
+            # leaves anchor recursively through this scope, so relationship-path
             # registration and derived expansion apply per leaf.
             return render_row_expression(
                 key=ref, dialect=self.dialect, resolve_field=self._anchor,

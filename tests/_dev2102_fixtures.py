@@ -1,4 +1,4 @@
-"""A small shop for query-scoped extensions, edge merge and query-declared INNER joins.
+"""A small shop for query-scoped extensions, edge merge and query-declared INNER relationships.
 
 Physical tables::
 
@@ -78,7 +78,7 @@ _TABLES: dict[str, tuple[str, list[tuple]]] = {
     "shipments": ("id INTEGER, address_id INTEGER", [(1, 11), (2, 12)]),
 }
 
-#: Customers with a vip_list row; with the ``active = 1`` model filter, Bob drops.
+#: Customers with a vip_list row; with the ``active = 1`` dataset filter, Bob drops.
 VIP_CUSTOMERS = {"Ann", "Bob", "Eve"}
 ACTIVE_VIP_CUSTOMERS = {"Ann", "Eve"}
 ALL_CUSTOMERS = {"Ann", "Bob", "Cid", "Dee", "Eve"}
@@ -196,13 +196,13 @@ def base_datasets() -> list[SlayerDataset]:
 
 
 def with_datasets(*replacements: SlayerDataset) -> list[SlayerDataset]:
-    """``base_models()`` with same-named models replaced."""
+    """``base_datasets()`` with same-named datasets replaced."""
     by_name = {m.name: m for m in replacements}
     return [by_name.pop(m.name, m) for m in base_datasets()] + list(by_name.values())
 
 
 def respelled_dataset(datasets: list[SlayerDataset], *, name: str, spelling: str) -> list[SlayerDataset]:
-    """``models`` with model ``name`` saved as ``spelling``, every stored join to it retargeted."""
+    """``datasets`` with dataset ``name`` saved as ``spelling``, every stored relationship to it retargeted."""
     def one(m: SlayerDataset) -> SlayerDataset:
         joins = [j.model_copy(update={"to": spelling}) if j.to == name else j for j in m.relationships]
         return m.model_copy(update={"name": spelling if m.name == name else m.name, "relationships": joins})

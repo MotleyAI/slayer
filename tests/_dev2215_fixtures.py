@@ -12,7 +12,7 @@ customers (id, name, region, status, updated_at, score): 1 A North gold 2024-05-
    3 C South bronze 2024-02-01 3 | 4 D South tin NULL 4
 events (id, customer_id, updated_at, status): customer 1 → (2024-01-01 a), (NULL b), (2024-03-01 c);
    customer 2 → (NULL x), (NULL y); customer 3 → (2024-01-01 p), (2024-02-01 NULL)
-ledger (id, rev_a, rev_b): (1, 1, 10), (2, 2, 20) — model columns ``Revenue`` (rev_a) and ``revenue`` (rev_b).
+ledger (id, rev_a, rev_b): (1, 1, 10), (2, 2, 20) — dataset fields ``Revenue`` (rev_a) and ``revenue`` (rev_b).
 
 Row 3's ``created_at`` extracts to year 2024, quarter 4, month 12, ISO week 1, day 30, hour 10, minute 15, second 42.
 """
@@ -90,7 +90,7 @@ TABLES = (ORDERS, CUSTOMERS, EVENTS, LEDGER)
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def trimmed() -> Aggregation:
     return Aggregation(name="trimmed", expression="AVG(CASE WHEN {value} > {cutoff} THEN {value} END)",
@@ -173,7 +173,7 @@ async def dev2215_engine(
     backend: str, *, datasets: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
     datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
-    """Executing engine over the seed; the datasource defines ``fiscal_year``; models are saved unvalidated."""
+    """Executing engine over the seed; the datasource defines ``fiscal_year``; datasets are saved unvalidated."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
         datasets=dev2215_datasets() if datasets is None else datasets,

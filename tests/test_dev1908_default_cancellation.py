@@ -1,4 +1,4 @@
-"""DEV-1908 — reverse-hop cancellation for definition defaults.
+"""Reverse-hop cancellation for definition defaults.
 
 A definition default whose qualifier names a dataset already on the query's path
 to the owner cancels the path back to that dataset (`a.b.a ≡ a`), reading its row
@@ -45,13 +45,13 @@ from tests._dev1908_fixtures import (
 
 
 def _cells(resp) -> dict:
-    """`{dimension-value tuple: measure value}` over a response's rows."""
+    """`{dimension-value tuple: metric value}` over a response's rows."""
     return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"): r["orders.w"]
             for r in resp.data}
 
 
 def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
-    """`home_path` of a measure's outer aggregate over the DEV-1908 graph."""
+    """`home_path` of a metric's outer aggregate over the ``_dev1908_fixtures`` graph."""
     elab = elaborate_query(
         query=orders_q(dimensions=dimensions or [],
                        metrics=[QueryMetric(metric=expression, alias="m")]),
@@ -189,7 +189,7 @@ class TestExecutedValues:
 async def test_ship_region_extension_edge_name_spelling_survives(dialect):
     # An inline ModelExtension names the regions hop `ship_region`; the default
     # cancels to that spelling (ship_region.pop), matching the explicit twin. Each
-    # query runs on its own engine (an extension mutates the shared stored model).
+    # query runs on its own engine (an extension mutates the shared stored dataset).
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
@@ -258,7 +258,7 @@ class TestKernelExpressionDefaults:
 class TestStageQueryUnaffected:
     async def test_two_stage_query_has_no_model_host(self, engine):
         """A later stage aggregating a stage's output resolves no definition
-        default (a stage has no model host) — executes exactly as before."""
+        default (a stage has no dataset host) — executes exactly as before."""
         stage1 = orders_q(name="stage1", dimensions=["status"],
                           metrics=[QueryMetric(metric="sum(amount)", alias="amount_sum")])
         root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="status")],
@@ -301,7 +301,7 @@ class TestFailClosed:
             await _gen("wnowhere(sum(amount, partition_by=status))")
 
     async def test_query_typed_revisit_raises_circular_join(self):
-        # DEV-1952 owns the model-SQL derived-column revisit; only the query-typed
+        # test_dev1952_derived_revisit owns the dataset-SQL derived-field revisit; only the query-typed
         # revisit is pinned here.
         with pytest.raises(ValueError, match="(?i)circular"):
             await _gen("sum(customers.regions.customers.spend)")

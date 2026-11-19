@@ -1,4 +1,4 @@
-"""Seed, models and saved queries for the saved-query refinement tests (datasource ``test``)."""
+"""Seed, datasets and saved queries for the saved-query refinement tests (datasource ``test``)."""
 
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ async def save_saved_queries(engine: SlayerQueryEngine) -> None:
 
 
 async def populate_refine_storage(storage: StorageBackend, *, db_path: str) -> None:
-    """Register the seeded SQLite ``db_path``, the ``orders`` model and the saved queries in ``storage``."""
+    """Register the seeded SQLite ``db_path``, the ``orders`` dataset and the saved queries in ``storage``."""
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path))
     await storage.save_dataset(orders_dataset())
     engine = SlayerQueryEngine(storage=storage)
@@ -141,7 +141,7 @@ async def build_refine_storage(base_dir: str) -> YAMLStorage:
 
 @asynccontextmanager
 async def refine_engine(dialect: str) -> AsyncGenerator[Tuple[SlayerQueryEngine, str]]:
-    """``(engine, db_path)`` over the seeded ``orders`` model with the saved queries stored."""
+    """``(engine, db_path)`` over the seeded ``orders`` dataset with the saved queries stored."""
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite

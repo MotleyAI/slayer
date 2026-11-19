@@ -1,10 +1,10 @@
-"""Derived result keys for unnamed formula measures.
+"""Derived result keys for unnamed expression metrics.
 
-An unnamed measure whose formula is not a plain aggregate reference (an
+An unnamed metric whose expression is not a plain aggregate reference (an
 arithmetic composite, a transform, or a mix with literals) derives its result
-key by sanitizing the canonical formula text through
+key by sanitizing the canonical expression text through
 ``auto_name_from_expression`` — the product-wide expression-name convention.
-Named, saved, and aggregate-rooted measures keep their existing keys.
+Named, saved, and aggregate-rooted metrics keep their existing keys.
 """
 
 from __future__ import annotations
@@ -185,7 +185,7 @@ class TestRawFormulaReferences:
             _q(
                 metrics=["sum(logo_churn) / sum(logo_bop)"],
                 dimensions=["region"],
-                # Raw formula text as the order column is the surface under test.
+                # Raw expression text as the order key is the surface under test.
                 order=[
                     OrderItem.model_validate(
                         {

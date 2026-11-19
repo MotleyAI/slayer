@@ -1,4 +1,4 @@
-"""A name bound by a lambda or list comprehension in Mode-A SQL is not a column reference."""
+"""A name bound by a lambda or list comprehension in Mode-A SQL is not a field reference."""
 
 from __future__ import annotations
 

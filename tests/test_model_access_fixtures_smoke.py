@@ -1,4 +1,4 @@
-"""The model-access fixture store builds on both backends and both dialects."""
+"""The dataset-access fixture store builds on both backends and both dialects."""
 
 from __future__ import annotations
 

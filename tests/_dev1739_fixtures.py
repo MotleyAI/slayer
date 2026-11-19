@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1739 — ``partition_by=`` on aggregations (aggregate at
+"""Shared fixtures for ``partition_by=`` on aggregations (aggregate at
 a coarser grain than the query).
 
 Underscore-prefixed so pytest skips collection here (like
@@ -7,14 +7,14 @@ Underscore-prefixed so pytest skips collection here (like
 DuckDB, ``make_exec_engine`` yielding an engine per backend, plus ``gen`` for
 SQL-shape assertions.
 
-Model shape
------------
+Dataset shape
+-------------
 ``orders`` (host) carries the LOCAL partition dimensions ``region`` / ``city`` /
 ``channel`` directly, so ``sum(revenue, partition_by=region)`` is a purely-local
-coarser aggregate. ``ok_amount`` / ``nomatch`` are filtered columns (CASE-WHEN at
+coarser aggregate. ``ok_amount`` / ``nomatch`` are filtered fields (CASE-WHEN at
 aggregation time) for the filtered-share and zero-surviving-input cases.
-``orders → customers → regions`` gives the cross-model + rerooted shapes:
-``customers.spend`` is a target-grain measure, ``customers.tier`` and
+``orders → customers → regions`` gives the cross-dataset + rerooted shapes:
+``customers.spend`` is a target-grain metric, ``customers.tier`` and
 ``customers.regions.name`` are target-side dimensions.
 
 Dataset (hand-computed; every executed expectation is derived here)
@@ -47,8 +47,8 @@ customers (id, tier, spend, signup_at, region_id) → regions (id, name):
    c3 gold    50  2024-03-15  r2(RegS)
 customers.spend:sum by tier:  gold=150  silver=200   grand total=350
 customers.spend:sum by regions.name:  RegN=300 (c1+c2)  RegS=50 (c3)  grand=350
-customers.spend first/last by signup within regions.name (DEV-1868 ranked
-cross-model shapes): RegN first=100 last=200, RegS first=last=50.
+customers.spend first/last by signup within regions.name (ranked
+cross-dataset shapes): RegN first=100 last=200, RegS first=last=50.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ from tests._engine_helpers import _engine_generate, _extract_cte_body
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers → regions.
+# Datasets — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
 def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -112,7 +112,7 @@ def orders_dataset() -> SlayerDataset:
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
-            # Filtered columns (CASE-WHEN at aggregation time).
+            # Filtered fields (CASE-WHEN at aggregation time).
             DatasetField(name="ok_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="status = 'ok'"),
             DatasetField(name="nomatch", datatype=DataType.FLOAT, sql="amount",

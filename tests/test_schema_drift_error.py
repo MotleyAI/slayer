@@ -1,8 +1,8 @@
 """Tests for ``SchemaDriftError`` query-time wrap.
 
 When ``engine.execute()`` raises a DBAPI error, the engine attempts to
-attribute it to schema drift via ``validate_models``. If drift is found in
-the touched models, the original error is wrapped in ``SchemaDriftError``
+attribute it to schema drift via ``validate_datasets``. If drift is found in
+the touched datasets, the original error is wrapped in ``SchemaDriftError``
 (with ``original`` as ``__cause__``); otherwise the original error
 re-raises untouched.
 """
@@ -136,9 +136,9 @@ class TestSchemaDriftErrorWrap:
             await engine.execute(q)
         # Original error preserved as __cause__
         assert exc.value.__cause__ is not None
-        # Touched-models set covers orders
+        # Touched-datasets set covers orders
         assert "orders" in exc.value.datasets
-        # to_delete includes a WholeModelDelete on orders
+        # to_delete includes a WholeDatasetDelete on orders
         assert any(
             isinstance(e, WholeDatasetDelete) and e.dataset_name == "orders"
             for e in exc.value.to_delete
@@ -147,7 +147,7 @@ class TestSchemaDriftErrorWrap:
     async def test_dbapi_error_without_drift_re_raises_original(
         self, workspace: Path
     ) -> None:
-        """A model whose own SQL is broken (source tables and columns intact)
+        """A dataset whose own SQL is broken (source tables and columns intact)
         is not drift — the original DBAPI error must reach the caller."""
         engine, _ = await _setup(workspace)
         broken_model = SlayerDataset(
@@ -382,8 +382,8 @@ class TestHealthyPathNoOverhead:
 class TestModelsTouchedComputation:
     async def test_touched_includes_join_targets(self, workspace: Path) -> None:
         engine, db_path = await _setup(workspace)
-        # Drop customers; orders query joins to customers, so customers must
-        # appear in the touched-models set even though the query syntactically
+        # Drop customers; the orders query walks the relationship to customers, so customers must
+        # appear in the touched-datasets set even though the query syntactically
         # only names "orders" as source.
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE customers")
@@ -395,7 +395,7 @@ class TestModelsTouchedComputation:
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
-        # Both source_model and the join target must be reported as touched.
+        # Both the population and the relationship target must be reported as touched.
         assert "orders" in exc.value.datasets
         assert "customers" in exc.value.datasets
 

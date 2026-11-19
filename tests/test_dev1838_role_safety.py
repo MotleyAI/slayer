@@ -1,4 +1,4 @@
-"""DEV-1838 stage 2 — per-role crossing-input safety on host-rooted producers
+"""Stage 2 — per-role crossing-input safety on host-rooted producers
 (design D5; class-(d) ledger in the change's divergences.md).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Unsafe aggregate
@@ -55,7 +55,7 @@ def _assert_clear(ei, *needles: str, remedy: bool = True) -> None:
 
 
 class TestCrossedPredicateFailsClosed:
-    """A ``Column.filter`` crossing an unproven hop — plain, ranked, and
+    """A ``DatasetField.filter`` crossing an unproven hop — plain, ranked, and
     windowed kernels alike — never the silently multiplied aggregate."""
 
     async def test_filter_over_unproven_second_hop_errors(self, exec_backend):
@@ -141,7 +141,7 @@ class TestProvenHopsKeepExactValues:
             assert float(by[(status,)]["orders.g"]) == pytest.approx(expected)
 
     async def test_ranked_filtered_over_proven_hop(self, exec_backend):
-        # DEV-1832: Column.filter masks the value; it never restricts the ranking.
+        # DatasetField.filter masks the value; it never restricts the ranking.
         # gold_amount masks amount to NULL unless the order's customer is gold (c1).
         # The newest 'ok' order (#7, NULL customer) and newest 'new' order (#6, c4
         # bronze) are both non-gold, so gold_amount:last masks each to NULL — the

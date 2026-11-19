@@ -1,6 +1,6 @@
-"""DEV-1745 — the boundary warning contract, exercised through the
+"""The boundary warning contract, exercised through the
 ``semi_join_pushed`` entries a pushed host filter produces: one entry per
-``(location, measure, original filter text)``, the text verbatim, built at the
+``(location, metric, original filter text)``, the text verbatim, built at the
 ENGINE BOUNDARY so every entry point (Python, REST, MCP, CLI) sees it; no Python
 warning is emitted for a push. Binder/planner internal failures RAISE.
 """
@@ -38,7 +38,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 # --------------------------------------------------------------------------- #
 # Fixtures — a host filter mixing a producer-root-local ref with a cross-path
-# ref under OR: pushed into the producer by semi-join (DEV-1935).
+# ref under OR: pushed into the producer by semi-join.
 # --------------------------------------------------------------------------- #
 def _warehouses() -> SlayerDataset:
     return SlayerDataset(
@@ -142,8 +142,8 @@ async def _engine(tmpdir: str, *, with_tables: bool = False) -> SlayerQueryEngin
 
 
 def _two_plan_query() -> SlayerQuery:
-    """ONE user filter pushed into TWO different cross-model producers — one
-    entry per (location, measure, text), never one per consumer."""
+    """ONE user filter pushed into TWO different cross-dataset producers — one
+    entry per (location, metric, text), never one per consumer."""
     return SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="status", alias="status")],
@@ -198,7 +198,7 @@ class TestExecuteEntryPoint:
             f"{payload.filter_text!r} vs {PUSHED_FILTER!r}"
         )
         assert payload.location, "the payload must carry a location"
-        assert payload.metric, "the payload must name the producer's measure"
+        assert payload.metric, "the payload must name the producer's metric"
         assert payload.kind == "semi_join_pushed", payload.kind
 
     async def test_two_pushed_filters_produce_two_entries(self) -> None:
@@ -251,8 +251,8 @@ class TestEmissionIsBoundaryNotRender:
     async def test_one_filter_pushed_into_two_producers_names_each_measure(
         self,
     ) -> None:
-        """Identity is (location, measure, text): one filter pushed into two
-        producers is two entries, one per measure, each carrying the text."""
+        """Identity is (location, metric, text): one filter pushed into two
+        producers is two entries, one per metric, each carrying the text."""
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(_two_plan_query(), dry_run=True)
@@ -450,7 +450,7 @@ class TestMcpEntryPoint:
             for m in (_orders(), _customers(), _warehouses()):
                 await storage.save_dataset(m, _validate=False)
             server = create_mcp_server(storage=storage)
-            # The MCP query tool takes one polymorphic `query` argument (model
+            # The MCP query tool takes one polymorphic `query` argument (dataset
             # name, single query object, or list of stage objects) plus the
             # execution wrappers.
             result = await server.call_tool("query", {

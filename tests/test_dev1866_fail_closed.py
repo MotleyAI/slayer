@@ -1,4 +1,4 @@
-"""DEV-1866 — population inference fails closed with a typed, payload-bearing error.
+"""Population inference fails closed with a typed, payload-bearing error.
 
 Every ambiguity that leaves the population under-determined raises
 ``PopulationInferenceError`` with a ``reason`` kind, the relevant ``candidates``
@@ -58,13 +58,13 @@ class TestFailClosed:
         _assert_stable_prefix(ei.value)
 
     async def test_empty_determination_set_has_dedicated_error(self, storage) -> None:
-        """Only measures, no dims/field-filters ⇒ nothing to infer from."""
+        """Only metrics, no dims/field-filters ⇒ nothing to infer from."""
         query = SlayerQuery.model_validate({"metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]})
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage, data_source=DS_CHAIN)
         err = ei.value
         assert err.reason is PopulationErrorReason.EMPTY_DETERMINATION
-        assert not err.candidates  # dedicated message, no full model listing
+        assert not err.candidates  # dedicated message, no full dataset listing
         assert "infer" in str(err).lower()
         _assert_stable_prefix(err)
 
@@ -88,7 +88,7 @@ class TestFailClosed:
         _assert_stable_prefix(err)
 
     async def test_zero_candidate_datasources_fails_closed(self, storage) -> None:
-        """No single datasource holds every referenced anchor model."""
+        """No single datasource holds every referenced anchor dataset."""
         query = SlayerQuery(dimensions=["widgets.x", "customers.region"])
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
@@ -117,7 +117,7 @@ class TestFailClosed:
         _assert_stable_prefix(err)
 
     async def test_measure_only_without_datasource_is_empty_determination(self, storage) -> None:
-        """A measures-only query has nothing to infer from — even with no
+        """A metrics-only query has nothing to infer from — even with no
         data_source it is EMPTY_DETERMINATION, never a datasource error."""
         query = SlayerQuery.model_validate({"metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]})
         with pytest.raises(PopulationInferenceError) as ei:
@@ -134,8 +134,8 @@ class TestFailClosed:
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
 
     async def test_measure_referencing_sibling_does_not_fail_closed(self, storage) -> None:
-        """A measure whose anchor matches a sibling stage name must not trigger
-        SIBLING_STAGE — measures never anchor inference."""
+        """A metric whose anchor matches a sibling stage name must not trigger
+        SIBLING_STAGE — metrics never anchor inference."""
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
@@ -160,7 +160,7 @@ class TestFailClosed:
         assert choice.dataset_name == "customers"
 
     async def test_short_form_cross_model_dim_routes_when_rootless(self, storage) -> None:
-        """DEV-1856×DEV-1871: rootless inference routes short forms per candidate,
+        """Rootless inference routes short forms per candidate,
         so bare ``regions.name`` and the full path infer the same population."""
         short = await infer_population(
             query=SlayerQuery(dimensions=["orders.status", "regions.name"]),

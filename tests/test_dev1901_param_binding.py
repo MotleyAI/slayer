@@ -1,8 +1,8 @@
-"""DEV-1901 — binding resolves every aggregation parameter once, onto the key.
+"""Binding resolves every aggregation parameter once, onto the key.
 
-Each test binds a formula and asserts the kwargs of the resulting ``AggregateKey``:
+Each test binds an expression and asserts the kwargs of the resulting ``AggregateKey``:
 a non-overridden definition default and an explicit string fragment land there as
-a column key, a scalar, or a ``SqlFragmentKey``; unanalysable text fails at bind.
+a field key, a scalar, or a ``SqlFragmentKey``; unanalysable text fails at bind.
 """
 
 from __future__ import annotations

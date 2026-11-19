@@ -1,7 +1,7 @@
-"""End-to-end tests for the three-channel ``SearchService`` (DEV-1386).
+"""End-to-end tests for the three-channel ``SearchService``.
 
 Each test sets up a ``YAMLStorage`` in tempdir, populates a few memories
-plus a small model corpus, stubs ``embed_batch`` (via the service module)
+plus a small dataset corpus, stubs ``embed_batch`` (via the service module)
 and ``embed_query`` (via the client module), and exercises the search
 contract. The embedding channel is exercised with deterministic vectors
 so cosine similarity is predictable.
@@ -128,7 +128,7 @@ async def test_question_with_embeddings_returns_entity(
     ) -> list[list[float] | None]:
         out: list[list[float] | None] = []
         for idx, t in enumerate(texts):
-            # Distinguish "amount" column doc by a marker vector — every
+            # Distinguish "amount" field doc by a marker vector — every
             # other doc gets a flatter base vector.
             if "amount" in t and "Column:" in t:
                 v = [1.0, 0.0, 0.0, 0.0]
@@ -152,12 +152,12 @@ async def test_question_with_embeddings_returns_entity(
         name="dsx", datasets=[model],
     )
 
-    # Stub the query-side embedding: align with the "amount" column
+    # Stub the query-side embedding: align with the "amount" field
     # vector so cosine ranks it #1.
     async def stub_embed_query(  # NOSONAR(S7503) — stub matches embed_query async signature
         text: str, *, model: str | None = None,
     ) -> list[float]:
-        # Align with amount column.
+        # Align with amount field.
         return [1.0, 0.0, 0.0, 0.0]
 
     monkeypatch.setattr(

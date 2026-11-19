@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-2046 — boolean aggregation inputs.
+"""Shared fixtures for boolean aggregation inputs.
 
 Underscore-prefixed so pytest skips collection. ``orders.customer_id →
 customers.id`` is many-to-one; ``big_order`` is the derived ``amount > 15``.
@@ -14,7 +14,7 @@ customers (id, name, vip, score):  100 A true NULL | 200 B false NULL | 300 C NU
 flag: sum 2, avg 0.5, min false, max true, count 4, count_distinct 2.
 By region: east sum 2 / avg 2/3 / min false / max true; west sum 0 / avg 0 / min false / max false.
 amount > 15 (= big_order): sum 2, avg 2/3, count 3.  status in ('ok', 'hold'): sum 4.
-By customer: 100 sum 2 / max true; 200 sum 0 / max false; 300 sum NULL (cross-model).
+By customer: 100 sum 2 / max true; 200 sum 0 / max false; 300 sum NULL (cross-dataset).
 By month (Jan rows 1, 3; Feb 2, 4; Mar 5): sum 1 / 1 / 0, cumsum 1 / 2 / 2.
 Trailing 90d by month (bucket end exclusive): Jan 1, Feb 2, Mar 2.
 count(amount) per customer: 100 → 2, 200 → 1.
@@ -39,7 +39,7 @@ from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def orders_dataset(*, data_source: str = "test", flag_format: Optional[NumberFormat] = None) -> SlayerDataset:
     return SlayerDataset(

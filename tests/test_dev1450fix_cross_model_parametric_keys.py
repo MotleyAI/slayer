@@ -1,7 +1,7 @@
-"""DEV-1450 follow-up #5 — cross-model parametric aggregate result keys.
+"""Cross-dataset parametric aggregate result keys.
 
-Cross-model parametric aggregates carry their kwarg-signature suffix in
-the result key, so two variants on the same target column do NOT collide
+Cross-dataset parametric aggregates carry their kwarg-signature suffix in
+the result key, so two variants on the same target field do NOT collide
 (legacy dropped the suffix and the two columns clobbered each other).
 
 This pins the (already-correct) behavior end-to-end:

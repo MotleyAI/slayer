@@ -17,13 +17,13 @@ def convert(project: CubeProject) -> tuple[dict[str, SlayerDataset], CubeConvers
 
 def metric(dataset: SlayerDataset, name: str) -> DatasetMetric:
     m = dataset.get_metric(name)
-    assert m is not None, f"measure {name} missing on {dataset.name}"
+    assert m is not None, f"metric {name} missing on {dataset.name}"
     return m
 
 
 def column(dataset: SlayerDataset, name: str) -> DatasetField:
     c = dataset.get_field(name)
-    assert c is not None, f"column {name} missing on {dataset.name}"
+    assert c is not None, f"field {name} missing on {dataset.name}"
     return c
 
 

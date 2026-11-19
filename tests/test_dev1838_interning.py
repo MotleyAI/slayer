@@ -1,4 +1,4 @@
-"""DEV-1838 stage 1 — producer interning (design D3) + warning pins (D6).
+"""Stage 1 — producer interning (design D3) + warning pins (D6).
 
 Spec: openspec …/specs/queries/partitioned-aggregates — "Structurally identical
 producers render once" (the cross-scope extension). A producer needed by
@@ -64,7 +64,7 @@ class TestSharedAcrossScopes:
     async def test_nested_and_top_level_share_one_city_producer(
         self, exec_backend,
     ) -> None:
-        """The flagship (DEV-1835 carry-over): band × wm needs the city totals
+        """The flagship: band × wm needs the city totals
         at the top level AND inside the windowed producer's sub-plan — one
         relation, no ``_2`` twin, executed values unchanged."""
         dialect, engine = exec_backend
@@ -136,7 +136,7 @@ class TestSharedAcrossScopes:
     async def test_same_aggregate_in_both_roles_shares_one_producer(
         self, exec_backend,
     ) -> None:
-        """Green pin — the cross-model dual-role shape (per-tier spend banded
+        """Green pin — the cross-dataset dual-role shape (per-tier spend banded
         AND selected, tier in the grain) already shares one producer; interning
         must keep it that way with both roles' values correct."""
         dialect, engine = exec_backend
@@ -178,7 +178,7 @@ class TestProducersThatMustStaySeparate:
     async def test_different_ranking_columns_stay_separate(
         self, exec_backend,
     ) -> None:
-        """Default ``ordered_at`` vs an explicit joined ranking column: two
+        """Default ``ordered_at`` vs an explicit joined ranking field: two
         producers, distinct values (green pin)."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"], metrics=[
@@ -216,7 +216,7 @@ class TestProducersThatMustStaySeparate:
         # ok_amount drops the Jan 20 'new' row.
         assert float(cell["orders.wok"]) == pytest.approx(10.0)
         dry = await engine.execute(query, dry_run=True)
-        # One shared city producer + one windowed producer per source column.
+        # One shared city producer + one windowed producer per source field.
         assert _cm_count(dry.sql, dialect) == 3, cte_aliases(
             dry.sql, "_cm_", dialect=dialect,
         )
@@ -229,7 +229,7 @@ class TestProducersThatMustStaySeparate:
         lives on the identity function itself.)"""
         identity = getattr(planned, "regroup_producer_identity", None)
         assert identity is not None, (
-            "DEV-1838 D3: planned.regroup_producer_identity is not "
+            "D3: planned.regroup_producer_identity is not "
             "implemented yet"
         )
         models = dev1838_datasets()
@@ -262,7 +262,7 @@ class TestWarningsUnchangedBySharing:
         self, exec_backend,
     ) -> None:
         """Two producers (the band's inner and ``cm``) each push the mixed-OR
-        filter: one entry per measure; ``cm`` counts the CityA customer only."""
+        filter: one entry per metric; ``cm`` counts the CityA customer only."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"field": SPEND_BAND, "alias": "sband"}],

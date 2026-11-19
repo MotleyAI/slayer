@@ -1,8 +1,8 @@
 """MCP query-tool response row cap: default 20-row cap, LIMIT push-down,
 truncation notice via the warnings channel (spec: mcp/response-row-cap).
 
-Since DEV-1858 the single polymorphic ``query`` tool carries the cap for all
-three input forms: a model name (run-by-name, capped response-side), a single
+The single polymorphic ``query`` tool carries the cap for all
+three input forms: a dataset name (run-by-name, capped response-side), a single
 query object, and a multi-stage list (capped on the root/last stage)."""
 
 from __future__ import annotations
@@ -46,8 +46,8 @@ def _make_db(workspace: Path, *, rows: int = 30) -> Path:
 
 
 async def _seed_storage(workspace: Path) -> YAMLStorage:
-    """A ``lite`` sqlite datasource with a 30-row ``nums`` model plus two
-    stored query-backed models returning 25 (``qb_over``) and 20 (``qb_at_cap``) rows."""
+    """A ``lite`` sqlite datasource with a 30-row ``nums`` dataset plus two
+    stored query-backed datasets returning 25 (``qb_over``) and 20 (``qb_at_cap``) rows."""
     db = _make_db(workspace)
     storage = YAMLStorage(base_dir=str(workspace / "store"))
     await storage.save_datasource(DatasourceConfig(name="lite", type="sqlite", database=str(db)))
@@ -86,7 +86,7 @@ async def _call(server, *, name: str, arguments: dict[str, Any] | None = None) -
 def _json_payload(text: str) -> Any:
     """Strict-decode the whole JSON output.
 
-    Since DEV-1858 attributes ride inside the payload, so json output is a single
+    Attributes ride inside the payload, so json output is a single
     ``json.loads``-able value with no trailing prose — this asserts that.
     """
     return json.loads(text)
@@ -452,7 +452,7 @@ class TestNoticeRendering:
 
 
 class TestAttributesMachineSafe:
-    """Requirement (DEV-1858): field attributes never break machine formats —
+    """Requirement: field attributes never break machine formats —
     embedded in the json payload, leading `#` comment lines for csv (never
     trailing prose that would fail ``json.loads`` or skew the CSV column count)."""
 

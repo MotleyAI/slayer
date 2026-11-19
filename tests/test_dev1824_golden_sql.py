@@ -196,7 +196,7 @@ def _cases() -> dict:
                 # partition_by carries extra keys so the internal CTE alias stays
                 # over bigquery's 300-byte limit — the tier-1 identifier-fitting
                 # premise pinned in test_dev1891_internal_identifier_fit.py (D5's
-                # Column.filter desugar shortened the encoding).
+                # DatasetField.filter desugar shortened the encoding).
                 {"field": "sum(amount, partition_by=[band, region, customer_id])",
                  "alias": "b2"},
             ],

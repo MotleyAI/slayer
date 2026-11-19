@@ -87,7 +87,7 @@ def _executor(catalog: FacadeCatalog) -> CatalogSqlExecutor:
 
 def _pg_probe_matcher(catalog: FacadeCatalog):
     """Build a probe matcher that matches what the pg facade installs at
-    runtime (DEV-1556 added SHOW + current_catalog/current_user/etc.).
+    runtime (SHOW + current_catalog/current_user/etc.).
     The corpus tests rely on this so SHOW statements are routed to a
     ProbeResult rather than to the noop classifier."""
     datasource = catalog.schemas[0].name if catalog.schemas else catalog.catalog_name
@@ -200,7 +200,7 @@ def test_corpus_set_statements_route_to_noop_result(sql: str, tag: str) -> None:
     "show timezone",
 ])
 def test_corpus_show_statements_route_to_probe_result(sql: str) -> None:
-    """SHOW is intercepted by the probe matcher (DEV-1556) before the
+    """SHOW is intercepted by the probe matcher before the
     executor; result is a ProbeResult with a single-row setting payload."""
     result = _translate(sql, _demo_catalog())
     assert isinstance(result, ProbeResult)
@@ -218,7 +218,7 @@ def test_corpus_select_1_routes_to_probe_with_one_row() -> None:
 
 
 def test_corpus_select_current_catalog_routes_to_probe() -> None:
-    # DEV-1556 added a probe for `select current_catalog`; the datasource
+    # A probe handles `select current_catalog`; the datasource
     # name (`jaffle`) surfaces verbatim.
     result = _translate("select current_catalog", _demo_catalog())
     assert isinstance(result, ProbeResult)
@@ -353,13 +353,13 @@ def test_corpus_09_describe_tables_join_seven_tables() -> None:
     result = _translate(sql, catalog)
     assert isinstance(result, PgCatalogResult)
     rows = result.batch.rows
-    assert len(rows) == 7  # seven demo models
+    assert len(rows) == 7  # seven demo datasets
     assert {r["name"] for r in rows} == {
         "customers", "orders", "products", "stores", "supplies", "items", "tweets",
     }
     # n_live_tup is NULL → estimated_row_count NULL.
     assert all(r["estimated_row_count"] is None for r in rows)
-    # Description present (per model.description = "jaffle <name>").
+    # Description present (per dataset.description = "jaffle <name>").
     assert all(r["description"].startswith("jaffle") for r in rows)
     # Aliased columns preserved exactly.
     assert [c.name for c in result.batch.columns] == [

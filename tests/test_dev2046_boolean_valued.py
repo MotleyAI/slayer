@@ -31,7 +31,7 @@ def _bind(text: str) -> ValueKey:
 
 
 @pytest.mark.parametrize("text,expected", [
-    # columns: base, derived, joined
+    # fields: base, derived, joined
     ("flag", True),
     ("big_order", True),
     ("customers.vip", True),
@@ -112,7 +112,7 @@ def test_numeric_recognition(text: str, expected: bool) -> None:
 
 
 def test_stage_column() -> None:
-    """A stage's BOOLEAN column is boolean-valued through the stage's column types."""
+    """A stage's BOOLEAN field is boolean-valued through the stage's field types."""
     schema = StageSchema(relation_name="s1", fields=[
         StageField(name="fm", sql_alias="fm", datatype=DataType.BOOLEAN),
         StageField(name="fs", sql_alias="fs", datatype=DataType.INTEGER),

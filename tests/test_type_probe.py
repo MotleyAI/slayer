@@ -246,7 +246,7 @@ def test_parse_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
         parse_query(sql=sql, target_dialect=postgres, parse_dialect=postgres)
 
 
-# ── engine model typing ───────────────────────────────────────────────────
+# ── engine dataset typing ─────────────────────────────────────────────────
 
 def _orders(sql_table: str = "orders") -> SlayerDataset:
     return SlayerDataset(name="orders", sql_table=sql_table, data_source="test", fields=[

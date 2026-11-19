@@ -1,6 +1,6 @@
-"""DEV-1908 — the determination route steps back only to the common prefix (D9).
+"""The determination route steps back only to the common prefix (D9).
 
-Between a model on one join path and a column on a prefix of that same path,
+Between a dataset on one relationship path and a field on a prefix of that same path,
 ``attributable_from_root`` / ``reroot_from_root`` / ``broadcast_reason`` walk back
 only to the two paths' longest common prefix (the reverse suffix), never a round
 trip through the query root. A to-one reverse suffix is attributable and reroots

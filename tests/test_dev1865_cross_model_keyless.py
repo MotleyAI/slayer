@@ -1,10 +1,10 @@
-"""DEV-1865 — keyless cross-model partitioned aggregates in filter/order position.
+"""Keyless cross-dataset partitioned aggregates in filter/order position.
 
-A computed dimension may band a cross-model partitioned aggregate whose
+A computed dimension may band a cross-dataset partitioned aggregate whose
 partition key is not a query dimension (keyless grain). Filtering on that same
 aggregate row-routes like the local shape; ordering by the dimension's name
 sorts by the banded value; consuming the keyless aggregate in a second
-(measure / raw ORDER BY) role fails with the partition-key error. Run on
+(metric / raw ORDER BY) role fails with the partition-key error. Run on
 SQLite + DuckDB.
 """
 
@@ -68,7 +68,7 @@ class TestKeylessOrderByDimensionName:
 class TestKeylessDualRoleRejected:
     async def test_second_role_needs_partition_key_among_dims(self, exec_engine) -> None:
         # The keyless aggregate banded by the computed dim, also selected as a
-        # measure while its partition key (tier) is absent → partition-key error.
+        # metric while its partition key (tier) is absent → partition-key error.
         query = q(
             dimensions=[{"field": CM_BAND, "alias": "band"}, "customers.regions.name"],
             metrics=[QueryMetric(metric=KEYLESS_AGG, alias="dual")],

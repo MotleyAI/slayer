@@ -212,7 +212,7 @@ def _ds_config(mysql_container, db_name: str) -> DatasourceConfig:
 @pytest.fixture(scope="module")
 def _mysql_env_storage(mysql_container, tmp_path_factory):
     """Module-scoped: per-module MySQL DB seeded with orders + customers
-    (InnoDB, with FK), plus a YAMLStorage with both models pre-saved.
+    (InnoDB, with FK), plus a YAMLStorage with both datasets pre-saved.
     """
     db_name = _create_module_db(mysql_container)
     try:
@@ -309,7 +309,7 @@ class TestMySQLQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, mysql_env: SlayerQueryEngine) -> None:
-        """A model column holding a ``(?:...)`` regex literal and a ``%``
+        """A dataset field holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         orders = await mysql_env.storage.get_dataset("orders")
         assert orders is not None
@@ -550,13 +550,13 @@ class TestMySQLQueries:
 
 
 # ---------------------------------------------------------------------------
-# Cross-model + multistage
+# Cross-dataset + multistage
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def mysql_cross_dataset_env(mysql_container):
-    """MySQL env with orders + customers (with score) and explicit join."""
+    """MySQL env with orders + customers (with score) and explicit relationship."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
     try:
@@ -1151,8 +1151,8 @@ class TestMySQLStatAggregations:
 @pytest.fixture
 def mysql_log10_env(mysql_container):
     """Dedicated function-scoped env for the log10 round-trip test so its
-    Column-add doesn't leak into the module-scoped storage (would corrupt
-    the shared model across sibling tests)."""
+    field-add doesn't leak into the module-scoped storage (would corrupt
+    the shared dataset across sibling tests)."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
     try:
@@ -1219,7 +1219,7 @@ async def test_log10_round_trip_mysql(mysql_log10_env: SlayerQueryEngine) -> Non
 
 @pytest.fixture
 def planets_mysql_env(mysql_container):
-    """Planets fixture (MySQL) with a Column.sql containing ROW_NUMBER()."""
+    """Planets fixture (MySQL) with a DatasetField.sql containing ROW_NUMBER()."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
     try:
@@ -1284,13 +1284,13 @@ async def test_filter_on_windowed_column_mysql_raises(planets_mysql_env) -> None
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql
+# Cross-dataset derived DatasetField.sql
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def mysql_derived_chain_env(mysql_container):
-    """A→B fixture with a derived column on B referenced by A (MySQL)."""
+    """A→B fixture with a derived field on B referenced by A (MySQL)."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
     try:
@@ -1385,7 +1385,7 @@ _MYSQL_ESC_ROWS = [
 
 @pytest.fixture(scope="module")
 def _mysql_esc_storage(mysql_container, tmp_path_factory):
-    """Per-module MySQL DB with an ``esc`` table of tricky-status rows + a model
+    """Per-module MySQL DB with an ``esc`` table of tricky-status rows + a dataset
     whose Mode-A filter carries a ``{v}`` placeholder."""
     db_name = _create_module_db(mysql_container)
     try:
@@ -1412,7 +1412,7 @@ def _mysql_esc_storage(mysql_container, tmp_path_factory):
             name="esc",
             sql_table="esc",
             data_source="testmysql",
-            # Mode-A model filter with a {var} placeholder (escape="sql").
+            # Mode-A dataset filter with a {var} placeholder (escape="sql").
             filters=["status = '{v}'"],
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),

@@ -1,4 +1,4 @@
-"""A query dimension's value read by measures, order targets and filters
+"""A query dimension's value read by metrics, order targets and filters
 (spec: queries/positions, queries/computed-dimensions, queries/partitioned-aggregates)."""
 
 from __future__ import annotations
@@ -235,7 +235,7 @@ class TestPredicateDimension:
         assert got == {q: q in (1.0, 2.0) for q in QTY_TIMES_COUNT}
 
 
-# An aggregate-free measure without dimensions is the one grand-total cell, even when empty.
+# An aggregate-free metric without dimensions is the one grand-total cell, even when empty.
 class TestGrandTotalCell:
     @pytest.mark.parametrize("filters", [
         pytest.param([], id="all-rows"),
@@ -418,7 +418,7 @@ class TestAggregationInternalsStayRowLevel:
 
 
 # --------------------------------------------------------------------------- #
-# Law 4 — measure, measure-typed filter and order agree on a dimension value.
+# Law 4 — metric, metric-typed filter and order agree on a dimension value.
 # --------------------------------------------------------------------------- #
 _PARITY = [
     pytest.param(sales_q, ["quantity"], "quantity * count(*)", "sales.quantity", 5,
@@ -542,7 +542,7 @@ class TestExistingMeasureErrorsTakePrecedence:
 
 
 # --------------------------------------------------------------------------- #
-# Plan structure — a dimension value inside a measure attaches once, row phase.
+# Plan structure — a dimension value inside a metric attaches once, row phase.
 # --------------------------------------------------------------------------- #
 def _is_p(key: ValueKey) -> bool:
     return (isinstance(key, AggregateKey) and key.agg == "sum"

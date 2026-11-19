@@ -45,7 +45,7 @@ def _granularity_dump(cfg: DatasourceConfig) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# The spine is a built-in model on every listing surface
+# The spine is a built-in dataset on every listing surface
 # ---------------------------------------------------------------------------
 
 class TestSpineListedWithItsWiredModels:
@@ -112,7 +112,7 @@ class TestSpineListedWithItsWiredModels:
 
 
 # ---------------------------------------------------------------------------
-# A declared default_time_dimension must name a date or time column; the reserved name
+# A declared default_time_dimension must name a date or time field; the reserved name
 # fails the same way on every save surface
 # ---------------------------------------------------------------------------
 
