@@ -1,6 +1,6 @@
 ## 1. Source gate (first step of pr-tests)
 
-- [ ] 1.1 #602 has merged to `main`. Take its merge commit `M`. Verify that:
+- [x] 1.1 #602 has merged to `main`. Take its merge commit `M`. Verify that:
   - `git diff --name-only M^1 M` lists exactly the files in proposal.md's Impact, at their `main` paths;
   - for each of `collection`, `controls` and `delivery`, this change's `specs/otel/<c>/spec.md` equals `## Purpose` plus `M`'s `gh-483-opentelemetry-instrumentation/specs/otel/<c>/spec.md` with design.md decision 16's translation applied, byte for byte. #602 may have archived its change before merging; if so, take the delta from the archived folder in `M`.
 
@@ -8,28 +8,28 @@
 
 ## 2. Tests (ported from #602 unless marked new)
 
-- [ ] 2.1 `tests/test_probes.py` and `tests/test_probes_decorator.py`, including the warning-location test, run through a 1.x deprecated query form. Verify they fail only because `slayer.core.probes` doesn't exist yet.
-- [ ] 2.2 `tests/_otel_helpers.py`, plus the `tests/conftest.py` fixtures: autouse `_otel_off_by_default`, and `otel_env`.
-- [ ] 2.3 `tests/test_otel_controls.py` and `tests/test_otel_guards.py`.
-- [ ] 2.4 `tests/test_otel_collection.py`, with the 1.x vocabulary for code-fixed names (design.md decision 16) and `main`'s telemetry names (`slayer.ingest.datasets.*`). Any patch or import of a moved module points at its 1.x path. The ingest span tree must hold with the probes on `_ingest_idempotent` / `_validate_datasource`.
-- [ ] 2.5 `tests/test_otel_privacy.py`.
-- [ ] 2.6 `tests/test_otel_logs.py`, with logger `slayer.database.client` → `slayer.sql.client`.
-- [ ] 2.7 `tests/test_otel_scope.py`, with the 1.x routes (`/models/{name}`) and MCP tool names.
-- [ ] 2.8 `tests/test_otel_isolation.py`.
-- [ ] 2.9 `tests/perf/test_otel_bench.py`. Verify that `tests/perf/conftest.py` on 1.x collects it.
-- [ ] 2.10 Ported changes to existing tests, adapted to 1.x names:
+- [x] 2.1 `tests/test_probes.py` and `tests/test_probes_decorator.py`, including the warning-location test, run through a query whose library-name-shadow warning comes from `_emit_python_warnings` (1.x has no deprecated query form that warns during `execute`). Verify they fail only because `slayer.core.probes` doesn't exist yet.
+- [x] 2.2 `tests/_otel_helpers.py`, plus the `tests/conftest.py` fixtures: autouse `_otel_off_by_default`, and `otel_env`.
+- [x] 2.3 `tests/test_otel_controls.py` and `tests/test_otel_guards.py`.
+- [x] 2.4 `tests/test_otel_collection.py`, with the 1.x vocabulary for code-fixed names (design.md decision 16) and `main`'s telemetry names (`slayer.ingest.datasets.*`). Any patch or import of a moved module points at its 1.x path. The ingest span tree must hold with the probes on `_ingest_idempotent` / `_validate_datasource`.
+- [x] 2.5 `tests/test_otel_privacy.py`.
+- [x] 2.6 `tests/test_otel_logs.py`, with logger `slayer.database.client` → `slayer.sql.client`.
+- [x] 2.7 `tests/test_otel_scope.py`, with the 1.x routes (`/models/{name}`) and MCP tool names.
+- [x] 2.8 `tests/test_otel_isolation.py`.
+- [x] 2.9 `tests/perf/test_otel_bench.py`. Verify that `tests/perf/conftest.py` on 1.x collects it.
+- [x] 2.10 Ported changes to existing tests, adapted to 1.x names:
   - `tests/pg_facade/test_connection.py`: a failed query marks its request span.
   - `tests/test_dev2073_surfaces.py`: `addition.has_changes` in place of `_addition_has_changes` / `_addition_update_details`; a metadata-only update renders `+key metadata`; a table-rename-only update has changes.
   - `tests/test_migrations.py`: the v2→v3 log names the query as an argument.
   - New `tests/flight/test_translation_failure_log.py`.
-- [ ] 2.11 New, 1.x only, in `tests/test_otel_collection.py`. Run `engine.execute(..., explain=True)` under `otel_env` and assert:
+- [x] 2.11 New, 1.x only, in `tests/test_otel_collection.py`. Run `engine.execute(..., explain=True)` under `otel_env` and assert:
   - exactly one database span, `slayer.db.execute`, of kind `CLIENT`, a child of `slayer.query`, with `db.system.name` and the other known `db.*` attributes;
   - no `slayer.query.run` span;
   - no `db.query.text` without content capture, and `db.query.text` present with it.
-- [ ] 2.12 New, in `tests/test_otel_scope.py`. Use the setups in `tests/flight/test_handlers.py` and `tests/pg_facade/test_connection.py`. For one query on Flight, covering `_derive_query_schema` and `_execute_full` separately, and one on the Postgres facade, assert:
+- [x] 2.12 New, in `tests/test_otel_scope.py`. Use the setups in `tests/flight/test_handlers.py` and `tests/pg_facade/test_connection.py`. For one query on Flight, covering `_derive_query_schema` and `_execute_full` separately, and one on the Postgres facade, assert:
   - exactly one `slayer.request` span, with `slayer.surface` `flight` / `pg`, `slayer.operation=query` and kind `SERVER`;
   - `slayer.query` nests under it.
-- [ ] 2.13 Grep every ported or changed test for `slayer.database`, `slayer.live_schema`, `Dataset`, `dataset_name` and `/datasets`. Verify that only `main`'s telemetry names (`slayer.ingest.datasets*`) remain.
+- [x] 2.13 Grep every ported or changed test for `slayer.database`, `slayer.live_schema`, `Dataset`, `dataset_name` and `/datasets`. Verify that only `main`'s telemetry names (`slayer.ingest.datasets*`) remain.
 
 ## 3. Implementation
 

@@ -14,7 +14,6 @@ from slayer.facade.catalog import FacadeCatalog, FacadeTable, build_catalog
 from slayer.facade.translator import QueryResult, translate
 from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import model_skeleton_fields, render_model_inspection
-from slayer.mcp.server import _addition_has_changes, _addition_update_details
 
 from tests._dev2073_fixtures import (
     DS,
@@ -143,6 +142,13 @@ class TestTranslatorMatchesTheDeclaredEdge:
 class TestIngestReportListsNamedEdges:
     def test_name_only_update_is_rendered(self) -> None:
         addition = ModelAddition(model_name="transactions", data_source=DS, named_joins=["coupon_usage"])
-        assert _addition_has_changes(addition)
-        assert any("coupon_usage" in d for d in _addition_update_details(addition))
+        assert addition.has_changes
         assert any("coupon_usage" in d for d in _updated_detail_lines(addition))
+
+    def test_metadata_only_update_is_rendered(self) -> None:
+        addition = ModelAddition(model_name="orders", data_source=DS, metadata_changed=True)
+        assert (addition.has_changes, _updated_detail_lines(addition)) == (True, ["+key metadata"])
+
+    def test_table_rename_only_update_has_changes(self) -> None:
+        addition = ModelAddition(model_name="reports", data_source=DS, sql_table_change="reports → rest.reports")
+        assert addition.has_changes
