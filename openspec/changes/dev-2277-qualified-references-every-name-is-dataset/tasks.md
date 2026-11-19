@@ -42,7 +42,7 @@
 
 - [x] 5.1 `architecture/semantics.arc42.md`: replace §4 Principle 1 and reword Axioms 2.4, 2.6 and 3.1 exactly as design decisions 7 and 8 quote them. Verify: `poetry run la-arch-check` passes.
 - [x] 5.2 MCP tool descriptions, input schemas, server instructions and `slayer/memories/help_content/` in the qualified syntax. Verify: test 2.10 passes.
-- [ ] 5.3 `docs/concepts/references.md` and `queries.md`, every query example under `docs/`, the reference pages; re-execute every notebook under `docs/examples/` and save its outputs (delete a stale local jaffle DuckDB first; run twice).
+- [x] 5.3 `docs/concepts/references.md` and `queries.md`, every query example under `docs/`, the reference pages; re-execute every notebook under `docs/examples/` and save its outputs (delete a stale local jaffle DuckDB first; run twice).
 - [x] 5.4 `docs/upgrading/2.0.md`: a section with a before and after for every converted spelling, the key changes, the cycle meaning change and its notice, the ambiguity refusals, and root-less `count(*)`.
 
 ## 6. Finish
