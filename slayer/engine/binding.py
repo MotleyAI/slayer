@@ -1021,10 +1021,10 @@ def _broken_chain_error(
 
 
 def _source_column_key(
-    parts: Tuple[str, ...], *, scope: DatasetScope | StageSchema, quoted: Tuple[bool, ...],
+    parts: Tuple[str, ...], *, scope: DatasetScope, quoted: Tuple[bool, ...],
 ) -> FieldSqlKey | None:
     """The key of the runtime reader ``source.column`` names on the scope's population, else ``None``."""
-    if not isinstance(scope, DatasetScope) or scope.population is None or len(parts) != 2:
+    if scope.population is None or len(parts) != 2:
         return None
     reader = source_reader(scope.population, qualifier=parts[0], column=parts[1], quoted=quoted[1:2] == (True,))
     return None if reader is None else FieldSqlKey(path=(), dataset=scope.population.name, field_name=reader.name)
