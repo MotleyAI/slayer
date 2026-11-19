@@ -90,7 +90,7 @@ async def test_plain_aggregate_references_key_by_their_anchor(engine, backend: s
 
 async def test_an_alias_keys_as_itself(engine, backend: str) -> None:
     resp = await engine.execute({
-        "population": "customers", "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}],
+        "population": "customers", "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue", "label": "Revenue"}],
     })
     assert_keys(resp, ["revenue"], dialect=backend)
     assert "revenue" in resp.attributes.metrics

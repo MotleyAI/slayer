@@ -256,7 +256,7 @@ async def test_a_row_count_keys_by_its_anchor(engine: SlayerQueryEngine) -> None
 
 async def test_an_alias_keys_as_itself(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute({"population": "customers",
-                                 "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}]})
+                                 "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue", "label": "Revenue"}]})
     assert resp.columns == ["revenue"]
     assert list(resp.attributes.metrics) == ["revenue"]
 

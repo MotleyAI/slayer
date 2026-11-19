@@ -188,7 +188,7 @@ async def test_custom_aggregation_default(engine: SlayerQueryEngine, cell: str) 
     aggregation, expected = AGGREGATION_CELLS[cell]
     resp = await run_clean(engine, {
         "population": "customers", "dimensions": ["customers.region"],
-        "metrics": [{"metric": f"{aggregation}(orders.amount)", "alias": "w"}],
+        "metrics": [{"metric": f"{aggregation}(customers.orders.amount)", "alias": "w"}],
     })
     got = values(resp, "region", "w")
     assert {k: v for k, v in got.items() if v is not None} == expected
@@ -296,7 +296,7 @@ async def test_unreachable_definition(engine: SlayerQueryEngine, definition: str
         use = {"population": "orders", "dimensions": ["orders.order_id", "customers.region"]}
     else:
         dataset = orders_dataset(managers=True, aggregations=[_agg("w_ev", "events.amount")])
-        use = {"population": "customers", "metrics": [{"metric": "w_ev(orders.amount)", "alias": "w"}]}
+        use = {"population": "customers", "metrics": [{"metric": "w_ev(customers.orders.amount)", "alias": "w"}]}
     if definition != "aggregation-default":
         with pytest.raises(SlayerError) as saved:
             await engine.save_dataset(dataset)
