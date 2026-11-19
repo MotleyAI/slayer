@@ -13,8 +13,8 @@
 
 ## 3. Field model and conversion
 
-- [ ] 3.1 Add Ossie's expression object (`sql`, `dialects`) to fields and metrics, with the string shorthand stored as written and the field-without-expression default; verify the shape tests of 2.1 pass.
-- [ ] 3.2 Make field `sql` a deprecated input: the pure registry step (version stamp; bare or quoted identifier → shorthand; other text kept as deprecated `sql`), fresh-input warnings through `deprecated_input`, refusal of `sql` beside `expression`; add field `sql` to the removal tripwire's covered forms; verify the conversion and tripwire tests pass.
+- [x] 3.1 Add Ossie's expression object (`sql`, `dialects`) to fields and metrics, with the string shorthand stored as written and the field-without-expression default; verify the shape tests of 2.1 pass.
+- [x] 3.2 Make field `sql` a deprecated input: the pure registry step (version stamp; bare or quoted identifier → shorthand; other text kept as deprecated `sql`), fresh-input warnings through `deprecated_input`, refusal of `sql` beside `expression`; add field `sql` to the removal tripwire's covered forms; verify the conversion and tripwire tests pass.
 - [ ] 3.3 Add the load-pipeline refinement with datasource and peer context (sibling qualification by today's resolver, concrete dialect token, version-gated `source.` path migration, unloadable on a non-unique target), ordered after the join-key repairs and inside `stored_document_boundary`; the same conversion runs at save and at query time for unresolved fields; verify the stored-upgrade tests, including the 0.10.2 and 1.8.2 fixtures, return their previous results.
 
 ## 4. Engine
