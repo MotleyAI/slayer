@@ -849,8 +849,8 @@ combined-consumer partition-key rule exactly as the source's constituents are; t
 association and trailing-window kernels pick it once per cell exactly like an
 aggregate-valued parameter; and a transform nested inside an attached aggregate
 parameter resolves bottom-up like any nested attached input. The
-parameter's producer is computed at the parameter's OWN home — the deepest
-dataset determining the parameter's own inputs, resolved bottom-up — at its own
+parameter's producer is computed at the parameter's OWN home (Axiom 2, resolved
+bottom-up from the parameter's own inputs) — at its own
 declared grain, and its value attached into the aggregation's input relation
 per home row of the aggregation, in every `to_many_handling` mode, null-safely
 on the producer's complete grain; the attachment is well-defined only when the
