@@ -169,10 +169,10 @@ class TestExistingResolutionUnchanged:
 class TestNamesThatAreNotReachableDatasets:
     async def test_unknown_name(self, engine) -> None:
         q = query(metrics=[m("count(evnts.id)", "n")])
-        with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
+        with pytest.raises(UnknownReferenceError) as exc:
             await engine.execute(q)
         assert "evnts.id" in str(exc.value)
-        assert "no route to target" in str(exc.value)
+        assert "no dataset 'evnts'" in str(exc.value)
 
     async def test_time_spine_is_never_an_unrelated_dataset(self, engine) -> None:
         q = query(metrics=[m("count(time_spine.timestamp)", "n")])
@@ -187,9 +187,9 @@ class TestNamesThatAreNotReachableDatasets:
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         q = query(metrics=[m("count(widgets.id)", "n")])
-        with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
+        with pytest.raises(UnknownReferenceError) as exc:
             await engine.execute(q)
-        assert "no route to target" in str(exc.value)
+        assert "no dataset 'widgets'" in str(exc.value)
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_hidden_model_is_reported_as_unknown(self, backend) -> None:
@@ -199,9 +199,9 @@ class TestNamesThatAreNotReachableDatasets:
             hidden_q = query(metrics=[m("count(events.id)", "n")])
             unknown_q = query(metrics=[m("count(evnts.id)", "n")])
             try:
-                with pytest.raises(UnresolvableDimensionRelationshipError) as hidden_exc:
+                with pytest.raises(UnknownReferenceError) as hidden_exc:
                     await scoped.execute(hidden_q)
-                with pytest.raises(UnresolvableDimensionRelationshipError) as unknown_exc:
+                with pytest.raises(UnknownReferenceError) as unknown_exc:
                     await scoped.execute(unknown_q)
             finally:
                 scoped.close()

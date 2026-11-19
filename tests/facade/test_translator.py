@@ -936,7 +936,8 @@ def test_double_quoted_column_in_where_becomes_column_not_string_literal(dialect
     # The Mode B DSL must read ``status`` as a column, not a literal.
     parsed = parse_expr(filters[0])
     assert isinstance(parsed, Cmp)
-    assert isinstance(parsed.left, DottedRef) and parsed.left.parts == ("orders", "status")
+    assert isinstance(parsed.left, DottedRef)
+    assert parsed.left.parts == ("orders", "status")
 
 
 def test_double_quoted_qualified_column_in_where_unquotes(dialect) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError, QueryExtensionError, SlayerError
+from slayer.core.errors import UnresolvableDimensionRelationshipError, CircularRelationshipPathError, QueryExtensionError, SlayerError
 from slayer.core.relationship_edges import EdgeMerge
 from slayer.core.models import DatasetRelationship
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -63,7 +63,7 @@ class TestStoredEdgeReuse:
     async def test_a_differing_unnamed_join_stays_parallel_and_fails_closed(self, dialect) -> None:
         query = q(**_tier_amounts(extensions=[ext("orders", relationships=[join("customers", [["referrer_id", "id"]])])]))
         async with shop(dialect) as engine:
-            with pytest.raises(AmbiguousRelationshipPathError):
+            with pytest.raises(UnresolvableDimensionRelationshipError):
                 await engine.execute(query)
 
     async def test_a_reversed_declaration_is_the_stored_edge(self, dialect) -> None:

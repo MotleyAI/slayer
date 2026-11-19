@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from tests._stored_upgrade_fixtures import (
@@ -35,13 +36,11 @@ LEGACY_FRAGMENTS = ("Z'", "+02:00", "/")
 
 VERBATIM_CASES = [
     pytest.param("status = '2024/01/01'", id="text-column"),
-    pytest.param("ordered_at IN ('2024/01/01', status)", id="mixed-in"),
     pytest.param("missing_col >= '2024-01-01T00:00:00Z'", id="unresolvable"),
 ]
 #: Each verbatim case as it loads: qualified by its population, its literal untouched.
 VERBATIM_LOADED = {
     "status = '2024/01/01'": "orders.status = '2024/01/01'",
-    "ordered_at IN ('2024/01/01', status)": "orders.ordered_at IN ('2024/01/01', orders.status)",
     "missing_col >= '2024-01-01T00:00:00Z'": "orders.missing_col >= '2024-01-01T00:00:00Z'",
 }
 
@@ -90,6 +89,13 @@ async def test_repair_keeps_the_rest_of_the_filter_verbatim(tmp_path, shop_ds):
 async def test_non_temporal_or_unresolvable_comparison_stays_verbatim(tmp_path, shop_ds, stored_filter):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=[stored_filter])
     assert await _loaded_filters(storage) == [VERBATIM_LOADED[stored_filter]]
+
+
+async def test_mixed_in_list_refuses_to_load(tmp_path, shop_ds):
+    storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml",
+                           filters=["ordered_at IN ('2024/01/01', status)"])
+    with pytest.raises(StoredDocumentLoadError):
+        await _loaded_filters(storage)
 
 
 async def test_text_column_comparison_keeps_its_rows(tmp_path, shop_ds):

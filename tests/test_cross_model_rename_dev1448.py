@@ -407,15 +407,14 @@ class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_rename_collides_with_local_canonical_raises(
         self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerDataset],
     ) -> None:
-        """Rename target equal to a sibling's canonical alias is rejected, not
-        silently merged onto ``orders.revenue_sum``."""
+        """A cross-model rename equal to a sibling's name is rejected, not silently merged."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[
                 QueryMetric(metric="sum(customers.revenue)", alias="revenue_sum"),
-                QueryMetric(metric="sum(orders.revenue)"),  # NOSONAR(S125) — explanatory note: canonical alias is "revenue_sum" (not commented-out code)
+                QueryMetric(metric="sum(orders.revenue)", alias="revenue_sum"),
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -573,9 +572,10 @@ class TestCrossModelRenameCollisionGuards:
         self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerDataset],
     ) -> None:
         """A measure renamed to a dimension's ``__``-flattened downstream short
-        (``customers__region_id``) is rejected, even though public aliases differ."""
+        (``customers__region_id``) is rejected when the stage is read by name."""
         engine, _ = orders_customers_engine
-        query = SlayerQuery(
+        stage = SlayerQuery(
+            name="s",
             population="orders",
             dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[
@@ -585,8 +585,9 @@ class TestCrossModelRenameCollisionGuards:
                 ),
             ],
         )
+        query = [stage, SlayerQuery(population="s", dimensions=["s.customers__region_id"])]
         with pytest.raises(
-            ValueError, match=r"declared more than once\.\n  at metric 'customers__region_id'",
+            ValueError, match=r"'customers__region_id'.*flatten to the same downstream name",
         ):
             await engine.execute(query=query, dry_run=True)
 

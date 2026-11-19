@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousRelationshipPathError
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 
 from tests._dev1902_fixtures import (
     AMOUNT_BY_CUSTOMER,
@@ -81,5 +81,5 @@ async def test_extension_join_differing_from_stored_one_stays_a_parallel_edge(sa
         dimensions=["customers.name"],
         metrics=[{"metric": "sum(orders.amount)", "alias": "total"}],
     )
-    with pytest.raises(AmbiguousRelationshipPathError):
+    with pytest.raises(UnresolvableDimensionRelationshipError):
         await saved_totals_engine.execute(query)

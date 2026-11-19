@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, spine_dataset
 from slayer.database import engine_factory
@@ -273,12 +274,13 @@ class TestSpineOperands:
 
 @pytest.mark.parametrize("backend", BACKENDS)
 class TestSpineLeftAlone:
-    @pytest.mark.parametrize("body", [
-        stage("TIME_SPINE.timestamp <= '2024-01-31'"),
-        spine_stage(TS_LE, source="TIME_SPINE"),
+    @pytest.mark.parametrize(("body", "loaded"), [
+        (stage("TIME_SPINE.timestamp <= '2024-01-31'"), "TIME_SPINE.timestamp <= '2024-01-31'"),
+        (spine_stage(TS_LE, source="TIME_SPINE"), "TIME_SPINE.timestamp <= '2024-01-31'"),
     ], ids=["path", "root"])
     async def test_spine_spelling_shared_with_a_stored_variant(
-        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, body: dict, caplog: pytest.LogCaptureFixture,
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, body: dict, loaded: str,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TIMESTAMP", "primary_key": True}])
         storage = await store(tmp_path, shop_ds, backend=backend, models=(variant,),
@@ -286,7 +288,7 @@ class TestSpineLeftAlone:
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_ambiguous")
         assert mem.query is not None
-        assert mem.query.filter == body["filters"]
+        assert mem.query.filter == [loaded]
         assert any("m_ambiguous" in t and body["filters"][0] in t for t in texts), texts
 
     async def test_memory_on_the_spine_in_a_store_with_two_datasources(
@@ -313,18 +315,17 @@ class TestSpineLeftAlone:
         assert mem.query.filter == [SPINE_LE]
         assert any("m_held_twice" in t and TS_LE in t for t in texts), texts
 
-    async def test_path_continuing_past_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
-                                                  caplog: pytest.LogCaptureFixture) -> None:
+    async def test_path_continuing_past_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                  backend: str) -> None:
         crossing = "orders.time_spine.customers.created_at <= '2024-01-31'"
         customers = customers_v10(version=PRE["SlayerModel"])
         customers["columns"] = [*customers["columns"], {"name": "created_at", "sql": "signed_up_at", "type": "TIMESTAMP"}]
         storage = await store(tmp_path, shop_ds, backend=backend, customers=customers,
                               memories=(memory("m_crossing", stage(crossing)),))
-        with logged(caplog) as texts:
-            mem = await storage.get_memory("m_crossing")
-        assert mem.query is not None
-        assert mem.query.filter == [crossing]
-        assert any("m_crossing" in t and crossing in t for t in texts), texts
+        with pytest.raises(StoredDocumentLoadError) as info:
+            await storage.get_memory("m_crossing")
+        assert "m_crossing" in str(info.value)
+        assert "orders.time_spine.customers.created_at" in str(info.value)
 
     async def test_stored_join_named_like_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                     caplog: pytest.LogCaptureFixture) -> None:

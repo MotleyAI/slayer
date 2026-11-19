@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
@@ -66,7 +67,7 @@ class TestSpinePopulation:
         body = {"version": PRE_QUERY, "source_model": "TIME_SPINE", "filters": [SPINE_FILTER]}
         storage = await store(tmp_path, shop_ds, models=(
             variant("Time_Spine"), query_backed_v10(name="q", stages=[body], version=PRE_MODEL)))
-        assert (await first_stage(storage, "q")).filter == [f"time_spine.{SPINE_FILTER}"]
+        assert (await first_stage(storage, "q")).filter == [f"TIME_SPINE.{SPINE_FILTER}"]
 
     async def test_spine_rooted_memory_reads_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig) -> None:
         body = {"version": PRE_QUERY, "source_model": "time_spine", "filters": [SPINE_FILTER, "orders.amount > 0"]}
@@ -113,3 +114,25 @@ class TestNestedStageVersions:
         assert [m.metric for m in q.metrics or []] == ["sum(orders.amount * 2)"]
         assert by_dimension(await run(storage, q), dim_suffix="region") == {
             k: 2 * v for k, v in AMOUNT_BY_REGION.items()}
+
+
+class TestRootlessStages:
+    async def test_the_one_dataset_reaching_every_read_is_the_population(self, tmp_path: Path,
+                                                                        shop_ds: DatasourceConfig) -> None:
+        body = {"version": PRE_QUERY, "dimensions": ["status"], "measures": [{"formula": "count(*)", "name": "n"}]}
+        storage = await store(tmp_path, shop_ds, models=(query_backed_v10(name="q", stages=[body], version=PRE_MODEL),))
+        q = await first_stage(storage, "q")
+        assert q.population is None
+        assert [d.field for d in q.dimensions or []] == ["orders.status"]
+        assert [m.metric for m in q.metrics or []] == ["count(orders.*)"]
+
+    @pytest.mark.parametrize("dimensions", [[], ["status"]], ids=["nothing-read", "two-datasets-reach"])
+    async def test_no_single_dataset_is_unloadable(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                   dimensions: list[str]) -> None:
+        archive = {"version": PRE_MODEL, "name": "archive", "sql_table": "orders", "data_source": DS,
+                   "columns": [{"name": "status", "type": "TEXT", "primary_key": True}], "joins": []}
+        body = {"version": PRE_QUERY, "dimensions": dimensions, "measures": [{"formula": "count(*)", "name": "n"}]}
+        storage = await store(tmp_path, shop_ds, models=(
+            archive, query_backed_v10(name="q", stages=[body], version=PRE_MODEL)))
+        with pytest.raises(StoredDocumentLoadError, match="names no population"):
+            await storage.get_dataset("q", data_source=DS)

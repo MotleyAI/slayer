@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousRelationshipPathError
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.engine.plan import plan_query
 
 from slayer.core.query import QueryMetric
@@ -79,7 +79,7 @@ class TestGraphExecutes:
         ambiguous = tq(
             metrics=[QueryMetric(metric="sum(agents.score)", alias="sm")],
         )
-        with pytest.raises(AmbiguousRelationshipPathError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(ambiguous)
 
 

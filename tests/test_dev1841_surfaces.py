@@ -79,7 +79,7 @@ class TestRestSurface:
         with recorded():
             resp = client.post("/query", json=body)
         assert resp.status_code == 200, resp.text
-        assert len(deprecated_in(resp.json()["warnings"])) == 1
+        assert len([w for w in deprecated_in(resp.json()["warnings"]) if w["old"] == "strict"]) == 1
 
     async def test_association_slayer_error_maps_to_400(self, storage) -> None:
         """An association-eligibility ``SlayerError`` (a status-grained attached

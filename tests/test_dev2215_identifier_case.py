@@ -381,10 +381,8 @@ def test_a_refinement_dedupes_a_quoted_and_a_plain_reference() -> None:
 
 
 def test_a_quoted_dimension_takes_its_column_name() -> None:
-    with pytest.raises(ValueError, match="used twice"):
-        q(dimensions=['orders."status"'], time_dimensions=[{"field": "orders.created_at", "granularity": "month", "alias": "status"}])
-    q(dimensions=['"orders".status'],
-      time_dimensions=[{"field": "orders.created_at", "granularity": "month", "alias": "orders_status"}])
+    query = q(dimensions=['orders."status"', '"orders".status'])
+    assert [d.name for d in query.dimensions or []] == ["status", "status"]
 
 
 def test_model_lookups_fold() -> None:

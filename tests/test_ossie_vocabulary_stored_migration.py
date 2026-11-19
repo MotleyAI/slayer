@@ -32,6 +32,7 @@ from tests._upgrade_corpus import MEMORY_PREFIX, Corpus, load_all, offline, onli
 from tests._upgrade_corpus import run as run_recorded
 
 PRE = {"SlayerModel": 25, "SlayerQuery": 15, "Memory": 11, "Embedding": 1}
+CURRENT = {"SlayerModel": 27, "SlayerQuery": 17, "Memory": 13, "Embedding": 2}
 CORPORA = {
     "v0_10_2": Corpus.load(release="v0_10_2", datasources=("shop", "cube", "lite"),
                            data_files=("data.duckdb", "data.sqlite")),
@@ -122,21 +123,21 @@ def assert_migrated_orders(dataset: SlayerDataset | None) -> None:
 class TestVersionSteps:
     @pytest.mark.parametrize("entity", sorted(PRE))
     def test_current_versions(self, entity: str) -> None:
-        assert CURRENT_VERSIONS[entity] == PRE[entity] + 1
+        assert CURRENT_VERSIONS[entity] == CURRENT[entity]
 
     def test_a_dataset_steps_silently(self) -> None:
         with recorded() as caught:
             dataset = SlayerDataset.model_validate(stored_orders())
         assert future(caught) == []
         assert_migrated_orders(dataset)
-        assert dataset.version == PRE["SlayerModel"] + 1
+        assert dataset.version == CURRENT_VERSIONS["SlayerModel"]
 
     def test_a_query_steps_silently(self) -> None:
         with recorded() as caught:
             query = SlayerQuery.model_validate(stored_query(version=PRE["SlayerQuery"]))
         assert future(caught) == []
         assert_migrated_query(query)
-        assert query.version == PRE["SlayerQuery"] + 1
+        assert query.version == CURRENT_VERSIONS["SlayerQuery"]
 
     def test_a_stored_extension_steps_silently(self) -> None:
         with recorded() as caught:
@@ -168,7 +169,7 @@ class TestVersionSteps:
             memory = Memory.model_validate(memory_v2(memory_id="1", query=query, version=PRE["Memory"]))
         assert future(caught) == []
         assert_migrated_query(memory.query)
-        assert memory.version == PRE["Memory"] + 1
+        assert memory.version == CURRENT_VERSIONS["Memory"]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -191,7 +192,7 @@ class TestStores:
         await storage.get_dataset("by_region", data_source=DS)
         for name in ("orders", "by_region"):
             doc = stored_document(backend=backend, base=str(tmp_path), name=name)
-            assert doc["version"] == PRE["SlayerModel"] + 1
+            assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
             assert_new_dataset_keys(doc)
         assert "fields" in stored_document(backend=backend, base=str(tmp_path), name="orders")
 

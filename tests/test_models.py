@@ -3,6 +3,7 @@
 import datetime
 
 import pytest
+import sqlglot
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
@@ -1745,8 +1746,16 @@ async def _prefix_sql(query: dict) -> str:
     return await _engine_generate(query=SlayerQuery.model_validate(query), dataset=model, extra_datasets=extra)
 
 
+def _unaliased(sql: str) -> str:
+    """``sql`` with each outer result alias replaced by its position."""
+    for i, name in enumerate(sqlglot.parse_one(sql).named_selects):
+        sql = sql.replace(f'"{name}"', f'"_c{i}"')
+    return sql
+
+
 _MONTH = {"field": "created_at", "granularity": "month"}
 
+_ANCHORED_KEYS = {"joined-dimension", "joined-formula", "multihop-dimension"}
 # (root-qualified, bare) spellings of one query.
 _ROOT_QUALIFIED = {
     "dimension": ({"dimensions": ["status"]}, {"dimensions": ["orders.status"]}),
@@ -1795,8 +1804,11 @@ class TestRootQualifier:
     @pytest.mark.parametrize("case", sorted(_ROOT_QUALIFIED))
     async def test_root_qualified_equals_bare(self, case: str) -> None:
         qualified, bare = _ROOT_QUALIFIED[case]
-        assert await _prefix_sql({"population": "orders", **qualified}) == await _prefix_sql(
-            {"population": "orders", **bare})
+        got = await _prefix_sql({"population": "orders", **qualified})
+        expected = await _prefix_sql({"population": "orders", **bare})
+        if case in _ANCHORED_KEYS:  # different anchors are different result keys
+            got, expected = _unaliased(got), _unaliased(expected)
+        assert got == expected
 
     @pytest.mark.parametrize("source", [
         {"population": "orders", "extensions": [{"dataset": "orders"}]},

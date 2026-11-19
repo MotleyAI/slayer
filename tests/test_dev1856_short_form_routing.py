@@ -416,7 +416,8 @@ class TestBidirectionalAndParallelEdges:
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
         assert ei.value.root_dataset == "Root"
-        assert "Root.a_leaf.x" in str(ei.value) and "Root.b_leaf.x" in str(ei.value)
+        assert "Root.a_leaf.x" in str(ei.value)
+        assert "Root.b_leaf.x" in str(ei.value)
 
 
 # Requirement: an anchor is reached by its only to-one path, even over an adjacent parallel pair

@@ -14,7 +14,7 @@ import warnings as _warnings
 import pytest
 
 from slayer.core.errors import (
-    AmbiguousRelationshipPathError,
+    UnresolvableDimensionRelationshipError,
     AssociatedGrainWarning,
     BroadcastGrainWarning,
 )
@@ -130,7 +130,7 @@ class TestStrictNarrows:
         DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         query = tq(to_many_handling="error", metrics=[SM], filter=["tickets.effort > 2"])
-        with pytest.raises(AmbiguousRelationshipPathError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
         assert "closed_by" in str(ei.value)
@@ -143,7 +143,7 @@ class TestStrictNarrows:
         class (d)."""
         _, engine = exec_backend_amb
         query = tq(to_many_handling="error", metrics=[RV], filter=["agents.name = 'Ann'"])
-        with pytest.raises(AmbiguousRelationshipPathError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
         assert "closed_by" in str(ei.value)
@@ -180,7 +180,7 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         retired. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         query = tq(metrics=[SM], filter=["tickets.effort > 2"])
-        with pytest.raises(AmbiguousRelationshipPathError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(query)
 
     async def test_ambiguous_filter_hop_errors_in_lenient_mode(
@@ -190,5 +190,5 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         lenient mode too — never dropped. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         query = tq(metrics=[RV], filter=["agents.name = 'Ann'"])
-        with pytest.raises(AmbiguousRelationshipPathError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(query)

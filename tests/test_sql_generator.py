@@ -177,6 +177,13 @@ def _outer_projection_names(sql: str, dialect: str = "postgres") -> set[str]:
     return {proj.alias_or_name for proj in tree.expressions}
 
 
+def _unaliased(sql: str) -> str:
+    """``sql`` with each outer result alias replaced by its position (different anchors are different keys)."""
+    for i, name in enumerate(sqlglot.parse_one(sql).named_selects):
+        sql = sql.replace(f'"{name}"', f'"_c{i}"')
+    return sql
+
+
 async def _generate(
     generator: SQLGenerator,
     query: SlayerQuery,
@@ -4607,7 +4614,8 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
         # Resolved as a JOINED dimension under the dotted result key, not as a bare local column that silently referenced the wrong table.
         assert "orders.customers.name" in sql, sql
         bare = SlayerQuery.model_validate({"population": "orders", "dimensions": ["customers.name"]})
-        assert sql == await _engine_generate(query=bare, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF])
+        expected = await _engine_generate(query=bare, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF])
+        assert _unaliased(sql) == _unaliased(expected)
 
     async def test_self_ref_measure_resolves_as_the_joined_measure(self, engine_and_datasets) -> None:
         """'orders.customers.score:sum' reads as 'customers.score:sum'."""
@@ -4619,7 +4627,8 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
         assert "SUM(" in sql.upper(), sql
         assert "customers" in sql, sql
         bare = SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(customers.score)"]})
-        assert sql == await _engine_generate(query=bare, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF])
+        expected = await _engine_generate(query=bare, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF])
+        assert _unaliased(sql) == _unaliased(expected)
 
     async def test_simple_self_ref_dimension_is_local(self, engine_and_datasets) -> None:
         """'orders.amount' on source_model=orders reads the local 'amount'."""

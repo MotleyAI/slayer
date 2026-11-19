@@ -261,8 +261,9 @@ async def test_a_column_sql_root_qualifier_keeps_an_edge_named_like_the_root(bac
 async def test_a_route_never_crosses_the_spine(engine: SlayerQueryEngine) -> None:
     body = {"dimensions": ["orders.status"], "metrics": ["count(orders.*)"]}
     await engine.execute(_orders(**body, filter=["time_spine.timestamp >= date '2025-02-01'"]))
+    crossing = _orders(**body, filter=["orders.time_spine.timestamp >= date '2025-02-01'"])
     with pytest.raises(UnresolvableDimensionRelationshipError, match="time_spine"):
-        await engine.execute(_orders(**body, filter=["orders.time_spine.timestamp >= date '2025-02-01'"]))
+        await engine.execute(crossing)
 
 
 @pytest.mark.parametrize("body", [
@@ -281,14 +282,16 @@ async def test_a_spine_rooted_reference_anchors_its_datasource(body: dict[str, A
 async def test_an_unrelated_dataset_is_only_an_anchor(backend: str) -> None:
     async with main_engine(backend) as eng:
         await eng.execute(query(metrics=[m("count(events.id)", "n")]))
+        broken = query(metrics=[m("count(customers.events.id)", "n")])
         with pytest.raises(UnresolvableDimensionRelationshipError, match="events"):
-            await eng.execute(query(metrics=[m("count(customers.events.id)", "n")]))
+            await eng.execute(broken)
 
 
 async def test_a_filter_matches_only_the_selected_metric_of_its_anchor(engine: SlayerQueryEngine) -> None:
     await engine.execute(_orders(metrics=["customers.aov"], filter=["customers.aov > 1"]))
+    routed = _orders(metrics=["customers.aov"], filter=["orders.customers.aov > 1"])
     with pytest.raises(UnknownReferenceError, match="orders.customers.aov"):
-        await engine.execute(_orders(metrics=["customers.aov"], filter=["orders.customers.aov > 1"]))
+        await engine.execute(routed)
 
 
 # --------------------------------------------------------------------------- #

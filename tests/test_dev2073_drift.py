@@ -94,7 +94,7 @@ class TestQueryBackedCascadeFollowsTheEdge:
             stage = SlayerQuery.model_validate(
                 {"population": "orders", "dimensions": [f"{prefix}{edge}.city"], "metrics": [{"metric": "count(orders.*)"}]},
             )
-            await drifted.storage.save_dataset(SlayerDataset(name=name, data_source=DS, source_queries=[stage]))
+            await drifted.engine().save_dataset(SlayerDataset(name=name, data_source=DS, source_queries=[stage]))
         models = list((await drifted.datasets()).values())
         whole = [e for e in await validate_datasource(datasource=drifted.ds, datasets=models, client=drifted.client())
                  if isinstance(e, WholeDatasetDelete)]

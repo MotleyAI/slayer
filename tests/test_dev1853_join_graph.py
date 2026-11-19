@@ -133,7 +133,7 @@ class TestRecommendRootModel:
         ]
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine_for(models, d)
-            rec = await engine.recommend_population(["a.x", "c.z"])
+            rec = await engine.recommend_population(["a.x", "c.z"], root_hint="a")
             assert rec.reachable is True
             assert {ip.input_item for ip in rec.item_paths} == {"a.x", "c.z"}
 

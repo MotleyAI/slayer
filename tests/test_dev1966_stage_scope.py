@@ -182,27 +182,24 @@ class TestInferredPopulationIsNeverAStage:
 
     async def test_rootless_stage_by_dimension(self, engine48) -> None:
         t = query(name="t", dimensions=["customers.tier"], metrics=[m("sum(customers.spend)", "sp")])
+        stages = [self._customers_stage(), t,
+                  query(population="t", dimensions=["t.tier"], metrics=[m("sum(t.sp)", "total")])]
         with pytest.raises(PopulationInferenceError) as ei:
-            await engine48.execute(
-                [self._customers_stage(), t,
-                 query(population="t", dimensions=["t.tier"], metrics=[m("sum(t.sp)", "total")])],
-                data_source="test")
+            await engine48.execute(stages, data_source="test")
         assert ei.value.reason is PopulationErrorReason.SIBLING_STAGE
 
     async def test_rootless_stage_by_filter(self, engine48) -> None:
         t = query(name="t", filter=["customers.tier = 'gold'"], metrics=[m("sum(customers.spend)", "sp")])
+        stages = [self._customers_stage(), t, query(population="t", metrics=[m("sum(t.sp)", "total")])]
         with pytest.raises(PopulationInferenceError) as ei:
-            await engine48.execute(
-                [self._customers_stage(), t, query(population="t", metrics=[m("sum(t.sp)", "total")])],
-                data_source="test")
+            await engine48.execute(stages, data_source="test")
         assert ei.value.reason is PopulationErrorReason.SIBLING_STAGE
 
     async def test_rootless_root(self, engine48) -> None:
+        stages = [self._customers_stage(),
+                  query(dimensions=["customers.tier"], metrics=[m("sum(customers.spend)", "sp")])]
         with pytest.raises(PopulationInferenceError) as ei:
-            await engine48.execute(
-                [self._customers_stage(),
-                 query(dimensions=["customers.tier"], metrics=[m("sum(customers.spend)", "sp")])],
-                data_source="test")
+            await engine48.execute(stages, data_source="test")
         assert ei.value.reason is PopulationErrorReason.SIBLING_STAGE
 
 

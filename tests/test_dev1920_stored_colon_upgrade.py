@@ -66,10 +66,10 @@ def _fresh(**fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 26
-        assert CURRENT_VERSIONS["SlayerQuery"] == 16
+        assert CURRENT_VERSIONS["SlayerModel"] == 27
+        assert CURRENT_VERSIONS["SlayerQuery"] == 17
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 12
+        assert CURRENT_VERSIONS["Memory"] == 13
 
 
 #: (stored measure formula, the formula it loads as).
@@ -237,7 +237,7 @@ class TestKeysAndNames:
     async def test_collides_like_the_functional_spelling(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         stored = stored_query(measures=["sum(amount)"],
-                              dimensions=[KEYED_DIMENSIONS[0], "sum(orders.amount, partition_by=orders.region)"])
+                              dimensions=["amount:sum(partition_by=region)", "sum(orders.amount, partition_by=orders.region)"])
         with pytest.raises(NameCollisionError):
             await run(storage, stored)
 

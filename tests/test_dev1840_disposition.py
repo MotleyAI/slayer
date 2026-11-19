@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousRelationshipPathError
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, SemiJoinHop
 from slayer.core.query import QueryMetric
@@ -205,7 +205,7 @@ class TestExcludedConjuncts:
         first-match. Divergence class (d)."""
         query = tq(metrics=[SM], filter=["tickets.effort > 2"])
         models = ambiguity_datasets()
-        with pytest.raises(AmbiguousRelationshipPathError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             _plan(query, datasets=models)
         msg = str(ei.value)
         assert "opened_by" in msg
@@ -217,7 +217,7 @@ class TestExcludedConjuncts:
         pair; drop+warn is retired. Divergence class (d)."""
         query = tq(metrics=[RV], filter=["agents.name = 'Ann'"])
         models = ambiguity_datasets()
-        with pytest.raises(AmbiguousRelationshipPathError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             _plan(query, datasets=models)
         msg = str(ei.value)
         assert "opened_by" in msg

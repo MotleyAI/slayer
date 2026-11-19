@@ -13,11 +13,24 @@ intended "feature missing" red state (Step 4, tests-first).
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 
 import pytest
+import sqlglot
 
-from slayer.sql.naming import AliasAllocator
+import slayer.sql.dialects.base as base
+from slayer.sql.naming import (
+    AliasAllocator,
+    assert_unique_cte_names,
+    decode_alias,
+    encode_alias,
+    flat_name,
+    maybe_quote_ident,
+    quote_mixed_case_identifiers,
+    result_key,
+    result_key_from_alias,
+)
 
 
 def test_naming_imports_cold_without_dialects_cycle() -> None:
@@ -141,26 +154,22 @@ class TestResultKey:
     (DEV-1495 bug 1) fix's single owner of the dotted form."""
 
     def test_local_leaf(self) -> None:
-        from slayer.sql.naming import result_key
 
         assert result_key(source_relation="orders", leaf="revenue_sum") == (
             "orders.revenue_sum"
         )
 
     def test_star_count_leading_underscore_leaf(self) -> None:
-        from slayer.sql.naming import result_key
 
         assert result_key(source_relation="orders", leaf="_count") == "orders._count"
 
     def test_single_hop_joined(self) -> None:
-        from slayer.sql.naming import result_key
 
         assert result_key(
             source_relation="orders", path=("customers",), leaf="revenue",
         ) == "orders.customers.revenue"
 
     def test_multi_hop_joined(self) -> None:
-        from slayer.sql.naming import result_key
 
         assert result_key(
             source_relation="orders",
@@ -172,7 +181,6 @@ class TestResultKey:
         """Hop information must arrive through ``path`` — a dotted ``leaf``
         would double-encode ownership (Codex F5). Use
         ``result_key_from_alias`` for an already-canonical dotted alias."""
-        from slayer.sql.naming import result_key
 
         with pytest.raises(ValueError):
             result_key(source_relation="orders", leaf="customers.revenue")
@@ -180,7 +188,6 @@ class TestResultKey:
     def test_dot_in_source_relation_is_passed_through(self) -> None:
         # The source relation is an opaque token passed through verbatim even
         # when it contains a dot; only ``leaf`` is validated dot-free.
-        from slayer.sql.naming import result_key
 
         assert result_key(
             source_relation="sales.orders", path=(), leaf="n",
@@ -193,21 +200,18 @@ class TestResultKeyFromAlias:
     (cross-model measure aliases built by ``_canonical_alias_for_formula``)."""
 
     def test_bare_alias(self) -> None:
-        from slayer.sql.naming import result_key_from_alias
 
         assert result_key_from_alias(
             source_relation="orders", alias="revenue_sum",
         ) == "revenue_sum"
 
     def test_hop_embedded_alias(self) -> None:
-        from slayer.sql.naming import result_key_from_alias
 
         assert result_key_from_alias(
             source_relation="orders", alias="customers.revenue_sum",
         ) == "customers.revenue_sum"
 
     def test_parametric_kwarg_suffix_preserved(self) -> None:
-        from slayer.sql.naming import result_key_from_alias
 
         assert result_key_from_alias(
             source_relation="orders",
@@ -220,17 +224,14 @@ class TestFlatName:
     INNER stages of a multi-stage DAG (the StageSchema bind contract)."""
 
     def test_flattens_dots(self) -> None:
-        from slayer.sql.naming import flat_name
 
         assert flat_name("customers.revenue_sum") == "customers__revenue_sum"
 
     def test_multi_hop(self) -> None:
-        from slayer.sql.naming import flat_name
 
         assert flat_name("customers.regions.name") == "customers__regions__name"
 
     def test_no_dot_is_identity(self) -> None:
-        from slayer.sql.naming import flat_name
 
         assert flat_name("revenue_sum") == "revenue_sum"
 
@@ -238,21 +239,18 @@ class TestFlatName:
         """Aliases differing only in dot-vs-underscore placement flatten to
         distinct names — the dot→``__`` rule is injective on the pair, so a
         CTE name minted from either can never collide."""
-        from slayer.sql.naming import flat_name
 
         assert flat_name("a.b_c") == "a__b_c"
         assert flat_name("a_b.c") == "a_b__c"
         assert flat_name("a.b_c") != flat_name("a_b.c")
 
     def test_strip_relation_prefix(self) -> None:
-        from slayer.sql.naming import flat_name
 
         assert flat_name(
             "orders.customers.revenue", strip_relation="orders",
         ) == "customers__revenue"
 
     def test_strip_relation_then_flatten_local(self) -> None:
-        from slayer.sql.naming import flat_name
 
         assert flat_name("orders.count", strip_relation="orders") == "count"
 
@@ -260,7 +258,6 @@ class TestFlatName:
         """``strip_relation='orders'`` strips ``orders.`` — NOT the char
         prefix of a sibling like ``orders_archive`` (which shares no dot
         boundary)."""
-        from slayer.sql.naming import flat_name
 
         assert flat_name(
             "orders_archive.x", strip_relation="orders",
@@ -273,7 +270,6 @@ class TestFlatName:
         stage-schema collision guard (``stage_planner._emit_stage_schema``)
         compares ``flat_name`` outputs, so delegation must preserve this
         collapse for the guard to keep firing."""
-        from slayer.sql.naming import flat_name
 
         assert flat_name("customers.region") == "customers__region"
         assert flat_name("customers__region") == "customers__region"
@@ -285,7 +281,6 @@ class TestManglingRelocatedToNaming:
     contract; ``slayer/sql/dialects/_alias_mangle.py`` is deleted."""
 
     def test_encode_decode_importable_from_naming(self) -> None:
-        from slayer.sql.naming import decode_alias, encode_alias
 
         assert encode_alias("orders.customers.revenue") == (
             "orders___customers___revenue"
@@ -306,14 +301,12 @@ class TestManglingRelocatedToNaming:
         ],
     )
     def test_round_trip(self, original: str) -> None:
-        from slayer.sql.naming import decode_alias, encode_alias
 
         assert decode_alias(encode_alias(original)) == original
 
     def test_old_alias_mangle_module_is_deleted(self) -> None:
         """Codex F8/relocation: the old ``dialects/_alias_mangle`` module is
         gone — importing it must fail so no consumer can drift back to it."""
-        import importlib
 
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module("slayer.sql.dialects._alias_mangle")
@@ -323,8 +316,6 @@ class TestManglingRelocatedToNaming:
         module (the single owner), not a private dialect-package copy. DEV-1817
         moved the shared mangling into ``DottedAliasManglingMixin`` (base), so
         the bijection is consumed there rather than in each dialect module."""
-        import slayer.sql.dialects.base as base
-        from slayer.sql.naming import decode_alias, encode_alias
 
         assert base.encode_alias is encode_alias
         assert base.decode_alias is decode_alias
@@ -333,7 +324,6 @@ class TestManglingRelocatedToNaming:
         """Codex F8: reversibility is not enough — distinct logical aliases
         must not collapse to one wire identifier after mangling (a false
         collision would corrupt result-key decode)."""
-        from slayer.sql.naming import encode_alias
 
         aliases = [
             "orders.my.metric",       # two hops
@@ -353,7 +343,6 @@ class TestAssertUniqueCteNames:
     same name to recur across independent nested ``WITH`` scopes (Codex F2)."""
 
     def test_unique_names_ok(self) -> None:
-        from slayer.sql.naming import assert_unique_cte_names
 
         assert_unique_cte_names(
             "WITH a AS (SELECT 1 AS x), b AS (SELECT 2 AS y) "
@@ -361,7 +350,6 @@ class TestAssertUniqueCteNames:
         )
 
     def test_duplicate_in_same_with_raises(self) -> None:
-        from slayer.sql.naming import assert_unique_cte_names
 
         with pytest.raises(ValueError):
             assert_unique_cte_names(
@@ -371,7 +359,6 @@ class TestAssertUniqueCteNames:
     def test_nested_scope_name_reuse_ok(self) -> None:
         """A name legally recurs in a separate nested ``WITH`` scope — a
         whole-statement dup check would wrongly reject this valid SQL."""
-        from slayer.sql.naming import assert_unique_cte_names
 
         assert_unique_cte_names(
             "WITH a AS (SELECT 1 AS x) "
@@ -388,9 +375,6 @@ class TestQuotingRelocatedToNaming:
     behaviour is covered by ``test_mixed_case_column_quoted_per_dialect``."""
 
     def test_quote_mixed_case_identifiers_importable(self) -> None:
-        import sqlglot
-
-        from slayer.sql.naming import quote_mixed_case_identifiers
 
         tree = sqlglot.parse_one("accounts.StateFlag = 'x'")
         out = tree.transform(quote_mixed_case_identifiers).sql(dialect="postgres")
@@ -398,9 +382,6 @@ class TestQuotingRelocatedToNaming:
         assert '"accounts"' not in out  # lowercase qualifier untouched
 
     def test_maybe_quote_ident_importable(self) -> None:
-        import sqlglot
-
-        from slayer.sql.naming import maybe_quote_ident
 
         ident = sqlglot.to_identifier("MixedCase")
         maybe_quote_ident(ident)
@@ -434,7 +415,6 @@ class TestFlatNameReproducesLegacy:
         ],
     )
     def test_matches_legacy_semantics(self, alias: str) -> None:
-        from slayer.sql.naming import flat_name
 
         strip = alias.split(".", 1)[0] if "." in alias else None
         assert flat_name(alias, strip_relation=strip) == self._legacy(alias)

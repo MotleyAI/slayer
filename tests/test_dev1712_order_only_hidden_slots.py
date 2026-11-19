@@ -631,12 +631,13 @@ class TestCrossModelHiddenOrder:
         assert _outer_select_columns(sql) == ["orders.status"], (
             f"both cross-model aggregates must be hidden.\nSQL:\n{sql}"
         )
-        aliases = "\n".join(_all_aliases_in_sql(sql))
-        assert "customers.revenue_sum" in aliases or "customers__revenue_sum" in aliases, aliases
-        assert "suppliers.revenue_sum" in aliases or "suppliers__revenue_sum" in aliases, aliases
-        order_names = _outer_order_by_names(sql)
-        assert any("customers" in n and "revenue_sum" in n for n in order_names), order_names
-        assert any("suppliers" in n and "revenue_sum" in n for n in order_names), order_names
+        ctes = [c.alias for c in sqlglot.parse_one(sql, dialect="postgres").find_all(exp.CTE)]
+        cust = [c for c in ctes if c.startswith("_cm_") and "customers" in c and "revenue_sum" in c]
+        supp = [c for c in ctes if c.startswith("_cm_") and "suppliers" in c and "revenue_sum" in c]
+        assert len(cust) == 1, ctes
+        assert len(supp) == 1, ctes
+        order_tables = {table for table, _ in _outer_order_by_columns(sql)}
+        assert {cust[0], supp[0]} <= order_tables, order_tables
 
     async def test_ungrouped_input_cross_model_aggregate_order_rejected(
         self, engine,

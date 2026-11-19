@@ -355,7 +355,7 @@ class TestStorageLoad:
         assert (q.metrics or [])[0].metric == FILLED
 
     async def test_unversioned_memory_and_query(self, seed: Seeder):
-        storage = await seed(memories=[{
+        storage = await seed(models=[_model_dict(measures=[])], memories=[{
             "id": "m1", "learning": "top regions",
             "query": {"source_model": "sales", "measures": [BARE], "filters": [f"{BARE} <= 2"]},
         }])
@@ -365,7 +365,7 @@ class TestStorageLoad:
         assert mem.query.filter == [f"{FILLED} <= 2"]
 
     async def test_versioned_legacy_memory(self, seed: Seeder):
-        storage = await seed(memories=[{
+        storage = await seed(models=[_model_dict(measures=[])], memories=[{
             "version": 2, "id": "m2", "learning": "top regions",
             "query": {"version": 4, "source_model": "sales", "measures": [BARE]},
         }])

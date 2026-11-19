@@ -97,6 +97,13 @@ COLLIDE_QUERY = q(
 
 _GOLDEN_CASES = _cases()
 NESTED = _GOLDEN_CASES["lift/nested_attach"]
+# The repro: one bare and one ``orders.``-prefixed over-limit alias (the unaliased, ordered window metric's).
+_WINDOW = "sum(orders.amount, partition_by=[band, b2])"
+NESTED_LONG = SlayerQuery.model_validate({
+    **NESTED.model_dump(mode="json", exclude_none=True),
+    "metrics": [*(m.model_dump(mode="json", exclude_none=True) for m in NESTED.metrics or []), {"metric": _WINDOW}],
+    "order": [{"field": _WINDOW}],
+})
 WINDOW_PARTITION = _GOLDEN_CASES["lift/window_partition"]
 
 
@@ -114,10 +121,10 @@ def _golden(key: str) -> str:
 
 
 async def _canonical_internal_aliases() -> list[str]:
-    """nested_attach's over-limit internal QUOTED aliases, read off the unbounded
+    """The repro's over-limit internal QUOTED aliases, read off the unbounded
     SQLite emission (canonical naming is dialect-independent). Excludes the bare
     CTE names — those are fitted at mint and out of dev-1891's scope."""
-    sql = await gen(NESTED, dialect="sqlite")
+    sql = await gen(NESTED_LONG, dialect="sqlite")
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     names = sorted({
         n.this for n in tree.find_all(exp.Identifier)
@@ -184,7 +191,7 @@ class TestPremise:
 class TestNestedAttachEmission:
     @pytest.mark.parametrize("dialect,limit", [("postgres", 63), ("duckdb", 256)])
     async def test_no_over_limit_identifier(self, dialect: str, limit: int) -> None:
-        sql = await gen(NESTED, dialect=dialect)
+        sql = await gen(NESTED_LONG, dialect=dialect)
         over = [n for n in _identifiers(sql, dialect) if _nbytes(n) > limit]
         assert not over, f"{over}\n{sql}"
 
@@ -195,21 +202,21 @@ class TestNestedAttachEmission:
         d = get_dialect(dialect)
         names = [n for n in await _canonical_internal_aliases() if _nbytes(n) > limit]
         assert names, "no alias exceeds this dialect's limit; test is vacuous"
-        sql = await gen(NESTED, dialect=dialect)
+        sql = await gen(NESTED_LONG, dialect=dialect)
         for name in names:
             assert name not in sql
             fitted = d.quote_identifier(fit_identifier(name=name, limit=limit))
             assert sql.count(fitted) >= 2, f"{fitted} not at definition+reference\n{sql}"
 
     async def test_repro_still_parses(self) -> None:
-        sql = await gen(NESTED, dialect="postgres")
+        sql = await gen(NESTED_LONG, dialect="postgres")
         assert len(sqlglot.parse(sql, dialect="postgres")) == 1
 
     async def test_query_backed_model_backing_sql_stays_fit_eligible(self) -> None:
         """SLayer-generated backing SQL is not a user surface: over-limit
         aliases inside an expanded query-backed model are fitted, not exempted."""
         names = await _canonical_internal_aliases()
-        qb = SlayerDataset(name="qb", source_queries=[NESTED], data_source=DS)
+        qb = SlayerDataset(name="qb", source_queries=[NESTED_LONG], data_source=DS)
         query = SlayerQuery(
             population="qb",
             dimensions=[QueryDimension(field="qb.band")],
@@ -239,7 +246,7 @@ class TestNoChurn:
 
     async def test_unbounded_clickhouse_keeps_canonical_aliases(self) -> None:
         names = await _canonical_internal_aliases()
-        sql = await gen(NESTED, dialect="clickhouse")
+        sql = await gen(NESTED_LONG, dialect="clickhouse")
         for name in names:
             assert name in sql
 
@@ -806,7 +813,7 @@ class TestBackstop:
 class TestManglingComposition:
     async def test_bigquery_fits_only_post_mangle_over_budget_names(self) -> None:
         names = await _canonical_internal_aliases()
-        sql = await gen(NESTED, dialect="bigquery")
+        sql = await gen(NESTED_LONG, dialect="bigquery")
         over = [n for n in _identifiers(sql, "bigquery") if _nbytes(n) > 300]
         assert not over, f"{over}\n{sql}"
         bq = get_dialect("bigquery")
@@ -821,7 +828,7 @@ class TestManglingComposition:
 
     async def test_tsql_fits_and_mangles_within_budget(self) -> None:
         names = await _canonical_internal_aliases()
-        sql = await gen(NESTED, dialect="tsql")
+        sql = await gen(NESTED_LONG, dialect="tsql")
         over = [n for n in _identifiers(sql, "tsql") if _nbytes(n) > 128]
         assert not over, f"{over}\n{sql}"
         ts = get_dialect("tsql")

@@ -174,19 +174,79 @@ def qualified_stages(
     stages = frozenset(q.name for q in queries if q.name)
     out: List[SlayerQuery] = []
     for query, todo in zip(queries, pending):
-        population = query.population_name
-        if not todo or population is None:
+        if not todo:
             out.append(query)
             continue
         datasets = _stage_universe(query, stages=stages, datasets_by_ds=datasets_by_ds, data_source=data_source,
                                    priority=priority)
+        population = query.population_name
+        if population is None:
+            read_from = query.model_copy(update={"population": _inferred_population(query, datasets=datasets)})
+            out.append(_qualified_stage(_Stage(query=read_from, host=datasets[read_from.population_name],
+                                               stages=stages, datasets_by_name=datasets), query))
+            continue
         stage = match_name(name=population, declared=stages, quoted=False)
+        if stage is None and _ambiguous_spine(population, datasets=datasets):
+            # Qualified as written: the spelling stays as ambiguous as it was, refused where it runs.
+            out.append(_qualified_stage(_Stage(query=query, host=None, stages=stages, datasets_by_name=datasets), query))
+            continue
         dataset = None if stage is not None else _population_dataset(population, datasets=datasets)
         if stage is None and dataset is None:
             raise UnqualifiableReferenceError(reference=population, reason="names no stored dataset or stage")
         host = datasets[dataset] if dataset is not None else None
         out.append(_qualified_stage(_Stage(query=query, host=host, stages=stages, datasets_by_name=datasets), query))
     return out
+
+
+def _inferred_population(query: SlayerQuery, *, datasets: Mapping[str, SlayerDataset]) -> str:
+    """The population a root-less stage was read from before 2.0: the dataset that reaches every reference its
+    dimensions and filters read outside aggregations, in the fewest hops; unconvertible when none or several do."""
+    items = list(dict.fromkeys(_determination_refs(query)))
+    hops: Dict[str, int] = {}
+    for name, dataset in datasets.items():
+        if name == TIME_SPINE_DATASET or not items:
+            continue
+        counts = [_old_reach(item, root=dataset, datasets=datasets) for item in items]
+        if all(c is not None for c in counts):
+            hops[name] = sum(c for c in counts if c is not None)
+    best = [n for n, h in hops.items() if h == min(hops.values())] if hops else []
+    if len(best) != 1:
+        raise UnqualifiableReferenceError(
+            reference=", ".join(".".join(i) for i in items) or "(no dimension or filter)",
+            reason="names no population, and no single dataset reaches what it reads" if not best
+            else f"names no population, and {sorted(best)} each reach what it reads",
+        )
+    return best[0]
+
+
+def _determination_refs(query: SlayerQuery) -> List[Tuple[str, ...]]:
+    """The references a root-less stage's dimensions, time dimensions and filters read outside aggregations."""
+    texts = [*(d.field for d in query.dimensions or []), *(td.field for td in query.time_dimensions or []),
+             *query.filter_conditions]
+    refs: List[Tuple[str, ...]] = []
+    for text in texts:
+        try:
+            parsed = parse_expr(text)
+        except ValueError:
+            continue
+        for node, aggregation in walk_references(parsed):
+            if aggregation is None and isinstance(node, (Ref, DottedRef)):
+                refs.append((node.name,) if isinstance(node, Ref) else tuple(node.parts))
+    return refs
+
+
+def _old_reach(parts: Tuple[str, ...], *, root: SlayerDataset, datasets: Mapping[str, SlayerDataset]) -> Optional[int]:
+    """How many hops the pre-2.0 reading of ``parts`` from ``root`` took; ``None`` when it did not resolve."""
+    if len(parts) == 1:
+        return 0 if root.get_field(parts[0]) is not None or root.get_metric(parts[0]) is not None else None
+    old = resolve_path(tuple(parts[:-1]), root=root, datasets_by_name=dict(datasets))
+    return None if old is None else len(old[1])
+
+
+def _ambiguous_spine(population: str, *, datasets: Mapping[str, SlayerDataset]) -> bool:
+    """Whether ``population`` spells the spine in another case beside a stored dataset that spells it too."""
+    return (population not in datasets and is_spine_spelling(population)
+            and any(n != TIME_SPINE_DATASET and is_spine_spelling(n) for n in datasets))
 
 
 def _population_dataset(population: str, *, datasets: Mapping[str, SlayerDataset]) -> Optional[str]:

@@ -161,15 +161,20 @@ async def _engine_with_real_sqlite(
 # quoting / formatting drift.
 # ---------------------------------------------------------------------------
 
-def _assert_reads_unrelated_customers(resp) -> None:
+def _assert_reads_unrelated_customers(resp, *, outer_and_cm_only: bool = False) -> None:
     """``customers``, which no join path reaches from ``s1``, is aggregated over its own rows — never
-    by re-aggregating an ``s1`` flat column — and announced as an unrelated dataset."""
+    by re-aggregating an ``s1`` flat column — and announced as an unrelated dataset. ``outer_and_cm_only``
+    checks for flat columns only in the outer query and the ``_cm_`` CTEs (the stage may hold the name)."""
     assert any(
         w.kind == "unrelated_dataset" and w.dataset == "customers" for w in resp.warnings or []
     ), resp.warnings
     assert resp.sql is not None
     tree = sqlglot.parse_one(resp.sql, dialect="sqlite")
-    assert not [c for c in tree.find_all(exp.Column) if c.name.startswith("customers__revenue")], resp.sql
+    columns = [
+        c for c in tree.find_all(exp.Column)
+        if not outer_and_cm_only or (cte := c.find_ancestor(exp.CTE)) is None or cte.alias.startswith("_cm_")
+    ]
+    assert not [c for c in columns if c.name.startswith("customers__revenue")], resp.sql
     own_rows = [
         s for s in tree.find_all(exp.Select)
         if not s.args.get("group") and any(t.name == "customers" for t in s.find_all(exp.Table))
@@ -1144,7 +1149,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
-            _assert_reads_unrelated_customers(resp)
+            _assert_reads_unrelated_customers(resp, outer_and_cm_only=True)
         finally:
             tmp.cleanup()
 

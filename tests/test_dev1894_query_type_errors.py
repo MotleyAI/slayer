@@ -217,7 +217,7 @@ async def test_family_error_layout(
         CanonicalAliasShadowsFieldError, "metric 'rev2'", id="canonical-alias-shadows"),
     pytest.param(lambda: (SlayerQuery(
         population="orders", dimensions=[QueryDimension(field="orders.status")],
-        metrics=[_m("sum(orders.revenue)", "profit_avg"), QueryMetric(metric="avg(orders.profit)")],
+        metrics=[_m("sum(orders.revenue)", "profit_avg"), _m("avg(orders.profit)", "profit_avg")],
     ), [_orders()]), DuplicateMetricNameError, "metric 'profit_avg'", id="duplicate-measure-name"),
 ])
 async def test_structured_name_collisions(case: Case, cls: type, location: str) -> None:

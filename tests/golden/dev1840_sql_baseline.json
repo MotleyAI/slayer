@@ -1,31 +1,31 @@
 {
   "excluded/ambiguous_inversion::bigquery": {
-    "error": "AmbiguousRelationshipPathError",
-    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'agents.score': not a valid relationship path from 'tickets'. 'agents' is reached by more than one path from 'tickets'; agents\u2194tickets is joined by edges no path token addresses (id=opened_by; id=closed_by); name the edges to make them addressable."
   },
   "excluded/ambiguous_inversion::duckdb": {
-    "error": "AmbiguousRelationshipPathError",
-    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'agents.score': not a valid relationship path from 'tickets'. 'agents' is reached by more than one path from 'tickets'; agents\u2194tickets is joined by edges no path token addresses (id=opened_by; id=closed_by); name the edges to make them addressable."
   },
   "excluded/ambiguous_inversion::mysql": {
-    "error": "AmbiguousRelationshipPathError",
-    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'agents.score': not a valid relationship path from 'tickets'. 'agents' is reached by more than one path from 'tickets'; agents\u2194tickets is joined by edges no path token addresses (id=opened_by; id=closed_by); name the edges to make them addressable."
   },
   "excluded/ambiguous_inversion::postgres": {
-    "error": "AmbiguousRelationshipPathError",
-    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'agents.score': not a valid relationship path from 'tickets'. 'agents' is reached by more than one path from 'tickets'; agents\u2194tickets is joined by edges no path token addresses (id=opened_by; id=closed_by); name the edges to make them addressable."
   },
   "excluded/ambiguous_inversion::snowflake": {
-    "error": "AmbiguousRelationshipPathError",
-    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'agents.score': not a valid relationship path from 'tickets'. 'agents' is reached by more than one path from 'tickets'; agents\u2194tickets is joined by edges no path token addresses (id=opened_by; id=closed_by); name the edges to make them addressable."
   },
   "excluded/ambiguous_inversion::sqlite": {
-    "error": "AmbiguousRelationshipPathError",
-    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'agents.score': not a valid relationship path from 'tickets'. 'agents' is reached by more than one path from 'tickets'; agents\u2194tickets is joined by edges no path token addresses (id=opened_by; id=closed_by); name the edges to make them addressable."
   },
   "excluded/ambiguous_inversion::tsql": {
-    "error": "AmbiguousRelationshipPathError",
-    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'agents.score': not a valid relationship path from 'tickets'. 'agents' is reached by more than one path from 'tickets'; agents\u2194tickets is joined by edges no path token addresses (id=opened_by; id=closed_by); name the edges to make them addressable."
   },
   "excluded/mixed_or::bigquery": "WITH _base AS (\n  SELECT\n    customers.tier AS `customers___tier`\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  WHERE\n    (\n      customers.tier = 'gold' OR orders.channel = 'app'\n    )\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS `tier`,\n    CAST(SUM(customers.spend) AS FLOAT64) AS `spend_sum`\n  FROM customers AS customers\n  WHERE\n    EXISTS(\n      SELECT\n        1\n      FROM orders AS orders\n      WHERE\n        customers.id = orders.customer_id\n        AND (\n          customers.tier = 'gold' OR orders.channel = 'app'\n        )\n    )\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.`customers___tier`,\n  _cm_orders__customers__spend_sum.`spend_sum` AS `cm`\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.`customers___tier` IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.`tier`\nORDER BY\n  _base.`customers___tier` ASC NULLS LAST",
   "excluded/mixed_or::duckdb": "WITH _base AS (\n  SELECT\n    customers.tier AS \"customers.tier\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  WHERE\n    (\n      customers.tier = 'gold' OR orders.channel = 'app'\n    )\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS \"tier\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"spend_sum\"\n  FROM customers AS customers\n  WHERE\n    EXISTS(\n      SELECT\n        1\n      FROM orders AS orders\n      WHERE\n        customers.id = orders.customer_id\n        AND (\n          customers.tier = 'gold' OR orders.channel = 'app'\n        )\n    )\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"customers.tier\",\n  _cm_orders__customers__spend_sum.\"spend_sum\" AS \"cm\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"customers.tier\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"tier\"\nORDER BY\n  _base.\"customers.tier\" ASC",

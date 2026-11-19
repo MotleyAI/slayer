@@ -164,25 +164,28 @@ _Q = r"[\"`]"
 
 def _assert_grain_pair(
     on_pred: str, col_regex: str, *, marker: str = "IS NOT DISTINCT FROM",
-    lookup: bool = False,
+    lookup: bool = False, population: str = "orders",
 ) -> None:
     """Assert the sjoin ON contains a genuine null-safe grain pair for the column
-    matched by ``col_regex``: ``base."<…col…>" <marker> shifted_x."<same alias>"``.
+    matched by ``col_regex``: ``base."<key>" <marker> shifted_x."<key flattened>"``,
+    the shifted side being the key minus the population, ``.`` → ``__``.
 
-    Stronger than a bare substring: it requires the column on BOTH sides (a
-    back-reference forces the SAME quoted alias), joined by the null-safe operator
-    — so an implementation that drops one side, omits the pair, or leaves a plain
-    ``=`` cannot pass. Hop separators tolerate either the dotted (``stores.name``)
-    or flattened (``stores__name``) alias form via ``[._]+`` inside ``col_regex``.
-    ``lookup`` marks the shift axis, whose base side carries the offset.
+    Stronger than a bare substring: it requires the column on BOTH sides, joined
+    by the null-safe operator — so an implementation that drops one side, omits
+    the pair, or leaves a plain ``=`` cannot pass. ``lookup`` marks the shift
+    axis, whose base side carries the offset.
     """
     m = re.escape(marker.strip())
     pat = re.compile(
         r"base\." + _Q + r"([^\"`]*(?:" + col_regex + r")[^\"`]*)" + _Q
         + (r"([^\n]*?)" if lookup else r"()\s*")
-        + m + r"\s*shifted_\w+\." + _Q + r"\1" + _Q
+        + m + r"\s*shifted_\w+\." + _Q + r"([^\"`]*)" + _Q
     )
-    found = pat.search(on_pred)
+
+    def _flat(key: str) -> str:
+        return key.removeprefix(f"{population}.").replace(".", "__")
+
+    found = next((f for f in pat.finditer(on_pred) if f.group(3) == _flat(f.group(1))), None)
     assert found, (
         f"no null-safe grain pair for /{col_regex}/ [{marker}] in ON:\n{on_pred}"
     )

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousRelationshipPathError, SlayerError
+from slayer.core.errors import UnresolvableDimensionRelationshipError, SlayerError
 
 from slayer.core.query import QueryMetric
 
@@ -83,7 +83,7 @@ class TestErrorModeRefusesExcludedFilters:
         error-mode concern, but it must not be masked by it."""
         _, engine = exec_backend_amb
         query = error_q(population="tickets", metrics=[SM], filter=["tickets.effort > 2"])
-        with pytest.raises(AmbiguousRelationshipPathError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(query)
 
 

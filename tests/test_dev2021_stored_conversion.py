@@ -195,7 +195,7 @@ class TestQualification:
         assert QueryDimension(field="upper(customers.region)", alias="customers__tier_label") in (
             loaded.dimensions or [])
         resp = await run(storage, loaded)
-        assert _rows(resp, "orders.status", "customers__tier_label", "orders.n") == [
+        assert _rows(resp, "orders.status", "customers__tier_label", "n") == [
             ("2024/01/01", "SOUTH", 1), ("new", "NORTH", 2), ("ok", "NORTH", 2), ("ok", "SOUTH", 1)]
 
     async def test_an_alias_qualifies_the_expression(self, tmp_path, shop_ds) -> None:

@@ -583,7 +583,8 @@ class TestDataSourceAndDedup:
             try:
                 with pytest.raises(UnknownMetricError) as ei:
                     await eng.recommend_population(["revenue"], data_source="d")
-                assert "sales.revenue" in str(ei.value) and "calc.revenue" not in str(ei.value)
+                assert "sales.revenue" in str(ei.value)
+                assert "calc.revenue" not in str(ei.value)
             finally:
                 await eng.aclose()
 

@@ -13,7 +13,12 @@ from pydantic import ValidationError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import AggregationArgumentError, UnresolvableDimensionRelationshipError
+from slayer.core.errors import (
+    AggregationArgumentError,
+    UnknownMetricError,
+    UnknownReferenceError,
+    UnresolvableDimensionRelationshipError,
+)
 from slayer.core.models import (
     Aggregation, AggregationParam, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset,
 )
@@ -292,9 +297,20 @@ class TestInvalidTemplates:
 
     @pytest.mark.parametrize(("formula", "twin", "aggs"), [
         ("SUM(orders.price, value=0)", "SUM(orders.price, (orders.value=0))", ()),
+        ("rows(orders.price, value=1)", "rows(orders.price, (orders.value=1))", (Aggregation(name="rows", expression="COUNT(*)"),)),
+    ])
+    async def test_non_parameter_name_on_a_parameterless_aggregation(
+        self, formula: str, twin: str, aggs: tuple[Aggregation, ...],
+    ) -> None:
+        with pytest.raises(AggregationArgumentError) as info:  # names are checked first
+            await _sql(formula, aggs=aggs)
+        assert "aggregated field" not in str(info.value)
+        with pytest.raises(UnknownReferenceError, match="'orders.value'"):
+            await _sql(twin, aggs=aggs)
+
+    @pytest.mark.parametrize(("formula", "twin", "aggs"), [
         ("percentile(orders.price, p=0.5, value=0)", "percentile(orders.price, p=0.5, (orders.value=0))", ()),
         ("corr(orders.price, other=orders.quantity, foo=1)", "corr(orders.price, other=orders.quantity, (orders.foo=1))", ()),
-        ("rows(orders.price, value=1)", "rows(orders.price, (orders.value=1))", (Aggregation(name="rows", expression="COUNT(*)"),)),
         ("scaled(orders.price, scale=2, bogus=1)", "scaled(orders.price, scale=2, (orders.bogus=1))", (_SCALED,)),
         ("weighted_avg(orders.price, weight=orders.quantity, value=0)", "weighted_avg(orders.price, weight=orders.quantity, (orders.value=0))", ()),
     ])
@@ -519,9 +535,11 @@ class TestArgumentNamesCheckedFirst:
             await _sql("kx(orders.price, orders.missing.path)", aggs=(_K_UNUSED,), validate=False)
 
     async def test_non_parameter_name_binds_as_a_comparison(self) -> None:
-        message = await _fails_as_its_comparison_twin(
-            expression="scaled(orders.price, bogus=orders.missing.path)", twin="scaled(orders.price, (orders.bogus=orders.missing.path))", aggs=(_SCALED,))
-        assert "does not accept argument 'bogus'" not in message
+        with pytest.raises(UnknownMetricError, match="'bogus'") as info:
+            await _sql("scaled(orders.price, bogus=orders.missing.path)", aggs=(_SCALED,))
+        assert "does not accept argument 'bogus'" not in str(info.value)
+        with pytest.raises(UnknownReferenceError, match="'orders.bogus'"):
+            await _sql("scaled(orders.price, (orders.bogus=orders.missing.path))", aggs=(_SCALED,))
 
     async def test_accepted_name_still_resolves_its_value(self) -> None:
         with pytest.raises(UnresolvableDimensionRelationshipError, match="missing.path"):

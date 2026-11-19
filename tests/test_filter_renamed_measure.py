@@ -308,16 +308,7 @@ class TestRemapEdgeCases:
     async def test_rename_collides_with_other_measure_canonical_raises(
         self,
     ) -> None:
-        """If a query measure's
-        ``name`` equals the canonical alias of another measure in the same
-        query, ``_ensure_aggregated_measure``'s alias-based dedup would
-        silently merge the two aggregates — both filter refs would resolve
-        to the SAME underlying aggregate even though the user declared two
-        distinct measures. Refuse the query at enrichment time.
-
-        Example: ``sum(revenue)`` renamed to ``profit_avg`` AND a separate
-        ``avg(profit)`` measure both end up at ``<model>.profit_avg``.
-        """
+        """Two distinct measures under one name are refused, never silently merged."""
         model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -333,10 +324,8 @@ class TestRemapEdgeCases:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                # Rename to a name that collides with the second measure's
-                # auto-canonical (``profit_avg``).
                 QueryMetric(metric="sum(orders.revenue)", alias="profit_avg"),
-                QueryMetric(metric="avg(orders.profit)"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
+                QueryMetric(metric="avg(orders.profit)", alias="profit_avg"),
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):

@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
@@ -396,15 +397,14 @@ class TestLeftAlone:
         assert isinstance(loaded, SlayerQuery)
         assert loaded.filter == ["base.code <= '2024-04-10'"]
 
-    async def test_missing_model_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
-                                                    caplog: pytest.LogCaptureFixture) -> None:
+    async def test_missing_model_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                    backend: str) -> None:
         body = {**query("created_at <= '2024-12-31'"), "source_model": "gone"}
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_gone", body),))
-        with logged(caplog) as texts:
-            mem = await storage.get_memory("m_gone")
-        assert mem.query is not None
-        assert mem.query.filter == ["created_at <= '2024-12-31'"]
-        assert any("m_gone" in t and "created_at <= '2024-12-31'" in t for t in texts), texts
+        with pytest.raises(StoredDocumentLoadError) as info:
+            await storage.get_memory("m_gone")
+        assert "m_gone" in str(info.value)
+        assert "'gone'" in str(info.value)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

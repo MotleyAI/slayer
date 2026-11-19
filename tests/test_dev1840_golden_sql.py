@@ -131,7 +131,7 @@ def test_exists_cases_carry_an_exists(baseline) -> None:
         case_id = key.rsplit("::", 1)[0]
         if case_id == "excluded/ambiguous_inversion":
             assert isinstance(value, dict), f"{key} no longer fails closed"
-            assert value.get("error") == "AmbiguousRelationshipPathError", value
+            assert value.get("error") == "UnresolvableDimensionRelationshipError", value
             continue
         assert not isinstance(value, dict), f"{key} unexpectedly raised: {value}"
         assert "__regroup__" not in value, f"{key} leaked a placeholder"
