@@ -187,6 +187,11 @@ def follow_sibling_chain(
         spec = named_queries[sib].population
 
 
+def _stage_field(field: DatasetField, *, native: Optional[str]) -> DatasetField:
+    """A stage output field; ``native`` is the output column it reads when that is not its name."""
+    return field if native is None else field.with_native(native)
+
+
 def without_inherited(dataset: SlayerDataset) -> Tuple[SlayerDataset, List[DatasetRelationship]]:
     """``dataset`` without its inherited edges, and those edges."""
     inherited = [j for j in dataset.relationships if j.inherited_from is not None]
@@ -275,9 +280,8 @@ def dataset_from_stage_schema(
         sql_table="_stage" if sql is None else None,
         sql=sql,
         fields=[
-            DatasetField(
+            _stage_field(DatasetField(
                 name=c.name,
-                sql=field_sql.get(c.name),
                 datatype=c.datatype or DataType.FLOAT,
                 element_type=(c.element_type or DataType.OPAQUE) if c.datatype is DataType.ARRAY else None,
                 granularity=c.granularity.name if isinstance(c.granularity, CustomGranularity) else c.granularity,
@@ -286,7 +290,7 @@ def dataset_from_stage_schema(
                 description=c.description,
                 primary_key=composite and c.name in grain,
                 unique=not composite and c.name in grain,
-            ).with_respellings(c.respellings)
+            ).with_respellings(c.respellings), native=field_sql.get(c.name))
             for c in schema.fields
         ],
     )

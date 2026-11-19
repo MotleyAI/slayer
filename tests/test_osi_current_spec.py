@@ -53,7 +53,7 @@ def _single_agg(expression: str) -> tuple[str, str]:
 
 def _expression(result: ConversionResult, metric: str) -> str:
     home = metric_home(result, metric)
-    return next(x.expression for x in home.metrics if x.name == metric)
+    return next(x.text for x in home.metrics if x.name == metric)
 
 
 # ─────────────────────────── document shapes ───────────────────────────────

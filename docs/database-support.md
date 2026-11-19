@@ -74,7 +74,7 @@ rejects the read-only setting fails the connection with its own error.
 
 ## Portable library support
 
-Each database runs a [portable library function](concepts/references.md) only where SLayer translates it for that database; anywhere else the query fails at plan time naming the function and the database (express the computation in `DatasetField.sql` instead). `TRY_CAST` also covers comparing or computing text with numbers, which reads through it, and the regex and JSON operators (`~`, `->>`, …) share their function's row.
+Each database runs a [portable library function](concepts/references.md) only where SLayer translates it for that database; anywhere else the query fails at plan time naming the function and the database (express the computation in a field's entry for that database's dialect instead). `TRY_CAST` also covers comparing or computing text with numbers, which reads through it, and the regex and JSON operators (`~`, `->>`, …) share their function's row.
 
 | Function | Postgres | DuckDB | SQLite | MySQL | MariaDB | ClickHouse | SQL Server | Trino | Presto | Snowflake | BigQuery | Redshift | Databricks | Spark | Oracle |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -313,7 +313,7 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
   Snowflake exposes its (non-enforced) FK metadata via the Inspector. Auto-
   ingestion discovers relationships like Postgres / MySQL / SQLite.
 - **Untyped `ARRAY` columns.** Ingestion infers their element type from a sample of each column's `TYPEOF`s, one query per untyped `ARRAY` column, and `json_value` reads a `VARIANT`, `OBJECT` or `ARRAY` column natively.
-- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a `DatasetField.sql` fall
+- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a field's dialect entry fall
   through to the canonical 2-arg `LOG(10, x)` / `LOG(2, x)` form; the rest of
   the math / statistical functions are native.
 
@@ -362,7 +362,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `orders.products.category`) to `<dataset>___<field>` at emit time and
   reverses the mapping on result rows. The triple-underscore separator is
   distinct from `__` (used by the query-backed virtual-dataset wrap for cross-dataset leaf
-  flattening), so the two encodings never collide. In `DatasetField.sql`,
+  flattening), so the two encodings never collide. In a field's dialect entry,
   fully-qualified table paths must be backticked per-segment
   (`` `project`.`dataset`.`table` ``) — a single backticked dotted path of
   word-only segments (`` `my_dataset.my_table` ``) would false-positive

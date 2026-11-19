@@ -211,7 +211,7 @@ async def test_case_ambiguous_identifier_is_quoted(env) -> None:
 # ─────────────────────── portable vs dialect-only fields ───────────────────
 
 async def test_portable_field_expression(env) -> None:
-    model = orders(columns=[*orders_columns(), col("gross", sql="price * quantity")], metrics=BASIC_MEASURES)
+    model = orders(columns=[*orders_columns(), col("gross", expression="price * quantity")], metrics=BASIC_MEASURES)
     gross = field(dataset((await export_datasets(env, customers(), model)).document, "orders"), "gross")
     assert gross is not None
     assert same_sql(gross["expression"]["sql"], "price * quantity")

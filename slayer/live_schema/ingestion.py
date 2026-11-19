@@ -30,9 +30,7 @@ from slayer.core.models import (
     DatasourceConfig,
     DatasetRelationship,
     SlayerDataset,
-    is_base_field_sql,
     is_key_set_unique,
-    physical_column_sql,
     sanitize_dataset_name,
 )
 from slayer.core.relationship_edges import edge_reference
@@ -454,7 +452,7 @@ def retyped_sql_columns(dataset: SlayerDataset, *, lists: dict[str, ResultList])
     fields: list[DatasetField] = []
     retyped: list[str] = []
     for column in dataset.fields:
-        found = lists.get(physical_column_sql(sql=column.sql, name=column.name)) if is_base_field_sql(column.sql) else None
+        found = lists.get(column.physical_name) if column.is_base else None
         fresh = None if found is None else DatasetField(
             name=column.name, datatype=DataType.ARRAY, element_type=found.element_type, db_type=found.db_type)
         new = _retyped_list(persisted=column, fresh=fresh) if fresh is not None else None
@@ -493,8 +491,10 @@ def _renamed_fields(datasets: list[SlayerDataset]) -> list[RenamedField]:
     out: list[RenamedField] = []
     for dataset in datasets:
         for column in dataset.fields:
-            physical = (column.sql or "").strip('"')
-            if column.sql and is_base_field_sql(column.sql) and _logical_field_name(physical) != column.name:
+            if column.expression is None or not column.is_base:
+                continue
+            physical = column.physical_name
+            if _logical_field_name(physical) != column.name:
                 out.append(RenamedField(dataset=dataset.name, field=column.name, physical=physical))
                 logger.warning(
                     "dataset %r: physical column %r differs from another only in case; ingested as %r",
@@ -534,7 +534,7 @@ def _fields_to_dataset(
             DatasetField(
                 name=column_name,
                 # A quoted lower-case Snowflake / Oracle column names itself exactly.
-                sql=exp.to_identifier(col.name, quoted=True).sql() if col.quoted else col.name,
+                expression=exp.to_identifier(col.name, quoted=True).sql() if col.quoted else col.name,
                 datatype=col.type,
                 element_type=(col.element_type or DataType.OPAQUE) if col.type is DataType.ARRAY else None,
                 db_type=col.db_type,
@@ -1414,7 +1414,7 @@ def _case_free_new_fields(fields: list[DatasetField], *, taken: list[str], datas
         if name != column.name:
             logger.warning("dataset %r: live column %r differs from a dataset name only in case; ingested as %r",
                            dataset, column.name, name)
-            column = column.model_copy(update={"name": name, "sql": column.sql or column.name})
+            column = column.model_copy(update={"name": name, "expression": column.expression or column.name})
         taken.append(name)
         out.append(column)
     return out

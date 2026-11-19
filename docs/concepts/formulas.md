@@ -42,7 +42,7 @@ sum(amount - cost, partition_by=region)  — reserved kwargs compose
 count(1)                               — a constant is a valid expression
 ```
 
-The expression may use bare host-dataset fields (derived `DatasetField.sql` fields
+The expression may use bare host-dataset fields (derived fields
 included), scalar-allowlist functions, arithmetic, and literals. It works in
 every functional-aggregation position — metrics, post-aggregation filters
 (`sum(amount - cost) > 0` routes to HAVING), order, computed-dimension
@@ -315,7 +315,7 @@ A saved metric reused by name — bare `aov` or another dataset's `customers.aov
 
 Transforms work on cross-dataset metrics: `"cumsum(avg(customers.score))"`, `"first(avg(customers.score))"`, `"last(avg(customers.score))"`. The cross-dataset metric is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
-Inside any expression or `DatasetField.sql`, dotted references to fields on joined datasets can target *derived* fields (fields whose own `sql` is itself an expression). The engine recursively inlines those references at query time, so `"sum(B.foo_normalized)"` — where `B.foo_normalized.sql = "foo_raw / 100.0"` — emits `SUM(B.foo_raw / 100.0)`. See [Datasets → Derived Fields Referencing Other Derived Fields](models.md#derived-fields-referencing-other-derived-fields) for the full chaining behaviour and cycle-detection semantics.
+Inside any expression or field definition, dotted references to fields on joined datasets can target *derived* fields (fields whose own `expression` is itself an expression). The engine recursively inlines those references at query time, so `"sum(B.foo_normalized)"` — where `B.foo_normalized` is `"foo_raw / 100.0"` — emits `SUM(B.foo_raw / 100.0)`. See [Datasets → Derived fields referencing other fields](models.md#derived-fields-referencing-other-fields) for the full chaining behaviour and cycle-detection semantics.
 
 ### Transform Functions
 
@@ -468,7 +468,7 @@ Multiple partition fields: `partition_by=[region, channel]`. Cross-dataset dotte
 
 The rank family's `partition_by=` may name a computed dimension, as an aggregation's can (one that itself wraps an aggregation is for now accepted only in filters and order). Each key must be a member of the transform's operand grain — the union of its inner aggregates' grains (an ungrained inner contributes the query's dimensions) — so `rank(sum(revenue, partition_by=[city, region]), partition_by=product, direction='desc')` is an error naming the remedy.
 
-> **Note:** SLayer's expression grammar rejects raw `OVER (...)` SQL in `DatasetMetric.expression` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `DatasetField.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "datatype": "NUMBER"}`) and filter on the field — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
+> **Note:** SLayer's expression grammar rejects raw `OVER (...)` SQL in `DatasetMetric.expression` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it as a field's dialect entry (e.g., `{"name": "rn", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "row_number() over (order by mass desc)"}]}, "datatype": "Integer"}`) and filter on the field — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
 
 ### First and Last Functions
 
@@ -496,7 +496,7 @@ Not to be confused with the [`first`/`last` aggregation types](models.md#the-fir
 
 ## Scalar Math Functions
 
-In Mode-A SQL (`DatasetField.sql`, `Aggregation.expression`) any database function passes through. In Mode-B expressions and query fields, scalar functions come from the closed [portable function library](references.md#the-portable-function-library), each translated per backend; a name outside it (`initcap`, `random`) is rejected. The math functions:
+In Mode-A SQL (a field's dialect entry, `Aggregation.expression`) any database function passes through. In Mode-B expressions (a field's portable `sql` included) and query fields, scalar functions come from the closed [portable function library](references.md#the-portable-function-library), each translated per backend; a name outside it (`initcap`, `random`) is rejected. The math functions:
 
 | Function | Args | Behaviour |
 |----------|------|-----------|
@@ -533,9 +533,9 @@ The 2-arg `log(B, X)` UDF is registered on **every** SQLite version, including �
 The single-arg aliases `log10(x)` and `log2(x)` round-trip verbatim where the backend has them natively; elsewhere they emit the canonical 2-arg `LOG(base, x)`: Snowflake and Oracle for both, Postgres, BigQuery, Redshift and T-SQL for `log2`. Other 2-arg `log(B, X)` calls — including non-literal bases like `log(some_col, x)` — always emit as `LOG(B, X)`.
 
 ```python
-# Examples (in DatasetField.sql):
-DatasetField(name="ln_amount", sql="ln(amount)", datatype=DataType.FLOAT)
-DatasetField(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", datatype=DataType.FLOAT)
+# Examples (a field's portable expression):
+{"name": "ln_amount", "expression": "ln(amount)", "datatype": "Float"}
+{"name": "rms", "expression": "sqrt(pow(x, 2) + pow(y, 2))", "datatype": "Float"}
 ```
 
 ## Conditionals (`CASE WHEN` / `iif`)

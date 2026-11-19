@@ -107,7 +107,7 @@ def test_cycle_raises_column_cycle_error() -> None:
     )
     with pytest.raises(DatasetFieldCycleError):
         expand_derived_refs_sync(
-            sql="c1", dataset=cyclic, alias_path="C",
+            sql="C.c1", dataset=cyclic, alias_path="C",
             datasets_by_name={"C": cyclic}, dialect="sqlite",
         )
 
@@ -145,7 +145,7 @@ def test_dev1752_root_inlines_while_subquery_local_untouched() -> None:
     the fix over-gating root inlining, not the bug itself."""
     a = _dataset_a()
     out = expand_derived_refs_sync(
-        sql="c1 IN (SELECT c1 FROM other_tbl)", dataset=a, alias_path="A",
+        sql="A.c1 IN (SELECT c1 FROM other_tbl)", dataset=a, alias_path="A",
         datasets_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "(A.raw_a + 1) IN (SELECT c1 FROM other_tbl)"

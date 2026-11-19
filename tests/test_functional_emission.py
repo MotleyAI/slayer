@@ -56,7 +56,7 @@ _COLON_ANY = re.compile(r"(?<![\w-])(?!memory:|https?:)(?:[A-Za-z_][\w.]*|\*)(?<
 
 
 def _assert_functional(datasets: list[SlayerDataset]) -> None:
-    formulas = [(m.name, mm.name, mm.expression) for m in datasets for mm in m.metrics]
+    formulas = [(m.name, mm.name, mm.text) for m in datasets for mm in m.metrics]
     assert formulas
     for model, measure, formula in formulas:
         assert ":" not in _LITERAL.sub("''", formula), (model, measure, formula)
@@ -192,14 +192,14 @@ def test_osi_import_is_functional(shop_engine: sa.Engine) -> None:
 
 def test_cube_emitters_render_functional() -> None:
     result = CubeToSlayerConverter(project=_cube_project(), data_source="ds").convert()
-    formulas = {(m.name, mm.name): mm.expression for m in result.datasets for mm in m.metrics}
+    formulas = {(m.name, mm.name): mm.text for m in result.datasets for mm in m.metrics}
     assert formulas[("orders", "count")] == "count(*)"
     assert formulas[("orders", "count_7d")] == "count(*, window='7d')"
     assert formulas[("orders", "revenue_30d")] == "sum(amount, window='30d')"
     assert formulas[("overview", "count")] == "count(*)"
     assert formulas[("overview", "revenue")] == "sum(amount)"
     assert formulas[("overview", "customers_count")] == "count(customers.*)"
-    assert formulas[("overview", "customers_ltv")] == "sum(customers.ltv_col)"
+    assert formulas[("overview", "customers_ltv")] == "sum(customers.ltv_raw)"
 
 
 @pytest.mark.parametrize(

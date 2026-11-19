@@ -7622,7 +7622,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 DatasetField(name="region_code", sql="customers.regions.code", datatype=DataType.STRING),
                 # Filtered local measure: filter references the derived column.
                 DatasetField(
-                    name="eu_amount", sql="amount", filter="region_code = 'EU'",
+                    name="eu_amount", sql="amount", filter="orders.region_code = 'EU'",
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -8279,7 +8279,7 @@ class TestGetResultColumnTypesSql:
     async def test_cross_model_measures_probed_via_engine(self) -> None:
         """Cross-model-derived columns are included in the type probe and mapped back to their bare column names. ``customer_score`` is a local column whose SQL reaches the joined ``customers`` model; the typed probe pipeline must still build a ``max(customer_score)`` aggregate aliased ``orders.customer_score_max`` and surface its type under the bare name."""
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
-        await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
         await storage.save_dataset(SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[

@@ -99,8 +99,8 @@ class TestBackingSqlIsLengthFitted:
         )
         col = next(c for c in expanded.fields if c.name == LONGCOL)
         fitted = get_dialect("postgres").fit_alias(LONGCOL)
-        assert col.sql == fitted
-        assert col.sql != col.name
+        assert col.physical_name == fitted
+        assert col.physical_name != col.name
         assert _nbytes(fitted) <= 63
         assert fitted in _outer_aliases(sql, "postgres")
 
@@ -111,7 +111,7 @@ class TestBackingSqlIsLengthFitted:
         _assert_within_limit(sql, 128, dialect="tsql")
         assert LONG310 not in sql
         col = next(c for c in expanded.fields if c.name == LONG310)
-        assert col.sql == get_dialect("tsql").fit_alias(LONG310)
+        assert col.physical_name == get_dialect("tsql").fit_alias(LONG310)
 
     async def test_bigquery_mangled_and_fitted(self) -> None:
         expanded, sql = await _expand(
@@ -120,7 +120,7 @@ class TestBackingSqlIsLengthFitted:
         _assert_within_limit(sql, 300, dialect="bigquery")
         assert LONG310 not in sql
         col = next(c for c in expanded.fields if c.name == LONG310)
-        assert col.sql == get_dialect("bigquery").fit_alias(LONG310)
+        assert col.physical_name == get_dialect("bigquery").fit_alias(LONG310)
 
     async def test_under_limit_expansion_is_byte_identical(self) -> None:
         expanded, sql = await _expand(
@@ -132,7 +132,7 @@ class TestBackingSqlIsLengthFitted:
             dimensions=["status"],
         )
         assert sql == GOLDEN_UNDER_LIMIT_PG
-        assert [(c.name, c.sql) for c in expanded.fields] == [("status", "status")]
+        assert [(c.name, c.physical_name) for c in expanded.fields] == [("status", "status")]
         assert not _FIT_MARKER_RE.search(sql)
 
     async def test_unbounded_dialect_keeps_canonical_aliases(self) -> None:
@@ -142,7 +142,7 @@ class TestBackingSqlIsLengthFitted:
         assert LONGCOL in sql
         assert not _FIT_MARKER_RE.search(sql)
         col = next(c for c in expanded.fields if c.name == LONGCOL)
-        assert col.sql == col.name
+        assert col.physical_name == col.name
 
 
 class TestOuterQueryThroughVirtualModel:

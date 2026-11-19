@@ -33,8 +33,6 @@ from slayer.core.models import (
     DatasetRelationship,
     DatasetMetric,
     SlayerDataset,
-    is_base_field_sql,
-    physical_column_sql,
 )
 from slayer.core.query import QueryDimension, SlayerQuery, extension_dataset_names
 from slayer.core.refs import IDENTIFIER_RE
@@ -418,9 +416,9 @@ def retype_findings(
         return []
     out: list[RetypeFinding] = []
     for col in dataset.fields:
-        if not _field_is_base(col.sql):
+        if not col.is_physical_reader:
             continue
-        name = physical_column_sql(sql=col.sql, name=col.name)
+        name = col.physical_name
         live = live_table.columns.get(name)
         if live is not None and _retyped(persisted=col.datatype, live=live, temporal_text=temporal_text):
             out.append(RetypeFinding.of(
@@ -437,8 +435,8 @@ def sql_dataset_retype_findings(
     out: list[RetypeFinding] = []
     for col in dataset.fields:
         live = (live_columns or {}).get(col.name)
-        if live is None and col.sql is not None:
-            live = (live_columns or {}).get(col.sql.strip())
+        if live is None and col.definition_sql is not None:
+            live = (live_columns or {}).get(col.definition_sql.strip())
         if live is not None and _retyped(persisted=col.datatype, live=live.type, temporal_text=temporal_text):
             out.append(RetypeFinding.of(
                 dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
@@ -453,11 +451,6 @@ def _is_bare_identifier(s: str | None) -> bool:
     return IDENTIFIER_RE.match(s.strip()) is not None
 
 
-def _field_is_base(col_sql: str | None) -> bool:
-    """A base field claims a live column (see ``is_base_field_sql``)."""
-    return is_base_field_sql(col_sql)
-
-
 # Pure diff functions
 
 
@@ -468,10 +461,10 @@ def _diff_sql_table_columns(
     dropped: list[str] = []
     reasons: list[DeleteReason] = []
     for col in dataset.fields:
-        # Base fields only; derived handled by cascade.
-        if not _field_is_base(col.sql):
+        # Physical readers only; derived handled by cascade.
+        if not col.is_physical_reader:
             continue
-        bare_name = physical_column_sql(sql=col.sql, name=col.name)
+        bare_name = col.physical_name
         if bare_name not in live_table.columns:
             dropped.append(col.name)
             reasons.append(
@@ -497,7 +490,7 @@ def _diff_sql_table_relationships(
         missing_locals = [
             lc for lc in local_cols
             if (col := dataset.get_field(lc)) is None
-            or physical_column_sql(sql=col.sql, name=col.name) not in live_table.columns
+            or (col.physical_name if col.is_base else col.name) not in live_table.columns
         ]
         if missing_locals:
             dropped.append(relationship)
@@ -610,10 +603,11 @@ def _diff_sql_dataset_fields(
     dropped_cols: list[str] = []
     reasons: list[DeleteReason] = []
     for col in dataset.fields:
-        # Cursor exposes alias names: match col.name, fall back to col.sql.
-        if col.name not in live_columns and (col.sql is None or col.sql.strip() not in live_columns):
-            # Base/aliased-base only; derived expressions handled by cascade.
-            if _field_is_base(col.sql) or col.sql == col.name:
+        # Cursor exposes alias names: match col.name, fall back to the column it reads.
+        text = col.definition_sql
+        if col.name not in live_columns and (text is None or text.strip() not in live_columns):
+            # Physical readers only; derived expressions handled by cascade.
+            if col.is_physical_reader:
                 dropped_cols.append(col.name)
                 reasons.append(
                     DeleteReason(
@@ -930,8 +924,8 @@ def _dimension_refs(dimension: QueryDimension) -> list[str]:
 def _definition_refs(field: DatasetField | DatasetMetric) -> list[str]:
     """The refs ``field``'s definition reads, spelled from its own dataset."""
     if isinstance(field, DatasetMetric):
-        return sorted(_metric_expression_refs(field.expression))
-    sqls = [s for s in (field.sql, field.filter) if s is not None]
+        return sorted(_metric_expression_refs(field.text))
+    sqls = [s for s in (field.definition_sql, field.filter) if s is not None]
     return [f"{q}.{c}" if q else c for sql in sqls for q, c in _extract_field_refs_from_sql(sql)]
 
 
@@ -1162,7 +1156,11 @@ def _field_ref_targets_dropped(
     state: _CascadeState,
 ) -> tuple[bool, SlayerDataset | None]:
     """Whether one ``(table_alias, ref_col)`` ref resolves to a dropped field → ``(is_dropped, resolved_target_dataset)``."""
-    if table_alias is None or table_alias == dataset.name:
+    if table_alias is None:
+        dropped = state.cascadable(dataset.name)
+        return any(c.name in dropped and c.is_physical_reader and c.physical_name == ref_col
+                   for c in dataset.fields), dataset
+    if table_alias == dataset.name:
         return ref_col in state.cascadable(dataset.name), dataset
     target = _walk_alias_to_target_dataset(
         source_dataset=dataset,
@@ -1193,8 +1191,8 @@ def _first_dropped_sql_column_ref(
 
 
 def _field_definition_sqls(col: DatasetField) -> list[str]:
-    """The SQL ``col``'s definition reads: its derived sql, then its filter."""
-    derived = None if col.sql is None or is_base_field_sql(col.sql) else col.sql
+    """The SQL ``col``'s definition reads: its derived definition, then its filter."""
+    derived = None if col.is_base else col.definition_sql
     return [s for s in (derived, col.filter) if s is not None]
 
 
@@ -1263,7 +1261,7 @@ def _cascade_metrics(*, dataset: SlayerDataset, state: _CascadeState) -> bool:
     for metric in dataset.metrics:
         if metric.name is None or metric.name in dropped_set:
             continue
-        refs = _metric_expression_refs(metric.expression)
+        refs = _metric_expression_refs(metric.text)
         cause = _first_dropped_cause(refs=refs, dataset=dataset, state=state)
         if cause is None:
             continue
@@ -2197,8 +2195,10 @@ async def _sqlite_probe_int_drift_for_dataset(
 
     drifts: list[RetypeFinding] = []
     for col in dataset.fields:
-        physical = physical_column_sql(sql=col.sql, name=col.name)
-        if col.datatype is not DataType.INTEGER or not _field_is_base(col.sql) or live.columns.get(physical) is not DataType.INTEGER:
+        if col.datatype is not DataType.INTEGER or not col.is_physical_reader:
+            continue
+        physical = col.physical_name
+        if live.columns.get(physical) is not DataType.INTEGER:
             continue
         verdict = await _probe_validate_datasets_field(
             client=client, dataset=dataset, col=col, physical=physical,
