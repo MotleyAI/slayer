@@ -193,7 +193,7 @@ class TestPerKindFullRender:
         out = await svc.inspect(
             reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         assert "Order total in USD." in out
         assert "Type:" in out
 
@@ -201,7 +201,7 @@ class TestPerKindFullRender:
         out = await svc.inspect(
             reference="mydb.orders.aov", entity_type="metric", compact=False,
         )
-        assert "Measure: mydb.orders.aov" in out
+        assert "Metric: mydb.orders.aov" in out
         assert "sum(amount) / count(*)" in out
 
     async def test_aggregation(self, svc: InspectService) -> None:
@@ -289,7 +289,7 @@ class TestNormalization:
             compact=False,
         )
         # Rendered against the OWNING dataset, not orders.
-        assert "Column: mydb.customers.region" in out
+        assert "Field: mydb.customers.region" in out
         assert "Customer billing region." in out
 
     async def test_normalized_id_echoed_in_json(self, svc: InspectService) -> None:
@@ -315,7 +315,7 @@ class TestCollision:
         out = await svc.inspect(
             reference="mydb.orders.big", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.big" in out
+        assert "Field: mydb.orders.big" in out
         assert "Aggregation:" not in out
 
     async def test_aggregation_wins_when_entity_type_aggregation(
@@ -325,7 +325,7 @@ class TestCollision:
             reference="mydb.orders.big", entity_type="aggregation", compact=False,
         )
         assert "Aggregation: mydb.orders.big" in out
-        assert "Column:" not in out
+        assert "Field:" not in out
 
     async def test_duplicate_aggregation_errors(
         self, storage: YAMLStorage
@@ -368,13 +368,13 @@ class TestCollision:
         as_measure = await svc.inspect(
             reference="mydb.ma.same", entity_type="metric", compact=False,
         )
-        assert "Measure: mydb.ma.same" in as_measure
+        assert "Metric: mydb.ma.same" in as_measure
         assert "Aggregation:" not in as_measure
         as_agg = await svc.inspect(
             reference="mydb.ma.same", entity_type="aggregation", compact=False,
         )
         assert "Aggregation: mydb.ma.same" in as_agg
-        assert "Measure:" not in as_agg
+        assert "Metric:" not in as_agg
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +482,7 @@ class TestHiddenRendered:
             reference="mydb.withsecret.secret", entity_type="field",
             compact=False,
         )
-        assert "Column: mydb.withsecret.secret" in out
+        assert "Field: mydb.withsecret.secret" in out
         assert "Hidden but inspectable." in out
 
     async def test_hidden_model_renders(self, storage: YAMLStorage) -> None:
@@ -560,7 +560,7 @@ class TestBareReferences:
         out = await svc.inspect(
             reference="region", entity_type="field", compact=False,
         )
-        assert "Column: mydb.customers.region" in out
+        assert "Field: mydb.customers.region" in out
 
 
 # ---------------------------------------------------------------------------
@@ -947,7 +947,7 @@ class TestModelSkeletonHelpers:
         # No description set → no description line; body starts at `Fields:`.
         assert lines[0] == "Fields: id, region"
         # All four lines always present; empty ones render `_(none)_`
-        # (aligned to models_summary(compact)).
+        # (aligned to datasets_summary(compact)).
         assert "Metrics: _(none)_" in md
         assert "Aggregations: _(none)_" in md
         assert "Relationships to: _(none)_" in md

@@ -85,7 +85,7 @@ class TestSingleStrBackCompat:
         # no block separator.
         assert not out.startswith("## ")
         assert _BLOCK_SEP not in out
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
     async def test_str_json_is_object_not_array(
         self, svc: InspectService
@@ -490,5 +490,5 @@ class TestPerIdFieldsAcrossList:
                        for w in arr[0]["warnings"])
             # The unambiguous datasource carries no such warning.
             assert arr[1]["canonical_id"] == "other"
-            assert not any("both a datasource and a model" in w
+            assert not any("both a datasource and a dataset" in w
                            for w in arr[1]["warnings"])

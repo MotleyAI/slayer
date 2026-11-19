@@ -277,7 +277,7 @@ async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageB
     )
     assert attempts == [], "engine=None must not attempt a refresh"
     # Renders the field header but no live samples (uncached + no engine).
-    assert "Column: ds.orders.status" in out
+    assert "Field: ds.orders.status" in out
     assert "Sample values:" not in out
     reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
@@ -384,7 +384,7 @@ async def test_hidden_column_renders_without_refresh(
     out = await svc.inspect(
         reference="ds.orders.secret", entity_type="field", compact=False,
     )
-    assert "Column: ds.orders.secret" in out
+    assert "Field: ds.orders.secret" in out
     assert calls == [], "hidden fields are never profiled"
     reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
@@ -413,7 +413,7 @@ async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch: pytes
     )
     assert invoked, "the refresh path must have executed"
     # No crash; field still renders (without fresh samples).
-    assert "Column: ds.orders.status" in out
+    assert "Field: ds.orders.status" in out
 
 
 @pytest.mark.asyncio

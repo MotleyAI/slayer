@@ -93,7 +93,7 @@ class TestMcpSurface:
                 "compact": False,
             },
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ class TestRestSurface:
             },
         )
         assert r.status_code == 200
-        assert "Column: mydb.orders.amount" in r.json()["result"]
+        assert "Field: mydb.orders.amount" in r.json()["result"]
 
     def test_inspect_json_format(self, rest_client: TestClient) -> None:
         r = rest_client.post(
@@ -199,7 +199,7 @@ class TestCliSurface:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _run_inspect(args=_inspect_args(), storage=cli_storage)
-        assert "Column: mydb.orders.amount" in buf.getvalue()
+        assert "Field: mydb.orders.amount" in buf.getvalue()
 
     def test_run_inspect_not_found_prints_string(
         self, cli_storage: YAMLStorage
@@ -241,14 +241,14 @@ class TestSlayerClientSurface:
         out = await client.inspect(
             reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
     def test_inspect_sync_local(self, client_storage: YAMLStorage) -> None:
         client = SlayerClient(storage=client_storage)
         out = client.inspect_sync(
             reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
     def test_inspect_sync_remote_posts_body(
         self, monkeypatch: pytest.MonkeyPatch
@@ -436,7 +436,7 @@ class TestCliBatch:
                 storage=cli_storage,
             )
         out = buf.getvalue()
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         assert "## mydb.orders.amount" not in out
 
     def test_run_inspect_multi_positional_is_batch(

@@ -102,7 +102,7 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
 
 
 async def _seed_single_ds(storage: YAMLStorage) -> None:
-    """One datasource, for the byte-identity-vs-models_summary tests."""
+    """One datasource, for the byte-identity-vs-datasets_summary tests."""
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="h")
     )
@@ -187,10 +187,10 @@ class TestModelCollectionCompactMarkdown:
         assert "- `events` (2 fields; relationships: _(none)_)" in out
 
     async def test_no_verbose_block(self, two_ds: YAMLStorage) -> None:
-        # The compact index must NOT emit the models_summary 5-line block.
+        # The compact index must NOT emit the datasets_summary 5-line block.
         out = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
-        assert "Columns: 3" not in out
-        assert "Measures: revenue" not in out
+        assert "Fields: 3" not in out
+        assert "Metrics: revenue" not in out
         assert "sum(amount)" not in out
 
     async def test_hidden_model_excluded(self, two_ds: YAMLStorage) -> None:
@@ -292,7 +292,7 @@ class TestModelCollectionVerbose:
         data = json.loads(out)
         assert data["collection"] is True
         assert len(data["datasources"]) == 1
-        # The single per-DS element IS the models_summary JSON payload.
+        # The single per-DS element IS the datasets_summary JSON payload.
         assert data["datasources"][0] == summary
 
     async def test_multi_ds_concatenates_full_blocks(
@@ -301,7 +301,7 @@ class TestModelCollectionVerbose:
         out = await _svc(two_ds).inspect(
             reference=None, entity_type="dataset", compact=False,
         )
-        # Full models_summary verbose markers, both datasources.
+        # Full datasets_summary verbose markers, both datasources.
         assert "**Fields (3):**" in out          # orders in mydb
         assert "sum(amount)" in out
         assert "# Datasource: `otherdb` — 2 dataset(s)" in out
@@ -497,7 +497,7 @@ class TestNonCollectionUnchanged:
         out = await _svc(two_ds).inspect(
             reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         # Not batch-framed.
         assert "## mydb.orders.amount" not in out
 
@@ -686,7 +686,7 @@ class TestCliCollection:
                 storage=cli_storage,
             )
         out = buf.getvalue()
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         assert "## mydb.orders.amount" not in out
 
     def test_parser_allows_zero_positionals(
