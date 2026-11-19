@@ -327,7 +327,7 @@ class _Stage:
         return metric.model_copy(update={"metric": text, "alias": alias})
 
     def _extension_metric(self, metric: DatasetMetric, *, root: Optional[SlayerDataset]) -> DatasetMetric:
-        text = self._text(metric.expression, root=root) if metric.expression else None
+        text = self._text(metric.text, root=root) if metric.text else None
         return metric if text is None else metric.model_copy(update={"expression": text})
 
     def _order(self, item: OrderItem, *, root: Optional[SlayerDataset]) -> OrderItem:

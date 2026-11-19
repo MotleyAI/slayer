@@ -9,7 +9,10 @@ from sqlglot import exp
 from pydantic import BaseModel
 
 from slayer.osi.models import OSIExpression
-from slayer.sql.dialects import SQLGLOT_NAMES, dialect_for_ds_type
+from slayer.sql.dialects import SQLGLOT_NAMES, ossie_token
+
+__all__ = ["ANSI_SQL", "OSSIE_SQL", "PORTABLE_READER", "Candidate", "Selection", "is_native", "ossie_token", "read",
+           "reader_for", "render", "select_expression"]
 
 OSSIE_SQL = "OSSIE_SQL_2026"
 ANSI_SQL = "ANSI_SQL"
@@ -36,11 +39,6 @@ class Selection(BaseModel):
 
 def _token(dialect: str) -> str:
     return dialect.strip().upper()
-
-
-def ossie_token(ds_type: str | None) -> str:
-    """The Ossie dialect token a datasource type's own SQL is declared in."""
-    return dialect_for_ds_type(ds_type).sqlglot_name.upper()
 
 
 def reader_for(dialect: str) -> str | None:

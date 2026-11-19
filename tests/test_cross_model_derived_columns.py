@@ -1197,7 +1197,7 @@ async def test_dev1334_model_level_filter_on_bare_derived_col_with_cross_table_s
     apply to model filters.
     """
     storage = await _orders_customers_storage(tmp_path)
-    orders = await _save_orders_with_is_eu(storage, filters=["is_eu = 1"])
+    orders = await _save_orders_with_is_eu(storage, filters=["orders.is_eu = 1"])
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
@@ -1228,7 +1228,7 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
             DatasetField(
                 name="eu_amount",
                 sql="amount",
-                filter="is_eu = 1",
+                filter="orders.is_eu = 1",
                 datatype=DataType.FLOAT,
             ),
         ],

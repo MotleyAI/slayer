@@ -1418,7 +1418,7 @@ def _ref_sql_dependency_paths(
         return ()
     owner, field = found
     paths: List[Tuple[str, ...]] = []
-    for sql in (field.sql, field.filter if include_filter else None):
+    for sql in (field.definition_sql, field.filter if include_filter else None):
         if not sql:
             continue
         frag = fragment_closure(

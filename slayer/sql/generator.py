@@ -1,7 +1,6 @@
 """SQL generator — converts a ``PlannedQuery`` to SQL via sqlglot AST."""
 
 import logging
-import re
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import (
@@ -39,6 +38,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
+from slayer.core.field_expression import portable_text
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_FIELD, is_spine
 from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
@@ -692,7 +692,6 @@ def _effective_src_filters(*, lowered_filters, plan) -> list:
 
 # A bare-identifier DatasetField.sql renames a physical column; dots are rejected (a dotted ref is a crossing, not a column
 # here).
-_BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
 def _apply_joins(*, select: exp.Select, joins) -> exp.Select:
@@ -1024,9 +1023,8 @@ class SQLGenerator:
         names: List[str] = []
         for c in dataset.fields:
             names.append(c.name)
-            sql = getattr(c, "sql", None)
-            if sql and _BARE_IDENT_RE.fullmatch(sql.strip()):
-                names.append(sql.strip())
+            if c.is_base and c.physical_name != c.name:
+                names.append(c.physical_name)
         allocator.reserve(*names)
 
     @staticmethod
@@ -6184,7 +6182,7 @@ class SQLGenerator:
     def _is_nontrivial_derived(dataset: SlayerDataset, name: str) -> bool:
         """True iff ``name`` is a field on ``dataset`` whose ``DatasetField.sql`` is a"""
         col = next((c for c in dataset.fields if c.name == name), None)
-        return col is not None and col.sql is not None and not is_trivial_base(
+        return col is not None and col.definition_sql is not None and not is_trivial_base(
             field=col,
         )
 
@@ -6539,8 +6537,17 @@ def _user_authored_exemptions(
 
     def _col_surfaces(col) -> list[str]:
         # ``fields`` entries may still be raw dicts (not yet coerced to DatasetField).
-        get = col.get if isinstance(col, dict) else lambda k: getattr(col, k, None)
-        return [s for s in (get("name"), get("sql"), get("filter")) if s]
+        if not isinstance(col, dict):
+            texts = [col.name, col.definition_sql, col.filter, portable_text(col.expression), *col.native_texts]
+            return [s for s in texts if s]
+        expression = col.get("expression")
+        texts = [col.get("name"), col.get("sql"), col.get("filter")]
+        if isinstance(expression, str):
+            texts.append(expression)
+        elif isinstance(expression, dict):
+            texts += [expression.get("sql"),
+                      *(e.get("expression") for e in expression.get("dialects") or [] if isinstance(e, dict))]
+        return [s for s in texts if isinstance(s, str) and s]
 
     surfaces: List[str] = []
     datasets = [

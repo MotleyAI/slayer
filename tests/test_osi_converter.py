@@ -30,11 +30,9 @@ from slayer.osi.models import (
 )
 from slayer.osi.parser import parse_osi_path
 from tests._engine_helpers import disposable_engine
-from tests._osi_helpers import run_converter
+from tests._osi_helpers import run_converter, stored_expression
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
-#: A self-named field is dropped until DEV-2175 imports it.
-SELF_NAMED = pytest.mark.xfail(strict=True, reason="DEV-2175: self-named field")
 
 _SCHEMA = [
     "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, "
@@ -186,29 +184,29 @@ def test_join_carries_relationship_ai_context(shop_engine):
 def test_simple_and_ratio_measures(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.metrics}
-    assert m["total_amount"].expression == "sum(amount)"
-    assert m["order_count"].expression == "count(*)"
-    assert m["aov"].expression == "sum(amount) / count(*)"
+    assert m["total_amount"].text == "sum(amount)"
+    assert m["order_count"].text == "count(*)"
+    assert m["aov"].text == "sum(amount) / count(*)"
 
 
 def test_inline_operand_metric(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     measure = {meas.name: meas for meas in orders.metrics}["revenue_line"]
     assert not [c for c in orders.fields if c.hidden]
-    assert parse_expr(measure.expression) == parse_expr("sum(quantity * amount)")
+    assert parse_expr(measure.text) == parse_expr("sum(quantity * amount)")
 
 
 def test_cross_dataset_metric_anchors_and_dotted_ref(shop_engine):
     # The anchor reaching every referenced dataset without a fanning hop wins.
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.metrics}
-    assert m["cust_reach"].expression == "sum(amount) / count_distinct(customers.customer_id)"
+    assert m["cust_reach"].text == "sum(amount) / count_distinct(customers.customer_id)"
 
 
 def test_multihop_metric_anchor_relative_path(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.metrics}
-    assert m["rev_plus_pop"].expression == "sum(amount) + sum(customers.regions.population)"
+    assert m["rev_plus_pop"].text == "sum(amount) + sum(customers.regions.population)"
 
 
 # ─────────────────────────── edge / failure cases ───────────────────────────
@@ -349,7 +347,7 @@ def test_aliased_field_expression_pointing_at_real_column(shop_engine):
     orders = {m.name: m for m in result.datasets}["orders"]
     amt = {c.name: c for c in orders.fields}.get("amt")
     assert amt is not None
-    assert amt.sql == "amount"
+    assert amt.definition_sql == "amount"
 
 
 def test_non_sql_dialect_metric_clean_fails(shop_engine):
@@ -391,7 +389,7 @@ def test_quoted_alias_field_preserves_quoting(shop_engine):
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert {c.name: c for c in orders.fields}["legal_type"].sql == '"status"'
+    assert {c.name: c for c in orders.fields}["legal_type"].definition_sql == '"status"'
 
 
 def test_invalid_osi_primary_key_keeps_introspected(shop_engine):
@@ -417,11 +415,10 @@ def test_invalid_derived_overlay_reverts_to_physical_column(shop_engine):
     cols = {c.name: c for c in {m.name: m for m in result.datasets}["orders"].fields}
     assert "order_id" in cols
     assert cols["order_id"].primary_key is True
-    assert cols["order_id"].sql != "customers.no_such_col"
+    assert cols["order_id"].definition_sql != "customers.no_such_col"
     assert _reported(result)
 
 
-@SELF_NAMED
 def test_derived_overlay_preserves_primary_key(shop_engine):
     # A derived overlay on the PK column (OSI not restating primary_key) keeps
     # the introspected PK flag.
@@ -432,7 +429,8 @@ def test_derived_overlay_preserves_primary_key(shop_engine):
     result = _convert(shop_engine, doc)
     order_id = {c.name: c for c in {m.name: m for m in result.datasets}["orders"].fields}["order_id"]
     assert order_id.primary_key is True
-    assert order_id.sql == "order_id + 0"
+    assert stored_expression(order_id) == {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id + 0"},
+                                                        {"dialect": "SQLITE", "expression": "order_id + 0"}]}
 
 
 def test_osi_primary_key_overrides_introspected(shop_engine):
@@ -490,7 +488,7 @@ def test_bridge_anchor_metric(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.metrics}
     assert "bridge_metric" in m
-    assert m["bridge_metric"].expression == (
+    assert m["bridge_metric"].text == (
         "sum(products.price) + count_distinct(customers.customer_id)"
     )
 
@@ -640,8 +638,8 @@ def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
     assert status.datatype == DataType.STRING
 
 
-def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
-    # A self-named legacy overlay is dropped with a report; the physical column stays (DEV-2175 imports it).
+def test_derived_field_shadowing_physical_column_imports(shop_engine):
+    # A self-named legacy overlay reads the physical column of its own name.
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -652,9 +650,8 @@ def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
     orders = {m.name: m for m in result.datasets}["orders"]
     status_cols = [c for c in orders.fields if c.name == "status"]
     assert len(status_cols) == 1
-    assert status_cols[0].is_base
-    assert (status_cols[0].physical_name, status_cols[0].datatype) == ("status", DataType.STRING)
-    assert _reported(result)
+    assert not status_cols[0].is_base
+    assert status_cols[0].definition_sql == "LOWER(status)"
 
 
 def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
@@ -854,7 +851,7 @@ def test_physical_multipart_ref_whose_first_hop_is_not_a_join_is_kept(shop_engin
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
     assert "phys" in {c.name for c in orders.fields}
-    assert not _reported(result)  # opaque physical ref: kept AND not flagged
+    assert not [e for e in (*result.warnings, *result.unconverted_metrics) if e.severity != "info"]  # kept, not flagged
 
 
 def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
@@ -959,7 +956,7 @@ def test_bare_alias_field_shadowing_physical_column_replaces(shop_engine):
     orders = {m.name: m for m in result.datasets}["orders"]
     status_cols = [c for c in orders.fields if c.name == "status"]
     assert len(status_cols) == 1
-    assert status_cols[0].sql == "order_id"
+    assert status_cols[0].definition_sql == "order_id"
 
 
 def test_materialized_name_avoids_existing_measure(shop_engine):
@@ -979,7 +976,7 @@ def test_materialized_name_avoids_existing_measure(shop_engine):
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
     assert "_rev_0" in {m.name for m in orders.metrics}
-    _, derived = _single_agg({m.name: m for m in orders.metrics}["rev"].expression)
+    _, derived = _single_agg({m.name: m for m in orders.metrics}["rev"].text)
     assert derived != "_rev_0"
 
 
@@ -1030,7 +1027,7 @@ def test_materialized_name_avoids_existing_column(shop_engine):
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
-    _, derived = _single_agg({meas.name: meas for meas in orders.metrics}["rev"].expression)
+    _, derived = _single_agg({meas.name: meas for meas in orders.metrics}["rev"].text)
     assert derived != "_rev_0"
     assert any(c.name == derived and c.hidden for c in orders.fields)
 
@@ -1143,7 +1140,7 @@ def test_requested_non_sql_dialect_falls_back_to_sql(shop_engine):
     )
     result = _convert(shop_engine, doc, dialect="MDX")
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert {m.name: m for m in orders.metrics}["tot"].expression == "sum(amount)"
+    assert {m.name: m for m in orders.metrics}["tot"].text == "sum(amount)"
 
 
 def test_databricks_dialect_expression_normalized(shop_engine):
@@ -1157,7 +1154,7 @@ def test_databricks_dialect_expression_normalized(shop_engine):
     )
     result = _convert(shop_engine, doc, dialect="DATABRICKS")
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert {m.name: m for m in orders.metrics}["tot"].expression == "sum(amount)"
+    assert {m.name: m for m in orders.metrics}["tot"].text == "sum(amount)"
 
 
 def test_target_dialect_refusing_percentile_drops_the_metric(shop_engine):
@@ -1231,7 +1228,7 @@ def test_emitted_formula_is_validated_by_the_mode_b_grammar(shop_engine):
                            expression=_expr("SUM(CASE WHEN status = 'paid' THEN amount END) / COUNT(*)"))],
     )
     orders = _by_name(_convert(shop_engine, doc))["orders"]
-    formula = {m.name: m for m in orders.metrics}["paid_share"].expression
+    formula = {m.name: m for m in orders.metrics}["paid_share"].text
     parse_expr(formula)
     assert '"' not in formula
     assert "\\" not in formula
@@ -1265,7 +1262,6 @@ def test_a_query_source_list_column_is_a_list(staff_engine):
     assert cols["skills"] == (DataType.ARRAY, DataType.OPAQUE)
 
 
-@SELF_NAMED
 def test_a_derived_list_field_is_a_list(staff_engine):
     cols = _staff_columns(staff_engine, source="staff", fields=[
         OSIField(name="skill_set", expression=_expr("list_distinct(skills)")),
@@ -1303,7 +1299,6 @@ def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
     assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
 
-@SELF_NAMED
 def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
     cols = _staff_columns(staff_engine, source="staff",

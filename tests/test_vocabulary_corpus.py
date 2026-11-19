@@ -42,6 +42,7 @@ def converted(kind: str, value: Any) -> tuple[BaseModel, set[tuple[str, str]]]:
 def problem(pair: dict[str, Any]) -> str | None:
     old, old_reported = converted(pair["kind"], pair["old"])
     new, new_reported = converted(pair["kind"], pair["new"])
+    new_reported -= {("sql", "expression")}  # field sql's own deprecation is not part of this rename
     if old != new:
         return "converts to something else"
     if new_reported:

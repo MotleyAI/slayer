@@ -44,11 +44,11 @@ Each aggregate in a metric is evaluated over the rows of the one dataset it read
 
 ## Expressions
 
-A field's or source's expression is written as portable `sql` (`OSSIE_SQL_2026`) only when reading it back reproduces the datasource's own SQL exactly. Otherwise it is written as a single `dialects` entry in the datasource's dialect (`POSTGRES`, `DUCKDB`, `TSQL`, …), holding the SQL verbatim. Metric expressions are always standard portable SQL, except an approximate distinct count, which has no portable form and is written only in the datasource's dialect.
+Each form of a field's expression exports as itself: its portable `sql` as `sql`, each `dialects` entry with its text, and an entry for the datasource's dialect (or a field `sql` not yet converted) under that dialect's token (`POSTGRES`, `DUCKDB`, `TSQL`, …). A path to another field of the dataset is replaced by that field's definition; the result stays portable `sql` only when every replaced part is portable, else it becomes the datasource's entry. Datasource SQL is never written as portable `sql`. A source's expression is written in the datasource's dialect. Metric expressions are always standard portable SQL, except an approximate distinct count, which has no portable form and is written only in the datasource's dialect.
 
 ## The SLAYER Extension
 
-Each exported dataset, field, metric and relationship carries one `nonportable_extensions` entry with `vendor_name: SLAYER`. Its `data` is a versioned payload object of what Ossie has no place for:
+Each exported dataset, field, metric and relationship carries one `nonportable_extensions` entry with `vendor_name: SLAYER`. Its `data` is a versioned payload object (version 3, a field's definition under `expression`; versions 1 and 2 still import) of what Ossie has no place for:
 
 - join types, names, cardinalities and the dataset that declares each relationship
 - metric expressions, home datasets, labels and types

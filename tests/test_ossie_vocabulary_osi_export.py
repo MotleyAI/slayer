@@ -77,13 +77,16 @@ def test_the_v1_fixture_is_a_pre_rename_export() -> None:
     assert PRE_2_0_PAYLOAD_KEYS & payload_keys(bodies)
 
 
-async def test_an_export_writes_payload_version_2_in_the_new_keys(tmp_path: Path) -> None:
+async def test_an_export_writes_payload_version_3_in_the_new_keys(tmp_path: Path) -> None:
     env = await make_env(tmp_path)
     await save(env, customers(), rich_orders(), monthly_revenue())
     bodies = slayer_payloads((await export(env)).document)
     assert {b["kind"] for b in bodies} == {"dataset", "field", "metric", "relationship"}
-    assert {b["version"] for b in bodies} == {2}
+    assert {b["version"] for b in bodies} == {3}
     assert not PRE_2_0_PAYLOAD_KEYS & payload_keys(bodies), sorted(PRE_2_0_PAYLOAD_KEYS & payload_keys(bodies))
+    fields = [b["field"] for b in bodies if b["kind"] == "field"]
+    fields += [f for b in bodies if b["kind"] == "dataset" for f in b.get("fields") or []]
+    assert not [f for f in fields if "sql" in f]
 
 
 async def test_a_v1_payload_matches_its_fingerprint_as_written(tmp_path: Path) -> None:
@@ -103,14 +106,14 @@ async def test_an_edited_v1_payload_fails_its_fingerprint(tmp_path: Path) -> Non
     assert any("'orders'" in m for m in edited(convert_document(env, document)))
 
 
-async def test_a_v1_export_imports_like_its_version_2_re_export(tmp_path: Path) -> None:
+async def test_a_v1_export_imports_like_its_version_3_re_export(tmp_path: Path) -> None:
     env = await make_env(tmp_path / "src")
     with recorded() as caught:
         from_v1, _ = await reimport(env, v1_document(), name="from_v1")
     assert [w for w in caught if issubclass(w.category, FutureWarning)] == []
-    v2_document = (await export(from_v1)).document
-    assert {b["version"] for b in slayer_payloads(v2_document)} == {2}
-    from_v2, _ = await reimport(env, v2_document, name="from_v2")
+    v3_document = (await export(from_v1)).document
+    assert {b["version"] for b in slayer_payloads(v3_document)} == {3}
+    from_v3, _ = await reimport(env, v3_document, name="from_v3")
     imported_v1 = await stored_datasets(from_v1)
     assert sorted(imported_v1) == ["customers", "monthly_revenue", "orders"]
-    assert imported_v1 == await stored_datasets(from_v2)
+    assert imported_v1 == await stored_datasets(from_v3)

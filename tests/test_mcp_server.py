@@ -1626,7 +1626,7 @@ class TestEditModel:
         assert any("updated field 'revenue'" in c for c in parsed["changes"])
         model = await storage.get_dataset("orders")
         assert len(model.fields) == 1
-        assert model.fields[0].sql == "price"
+        assert model.fields[0].expression == "price"
 
     async def test_upsert_existing_column_partial_update(self, mcp_server, storage: YAMLStorage) -> None:
         """Partial upsert: only specified fields change, others are preserved."""
@@ -1642,7 +1642,7 @@ class TestEditModel:
         assert parsed["success"] is True
         c = (await storage.get_dataset("orders")).fields[0]
         assert c.description == "Updated description"
-        assert c.sql == "amount"  # unchanged
+        assert c.expression == "amount"  # unchanged
 
     # --- New ``measures`` (ModelMeasure formulas) upserts ---
 
@@ -1944,7 +1944,7 @@ class TestEditModel:
         parsed = json.loads(result)
         assert parsed["success"] is True
         c = (await storage.get_dataset("orders")).fields[0]
-        assert c.sql == "new_col"
+        assert c.expression == "new_col"
 
     # --- Error cases ---
 

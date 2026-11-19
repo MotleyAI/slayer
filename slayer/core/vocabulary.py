@@ -312,10 +312,14 @@ def _datatype(data: dict[str, Any], key: str, spellings: Spellings, *, db_type: 
 
 
 def field(data: Any, spellings: Spellings) -> Any:
-    """A dataset field in the Ossie vocabulary."""
+    """A dataset field in the Ossie vocabulary; its deprecated ``sql`` is converted by the field itself."""
     if not isinstance(data, dict):
         return data
     data = spellings.rename(data, FIELD_KEYS)
+    if data.get("sql") is not None:
+        if data.get("expression") is not None:
+            raise SpellingConflictError(old="sql", new="expression")
+        spellings.note("sql", "expression")
     data = _datatype(data, "datatype", spellings, db_type=data.get("db_type"))
     return _datatype(data, "element_type", spellings)
 
