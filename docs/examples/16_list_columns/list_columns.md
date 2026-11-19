@@ -19,8 +19,8 @@ These functions test what an array-valued field contains: `contains(list, x)` (a
 ```json
 {
   "population": "products",
-  "dimensions": ["name", {"field": "length(ingredients)", "alias": "ingredient_count"}],
-  "filter": ["contains_all(ingredients, ['bread', 'cheese'])"]
+  "dimensions": ["products.name", {"field": "length(products.ingredients)", "alias": "ingredient_count"}],
+  "filter": ["contains_all(products.ingredients, ['bread', 'cheese'])"]
 }
 ```
 
@@ -35,10 +35,10 @@ A whole list can also be grouped by, compared with another list and counted dist
 ```json
 {
   "population": "orders",
-  "dimensions": ["item_skus.value"],
+  "dimensions": ["orders.item_skus.value"],
   "metrics": [
     {"metric": "count(orders.*)", "alias": "orders_with_sku"},
-    {"metric": "count(item_skus.*)", "alias": "units"}
+    {"metric": "count(orders.item_skus.*)", "alias": "units"}
   ]
 }
 ```
@@ -49,9 +49,9 @@ A whole list can also be grouped by, compared with another list and counted dist
 
 ```json
 [
-  {"name": "baskets", "population": "orders", "dimensions": ["customer_id"],
-   "metrics": [{"metric": "collect(item_skus.value)", "alias": "skus"}]},
-  {"population": "baskets", "metrics": ["count(*)"], "filter": ["contains(skus, 'JAF-005')"]}
+  {"name": "baskets", "population": "orders", "dimensions": ["orders.customer_id"],
+   "metrics": [{"metric": "collect(orders.item_skus.value)", "alias": "skus"}]},
+  {"population": "baskets", "metrics": ["count(baskets.*)"], "filter": ["contains(baskets.skus, 'JAF-005')"]}
 ]
 ```
 
@@ -60,8 +60,8 @@ The `collect` function also works on regular fields, for example to list the pro
 ```json
 {
   "population": "products",
-  "dimensions": ["type"],
-  "metrics": [{"metric": "collect(name)", "alias": "product_names"}]
+  "dimensions": ["products.type"],
+  "metrics": [{"metric": "collect(products.name)", "alias": "product_names"}]
 }
 ```
 
@@ -70,12 +70,12 @@ It also collects a field of a joined dataset, one list per parent row. Here are 
 ```json
 {
   "population": "customers",
-  "dimensions": ["name"],
+  "dimensions": ["customers.name"],
   "metrics": [
     {"metric": "count(orders.*)", "alias": "order_count"},
     {"metric": "collect(orders.status)", "alias": "statuses"}
   ],
-  "order": [{"field": "order_count", "direction": "asc"}, {"field": "name"}],
+  "order": [{"field": "order_count", "direction": "asc"}, {"field": "customers.name"}],
   "limit": 5
 }
 ```

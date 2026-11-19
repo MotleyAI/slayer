@@ -281,9 +281,9 @@ case-insensitively):
 ```json
 {
   "population": "orders",
-  "dimensions": [{"field": "date_part('day_of_week', created_at)", "alias": "dow"}],
-  "metrics": [{"metric": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "alias": "age_days"}],
-  "filter": ["created_at >= date_add(current_date(), -30, 'day')"]
+  "dimensions": [{"field": "date_part('day_of_week', orders.created_at)", "alias": "dow"}],
+  "metrics": [{"metric": "avg(date_diff('day', orders.created_at, coalesce(orders.shipped_at, now())))", "alias": "age_days"}],
+  "filter": ["orders.created_at >= date_add(current_date(), -30, 'day')"]
 }
 ```
 

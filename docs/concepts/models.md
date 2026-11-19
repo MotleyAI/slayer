@@ -442,13 +442,13 @@ A query-backed dataset is a queryable relation whose rows are the final-stage re
 await engine.create_dataset_from_query(
     query={
         "population": "orders",
-        "metrics": ["sum(amount)"],
-        "dimensions": ["region"],
-        "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
+        "metrics": ["sum(orders.amount)"],
+        "dimensions": ["orders.region"],
+        "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
     },
     name="monthly_revenue",
     description="Monthly revenue by region",
-    variables={"region": "US"},  # default placeholder values, optional
+    variables={"orders.region": "US"},  # default placeholder values, optional
 )
 ```
 
@@ -475,8 +475,8 @@ Or use the saved result as a dataset in another query:
 ```json
 {
   "population": "monthly_revenue",
-  "metrics": ["avg(amount_sum)"],
-  "dimensions": ["region"]
+  "metrics": ["avg(monthly_revenue.amount_sum)"],
+  "dimensions": ["monthly_revenue.region"]
 }
 ```
 

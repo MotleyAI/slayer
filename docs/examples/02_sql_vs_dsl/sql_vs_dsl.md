@@ -17,9 +17,9 @@ What if a query needs an expression the dataset doesn't define? Write it right w
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)", "sum(order_total)"],
+  "metrics": ["count(orders.*)", "sum(orders.order_total)"],
   "dimensions": ["stores.name"],
-  "filter": ["day_of_week(ordered_at) IN (6, 7)"]
+  "filter": ["day_of_week(orders.ordered_at) IN (6, 7)"]
 }
 ```
 

@@ -51,9 +51,9 @@ Once ingested, datasets are queried like any other. Joined dimensions use dot sy
 ```json
 {
   "population": "items",
-  "metrics": ["count(*)"],
+  "metrics": ["count(items.*)"],
   "dimensions": ["orders.customers.name"],
-  "order": [{"field": "_count", "direction": "desc"}],
+  "order": [{"field": "items._count", "direction": "desc"}],
   "limit": 5
 }
 ```

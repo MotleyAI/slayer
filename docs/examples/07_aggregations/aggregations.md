@@ -28,7 +28,7 @@ At query time, you pick the aggregation with a function call:
 ```json
 {
   "population": "orders",
-  "metrics": ["sum(subtotal)", "avg(subtotal)", "min(order_total)", "max(order_total)"],
+  "metrics": ["sum(orders.subtotal)", "avg(orders.subtotal)", "min(orders.order_total)", "max(orders.order_total)"],
   "dimensions": ["stores.name"]
 }
 ```
@@ -45,9 +45,9 @@ declaration order, so `percentile(price, 0.9)` means `p=0.9`:
 {
   "population": "orders",
   "metrics": [
-    {"metric": "sum(order_total - tax_paid)", "alias": "net_revenue"},
-    "count_distinct(concat(customer_id, store_id))",
-    "percentile(tax_paid / subtotal, p=0.5)"
+    {"metric": "sum(orders.order_total - orders.tax_paid)", "alias": "net_revenue"},
+    "count_distinct(concat(orders.customer_id, orders.store_id))",
+    "percentile(orders.tax_paid / orders.subtotal, p=0.5)"
   ]
 }
 ```
@@ -263,8 +263,8 @@ Most aggregations take an optional `partition_by=` to compute over a subset of t
   "population": "orders",
   "dimensions": ["stores.regions.name", "stores.name"],
   "metrics": [
-    {"metric": "sum(order_total) / sum(order_total, partition_by=stores.regions.name)", "alias": "share_of_region"},
-    {"metric": "sum(order_total) / sum(order_total, partition_by=[])", "alias": "share_of_total"}
+    {"metric": "sum(orders.order_total) / sum(orders.order_total, partition_by=stores.regions.name)", "alias": "share_of_region"},
+    {"metric": "sum(orders.order_total) / sum(orders.order_total, partition_by=[])", "alias": "share_of_total"}
   ]
 }
 ```

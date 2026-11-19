@@ -31,7 +31,7 @@ engine = SlayerQueryEngine(
 # Any input shape works — SlayerQuery / dict, a multi-stage list, or a
 # run-by-name string. Each funnels into one final SQL that is cached.
 resp = await engine.execute({"population": "orders",
-                             "metrics": ["sum(amount)"]},
+                             "metrics": ["sum(orders.amount)"]},
                             cache=True)
 ```
 

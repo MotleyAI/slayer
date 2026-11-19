@@ -30,14 +30,14 @@ For the first example above, all you need to do is use the (revenue by store and
   {
     "name": "monthly_store_revenue",
     "population": "orders",
-    "metrics": ["sum(order_total)"],
+    "metrics": ["sum(orders.order_total)"],
     "dimensions": ["stores.name"],
-    "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
+    "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}]
   },
   {
     "population": "monthly_store_revenue",
-    "metrics": ["avg(order_total_sum)"],
-    "dimensions": ["stores__name"]
+    "metrics": ["avg(monthly_store_revenue.order_total_sum)"],
+    "dimensions": ["monthly_store_revenue.stores__name"]
   }
 ]
 ```
@@ -51,14 +51,14 @@ If you'd rather not type `order_total_sum` everywhere, give the inner metric an 
   {
     "name": "monthly_store_revenue",
     "population": "orders",
-    "metrics": [{"metric": "sum(order_total)", "alias": "rev"}],
+    "metrics": [{"metric": "sum(orders.order_total)", "alias": "rev"}],
     "dimensions": ["stores.name"],
-    "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
+    "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}]
   },
   {
     "population": "monthly_store_revenue",
-    "metrics": ["avg(rev)"],
-    "dimensions": ["stores__name"]
+    "metrics": ["avg(monthly_store_revenue.rev)"],
+    "dimensions": ["monthly_store_revenue.stores__name"]
   }
 ]
 ```
@@ -76,16 +76,16 @@ As we want to use a result of a child query as a dimension, we use a [dynamic re
   {
     "name": "customer_activity",
     "population": "orders",
-    "metrics": ["count(*)"],
-    "dimensions": ["customer_id"]
+    "metrics": ["count(orders.*)"],
+    "dimensions": ["orders.customer_id"]
   },
   {
     "population": "orders",
     "extensions": [{
       "dataset": "orders",
-      "relationships": [{"to": "customer_activity", "from_columns": ["customer_id"], "to_columns": ["customer_id"]}]
+      "relationships": [{"to": "customer_activity", "from_columns": ["orders.customer_id"], "to_columns": ["orders.customer_id"]}]
     }],
-    "metrics": ["count(*)", "sum(order_total)"],
+    "metrics": ["count(orders.*)", "sum(orders.order_total)"],
     "dimensions": [{"field": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "alias": "activity_bucket"}]
   }
 ]
@@ -100,23 +100,23 @@ Stages in a query list are not restricted to a linear pipeline. Any stage may us
 ```json
 [
   {
-    "name": "kpis",
+    "customers.name": "kpis",
     "population": "orders",
-    "dimensions": ["customer_id"],
-    "metrics": ["sum(order_total)"]
+    "dimensions": ["orders.customer_id"],
+    "metrics": ["sum(orders.order_total)"]
   },
   {
-    "name": "tagged",
+    "customers.name": "tagged",
     "population": "customers",
     "extensions": [{
       "dataset": "customers",
-      "relationships": [{"to": "kpis", "from_columns": ["id"], "to_columns": ["customer_id"]}]
+      "relationships": [{"to": "kpis", "from_columns": ["id"], "to_columns": ["orders.customer_id"]}]
     }],
-    "dimensions": ["name", "kpis.order_total_sum"]
+    "dimensions": ["customers.name", "kpis.order_total_sum"]
   },
   {
     "population": "tagged",
-    "metrics": ["max(kpis__order_total_sum)"]
+    "metrics": ["max(tagged.kpis__order_total_sum)"]
   }
 ]
 ```

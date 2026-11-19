@@ -24,19 +24,19 @@ Given the demo's `orders` [dataset](concepts/models.md), with an `order_total` f
 {
   "population": "orders",
   "metrics": [
-    "sum(order_total)",
-    {"metric": "change_pct(sum(order_total))", "alias": "mom_growth"},
-    {"metric": "sum(order_total) / time_shift(sum(order_total), -1, 'year') - 1", "alias": "yoy_growth"},
+    "sum(orders.order_total)",
+    {"metric": "change_pct(sum(orders.order_total))", "alias": "mom_growth"},
+    {"metric": "sum(orders.order_total) / time_shift(sum(orders.order_total), -1, 'year') - 1", "alias": "yoy_growth"},
     "last(stores.name, stores.opened_at)"
   ],
   "dimensions": ["stores.regions.name"],
   "time_dimensions": [{
-    "field": "ordered_at",
+    "field": "orders.ordered_at",
     "granularity": "month",
     "date_range": "last 12 months"
   }],
-  "filter": ["status = 'completed'", "change(sum(order_total)) > 0"],
-  "order": [{"field": "order_total_sum", "direction": "desc"}]
+  "filter": ["orders.status = 'completed'", "change(sum(orders.order_total)) > 0"],
+  "order": [{"field": "orders.order_total_sum", "direction": "desc"}]
 }
 ```
 

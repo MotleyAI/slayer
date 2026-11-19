@@ -30,16 +30,16 @@ Here is a complete example query on the demo for “monthly revenue for the last
 {
   "population": "orders",
   "metrics": [
-    "sum(order_total)",
-    "time_shift(sum(order_total), -1, 'year')"
+    "sum(orders.order_total)",
+    "time_shift(sum(orders.order_total), -1, 'year')"
   ],
   "dimensions": ["stores.regions.name"],
   "time_dimensions": [{
-    "field": "ordered_at",
+    "field": "orders.ordered_at",
     "granularity": "month",
     "date_range": "last 12 months"
   }],
-  "filter": ["last(cumsum(sum(order_total))) > 10000"]
+  "filter": ["last(cumsum(sum(orders.order_total))) > 10000"]
 }
 ```
 

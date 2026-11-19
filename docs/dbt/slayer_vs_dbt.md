@@ -31,15 +31,15 @@ Example — account balances rolled up to customer-level monthly totals:
   {
     "name": "latest_balance_per_account",
     "population": "account_snapshots",
-    "metrics": ["last(balance, snapshot_date)"],
-    "dimensions": ["account_id", "customer_id"],
-    "time_dimensions": [{"field": "snapshot_date", "granularity": "month"}]
+    "metrics": ["last(account_snapshots.balance, account_snapshots.snapshot_date)"],
+    "dimensions": ["account_snapshots.account_id", "account_snapshots.customer_id"],
+    "time_dimensions": [{"field": "account_snapshots.snapshot_date", "granularity": "month"}]
   },
   {
     "population": "latest_balance_per_account",
-    "metrics": ["sum(balance_last_snapshot_date)"],
-    "dimensions": ["customer_id"],
-    "time_dimensions": [{"field": "snapshot_date", "granularity": "month"}]
+    "metrics": ["sum(latest_balance_per_account.balance_last_snapshot_date)"],
+    "dimensions": ["account_snapshots.customer_id"],
+    "time_dimensions": [{"field": "account_snapshots.snapshot_date", "granularity": "month"}]
   }
 ]
 ```

@@ -42,7 +42,7 @@ A stored dataset `orders_over_floor` (`sql_table: orders`) with the filter
 ```json
 {
   "population": "orders_over_floor",
-  "metrics": ["count(*)"],
+  "metrics": ["count(orders_over_floor.*)"],
   "variables": {"floor": 50}
 }
 ```
@@ -76,7 +76,7 @@ is queried by name:
 ```json
 {
   "population": "orders_by_store",
-  "metrics": ["count(*)"],
+  "metrics": ["count(orders_by_store.*)"],
   "variables": {"stores": ["Brooklyn", "Philadelphia"]}
 }
 ```

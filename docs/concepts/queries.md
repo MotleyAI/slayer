@@ -77,10 +77,10 @@ crosses a threshold, then group by `(region, band)`:
 {
   "population": "orders",
   "dimensions": [
-    "region",
-    {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END", "alias": "band"}
+    "orders.region",
+    {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END", "alias": "band"}
   ],
-  "metrics": [{"metric": "sum(amount)", "alias": "band_total"}]
+  "metrics": [{"metric": "sum(orders.amount)", "alias": "band_total"}]
 }
 ```
 
@@ -140,7 +140,7 @@ whose evaluation grain lacks its time-ordering key — include that key in
 A query with no metrics and at least one dimension or time-dimension returns the **distinct combinations** of those dimensions, not the raw underlying-row stream. SLayer emits `GROUP BY` over all dim/time-dim aliases before applying `LIMIT`, so a row cap can't silently drop unique tuples that only appear past `limit` rows.
 
 ```json
-{"population": "orders", "dimensions": ["status"], "limit": 100}
+{"population": "orders", "dimensions": ["orders.status"], "limit": 100}
 ```
 
 Emits `SELECT orders.status FROM orders GROUP BY orders.status ORDER BY orders.status LIMIT 100`.
@@ -152,9 +152,9 @@ Set `distinct_dimension_values: false` on a query to opt out of the auto-dedup a
 ```json
 {
   "population": "orders",
-  "dimensions": ["status", "amount"],
-  "filter": ["amount > 100"],
-  "order": [{"field": "amount", "direction": "desc"}],
+  "dimensions": ["orders.status", "orders.amount"],
+  "filter": ["orders.amount > 100"],
+  "order": [{"field": "orders.amount", "direction": "desc"}],
   "limit": 100,
   "distinct_dimension_values": false
 }
@@ -215,8 +215,8 @@ A query (or the final stage of a query list) with no `order` that projects dimen
 `order` may reference a field or aggregate that is **not** declared as a dimension/metric — the classic "top-N by metric X, display only Y, Z" pattern:
 
 ```json
-{"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"],
- "order": [{"field": "sum(amount)", "direction": "desc"}], "limit": 10}
+{"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"],
+ "order": [{"field": "sum(orders.amount)", "direction": "desc"}], "limit": 10}
 ```
 
 The `sum(amount)` aggregate is computed as a hidden column, sorted on, and **stripped from the result** — the response projects only `status` and `_count`. This works for local aggregates, cross-dataset aggregates (`sum(customers.revenue)`), and inner-stage columns re-aggregated in a later DAG stage (`max(customers__revenue_sum)`).
@@ -444,7 +444,7 @@ A negated condition on a joined dataset does not mean "has none": `not orders.st
 A list field `skills` (datatype `ARRAY`, see [Data types](models.md#data-types)) is also a relationship hop to its elements: one row per non-NULL element, with the single field `skills.value`. So `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, and `count(*)` by `skills.value` is the number of contractors per skill (no key needed). Every `skills.value` condition in one query reads the same element, so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`; absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
 
 ```json
-{"population": "contractors", "dimensions": ["skills.value"], "metrics": ["count(*)"]}
+{"population": "contractors", "dimensions": ["contractors.skills.value"], "metrics": ["count(contractors.*)"]}
 ```
 
 With `to_many_handling: "broadcast"`, a parent aggregate sliced by `skills.value` repeats its total on every element with a `broadcast` warning instead.
@@ -490,8 +490,8 @@ The same placeholders work in metric expressions, computed- and time-dimension e
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)"],
-  "filter": ["status = '{status}' AND amount > {min_amount}"],
+  "metrics": ["count(orders.*)"],
+  "filter": ["orders.status = '{status}' AND orders.amount > {min_amount}"],
   "variables": {"status": "completed", "min_amount": 100}
 }
 ```
@@ -505,8 +505,8 @@ This produces the filter `status = 'completed' AND amount > 100`.
     ```json
     {
       "population": "orders",
-      "metrics": ["count(*)"],
-      "filter": ["region in ({regions})"],
+      "metrics": ["count(orders.*)"],
+      "filter": ["orders.region in ({regions})"],
       "variables": {"regions": ["US", "CA"]}
     }
     ```
@@ -537,7 +537,7 @@ slayer query monthly_revenue --variables region=EU
 
 ```json
 // REST POST /query
-{"population": "orders", "metrics": ["count(*)"], "variables": {"region": "EU"}}
+{"population": "orders", "metrics": ["count(orders.*)"], "variables": {"region": "EU"}}
 {"name": "monthly_revenue", "variables": {"region": "EU"}}  // run-by-name
 ```
 
@@ -644,8 +644,8 @@ Surfaces: MCP `recommend_population(items, data_source=None, root_hint=None, for
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)"],
-  "dimensions": ["status"]
+  "metrics": ["count(orders.*)"],
+  "dimensions": ["orders.status"]
 }
 ```
 
@@ -654,9 +654,9 @@ Surfaces: MCP `recommend_population(items, data_source=None, root_hint=None, for
 ```json
 {
   "population": "orders",
-  "metrics": ["sum(revenue)"],
+  "metrics": ["sum(orders.revenue)"],
   "time_dimensions": [{
-    "field": "created_at",
+    "field": "orders.created_at",
     "granularity": "month",
     "date_range": ["2024-01-01", "2024-12-31"]
   }]
@@ -668,9 +668,9 @@ Surfaces: MCP `recommend_population(items, data_source=None, root_hint=None, for
 ```json
 {
   "population": "orders",
-  "metrics": ["sum(revenue)"],
-  "dimensions": ["customer_name"],
-  "order": [{"field": "sum(revenue)", "direction": "desc"}],
+  "metrics": ["sum(orders.revenue)"],
+  "dimensions": ["orders.customer_name"],
+  "order": [{"field": "sum(orders.revenue)", "direction": "desc"}],
   "limit": 5
 }
 ```
@@ -680,8 +680,8 @@ Surfaces: MCP `recommend_population(items, data_source=None, root_hint=None, for
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)"],
-  "filter": ["status = 'completed' or status = 'pending'"]
+  "metrics": ["count(orders.*)"],
+  "filter": ["orders.status = 'completed' or orders.status = 'pending'"]
 }
 ```
 
@@ -691,13 +691,13 @@ Surfaces: MCP `recommend_population(items, data_source=None, root_hint=None, for
 {
   "population": "orders",
   "metrics": [
-    "count(*)",
-    "sum(revenue)",
-    {"metric": "sum(revenue) / count(*)", "alias": "aov", "label": "Average Order Value"},
-    {"metric": "cumsum(sum(revenue))", "alias": "running"},
-    {"metric": "change(sum(revenue))", "alias": "mom_change"}
+    "count(orders.*)",
+    "sum(orders.revenue)",
+    {"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov", "label": "Average Order Value"},
+    {"metric": "cumsum(sum(orders.revenue))", "alias": "running"},
+    {"metric": "change(sum(orders.revenue))", "alias": "mom_change"}
   ],
-  "time_dimensions": [{"field": "created_at", "granularity": "month"}]
+  "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]
 }
 ```
 
@@ -709,12 +709,12 @@ The `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, an
 {
   "population": "orders",
   "metrics": [
-    {"metric": "stddev_samp(latency)", "alias": "latency_sd"},
-    {"metric": "var_pop(latency)", "alias": "latency_var_pop"},
-    {"metric": "corr(price, other=quantity)", "alias": "price_qty_corr"},
-    {"metric": "covar_samp(price, other=quantity)", "alias": "price_qty_cov"}
+    {"metric": "stddev_samp(orders.latency)", "alias": "latency_sd"},
+    {"metric": "var_pop(orders.latency)", "alias": "latency_var_pop"},
+    {"metric": "corr(orders.price, other=orders.quantity)", "alias": "price_qty_corr"},
+    {"metric": "covar_samp(orders.price, other=orders.quantity)", "alias": "price_qty_cov"}
   ],
-  "dimensions": ["status"]
+  "dimensions": ["orders.status"]
 }
 ```
 
@@ -734,11 +734,11 @@ percent-of-total shape. See [Expressions](formulas.md#aggregate-at-a-coarser-gra
 ```json
 {
   "population": "orders",
-  "dimensions": ["region", "city"],
+  "dimensions": ["orders.region", "orders.city"],
   "metrics": [
-    {"metric": "sum(revenue)", "alias": "city_rev"},
-    {"metric": "sum(revenue) / sum(revenue, partition_by=region)", "alias": "share_of_region"},
-    {"metric": "sum(revenue) / sum(revenue, partition_by=[])", "alias": "share_of_total"}
+    {"metric": "sum(orders.revenue)", "alias": "city_rev"},
+    {"metric": "sum(orders.revenue) / sum(orders.revenue, partition_by=orders.region)", "alias": "share_of_region"},
+    {"metric": "sum(orders.revenue) / sum(orders.revenue, partition_by=[])", "alias": "share_of_total"}
   ]
 }
 ```
@@ -759,10 +759,10 @@ When datasets have [relationships](models.md#relationships), you can reference m
 {
   "population": "orders",
   "metrics": [
-    "count(*)",
+    "count(orders.*)",
     "avg(customers.score)"
   ],
-  "time_dimensions": [{"field": "created_at", "granularity": "month"}]
+  "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]
 }
 ```
 
@@ -855,12 +855,12 @@ Pass a list of queries to `execute()`. Earlier queries are named sub-queries, th
   {
     "name": "monthly",
     "population": "orders",
-    "metrics": ["count(*)", "sum(amount)"],
-    "time_dimensions": [{"field": "created_at", "granularity": "month"}]
+    "metrics": ["count(orders.*)", "sum(orders.amount)"],
+    "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]
   },
   {
     "population": "monthly",
-    "metrics": ["count(*)"]
+    "metrics": ["count(orders.*)"]
   }
 ]
 ```
@@ -874,14 +874,14 @@ You can also join named queries to datasets:
   {
     "name": "customer_scores",
     "population": "customers",
-    "dimensions": ["id"],
-    "metrics": ["avg(score)"]
+    "dimensions": ["customers.id"],
+    "metrics": ["avg(customers.score)"]
   },
   {
     "population": "orders",
-    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
-    "metrics": ["count(*)", "avg(customer_scores.score_avg)"],
-    "time_dimensions": [{"field": "created_at", "granularity": "month"}]
+    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["customers.id"]}]}],
+    "metrics": ["count(orders.*)", "avg(customer_scores.score_avg)"],
+    "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]
   }
 ]
 ```
@@ -895,19 +895,19 @@ Sibling stages can also reference each other — any non-final stage may use a *
   {
     "name": "customer_scores",
     "population": "customers",
-    "dimensions": ["id"],
-    "metrics": ["avg(score)"]
+    "dimensions": ["customers.id"],
+    "metrics": ["avg(customers.score)"]
   },
   {
     "name": "tagged_orders",
     "population": "orders",
-    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
+    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["customers.id"]}]}],
     "dimensions": ["customer_scores.score_avg"],
-    "metrics": ["count(*)"]
+    "metrics": ["count(orders.*)"]
   },
   {
     "population": "tagged_orders",
-    "metrics": ["max(_count)"]
+    "metrics": ["max(tagged_orders._count)"]
   }
 ]
 ```
@@ -939,8 +939,8 @@ A grouped stage is unique on its dimensions, so a relationship onto a sibling st
     },
     {"dataset": "customers", "metrics": [{"name": "credit_total", "expression": "sum(credit)"}]}
   ],
-  "dimensions": [{"field": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "alias": "tier"}],
-  "metrics": ["count(*)", "customers.credit_total"]
+  "dimensions": [{"field": "CASE WHEN orders.amount > 100 THEN 'high' ELSE 'low' END", "alias": "tier"}],
+  "metrics": ["count(orders.*)", "customers.credit_total"]
 }
 ```
 
@@ -962,7 +962,7 @@ Dimensions from joined datasets can be referenced with dotted paths. SLayer auto
 {
   "population": "orders",
   "dimensions": ["customers.regions.name"],
-  "metrics": ["count(*)"]
+  "metrics": ["count(orders.*)"]
 }
 ```
 

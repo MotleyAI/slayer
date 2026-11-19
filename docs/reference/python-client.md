@@ -19,8 +19,8 @@ client = SlayerClient(url="http://localhost:5143")
 
 query = {
     "population": "orders",
-    "metrics": ["count(*)", "sum(order_total)"],
-    "dimensions": ["status"],
+    "metrics": ["count(orders.*)", "sum(orders.order_total)"],
+    "dimensions": ["orders.status"],
     "limit": 10,
 }
 
@@ -64,20 +64,20 @@ Each also takes `variables=` — runtime values for `{placeholders}`, overriding
 ```python
 # Multi-stage DAG
 client.query_sync([
-    {"name": "by_customer", "population": "orders", "metrics": ["sum(order_total)"], "dimensions": ["customer_id"]},
-    {"population": "by_customer", "metrics": ["avg(order_total_sum)"]},
+    {"name": "by_customer", "population": "orders", "metrics": ["sum(orders.order_total)"], "dimensions": ["orders.customer_id"]},
+    {"population": "by_customer", "metrics": ["avg(by_customer.order_total_sum)"]},
 ])
 
 # Run-by-name (query-backed dataset), optionally refined
 client.query_sync("rev_by_region")
-client.query_sync("rev_by_region", refine={"dimensions": ["status"]})
-client.query_sync("rev_by_status", variables={"status": "refunded"})
+client.query_sync("rev_by_region", refine={"dimensions": ["orders.status"]})
+client.query_sync("rev_by_status", variables={"orders.status": "refunded"})
 
 # Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
 client.query_sync({
     "population": "orders",
-    "dimensions": ["status", "order_total"],
-    "filter": ["order_total > 100"],
+    "dimensions": ["orders.status", "orders.order_total"],
+    "filter": ["orders.order_total > 100"],
     "limit": 100,
     "distinct_dimension_values": False,
 })
@@ -150,7 +150,7 @@ run_sync(client.save_memory(
     learning="Top customers by lifetime spend",
     linked_entities={
         "population": "orders",
-        "metrics": [{"metric": "sum(order_total)", "alias": "lifetime_spend"}],
+        "metrics": [{"metric": "sum(orders.order_total)", "alias": "lifetime_spend"}],
         "dimensions": ["customers.name"],
         "order": [{"field": "lifetime_spend", "direction": "desc"}],
         "limit": 5,

@@ -420,12 +420,12 @@ The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timele
 ```json
 {
   "population": "orders",
-  "dimensions": ["customer_name"],
+  "dimensions": ["orders.customer_name"],
   "metrics": [
-    "sum(revenue)",
-    {"metric": "rank(sum(revenue), direction='desc')", "alias": "rnk"}
+    "sum(orders.revenue)",
+    {"metric": "rank(sum(orders.revenue), direction='desc')", "alias": "rnk"}
   ],
-  "order": [{"field": "sum(revenue)", "direction": "desc"}]
+  "order": [{"field": "sum(orders.revenue)", "direction": "desc"}]
 }
 ```
 
@@ -455,11 +455,11 @@ To rank within groups instead of across the whole result set, pass `partition_by
 ```json
 {
   "population": "orders",
-  "dimensions": ["region", "customer_name"],
+  "dimensions": ["orders.region", "orders.customer_name"],
   "metrics": [
-    "sum(revenue)",
-    {"metric": "dense_rank(sum(revenue), partition_by=region, direction='desc')", "alias": "rev_rank_within_region"},
-    {"metric": "ntile(sum(revenue), n=4, partition_by=region)", "alias": "rev_quartile_within_region"}
+    "sum(orders.revenue)",
+    {"metric": "dense_rank(sum(orders.revenue), partition_by=orders.region, direction='desc')", "alias": "rev_rank_within_region"},
+    {"metric": "ntile(sum(orders.revenue), n=4, partition_by=orders.region)", "alias": "rev_quartile_within_region"}
   ]
 }
 ```
@@ -478,11 +478,11 @@ The rank family's `partition_by=` may name a computed dimension, as an aggregati
 {
   "population": "orders",
   "metrics": [
-    "sum(revenue)",
-    {"metric": "first(sum(revenue))", "alias": "initial_revenue"},
-    {"metric": "last(sum(revenue))", "alias": "latest_revenue"}
+    "sum(orders.revenue)",
+    {"metric": "first(sum(orders.revenue))", "alias": "initial_revenue"},
+    {"metric": "last(sum(orders.revenue))", "alias": "latest_revenue"}
   ],
-  "time_dimensions": [{"field": "created_at", "granularity": "month"}]
+  "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]
 }
 ```
 

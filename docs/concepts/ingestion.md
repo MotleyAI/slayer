@@ -213,7 +213,7 @@ After ingestion, you can query rolled-up dimensions directly:
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)", "sum(amount)"],
+  "metrics": ["count(orders.*)", "sum(orders.amount)"],
   "dimensions": ["customers.name"]
 }
 ```
@@ -223,7 +223,7 @@ Or multi-hop dimensions (resolved at query time by walking each dataset's relati
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)"],
+  "metrics": ["count(orders.*)"],
   "dimensions": ["customers.regions.name"]
 }
 ```
@@ -244,7 +244,7 @@ This avoids table alias collisions and allows querying both paths simultaneously
     "customers.regions.name",
     "warehouses.regions.name"
   ],
-  "metrics": ["count(*)"]
+  "metrics": ["count(orders.*)"]
 }
 ```
 
