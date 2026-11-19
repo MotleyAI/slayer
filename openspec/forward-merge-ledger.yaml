@@ -11,3 +11,21 @@
 - title: Association across a list hop needs no key
   one_x_hash: fd0e2538ffef4ebe8c330e8f9eb31d468cfc27729627ae4429277a9b4a9be0a9
   reason: main applies it when the mode is omitted too (association is the default); same primary-key-else-row-identity rule.
+- title: REST requests are named by their route template
+  one_x_hash: ef055ce6b1e1df5117331cc42408225d955f7a1f437c8442f7ed4d997b4a6867
+  reason: "main keeps its own wording: the route-template scenario uses main's `/datasets/{name}` route."
+- title: A query is one span tree
+  one_x_hash: 230b283a638025e775dc66e8283458d2c86c0be4f1fab06433e7e92b4a7b3333
+  reason: "main keeps its own wording: an EXPLAIN query's database span is `slayer.db.explain`, not 1.x's `slayer.db.execute`."
+- title: An ingest is one span tree with its outcome
+  one_x_hash: f0bbc12ac7f6ba8f96e38d4a216d0866375998f5e786e0372465a3e3db67cae6
+  reason: "main keeps its own wording: datasets where 1.x says models; same span tree and outcome attributes."
+- title: Errors are reported by class
+  one_x_hash: 173ba814f40df827dc70806333970fc0c693ae78e2b241ca7a14868af61cef87
+  reason: "main keeps its own wording: the unknown-dataset scenario reports `DatasetNotFoundError`."
+- title: Duration histograms in seconds
+  one_x_hash: 9e36b909dd1443455d7c3c62866422e879c2116ca6564bfcec549612f09b3f30
+  reason: "main keeps its own wording: the failed-query scenario is labeled `DatasetNotFoundError`."
+- title: Counters for retries, cache and ingest
+  one_x_hash: f0a4c287d9ab88aeaa6ab1422222825312b96ed6f116933dc2ed11a2fb0ec724
+  reason: "main keeps its own wording: `slayer.ingest.datasets` counts ingested datasets, not models."

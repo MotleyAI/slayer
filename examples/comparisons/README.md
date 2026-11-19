@@ -51,6 +51,8 @@ Each runner seeds a fresh DuckDB file in a temp directory and computes the groun
 pins "now" at 2025-07-15 12:00 for relative time filters and the time spine's default upper bound, and defines two
 datasource granularities: `fiscal_year` (12 months from 2024-04-01) and `quarter_hour`. Probes with `steps` (rows
 C24–C29) instead drive SLayer's MCP server on their own copy of the database, with the embedding search channel off.
+Probes with `osi_roundtrip` (row C23) export the probe models with `slayer export-osi`, re-import them with
+`slayer import-osi` into a fresh store, and check the re-imported models, a query on them, or the export report.
 
 ## Running
 

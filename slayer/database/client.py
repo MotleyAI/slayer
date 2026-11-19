@@ -801,10 +801,19 @@ class SlayerSQLClient:
         return dialect_for_ds_type(self.datasource.type)
 
     def connection_url(self) -> URL:
-        """The URL this client connects through: its caller's engine's, else its datasource's."""
-        if self._sync_engine_owner == "caller" and self._sync_engine is not None:
-            return self._sync_engine.url
+        """The URL this client connects through: its running loop's or sync engine's, else its datasource's."""
+        engine = self._running_loop_async_engine() or self._sync_engine
+        if engine is not None:
+            return engine.url
         return make_url(self._connection_datasource().get_connection_string())
+
+    def _running_loop_async_engine(self) -> AsyncEngine | None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        with self._async_lock:
+            return self._async_engines.get(loop)
 
     def _in_memory(self) -> bool:
         """Whether this client's database is an in-memory one, which it may write."""
@@ -1000,7 +1009,7 @@ class SlayerSQLClient:
             await self._typed(exc)
             raise
 
-    @probes.probe(name="db.explain", extract=_db_probe_attributes)
+    @probes.probe(name="db.explain", extract=_db_probe_attributes, result=_returned_rows)
     async def _explain(self, *, statements: ExplainStatements, timeout_seconds: int) -> ExecutionResult:
         ds = self.datasource
         async_engine = self._async_engine_here()

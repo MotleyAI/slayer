@@ -60,12 +60,16 @@ def _create_providers(configured: Configured) -> None:
     resource = build_resource()
     # shutdown_on_exit=False: the SDK's own exit hook would flush without a time limit;
     # recorder.shutdown() flushes these providers with a bounded wait instead.
+    # Each exporter gets settings.endpoint(), so it sends where `slayer otel status` / `test` say it does.
     tracer_provider = TracerProvider(resource=resource, shutdown_on_exit=False)
     configured.owned.append(tracer_provider)
     configured.tracer_provider = tracer_provider
     if settings.exports("traces"):
-        tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-    readers = [PeriodicExportingMetricReader(OTLPMetricExporter())] if settings.exports("metrics") else []
+        tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.endpoint("traces"))))
+    readers = (
+        [PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=settings.endpoint("metrics")))]
+        if settings.exports("metrics") else []
+    )
     configured.owned.extend(readers)  # already running; until the provider exists, nothing else can close them
     meter_provider = MeterProvider(resource=resource, metric_readers=readers, shutdown_on_exit=False)
     for reader in readers:
@@ -76,7 +80,9 @@ def _create_providers(configured: Configured) -> None:
         logger_provider = LoggerProvider(resource=resource, shutdown_on_exit=False)
         configured.owned.append(logger_provider)
         configured.logger_provider = logger_provider
-        logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
+        logger_provider.add_log_record_processor(
+            BatchLogRecordProcessor(OTLPLogExporter(endpoint=settings.endpoint("logs"))),
+        )
 
 
 def shutdown_all(providers: list[Any]) -> bool:

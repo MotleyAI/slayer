@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import warnings
@@ -58,6 +59,11 @@ class Compare(BaseModel):
     columns_exact: bool = False
 
 
+def _is_set(v: Any) -> bool:
+    """Identity checks, so an expected ``0`` still counts."""
+    return v is not None and v is not False and v != []
+
+
 class SlayerExpect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     error: Optional[str] = None
@@ -66,9 +72,34 @@ class SlayerExpect(BaseModel):
     buggy_rows: List[List[Any]] = Field(default_factory=list)
     buggy_row_count: Optional[int] = None
     buggy_error: Optional[str] = None
-    # Substrings the last step's text output must contain / must not contain (steps probes only).
+    # Substrings the last step's output (steps) or the export report (osi_roundtrip) must contain / must not contain.
     contains: List[str] = Field(default_factory=list)
     lacks: List[str] = Field(default_factory=list)
+    # osi_roundtrip only: every probe dataset equals its re-imported twin.
+    same_datasets: bool = False
+
+    @model_validator(mode="after")
+    def _none_skipped(self) -> "SlayerExpect":
+        """Reject combinations whose evaluation would silently skip one of the checks."""
+        given = {f for f in self.model_fields_set if _is_set(getattr(self, f))}
+        for label, own in (("same_datasets", {"same_datasets"}), ("error", {"error"}),
+                           ("contains / lacks", {"contains", "lacks"})):
+            if given & own and given - own:
+                raise ValueError(f"{label}: no other expectation")
+        if given & {"buggy_rows", "buggy_row_count", "buggy_error"} and not self.known_bug:
+            raise ValueError("buggy_rows / buggy_row_count / buggy_error need known_bug")
+        if "buggy_error" in given and given & {"buggy_rows", "buggy_row_count"}:
+            raise ValueError("buggy_error excludes buggy_rows / buggy_row_count")
+        if self.known_bug and self.warning:
+            raise ValueError("known_bug ignores warning")
+        return self
+
+
+class OsiRoundtrip(BaseModel):
+    """Export the probe datasets with `slayer export-osi`, then `import-osi` them into a fresh store."""
+
+    model_config = ConfigDict(extra="forbid")
+    extensions: bool = True
 
 
 class SetupDataset(BaseModel):
@@ -91,6 +122,13 @@ class Step(BaseModel):
             raise ValueError("a step needs exactly one of tool / sql")
         return self
 
+    @property
+    def returns_rows(self) -> bool:
+        """A ``query`` call whose output `as_response` parses: bare JSON, no SQL or plan text."""
+        a = self.args
+        return (self.tool == "query" and str(a.get("format", "markdown")).lower().strip() == "json"
+                and not any(a.get(k) for k in ("dry_run", "explain", "show_sql")))
+
 
 class SlayerBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -98,6 +136,8 @@ class SlayerBlock(BaseModel):
     run_by_name: Optional[str] = None
     # An MCP session on a private copy of the database; the last step must be a tool call.
     steps: List[Step] = Field(default_factory=list)
+    # Runs `query`, if given, on the re-imported store.
+    osi_roundtrip: Optional[OsiRoundtrip] = None
     # What the session's storage starts with: the probe datasets, only the datasource, or nothing.
     setup: Literal["datasets", "datasource", "empty"] = "datasets"
     refine: Optional[Dict[str, Any]] = None
@@ -112,12 +152,27 @@ class SlayerBlock(BaseModel):
 
     @model_validator(mode="after")
     def _one_source(self) -> "SlayerBlock":
-        if sum(x is not None for x in (self.query, self.run_by_name, self.steps or None)) != 1:
-            raise ValueError("a slayer block needs exactly one of query / run_by_name / steps")
+        if self.osi_roundtrip is not None:
+            if self.run_by_name is not None or self.steps:
+                raise ValueError("osi_roundtrip combines only with query")
+        elif sum(x is not None for x in (self.query, self.run_by_name, self.steps or None)) != 1:
+            raise ValueError("a slayer block needs exactly one of query / run_by_name / steps / osi_roundtrip")
         if self.refine is not None and self.run_by_name is None:
             raise ValueError("refine applies only to run_by_name")
         if self.steps and self.steps[-1].tool is None:
             raise ValueError("the last step must be a tool call")
+        if "policy" in self.options and (self.steps or self.osi_roundtrip is not None):
+            raise ValueError("options.policy applies only to query / run_by_name")
+        return self
+
+    @model_validator(mode="after")
+    def _expect_fits_source(self) -> "SlayerBlock":
+        ex = self.expect if isinstance(self.expect, SlayerExpect) else SlayerExpect()
+        if ex.same_datasets and (self.osi_roundtrip is None or self.query is not None):
+            raise ValueError("same_datasets needs osi_roundtrip without query")
+        rows = self.query is not None or self.run_by_name is not None or (self.steps and self.steps[-1].returns_rows)
+        if (ex.contains or ex.lacks) and rows:
+            raise ValueError("contains / lacks check a report or tool output, not query rows")
         return self
 
 
@@ -303,6 +358,8 @@ class SessionResult(BaseModel):
     text: str = ""
     resp: Optional[SlayerResponse] = None
     err: Optional[Exception] = None
+    # osi_roundtrip: names of datasets missing from, or different in, the re-imported store.
+    dataset_diffs: List[str] = Field(default_factory=list)
 
 
 def run_sql(db_path: Path, sql: str) -> None:
@@ -353,12 +410,88 @@ def run_session(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResu
     finally:
         if server is not None:
             run_sync(server._slayer_engine.aclose())
-    return SessionResult(text=text, resp=as_response(text) if block.steps[-1].tool == "query" else None)
+    return SessionResult(text=text, resp=as_response(text) if block.steps[-1].returns_rows else None)
+
+
+def run_cli(args: List[str], phase: str) -> str:
+    """`slayer <args>` in a subprocess; its stdout, or an error naming the phase on a non-zero exit."""
+    proc = subprocess.run([sys.executable, "-m", "slayer", *args], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{phase} exited {proc.returncode}: {(proc.stderr or proc.stdout).strip()}")
+    return proc.stdout
+
+
+def strip_osi_meta(node: Any) -> Any:
+    """``node`` without the importer's `osi_*` provenance in any ``meta``, dropping a ``meta`` that empties."""
+    if isinstance(node, list):
+        return [strip_osi_meta(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+    out = {k: strip_osi_meta(v) for k, v in node.items() if k != "meta"}
+    meta = {k: v for k, v in (node.get("meta") or {}).items() if not k.startswith("osi_")}
+    if meta:
+        out["meta"] = meta
+    return out
+
+
+def comparable(dataset: SlayerDataset) -> Dict[str, Any]:
+    """The dataset's non-default fields, without import provenance."""
+    return strip_osi_meta(dataset.model_dump(exclude_defaults=True))
+
+
+async def dataset_diffs(src: Path, dst: Path) -> List[str]:
+    """Datasets of ``src`` missing from, or different in, ``dst``, plus datasets only ``dst`` has."""
+    before, _ = await YAMLStorage(base_dir=str(src)).load_datasets(data_source=DATASOURCE)
+    after, _ = await YAMLStorage(base_dir=str(dst)).load_datasets(data_source=DATASOURCE)
+    if not before:
+        return ["<no datasets>"]
+    twins = {m.name: comparable(m) for m in after}
+    diffs = [m.name for m in before if twins.get(m.name) != comparable(m)]
+    return diffs + sorted(set(twins) - {m.name for m in before})
+
+
+def run_roundtrip(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResult:
+    """Export the probe datasets to Ossie, import them into a fresh store, then run ``query`` there."""
+    assert block.osi_roundtrip is not None
+    workdir.mkdir()
+    db_path = workdir / DB_FILE
+    shutil.copy(base_db, db_path)
+    src, dst, doc = workdir / "store", workdir / "reimported", workdir / "export.osi.yaml"
+    flags = [] if block.osi_roundtrip.extensions else ["--no-extensions"]
+    engine: Optional[SlayerQueryEngine] = None
+    try:
+        for store, setup in ((src, "datasets"), (dst, "datasource")):
+            setup_engine = run_sync(fill_store(storage=YAMLStorage(base_dir=str(store)), db_path=db_path, setup=setup))
+            run_sync(setup_engine.aclose())
+        report = run_cli(["export-osi", "--datasource", DATASOURCE, "--storage", str(src), "--out", str(doc), *flags],
+                         phase="export-osi")
+        run_cli(["import-osi", str(doc), "--datasource", DATASOURCE, "--storage", str(dst)], phase="import-osi")
+        diffs = run_sync(dataset_diffs(src=src, dst=dst))
+        if block.query is None:
+            return SessionResult(text=report, dataset_diffs=diffs)
+        engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(dst)))
+        resp, err = run_query(engine, block)
+        return SessionResult(text=report, resp=resp, err=err, dataset_diffs=diffs)
+    except Exception as e:  # noqa: BLE001 - a probe's error is data
+        return SessionResult(err=e)
+    finally:
+        if engine is not None:
+            run_sync(engine.aclose())
+
+
+def _same_datasets_outcome(res: SessionResult) -> Outcome:
+    if res.err is not None:
+        return Outcome(status=FAIL, detail=f"unexpected error: {first_line(res.err)}")
+    if res.dataset_diffs:
+        return Outcome(status=FAIL, detail=f"datasets differ after the round trip: {res.dataset_diffs}")
+    return Outcome(status=PASS, detail="re-imported datasets equal the originals")
 
 
 def evaluate_session(p: Probe, res: SessionResult, truth: Dict) -> Outcome:
     assert p.slayer is not None
     ex = p.slayer.expect if isinstance(p.slayer.expect, SlayerExpect) else SlayerExpect()
+    if ex.same_datasets:
+        return _same_datasets_outcome(res)
     if res.err is None and ex.error:
         return Outcome(status=FAIL, detail=f"expected error {ex.error!r}, got: {res.text[:120]!r}")
     if res.err is None and (ex.contains or ex.lacks):
@@ -478,8 +611,9 @@ def run_probe(
 ) -> Outcome:
     assert p.slayer is not None
     text = ""
-    if p.slayer.steps:
-        res = run_session(block=p.slayer, base_db=tmp / DB_FILE, workdir=tmp / p.id)
+    if p.slayer.steps or p.slayer.osi_roundtrip is not None:
+        run = run_session if p.slayer.steps else run_roundtrip
+        res = run(block=p.slayer, base_db=tmp / DB_FILE, workdir=tmp / p.id)
         resp, err, text = res.resp, res.err, res.text
         outcome = evaluate_session(p=p, res=res, truth=truth)
     else:
