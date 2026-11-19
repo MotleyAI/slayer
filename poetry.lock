@@ -874,7 +874,7 @@ files = [
     {file = "charset_normalizer-3.4.7-py3-none-any.whl", hash = "sha256:3dce51d0f5e7951f8bb4900c257dad282f49190fdbebecd4ba99bcc41fef404d"},
     {file = "charset_normalizer-3.4.7.tar.gz", hash = "sha256:ae89db9e5f98a11a4bf50407d4363e7b09b31e55bc117b4f7d80aab97ba009e5"},
 ]
-markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\""}
+markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\""}
 
 [[package]]
 name = "ciso8601"
@@ -2278,7 +2278,7 @@ description = "Common protobufs used in Google APIs"
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version < \"3.15\" and (extra == \"bigquery\" or extra == \"all\")"
+markers = "(extra == \"otel\" or extra == \"all\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"otel\") or extra == \"otel\" or extra == \"all\""
 files = [
     {file = "googleapis_common_protos-1.75.0-py3-none-any.whl", hash = "sha256:961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed"},
     {file = "googleapis_common_protos-1.75.0.tar.gz", hash = "sha256:53a062ff3c32552fbd62c11fe23768b78e4ddf0494d5e5fd97d3f4689c75fbbd"},
@@ -4454,6 +4454,160 @@ realtime = ["websockets (>=13,<16)"]
 voice-helpers = ["numpy (>=2.0.2)", "sounddevice (>=0.5.1)"]
 
 [[package]]
+name = "opentelemetry-api"
+version = "1.45.2"
+description = "OpenTelemetry Python API"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"otel\" or extra == \"all\""
+files = [
+    {file = "opentelemetry_api-1.45.2-py3-none-any.whl", hash = "sha256:2cbd737377e710ee740d261c94e93fa0f08e6d037c18f17513cc0a2d94479a34"},
+    {file = "opentelemetry_api-1.45.2.tar.gz", hash = "sha256:d7b0008e21e5fd61cbe7a7f34ca3b6905a78ab677d9bc395e299359c75cda6b4"},
+]
+
+[package.dependencies]
+typing-extensions = ">=4.5.0"
+
+[[package]]
+name = "opentelemetry-exporter-http-transport"
+version = "0.66b2"
+description = "OpenTelemetry Exporters HTTP transport"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"otel\" or extra == \"all\""
+files = [
+    {file = "opentelemetry_exporter_http_transport-0.66b2-py3-none-any.whl", hash = "sha256:fd5f5b490c099acda1cd7b909d5e8981436bf18cc8c6098d302d114c271720e9"},
+    {file = "opentelemetry_exporter_http_transport-0.66b2.tar.gz", hash = "sha256:66d6ed810a515432c8891da9a834464332fd70badeca45bdeeae81b4280c903b"},
+]
+
+[package.dependencies]
+opentelemetry-api = ">=1.15,<2.0"
+requests = {version = ">=2.25,<3.0", optional = true, markers = "extra == \"requests\""}
+
+[package.extras]
+requests = ["requests (>=2.25,<3.0)"]
+urllib3 = ["urllib3 (>=1.26)"]
+
+[[package]]
+name = "opentelemetry-exporter-otlp-common"
+version = "0.66b2"
+description = "OpenTelemetry OTLP HTTP export utilities"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"otel\" or extra == \"all\""
+files = [
+    {file = "opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl", hash = "sha256:ace86efb75489f925f1ef809856ae5f0c7db534e4afdc624530222228b1236a5"},
+    {file = "opentelemetry_exporter_otlp_common-0.66b2.tar.gz", hash = "sha256:06f5a9b88638e310efa1f1d206cdf6b75393e112aba4e174a963416192bd1028"},
+]
+
+[package.dependencies]
+opentelemetry-sdk = ">=1.45.2,<1.46.0"
+
+[package.extras]
+http = ["opentelemetry-exporter-http-transport (==0.66b2)"]
+
+[[package]]
+name = "opentelemetry-exporter-otlp-proto-common"
+version = "1.45.2"
+description = "OpenTelemetry Protobuf encoding"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"otel\" or extra == \"all\""
+files = [
+    {file = "opentelemetry_exporter_otlp_proto_common-1.45.2-py3-none-any.whl", hash = "sha256:af483b24217028892f017096731b794b196b785025d2e6808874720fd0b05a80"},
+    {file = "opentelemetry_exporter_otlp_proto_common-1.45.2.tar.gz", hash = "sha256:f1f2806f3f28ce7938033823e50934fcd91595a39de38e69a28a51e19f40fc6d"},
+]
+
+[package.dependencies]
+opentelemetry-proto = "1.45.2"
+
+[[package]]
+name = "opentelemetry-exporter-otlp-proto-http"
+version = "1.45.2"
+description = "OpenTelemetry Collector Protobuf over HTTP Exporter"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"otel\" or extra == \"all\""
+files = [
+    {file = "opentelemetry_exporter_otlp_proto_http-1.45.2-py3-none-any.whl", hash = "sha256:6e4d025138829d0ee57946930c2ccad6491ad4d92a958e9c7eea69278fe60cfc"},
+    {file = "opentelemetry_exporter_otlp_proto_http-1.45.2.tar.gz", hash = "sha256:5984a3fb46bc4628e4e2b85d4a6e72637e03962aae6cf372791137768a4ad939"},
+]
+
+[package.dependencies]
+googleapis-common-protos = ">=1.52,<2.0"
+opentelemetry-api = ">=1.15,<2.0"
+opentelemetry-exporter-http-transport = {version = "0.66b2", extras = ["requests"]}
+opentelemetry-exporter-otlp-common = "0.66b2"
+opentelemetry-exporter-otlp-proto-common = "1.45.2"
+opentelemetry-proto = "1.45.2"
+opentelemetry-sdk = ">=1.45.2,<1.46.0"
+requests = ">=2.7,<3.0"
+typing-extensions = ">=4.5.0"
+
+[package.extras]
+gcp-auth = ["opentelemetry-exporter-credential-provider-gcp (>=0.59b0)"]
+requests = ["opentelemetry-exporter-http-transport[requests] (==0.66b2)", "requests (>=2.7,<3.0)"]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "1.45.2"
+description = "OpenTelemetry Python Proto"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"otel\" or extra == \"all\""
+files = [
+    {file = "opentelemetry_proto-1.45.2-py3-none-any.whl", hash = "sha256:03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a"},
+    {file = "opentelemetry_proto-1.45.2.tar.gz", hash = "sha256:bd8d23cf770605b0af9b7be2071d26a464fea289d35429abfd2a66226114ad64"},
+]
+
+[package.dependencies]
+protobuf = ">=5.0,<8.0"
+
+[[package]]
+name = "opentelemetry-sdk"
+version = "1.45.2"
+description = "OpenTelemetry Python SDK"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"otel\" or extra == \"all\""
+files = [
+    {file = "opentelemetry_sdk-1.45.2-py3-none-any.whl", hash = "sha256:ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6"},
+    {file = "opentelemetry_sdk-1.45.2.tar.gz", hash = "sha256:7eec4de13dd21ff3a1670dcb0e02079e692736f94d733dfdce5af461d884248d"},
+]
+
+[package.dependencies]
+opentelemetry-api = "1.45.2"
+opentelemetry-semantic-conventions = "0.66b2"
+typing-extensions = ">=4.5.0"
+
+[package.extras]
+file-configuration = ["opentelemetry-configuration (==0.66b2)"]
+
+[[package]]
+name = "opentelemetry-semantic-conventions"
+version = "0.66b2"
+description = "OpenTelemetry Semantic Conventions"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"otel\" or extra == \"all\""
+files = [
+    {file = "opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl", hash = "sha256:4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8"},
+    {file = "opentelemetry_semantic_conventions-0.66b2.tar.gz", hash = "sha256:7da5f1a5dc4383eb66711d4d3d3e71824d9403ac1559fea021cc103c1a4c4976"},
+]
+
+[package.dependencies]
+opentelemetry-api = "1.45.2"
+typing-extensions = ">=4.5.0"
+
+[[package]]
 name = "orderly-set"
 version = "5.5.0"
 description = "Orderly set"
@@ -4997,7 +5151,7 @@ description = ""
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "(extra == \"dbt\" or extra == \"all\" or extra == \"flight\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"dbt\" or extra == \"flight\") or extra == \"dbt\" or extra == \"all\" or extra == \"flight\""
+markers = "(extra == \"bigquery\" or extra == \"all\" or extra == \"otel\" or extra == \"dbt\" or extra == \"flight\") and python_version < \"3.15\" or extra == \"otel\" or extra == \"all\" or extra == \"dbt\" or extra == \"flight\""
 files = [
     {file = "protobuf-6.33.6-cp310-abi3-win32.whl", hash = "sha256:7d29d9b65f8afef196f8334e80d6bc1d5d4adedb449971fefd3723824e6e77d3"},
     {file = "protobuf-6.33.6-cp310-abi3-win_amd64.whl", hash = "sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326"},
@@ -6524,7 +6678,7 @@ files = [
     {file = "requests-2.33.1-py3-none-any.whl", hash = "sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a"},
     {file = "requests-2.33.1.tar.gz", hash = "sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517"},
 ]
-markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\""}
+markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\""}
 
 [package.dependencies]
 certifi = ">=2023.5.7"
@@ -7747,7 +7901,7 @@ files = [
     {file = "urllib3-2.6.3-py3-none-any.whl", hash = "sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4"},
     {file = "urllib3-2.6.3.tar.gz", hash = "sha256:1b62b6884944a57dbe321509ab94fd4d3b307075e0c2eae991ac71ee15ad38ed"},
 ]
-markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\""}
+markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\""}
 
 [package.extras]
 brotli = ["brotli (>=1.2.0) ; platform_python_implementation == \"CPython\"", "brotlicffi (>=1.2.0.0) ; platform_python_implementation != \"CPython\""]
@@ -8365,7 +8519,7 @@ files = [
 
 [extras]
 advanced-search = ["ladybug", "litellm", "numpy"]
-all = ["aiomysql", "asyncpg", "clickhouse-sqlalchemy", "dbt-core", "httpx", "ladybug", "litellm", "numpy", "pandas", "protobuf", "psycopg", "psycopg2-binary", "pyarrow", "pymysql", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino"]
+all = ["aiomysql", "asyncpg", "clickhouse-sqlalchemy", "dbt-core", "httpx", "ladybug", "litellm", "numpy", "opentelemetry-api", "opentelemetry-exporter-otlp-proto-http", "opentelemetry-sdk", "pandas", "protobuf", "psycopg", "psycopg2-binary", "pyarrow", "pymysql", "pyodbc", "requests", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino"]
 bigquery = ["sqlalchemy-bigquery"]
 clickhouse = ["clickhouse-sqlalchemy"]
 client = ["httpx", "pandas"]
@@ -8373,6 +8527,7 @@ dbt = ["dbt-core"]
 embedding-search = ["litellm", "numpy"]
 flight = ["protobuf", "pyarrow"]
 mysql = ["aiomysql", "pymysql"]
+otel = ["opentelemetry-api", "opentelemetry-exporter-otlp-proto-http", "opentelemetry-sdk", "requests"]
 postgres = ["asyncpg", "psycopg", "psycopg2-binary"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
 sqlserver = ["pyodbc"]
@@ -8381,4 +8536,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "0772a2b98fb494ba66be509a00256711d0001827f56a8a4b4e8c57de0ca3b1fb"
+content-hash = "599329ddf3fc649954f18bbc30ddd44e9e8f6d346c5d5431b42e87b712c19180"

@@ -47,7 +47,7 @@
   - `slayer/engine/schema_drift.py`: `ModelAddition.metadata_changed` and `has_changes`; `ingest.drift` on `_validate_datasource`.
 
   Verify that 2.4, 2.5, 2.7 and 2.10–2.12 pass.
-- [ ] 3.6 `pyproject.toml`: the `otel` extra (`opentelemetry-api`, `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`, each `>=1.45`, plus `requests>=2.25`, all optional), also added to `all`. Run `poetry lock` on 1.x. Verify that the lock diff only adds what the extra needs, and that `poetry install -E all` succeeds.
+- [x] 3.6 `pyproject.toml`: the `otel` extra (`opentelemetry-api`, `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`, each `>=1.45`, plus `requests>=2.25`, all optional), also added to `all`. Run `poetry lock` on 1.x. Verify that the lock diff only adds what the extra needs, and that `poetry install -E all` succeeds.
 - [ ] 3.7 Architecture, applying design.md decision 5 verbatim:
   - the `model.c4` `core.probes` element, the `otel` node and its three arrows;
   - the `index.yaml` `otel` entry;
@@ -56,7 +56,7 @@
   - the `system.arc42.md` prose replacement.
 
   Verify that `poetry run la-arch-check` and `npx -y likec4@1.47.0 validate architecture` pass. Until this task lands, `la-arch-check` reports "spec group otel is mapped by no element"; that's expected, because the mapping can't exist before `slayer/otel/` and `slayer/core/probes.py` do.
-- [ ] 3.8 Docs:
+- [x] 3.8 Docs:
   - `docs/reference/opentelemetry.md` from `M`, adapted:
     - the database-span row drops `slayer.db.explain` and notes that EXPLAIN appears as `slayer.db.execute`;
     - the sample `slayer otel status` output shows `slayer 1.8.5`;
