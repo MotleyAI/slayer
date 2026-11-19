@@ -38,4 +38,4 @@
 
 - [x] 7.1 Apply the approved `architecture/python.engine.arc42.md` P5 and §4 rationale wording verbatim (design decisions 5–6) (verify: `la-arch-check` green)
 - [x] 7.2 Docs: inherited edges in `docs/concepts/queries.md` (multi-stage) and `docs/concepts/models.md` (query-backed models), the inspect output in `docs/reference/mcp.md`, the stage help memories, and a Part 1 entry in `docs/upgrading/2.0.md` for the unrelated → joined change (verify: every changed page reachable from `zensical.toml` nav)
-- [ ] 7.3 Enforcement bundle and lint: `la-arch-check`, LikeC4 validation, `la-typecheck`, `ruff check slayer/ tests/` (verify: all green)
+- [x] 7.3 Enforcement bundle and lint: `la-arch-check`, LikeC4 validation, `la-typecheck`, `ruff check slayer/ tests/` (verify: all green)
