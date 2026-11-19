@@ -37,6 +37,10 @@ class RequestMiddleware:
 
             try:
                 await self.app(scope, receive, observed)
+            except Exception:
+                if not statuses:
+                    statuses.append(500)  # Starlette's outer error middleware answers it, outside this observer
+                raise
             finally:
                 request.set({"operation": getattr(scope.get("route"), "path", "other")})
                 if statuses:

@@ -4,4 +4,4 @@ source_queries:
   - population: orders
     dimensions: [status]
     time_dimensions: [{field: order_date, granularity: month}]
-    metrics: [{expression: "sum(amount)", name: rev}]
+    metrics: [{metric: "sum(amount)", alias: rev}]

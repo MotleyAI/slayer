@@ -87,6 +87,18 @@ class _FastProvider:
         self.closed.set()
 
 
+class _GatedProvider:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def shutdown(self) -> None:
+        self.release.wait(timeout=10)
+
+
+def _export_text_hidden(logger: logging.Logger) -> bool:
+    return any(isinstance(f, logs._ExportTextFilter) for f in logger.filters)
+
+
 # --- inert by default ----------------------------------------------------------------
 
 
@@ -188,6 +200,7 @@ def test_exporter_log_text_stays_hidden_while_a_shutdown_is_still_running(monkey
     monkeypatch.setattr(recorder, "_owned", [_SlowProvider()])
     exporter_logger = logging.getLogger(logs.EXPORTER_LOGGERS[1])
     logs.hide_export_text()
+    monkeypatch.setattr(recorder, "_export_text_hidden", True)  # as start() leaves it
     try:
         otel.reset()
         monkeypatch.setattr(recorder, "_owned", [_FastProvider()])  # a later, quick cycle
@@ -196,6 +209,59 @@ def test_exporter_log_text_stays_hidden_while_a_shutdown_is_still_running(monkey
     finally:
         logs.show_export_text()
     assert hidden
+
+
+def test_exporter_log_text_is_shown_again_once_a_late_shutdown_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLAYER_OTEL", "on")
+    monkeypatch.setattr(recorder, "_lingering", [])  # slow shutdowns of earlier tests may still run
+    monkeypatch.setattr(recorder, "_export_text_hidden", False)
+    gated = _GatedProvider()
+    monkeypatch.setattr(exporters, "configure", lambda: exporters.Configured(owned=[gated]))
+    exporter_logger = logging.getLogger(logs.EXPORTER_LOGGERS[1])
+    try:
+        otel.start()
+        otel.reset()  # outlives the bound
+        hidden_while_running = _export_text_hidden(exporter_logger)
+        workers = list(recorder._lingering)
+        gated.release.set()
+        for worker in workers:
+            worker.join(timeout=5)
+        hidden_after = _export_text_hidden(exporter_logger)
+    finally:
+        gated.release.set()
+        logs.show_export_text()
+    assert (hidden_while_running, len(workers), hidden_after) == (True, 1, False)
+
+
+def test_a_restart_after_uninstrument_closes_the_first_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLAYER_OTEL", "on")
+    first, second = _FastProvider(), _FastProvider()
+    provider_sets = iter([[first], [second]])
+    monkeypatch.setattr(exporters, "configure", lambda: exporters.Configured(owned=next(provider_sets)))
+    try:
+        otel.start()
+        otel.uninstrument()
+        otel.start()
+        assert (first.closed.is_set(), recorder._owned, otel.is_active()) == (True, [second], True)
+    finally:
+        otel.reset()
+
+
+def test_a_restart_after_uninstrument_detaches_the_first_log_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLAYER_OTEL", "on")
+    first = logging.Handler()
+    monkeypatch.setattr(exporters, "configure", lambda: exporters.Configured(owned=[_FastProvider()]))
+    otel.start()
+    monkeypatch.setattr(recorder, "_log_handlers", [first])
+    logging.getLogger(logs.SLAYER_LOGGER).addHandler(first)
+    try:
+        otel.uninstrument()
+        otel.start()
+        attached = first in logging.getLogger(logs.SLAYER_LOGGER).handlers
+    finally:
+        logging.getLogger(logs.SLAYER_LOGGER).removeHandler(first)
+        otel.reset()
+    assert attached is False
 
 
 class _Reader:
@@ -264,6 +330,81 @@ def test_a_slow_provider_does_not_hold_back_the_others(monkeypatch: pytest.Monke
     assert fast.closed.is_set()
 
 
+def test_a_shutdown_thread_that_cannot_start_keeps_the_bound_and_stays_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = threading.Thread.start
+
+    def refuse(self: threading.Thread) -> None:
+        if self.name == "slayer-otel-shutdown":
+            raise RuntimeError("can't start new thread")
+        original(self)
+
+    slow = _GatedProvider()  # an inline shutdown would wait out its 10 s gate
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    monkeypatch.setattr(recorder, "_lingering", [])
+    monkeypatch.setattr(recorder, "_owned", [slow])
+    began = time.monotonic()
+    otel.reset()
+    elapsed = time.monotonic() - began
+    assert (elapsed < recorder.SHUTDOWN_WAIT_SECONDS + 1, len(recorder._lingering)) == (True, 1)
+
+
+def test_a_later_reset_retries_a_shutdown_thread_that_could_not_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = threading.Thread.start
+    refusals = [RuntimeError("can't start new thread")]
+
+    def refuse_once(self: threading.Thread) -> None:
+        if self.name == "slayer-otel-shutdown" and refusals:
+            raise refusals.pop()
+        original(self)
+
+    fast = _FastProvider()
+    monkeypatch.setattr(threading.Thread, "start", refuse_once)
+    monkeypatch.setattr(recorder, "_lingering", [])
+    monkeypatch.setattr(recorder, "_owned", [fast])
+    otel.reset()
+    closed_at_first = fast.closed.is_set()
+    otel.reset()
+    assert (closed_at_first, fast.closed.is_set(), recorder._lingering) == (False, True, [])
+
+
+class _IterHook(list):
+    """A provider list that runs ``hook`` the first time it is iterated."""
+
+    def __init__(self, items: list[Any], *, hook: Any) -> None:
+        super().__init__(items)
+        self.hook = hook
+
+    def __iter__(self) -> Any:
+        hook, self.hook = self.hook, None
+        if hook is not None:
+            hook()
+        return super().__iter__()
+
+
+def test_an_earlier_shutdown_ending_during_the_handoff_keeps_the_text_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(recorder, "_lingering", [])
+    monkeypatch.setattr(recorder, "_export_text_hidden", True)
+    earlier, current = _GatedProvider(), _GatedProvider()
+    exporter_logger = logging.getLogger(logs.EXPORTER_LOGGERS[1])
+    logs.hide_export_text()
+    try:
+        recorder.close_providers([earlier])  # outlives the bound
+        (earlier_worker,) = recorder._lingering
+
+        def end_the_earlier_shutdown() -> None:
+            earlier.release.set()
+            earlier_worker.join(timeout=0.5)  # blocks on the lock while the handoff holds it
+
+        monkeypatch.setattr(recorder, "_owned", _IterHook([current], hook=end_the_earlier_shutdown))
+        otel.reset()  # `current` outlives the bound too
+        hidden = _export_text_hidden(exporter_logger)
+    finally:
+        earlier.release.set()
+        current.release.set()
+        logs.show_export_text()
+    assert hidden
+
+
 def test_reset_closes_the_owned_providers(monkeypatch: pytest.MonkeyPatch) -> None:
     fast = _FastProvider()
     monkeypatch.setattr(recorder, "_owned", [fast])
@@ -302,7 +443,11 @@ def test_concurrent_instrument_installs_one_listener(monkeypatch: pytest.MonkeyP
         thread.start()
     for thread in threads:
         thread.join()
-    otel.uninstrument()
+    try:
+        installed = [listener for listener in probes._listeners if isinstance(listener, _Slow)]
+        assert (len(installed), otel.is_active()) == (1, True)
+    finally:
+        otel.uninstrument()
     assert [listener for listener in probes._listeners if isinstance(listener, _Slow)] == []
 
 
