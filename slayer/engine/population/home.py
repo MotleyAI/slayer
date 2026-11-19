@@ -100,12 +100,13 @@ def aggregate_home(
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
 ) -> AggregateHome:
-    """The home dataset of an aggregate (Axiom 2): the deepest relationship path that
-    determines every input — each source leaf and each row leaf of every argument
-    (a bound definition default included) — over provably to-one hops. Candidates are
-    the input paths and their longest common prefix, deepest first (ties prefer the
-    source anchor); the first from which every input is attributable wins, else the
-    inputs' common prefix, where input safety names the offending hop."""
+    """The home dataset of an aggregate (Axiom 2): the source anchor when it determines
+    every input — each source leaf and each row leaf of every argument (a bound
+    definition default included) — over provably to-one hops, else the deepest
+    relationship path that does. Candidates are the anchor, then the input paths and
+    their longest common prefix deepest first; the first from which every input is
+    attributable wins, else the inputs' common prefix, where input safety names the
+    offending hop."""
     anchor = source_anchor_path(agg.source)
     input_paths: List[Path] = list(source_leaf_paths(agg.source)) or [anchor]
     # A ranked aggregate's positional args are ranking keys, not value inputs;
@@ -125,7 +126,7 @@ def aggregate_home(
         seed_paths.extend(cg)
     candidates = sorted(
         {anchor, _longest_common_prefix(input_paths), *seed_paths},
-        key=lambda p: (-len(p), p != anchor, p),
+        key=lambda p: (p != anchor, -len(p), p),
     )
     second_order = is_reaggregation_key(agg)
     for p in candidates:

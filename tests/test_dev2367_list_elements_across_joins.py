@@ -5,12 +5,14 @@ aggregation is computed)."""
 from __future__ import annotations
 
 import re
+import sqlite3
 from collections.abc import AsyncGenerator
 from typing import Any, Optional, Union
 
 import pytest
 import sqlglot
 from pytest_postgresql import factories
+from sqlalchemy.exc import ProgrammingError
 from sqlglot import exp
 
 from slayer.core.enums import DataType
@@ -43,6 +45,7 @@ from tests._dev2137_fixtures import (
     list_engine,
     num,
 )
+from tests._engine_helpers import seeded_exec_engine
 from tests._pg_helpers import client_datasource, pg_query_engine
 
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -315,6 +318,76 @@ class TestHomeBelowTheRoot:
             "contractors", m(f"sum(rate * {inner.format(', partition_by=team')})"), dimensions=["team"]))
         assert isinstance(plain, dict), plain
         assert redundant == plain
+
+
+def _seed_one_to_one(db_path: str) -> None:
+    with sqlite3.connect(db_path) as con:
+        con.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, price REAL)")
+        con.executemany("INSERT INTO orders VALUES (?, ?)", [(1, 10.0), (2, 20.0), (3, 30.0)])
+        con.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, weight REAL)")
+        con.executemany("INSERT INTO customers VALUES (?, ?)", [(1, 2.0), (2, 4.0)])
+
+
+async def test_a_to_one_input_keeps_the_aggregation_on_its_anchor() -> None:
+    # One-to-one by primary keys: customers determines orders too, but order 3 has no customer and still counts.
+    scaled = Aggregation(name="scaled", expression="SUM({value}) / MAX({scale})")
+    orders = SlayerDataset(
+        name="orders", sql_table="orders", data_source="test", aggregations=[scaled],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="price", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])],
+    )
+    customers = SlayerDataset(
+        name="customers", sql_table="customers", data_source="test",
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="weight", datatype=DataType.FLOAT)],
+    )
+    async with seeded_exec_engine(dialect="sqlite", seed=_seed_one_to_one, datasets=[orders, customers]) as (e, _):
+        resp = await e.execute(body("orders", m("scaled(price, scale='customers.weight')")))
+    assert [num(r[col(resp, "v")]) for r in resp.data] == [15.0]
+
+
+def _band(q: str) -> dict[str, str]:
+    """A computed dimension carrying a re-aggregation; ``q`` prefixes the ``contractors`` fields."""
+    agg = f"max(sum({q}rate, partition_by=[{q}team, {q}name]), partition_by={q}team)"
+    return {"field": f"CASE WHEN {agg} > 50 THEN 1 ELSE 0 END", "alias": "band"}
+
+
+def _band_query(population: str, expression: str) -> SlayerQuery:
+    q = "" if population == "contractors" else "contractors."
+    return SlayerQuery.model_validate(body(population, m(expression), dimensions=[f"{q}team", _band(q)]))  # pyright: ignore[reportArgumentType]
+
+
+async def test_home_survives_a_reaggregation_partition_key() -> None:
+    # The target-rooted aggregate rebuilt around the re-aggregation placeholder keeps its home.
+    sql = await emit_contractors(_band_query("contractors", "sum(rate * length(skills.value), partition_by=band)"),
+                                 dialect="duckdb", datasets=all_datasets())
+    assert sql.lstrip().upper().startswith("WITH"), sql
+
+
+#: (from ``contractors``, from ``assignments``) — both homed on the list child or on ``assignments``.
+BAND_SHAPES = {
+    "list-element": ("sum(rate * length(skills.value))", "sum(contractors.rate * length(contractors.skills.value))"),
+    "reverse-to-many": ("sum(rate * assignments.id)", "sum(contractors.rate * id)"),
+    "list-element-partitioned": ("sum(rate * length(skills.value), partition_by=band)",
+                                 "sum(contractors.rate * length(contractors.skills.value), partition_by=band)"),
+}
+
+
+def _band_cells(resp: SlayerResponse) -> dict[tuple[Any, Any], Any]:
+    team, band, v = col(resp, "team"), col(resp, "band"), col(resp, "v")
+    return {(r[team], r[band]): num(r[v]) for r in resp.data if r[team] is not None}
+
+
+@pytest.mark.xfail(strict=True, raises=ProgrammingError,
+                   reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
+@pytest.mark.parametrize("kind", sorted(BAND_SHAPES))
+async def test_a_reaggregation_dimension_is_independent_of_the_root(engine: SlayerQueryEngine, kind: str) -> None:
+    home_expr, other_expr = BAND_SHAPES[kind]
+    home = _band_cells(await engine.execute(_band_query("contractors", home_expr)))
+    other = _band_cells(await engine.execute(_band_query("assignments", other_expr)))
+    assert other
+    assert {k: home[k] for k in other} == other
 
 
 #: kind → (expression and dimensions written from ``contractors``, the outcome from both populations: cells

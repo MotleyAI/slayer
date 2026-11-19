@@ -19,6 +19,8 @@
 - [x] 3.2 Replace the anchor-based test with one target-homed predicate in `is_cross_dataset_agg` (`slayer/core/keys.py`), `crossing_local_root_predicate` (`slayer/engine/cardinality/relationship_safety.py`), `combined_kind` (`slayer/engine/elaborate_env.py`), the routing helpers of `slayer/engine/compile/discovery.py` (`discover_roots` receives the classification) and all callers; verify 1.3 and 1.4 pass
 - [x] 3.3 Carry the home through every compiler substitution that rebuilds an `AggregateKey` (`_strip_redundant_partitions` and any other), a missing home raising an internal error, never falling back to the anchor (D7); verify the redundant-`partition_by` test passes
 - [x] 3.4 Any existing test that pins a refusal or value this change alters: STOP and ask the user for approval to align it (name each file and change) before editing
+- [x] 3.5 Home candidates: try the source anchor first (D15) in `slayer/engine/population/home.py`; add an executed test for the D15 scenario; verify the PR's suites and the `test_dev1934` placeholder tests pass unchanged
+- [x] 3.6 MODIFIED deltas for the two requirements that stated deepest-first (D15)
 
 ## 4. Docs, gates and hand-off
 

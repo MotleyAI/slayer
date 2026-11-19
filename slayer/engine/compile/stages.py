@@ -3770,9 +3770,11 @@ def _plan_regroups(
         for d in dispositions if d.routing == "reaggregation"
     }
     if reagg_mapping:
-        prebound = _substitute_reaggregations(
+        substituted = _substitute_reaggregations(
             prebound, reagg_mapping, filter_typings=filter_typings,
         )
+        homes = _carried_homes(homes, before=prebound, after=substituted)
+        prebound = substituted
     dim_dms, td_dms, _ = partition_declared_metrics(
         declared_metrics=prebound.declared_metrics,
         n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,

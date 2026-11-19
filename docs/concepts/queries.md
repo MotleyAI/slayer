@@ -830,7 +830,7 @@ Cross-dataset aggregates also support `window=`, `partition_by=`, and `first` /
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 
-An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-dataset fields (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the relationship hop's cardinality decides exact grain vs association exactly as for a single cross-dataset metric.
+An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-dataset fields (`sum(amount - customers.discount)`); it is homed on the source's own dataset when that determines every operand, else the deepest dataset that does, so the relationship hop's cardinality decides exact grain vs association exactly as for a single cross-dataset metric.
 
 A cross-dataset **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target field do not collide:
 
