@@ -99,7 +99,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 DatasetField(name="big_spender", sql="revenue > 60", datatype=DataType.BOOLEAN),
                 DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT),
             ],
-            filters=["is_active"],
+            filters=["customers.is_active"],
         )
     )
     await storage.save_dataset(

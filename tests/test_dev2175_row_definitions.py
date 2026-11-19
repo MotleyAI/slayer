@@ -52,7 +52,7 @@ from tests._dev2175_fixtures import (
 )
 
 BACKEND = pytest.mark.parametrize("dialect", BACKENDS)
-PAID_AMOUNT = fld("paid_amount", "amount", filter="status = 'paid'")
+PAID_AMOUNT = fld("paid_amount", "amount", filter="status = 'paid'", datatype="Integer")
 
 
 # ── field filters ─────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ class TestFieldFilter:
         assert_refused(caught.value, "loop", kind=DatasetFieldCycleError)
 
     async def test_variables_substitute_into_the_dialect_entry_and_the_filter(self) -> None:
-        vcol = fld("vcol", {"dialects": [entry("DUCKDB", "amount * {mult}")]}, filter="status = '{s}'")
+        vcol = fld("vcol", {"dialects": [entry("DUCKDB", "amount * {mult}")]}, filter="status = '{s}'", datatype="Integer")
         async with engine_with(dialect="duckdb", docs=[orders_doc(fld("status"), vcol)]) as (engine, _, _):
             dry = await engine.execute({"population": "orders", "metrics": [{"metric": "sum(vcol)"}],
                                         "variables": {"mult": 2, "s": "paid"}}, dry_run=True)

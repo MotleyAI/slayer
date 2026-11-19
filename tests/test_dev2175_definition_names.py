@@ -260,7 +260,7 @@ class TestPhysicalReader:
         orders = orders_doc(fld("paid_ref", "customer_id", datatype="Integer", filter="status = 'paid'"),
                             relationships=[to_customers(from_columns=["paid_ref"])])
         async with engine_with(dialect="duckdb", docs=[customers_doc()]) as (engine, _, _):
-            with pytest.raises(SlayerError) as caught:
+            with pytest.raises(ValueError) as caught:
                 await engine.save_dataset(dataset(orders))
         assert_refused(caught.value, "paid_ref", kind=RelationshipKeyError)
 
@@ -299,7 +299,7 @@ class TestMetricExpression:
 
     async def test_another_dialects_entry_is_kept(self) -> None:
         p = {"sql": "sum(amount)", "dialects": [entry("SNOWFLAKE", "SUM(amount)")]}
-        doc = orders_doc(fld("amount"), metrics=[{"name": "p", "expression": p}])
+        doc = orders_doc(fld("amount", datatype="Integer"), metrics=[{"name": "p", "expression": p}])
         async with engine_with(dialect="duckdb", docs=[doc]) as (engine, storage, _):
             assert await metric_value(engine, metric="p") == 35
             stored = await storage.get_dataset("orders")
