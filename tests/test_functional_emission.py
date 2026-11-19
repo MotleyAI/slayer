@@ -199,7 +199,7 @@ def test_cube_emitters_render_functional() -> None:
     assert formulas[("overview", "count")] == "count(*)"
     assert formulas[("overview", "revenue")] == "sum(amount)"
     assert formulas[("overview", "customers_count")] == "count(customers.*)"
-    assert formulas[("overview", "customers_ltv")] == "sum(customers.ltv_col)"
+    assert formulas[("overview", "customers_ltv")] == "sum(customers.ltv_raw)"
 
 
 @pytest.mark.parametrize(
