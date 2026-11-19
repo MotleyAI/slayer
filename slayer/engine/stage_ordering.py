@@ -36,13 +36,22 @@ def stage_sibling_reads(
     written = _written_names(query=query, siblings=siblings, displays=displays or {})
     own = _extension_relationship_spellings(query)
     for parts in query_reference_parts(query) if expressions else ():
-        if len(parts) > 1 and _spells_relationship(parts[0], edges=population_edges, own=own):
-            continue  # a relationship path, not a sibling reference
-        for head in parts[:-1]:
-            hit = match_name(name=head, declared=written, quoted=False)
-            if hit is not None:
-                found.add(written[hit])
+        # Only a reference's head (after a root qualifier) names a dataset; later segments are relationship hops.
+        head = parts[1:] if _root_qualifier(parts, query=query, displays=displays or {}) else parts
+        if len(head) < 2 or _spells_relationship(head[0], edges=population_edges, own=own):
+            continue
+        hit = match_name(name=head[0], declared=written, quoted=False)
+        if hit is not None:
+            found.add(written[hit])
     return {f for f in found if f is not None}
+
+
+def _root_qualifier(parts: Sequence[str], *, query: SlayerQuery, displays: Mapping[str, StageDisplay]) -> bool:
+    spec = query.population
+    if len(parts) < 3 or not isinstance(spec, str):
+        return False
+    spellings = [spec, *([displays[spec].name] if spec in displays else [])]
+    return match_name(name=parts[0], declared=spellings, quoted=False) is not None
 
 
 def _extension_relationship_spellings(query: SlayerQuery) -> List[str]:

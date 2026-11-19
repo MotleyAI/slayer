@@ -192,3 +192,13 @@ class TestExpressionReadErrors:
         async with shop(dialect) as engine:
             with pytest.raises(ValueError, match=r"stages \['b', 'c'\]"):
                 await engine.execute(stages)
+
+
+class TestReferenceHeads:
+    def test_a_relationship_hop_after_a_sibling_is_no_sibling_read(self) -> None:
+        query = q(name="cur", population="events", metrics=[m("max(z_orders.customers.id)", "mx")])
+        assert stage_sibling_reads(query=query, siblings={"cur", "z_orders", "customers"}) == {"z_orders"}
+
+    def test_the_segment_after_a_root_qualifier_is_a_reference_head(self) -> None:
+        query = q(name="cur", population="customers", metrics=[m("max(customers.z_ev.ne)", "mx")])
+        assert stage_sibling_reads(query=query, siblings={"cur", "z_ev"}) == {"z_ev"}
