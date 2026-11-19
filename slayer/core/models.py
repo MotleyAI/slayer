@@ -956,6 +956,22 @@ def check_relationship_key_lists(*, to: str, from_columns: Sequence[str], to_col
         _validate_field_name(key, "Relationship key")
 
 
+class RelationshipOrigin(BaseModel):
+    """The declared edge an inherited stage edge derives from, and the direction it is read in."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # Declaring dataset: identity and user spelling.
+    dataset: str
+    dataset_spelling: str
+    # The edge's reference from its declaring dataset: its name, else its target's spelling.
+    relationship: str
+    to: str
+    name: str | None = None
+    pairs: frozenset[tuple[str, str]]
+    forward: bool
+
+
 class DatasetRelationship(DatasetPart):
     """A relationship to another dataset."""
     to: str                               # Name of the joined dataset
@@ -974,6 +990,8 @@ class DatasetRelationship(DatasetPart):
     _aliases: tuple[str, ...] = PrivateAttr(default=())
     # Runtime-only: declared by a query extension, not stored.
     _query_local: bool = PrivateAttr(default=False)
+    # Runtime-only: a stage edge inherited on pass-through keys, with the edge it derives from.
+    _inherited_from: RelationshipOrigin | None = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -996,6 +1014,15 @@ class DatasetRelationship(DatasetPart):
     def as_query_local(self) -> "DatasetRelationship":
         out = self.model_copy()
         out._query_local = True
+        return out
+
+    @property
+    def inherited_from(self) -> RelationshipOrigin | None:
+        return self._inherited_from
+
+    def as_inherited(self, origin: RelationshipOrigin) -> "DatasetRelationship":
+        out = self.model_copy()
+        out._inherited_from = origin
         return out
 
     @field_validator("name")
@@ -1225,6 +1252,8 @@ class SlayerDataset(DatasetPart):
         default_factory=dict)
     # Runtime-only: the field and metric names a query extension added.
     _query_local: frozenset[str] = PrivateAttr(default=frozenset())
+    # Runtime-only: a stage's dataset whose rows restrict its population.
+    _restricts_rows: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -1398,6 +1427,16 @@ class SlayerDataset(DatasetPart):
     def with_spelling(self, spelling: str | None) -> "SlayerDataset":
         out = self.model_copy()
         out._spelling = spelling
+        return out
+
+    @property
+    def restricts_rows(self) -> bool:
+        """A stage's dataset whose rows restrict its population: reached datasets count only associated rows."""
+        return self._restricts_rows
+
+    def with_restricted_rows(self, restricts: bool) -> "SlayerDataset":
+        out = self.model_copy()
+        out._restricts_rows = restricts
         return out
 
     @property

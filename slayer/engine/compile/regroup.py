@@ -11,7 +11,6 @@ from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, FieldKey, ValueK
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.bound import BoundFilter
 from slayer.core.models import SlayerDataset
-from slayer.core.scope import StageSchema
 
 __all__ = [
     "REGROUP_LEAF_PREFIX",
@@ -21,7 +20,7 @@ __all__ = [
 ]
 
 
-def reserved_prefix_fields(dataset: SlayerDataset | StageSchema | None) -> list[str]:
+def reserved_prefix_fields(dataset: SlayerDataset | None) -> list[str]:
     """``dataset`` fields colliding with the reserved regroup placeholder prefix."""
     if dataset is None:
         return []

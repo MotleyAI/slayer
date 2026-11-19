@@ -8,7 +8,7 @@ multi-stage DAG through it, splicing the stored query-backed datasets its stages
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Dict, Hashable, List, NoReturn, Optional, Set, Tuple
+from typing import Any, Dict, Hashable, List, Mapping, NoReturn, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,7 @@ from slayer.engine.normalization import normalize_query
 from slayer.engine.cardinality.unrelated import stamp_unrelated
 from slayer.engine.stage_ordering import (
     localize_stages,
+    population_edges,
     stage_sibling_reads,
     topologically_order_stages,
 )
@@ -63,7 +64,7 @@ def plan_query(
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: DatasetScope | StageSchema | None = None,
+    scope: DatasetScope | None = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     prebound: Optional[PreboundQuery] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
@@ -95,7 +96,7 @@ def _stage_scope_and_bundle(
     data_source: str,
     stage_dataset: Optional[SlayerDataset],
     placeholders: List[SlayerDataset],
-) -> "Tuple[DatasetScope | StageSchema, ResolvedSourceBundle]":
+) -> "Tuple[DatasetScope, ResolvedSourceBundle]":
     """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic datasets threaded in."""
     scope, sb = _stage_scope_and_bundle_unframed(
         query=query, bundle=bundle, stage_schemas=stage_schemas, data_source=data_source,
@@ -108,9 +109,9 @@ def _stage_scope_and_bundle(
 
 
 def _framed(
-    *, query: SlayerQuery, scope: "DatasetScope | StageSchema | None", bundle: ResolvedSourceBundle,
+    *, query: SlayerQuery, scope: "DatasetScope | None", bundle: ResolvedSourceBundle,
     placeholders: List[SlayerDataset],
-) -> "Tuple[DatasetScope | StageSchema | None, ResolvedSourceBundle]":
+) -> "Tuple[DatasetScope | None, ResolvedSourceBundle]":
     """The frame's population stamped with the unrelated datasets ``query`` names (unspliced
     placeholders included, so a product hop to one is walked); dots need a dataset scope."""
     host = bundle.population
@@ -129,31 +130,38 @@ def _stage_scope_and_bundle_unframed(
     stage_schemas: Dict[str, StageSchema],
     data_source: str,
     stage_dataset: Optional[SlayerDataset],
-) -> "Tuple[DatasetScope | StageSchema, ResolvedSourceBundle]":
+) -> "Tuple[DatasetScope, ResolvedSourceBundle]":
     src = query.population
-
-    # 1. Sibling source (chain): bind against the upstream flat StageSchema.
+    # Only the siblings the stage names join its graph; a spliced stored dataset is a dataset, not a sibling.
+    reads = stage_sibling_reads(query=query, siblings=set(stage_schemas), displays=bundle.stage_displays,
+                                population_edges=population_edges(query, bundle.datasets_by_name))
+    reads |= _inherited_targets(start={*reads, src} if isinstance(src, str) else reads, stage_schemas=stage_schemas)
+    named = {n: s for n, s in stage_schemas.items() if (n in reads or n in bundle.query_backed) and n != src}
     if isinstance(src, str) and src in stage_schemas:
-        synth = dataset_from_stage_schema(
+        # A sibling population is read as the dataset its schema defines.
+        source = dataset_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
             saved=bundle.query_backed.get(src),
         )
-        others = {n: s for n, s in stage_schemas.items() if n != src}
-        sb = stage_bundle_with_siblings(
-            bundle=bundle, source_dataset=synth,
-            sibling_schemas=others, data_source=data_source,
-        )
-        if src in bundle.query_backed:
-            return DatasetScope(population=synth), sb
-        return stage_schemas[src], sb
-
-    # 2. Dataset-scoped: the stage's own resolved source dataset.
-    assert stage_dataset is not None
+    else:
+        assert stage_dataset is not None
+        source = stage_dataset
     sb = stage_bundle_with_siblings(
-        bundle=bundle, source_dataset=stage_dataset,
-        sibling_schemas=stage_schemas, data_source=data_source,
+        bundle=bundle, source_dataset=source, sibling_schemas=named, data_source=data_source,
     )
-    return DatasetScope(population=stage_dataset), sb
+    return DatasetScope(population=sb.population), sb
+
+
+def _inherited_targets(*, start: Set[str], stage_schemas: Mapping[str, StageSchema]) -> Set[str]:
+    """The siblings the inherited edges of ``start``'s stages target, transitively."""
+    seen: Set[str] = set()
+    frontier = [n for n in start if n in stage_schemas]
+    while frontier:
+        for edge in stage_schemas[frontier.pop()].inherited_edges:
+            if edge.to in stage_schemas and edge.to not in seen and edge.to not in start:
+                seen.add(edge.to)
+                frontier.append(edge.to)
+    return seen
 
 
 class _Splice(BaseModel):
@@ -290,7 +298,7 @@ class _StagePlanner:
 
     def _universe(
         self, query: SlayerQuery, *, stage_dataset: Optional[SlayerDataset], single: bool,
-    ) -> "Tuple[DatasetScope | StageSchema | None, ResolvedSourceBundle]":
+    ) -> "Tuple[DatasetScope | None, ResolvedSourceBundle]":
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
         if single:
             _, base = apply_query_extensions(query=query, scope=None, bundle=base)
@@ -317,7 +325,8 @@ class _StagePlanner:
             p.stage_schema.relation_name: i
             for i, p in enumerate(self.state.planned) if p.stage_schema is not None
         }
-        reads = stage_sibling_reads(query=query, siblings=set(self.state.schemas))
+        reads = stage_sibling_reads(query=query, siblings=set(self.state.schemas), displays=self.state.displays,
+                                    population_edges=population_edges(query, self.bundle.datasets_by_name))
         reads |= {
             n for n, strict in seen.items()
             if strict and (n in self.state.spliced or n in self.state.schemas)
@@ -407,7 +416,8 @@ class _StagePlanner:
         self, name: str, *, dataset: SlayerDataset, chain: Tuple[str, ...], context: Dict[str, Any],
     ) -> None:
         stages, displays = localize_stages(
-            topologically_order_stages(list(dataset.source_queries or [])), dataset=name,
+            topologically_order_stages(list(dataset.source_queries or []), datasets_by_name=self.bundle.datasets_by_name),
+            dataset=name,
         )
         self.state.displays.update(displays)
         record = _Splice(
@@ -468,7 +478,8 @@ class _StagePlanner:
     def _base_time_dimension(self, name: str) -> Optional[str]:
         dataset = self.bundle.query_backed[name]
         private = {q.name: q for q in dataset.source_queries or [] if q.name}
-        stages: list[SlayerQuery] = topologically_order_stages(list(dataset.source_queries or []))
+        stages: list[SlayerQuery] = topologically_order_stages(
+            list(dataset.source_queries or []), datasets_by_name=self.bundle.datasets_by_name)
         if not stages:
             return None
         spec = follow_sibling_chain(spec=stages[-1].population, named_queries=private)
@@ -514,7 +525,7 @@ def plan_stages(
     source + already-planned siblings' synthetic datasets, splicing every stored
     query-backed dataset a stage reads before it; each plan records its sibling reads
     and is stamped with its per-stage bundle."""
-    ordered = topologically_order_stages(queries)
+    ordered = topologically_order_stages(queries, displays=bundle.stage_displays, datasets_by_name=bundle.datasets_by_name)
     planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}))
     for q in ordered:
         planner.plan_stage(
