@@ -96,7 +96,7 @@ PUSHED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [{"field": "status", "alias": "status"}],
+        "dimensions": [{"field": "orders.status", "alias": "status"}],
         "metrics": [{"metric": "sum(customers.revenue)"}],
         "filter": [PUSHED_FILTER, *(extra_filters or [])],
     })
@@ -146,7 +146,7 @@ def _two_plan_query() -> SlayerQuery:
     entry per (location, measure, text), never one per consumer."""
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status", alias="status")],
+        dimensions=[QueryDimension(field="orders.status", alias="status")],
         metrics=[
             {"metric": "sum(customers.revenue)"},
             {"metric": "sum(shippers.cost)"},
@@ -218,7 +218,7 @@ class TestExecuteEntryPoint:
             engine = await _engine(d)
             clean = SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "status", "alias": "status"}],
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
                 "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
             })
             with warnings.catch_warnings(record=True) as caught:
@@ -269,13 +269,13 @@ class TestEmissionIsBoundaryNotRender:
         inner = SlayerQuery.model_validate({
             "name": "s1",
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
         outer = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
@@ -298,7 +298,7 @@ class TestEmissionIsBoundaryNotRender:
         stage_b = SlayerQuery.model_validate({
             "name": "b",
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
@@ -394,7 +394,7 @@ class TestInternalFailuresRaise:
             engine = await _engine(d)
             bad = SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "status", "alias": "status"}],
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
                 "metrics": [{"metric": "sum(customers.revenue)"}],
                 "filter": ["orders.no_such_column == 'X'"],
             })

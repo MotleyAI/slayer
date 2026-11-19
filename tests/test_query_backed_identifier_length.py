@@ -129,7 +129,7 @@ class TestBackingSqlIsLengthFitted:
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
-            dimensions=["status"],
+            dimensions=["orders.status"],
         )
         assert sql == GOLDEN_UNDER_LIMIT_PG
         assert [(c.name, c.sql) for c in expanded.fields] == [("status", "status")]

@@ -449,7 +449,7 @@ class TestCompileRejects:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             filter=["{agg_filter}"],
-            variables={"agg_filter": "sum(amount) > 100"},
+            variables={"agg_filter": "sum(orders.amount) > 100"},
             distinct_dimension_values=False,
         )
         with pytest.raises(ValueError, match="variables supply literal values"):

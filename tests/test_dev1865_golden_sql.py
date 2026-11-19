@@ -39,13 +39,13 @@ def _cases() -> dict:
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         ),
         "filter/computed_dim_mix_field": _q(
-            dimensions=["region", "city", band],
-            filter=["band == 1 or channel == 'app'"],
+            dimensions=["orders.region", "orders.city", band],
+            filter=["band == 1 or orders.channel == 'app'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "filter/computed_dim_mix_measure": _q(
-            dimensions=["region", "city", band],
-            filter=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
+            dimensions=["orders.region", "orders.city", band],
+            filter=["sum(orders.amount, partition_by=orders.city) > 45 or sum(orders.amount) > 55"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "order/cross_model_partitioned": _q(

@@ -1200,6 +1200,12 @@ def _resolve_anchored(
         hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
         routes_short_form=False,
     )
+    if TIME_SPINE_DATASET in effective_hop_path[len(path) - len(parts) + 1:]:  # hops after the anchor's route
+        raise UnresolvableDimensionRelationshipError(
+            reference=".".join(parts), root_dataset=host.spelling,
+            reason=f"a route never crosses {TIME_SPINE_DATASET!r}, which is read only as an anchor.",
+            suggested_path=f"{TIME_SPINE_DATASET}.{path[-1]}",
+        )
     return _resolve_terminal_leaf(
         current=current, leaf=path[-1], hop_path=effective_hop_path, original_parts=parts, scope=scope,
         bundle=bundle, metric_ctx=metric_ctx, quoted=flags[-1],

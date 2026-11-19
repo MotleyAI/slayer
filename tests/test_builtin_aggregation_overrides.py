@@ -13,18 +13,18 @@ _COLLECT_SUM = agg("collect", "SUM({value})")
 class TestOwnCollect:
     async def test_answers_the_formula(self, dialect: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_COLLECT_SUM])], dialect=dialect) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [metric("collect(a)")]})
+            resp = await engine.execute({"population": "t", "metrics": [metric("collect(t.a)")]})
         assert float(value(resp)) == SUM_A
 
     async def test_the_empty_value_follows_the_formula(self, dialect: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_COLLECT_SUM])], dialect=dialect) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [metric("collect(a)")],
+            resp = await engine.execute({"population": "t", "metrics": [metric("collect(t.a)")],
                                          "filter": ["t.a > 100"]})
         assert value(resp) is None
 
     async def test_its_result_type_is_the_formulas(self, dialect: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_COLLECT_SUM])], dialect=dialect) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [metric("collect(a) + 1")]})
+            resp = await engine.execute({"population": "t", "metrics": [metric("collect(t.a) + 1")]})
         assert float(value(resp)) == SUM_A + 1
 
 
@@ -43,7 +43,7 @@ class TestOtherClassificationSites:
                 metric(f"{name}(a)")]})
         assert float(resp.data[0]["v"]) == expected
 
-    @pytest.mark.parametrize(("formula", "factor"), [("percentile(a, 2)", 2), ("percentile(a, 3)", 3)])
+    @pytest.mark.parametrize(("formula", "factor"), [("percentile(t.a, 2)", 2), ("percentile(t.a, 3)", 3)])
     async def test_positional_parameters_follow_the_definition(self, formula: str, factor: int) -> None:
         own = agg("percentile", "SUM({value}) * {k}", k="1")
         async with stored_engine(datasets=[t_doc(aggregations=[own])]) as engine:

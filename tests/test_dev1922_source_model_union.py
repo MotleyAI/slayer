@@ -281,7 +281,7 @@ class TestSourceModelName:
     async def test_root_qualifier_uses_the_typed_name(self, chain_engine: SlayerQueryEngine) -> None:
         qualified = await chain_engine.execute(_query(
             population="orders", extensions=[EXTENSION], dimensions=["orders.status"]))
-        bare = await chain_engine.execute(_query(population="orders", extensions=[EXTENSION], dimensions=["status"]))
+        bare = await chain_engine.execute(_query(population="orders", extensions=[EXTENSION], dimensions=["orders.status"]))
         assert qualified.sql == bare.sql
         assert qualified.columns == bare.columns == ["orders.status"]
 

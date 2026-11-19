@@ -298,7 +298,7 @@ class TestB7DeclarationOrderProjection:
             population="orders_x",
             dimensions=[QueryDimension(field="orders_x.status")],
             metrics=[QueryMetric(metric="count(orders_x.*)", alias="n")],
-            order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders_x.amount)", "direction": "desc"})],
         )
         sql = await _gen(query, dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))

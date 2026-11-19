@@ -38,9 +38,9 @@ from tests._dev1838_fixtures import (
     q,
 )
 
-LOCAL_AGG = "sum(amount, partition_by=city)"
+LOCAL_AGG = "sum(orders.amount, partition_by=orders.city)"
 CM_AGG = "sum(customers.spend, partition_by=customers.tier)"
-LOCAL_BAND = "CASE WHEN sum(amount, partition_by=city) > 25 THEN 'hi' ELSE 'lo' END"
+LOCAL_BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 25 THEN 'hi' ELSE 'lo' END"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

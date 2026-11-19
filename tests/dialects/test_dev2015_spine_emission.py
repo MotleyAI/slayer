@@ -45,7 +45,7 @@ async def test_spine_is_a_generated_series(dialect, granularity) -> None:
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_custom_bucketing_renders(dialect) -> None:
     sql = await _sql(dialect, {
-        "population": "orders", "metrics": [m("sum(amount)", "s")],
+        "population": "orders", "metrics": [m("sum(orders.amount)", "s")],
         "time_dimensions": [{"field": "orders.order_date", "granularity": "fiscal_year"}],
     })
     assert "2000" in sql  # the fiscal year's origin anchors the bucket arithmetic

@@ -25,7 +25,7 @@ from tests._dev1836_fixtures import (
 from slayer.engine.compile import stages
 
 LOCAL_BAND = {
-    "field": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "field": "CASE WHEN sum(orders.amount, partition_by=orders.channel) > 30 THEN 1 ELSE 0 END",
     "alias": "band",
 }
 
@@ -54,7 +54,7 @@ class TestExplicitRejections:
     async def test_bare_aggregate_in_dimension_is_rejected(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=[{"field": "sum(amount)", "alias": "d"}],
+            dimensions=[{"field": "sum(orders.amount)", "alias": "d"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         with pytest.raises(expected_exception=ValueError, match="partition_by") as ei:
@@ -105,7 +105,7 @@ class TestTotalRoutingInvariant:
         post-discovery invariant must catch the now-undisposed aggregate."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.channel)",
                                    alias="pt")],
         )
@@ -126,7 +126,7 @@ class TestTotalRoutingInvariant:
         no-disposition error, not fall through to the legacy dispatch."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm")],
         )
         bundle = _bundle()
@@ -149,7 +149,7 @@ class TestTotalRoutingInvariant:
         leaf in either role must not survive blinded discovery."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             **role_kwargs,
         )

@@ -309,7 +309,11 @@ def _emit_recommend_path(
     """``item`` as written when a query rooted at ``root`` reads it along ``hops``, else its explicit route from the
     root, re-aggregated functionally."""
     if _anchored_route(root=root, dataset=item.dataset, datasets_by_name=datasets_by_name) == tuple(hops):
-        return item.input_item
+        entity, _ = split_entity_agg_ref(item.input_item)
+        if entity.split(".") != [item.data_source, item.dataset, item.leaf]:
+            return item.input_item
+        core = f"{item.dataset}.{item.leaf}"  # a datasource prefix is no query reference
+        return core if item.suffix is None else functional_agg_text(source=core, suffix=item.suffix)
     core = ".".join((root.spelling, *hops, item.leaf))
     return core if item.suffix is None else functional_agg_text(source=core, suffix=item.suffix)
 

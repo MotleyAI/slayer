@@ -23,8 +23,8 @@ class TestPartitionByRequired:
     async def test_aggregate_without_partition_by_raises_directive(self) -> None:
         q = _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount) > 5000 THEN 1 ELSE 0 END",
                  "alias": "band"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
@@ -44,7 +44,7 @@ class TestAggregateReferencingDimGenerates:
         # grain.)
         q = _q(
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
@@ -60,8 +60,8 @@ class TestDeferredShapesRaiseDev1824:
         # transform is a permanent type rule (ValueError, no issue ref).
         q = _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
+                "orders.region",
+                {"field": "CASE WHEN cumsum(sum(orders.amount)) > 5000 THEN 1 ELSE 0 END",
                  "alias": "x"},
             ],
             time_dimensions=month_td(),
@@ -78,7 +78,7 @@ class TestDeferredShapesRaiseDev1824:
         # (Executed values: test_dev1824_computed_dim_execution.py::TestWindowInDimension.)
         q = _q(
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": "CASE WHEN sum(amount, window='90d', partition_by=city) "
                                "> 5000 THEN 1 ELSE 0 END", "alias": "x"},
             ],
@@ -97,7 +97,7 @@ class TestDeferredShapesRaiseDev1824:
         # (Executed values: test_dev1824_computed_dim_execution.py.)
         q = _q(
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "x"},
             ],

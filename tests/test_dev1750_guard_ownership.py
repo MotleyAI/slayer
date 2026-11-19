@@ -80,7 +80,7 @@ class TestGuardOwnership:
         """(b) ``time_shift(wscaled_sum(amount))`` — DEV-1838 D5 migrates the
         crossing-fragment inner onto the regroup primitive: the shift wraps a
         placeholder answered by a HOST-rooted producer attach."""
-        planned = _plan("time_shift(wscaled_sum(amount), -1)")
+        planned = _plan("time_shift(wscaled_sum(orders.amount), -1)")
         layer = next(
             layer for layer in planned.transform_layers if layer.op == "time_shift"
         )

@@ -71,7 +71,7 @@ client.query_sync([
 # Run-by-name (query-backed dataset), optionally refined
 client.query_sync("rev_by_region")
 client.query_sync("rev_by_region", refine={"dimensions": ["orders.status"]})
-client.query_sync("rev_by_status", variables={"orders.status": "refunded"})
+client.query_sync("rev_by_status", variables={"status": "refunded"})
 
 # Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
 client.query_sync({

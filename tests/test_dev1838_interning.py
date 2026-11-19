@@ -56,7 +56,7 @@ def _band_wm_query(*windows: str, filters=None):
         for w in windows
     ]
     kw = {"filter": filters} if filters else {}
-    return q(dimensions=["region", BAND], time_dimensions=month_td(),
+    return q(dimensions=["orders.region", BAND], time_dimensions=month_td(),
              metrics=measures, **kw)
 
 
@@ -119,7 +119,7 @@ class TestSharedAcrossScopes:
         rewrite."""
         dialect, engine = exec_backend
         query = _band_wm_query(
-            "90d", filters=["ordered_at >= '2024-02-01' and status = 'ok'"],
+            "90d", filters=["orders.ordered_at >= '2024-02-01' and orders.status = 'ok'"],
         )
         resp = await engine.execute(query)
         got = {
@@ -181,7 +181,7 @@ class TestProducersThatMustStaySeparate:
         """Default ``ordered_at`` vs an explicit joined ranking column: two
         producers, distinct values (green pin)."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"], metrics=[
+        query = q(dimensions=["orders.status"], metrics=[
             QueryMetric(metric="last(orders.amount)", alias="lb"),
             QueryMetric(metric="last(orders.amount, customers.signup_at)", alias="ls"),
         ])
@@ -199,7 +199,7 @@ class TestProducersThatMustStaySeparate:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
                 QueryMetric(metric="sum(orders.ok_amount, window='90d')", alias="wok"),
@@ -238,12 +238,12 @@ class TestProducersThatMustStaySeparate:
             population=models[0], referenced_datasets=models[1:],
         )
         base = plan.plan_query(query=q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             metrics=[M],
         ), bundle=bundle)
         filtered = plan.plan_query(query=q(
-            dimensions=["region", BAND],
-            metrics=[M], filter=["status = 'ok'"],
+            dimensions=["orders.region", BAND],
+            metrics=[M], filter=["orders.status = 'ok'"],
         ), bundle=bundle)
         (attach_a,) = base.regroup_attach_plans
         (attach_b,) = filtered.regroup_attach_plans
@@ -267,7 +267,7 @@ class TestWarningsUnchangedBySharing:
         resp = await engine.execute(q(
             dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, QueryMetric(metric="sum(customers.spend)", alias="cm")],
-            filter=["city = 'CityA' OR customers.tier = '__none__'"],
+            filter=["orders.city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
         assert len({w.metric for w in pushed}) == 2, pushed
@@ -289,7 +289,7 @@ class TestWarningsUnchangedBySharing:
             metrics=[M, QueryMetric(
                 metric="sum(customers.spend, partition_by=customers.tier)",
                 alias="rt")],
-            filter=["city = 'CityA' OR customers.tier = '__none__'"],
+            filter=["orders.city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
         assert len(pushed) == 1, [w.metric for w in pushed]
@@ -305,7 +305,7 @@ class TestWarningsUnchangedBySharing:
     ) -> None:
         _, engine = exec_backend
         resp = await engine.execute(
-            _band_wm_query("1y", filters=["status = 'ok'"]),
+            _band_wm_query("1y", filters=["orders.status = 'ok'"]),
         )
         assert not resp.warnings, [
             getattr(w, "kind", "?") for w in resp.warnings

@@ -65,7 +65,7 @@ async def test_embedded_with_model(engine, name) -> None:
 
 
 @pytest.mark.parametrize(("name", "measure", "total"), [
-    ("orders", "sum(amount)", 145.0),
+    ("orders", "sum(orders.amount)", 145.0),
     ("customers", "sum(spend)", 430.0),
     ("clients", "sum(spend)", 430.0),
 ])

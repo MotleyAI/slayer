@@ -52,12 +52,12 @@ def _cases() -> dict:
         "w1/filter": _orders(
             dimensions=["customers.tier"],
             filter=[f"{LAST_TIER} > 100"],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
         "w1/order": _orders(
             dimensions=["customers.tier"],
             filter=["customers.tier is not null"],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
             order=[{"field": LAST_TIER, "direction": "desc"}],
         ),
         # W2 — cross-model partitioned inners under transforms.
@@ -77,7 +77,7 @@ def _cases() -> dict:
         # W3 — composite routes (already combined; pinned against regression).
         "w3/scalar_call": _orders(
             dimensions=["customers.tier"],
-            metrics=[{"metric": "round(sum(customers.spend) / sum(amount), 2)",
+            metrics=[{"metric": "round(sum(customers.spend) / sum(orders.amount), 2)",
                        "alias": "r"}],
         ),
         "w3/multi_remote": _orders(
@@ -92,23 +92,23 @@ def _cases() -> dict:
         ),
         # Series-regime time_shift emission.
         "ts/series_nested_cumsum": _sales(metrics=[
-            {"metric": "time_shift(cumsum(sum(revenue)), -1)", "alias": "t"},
+            {"metric": "time_shift(cumsum(sum(sales.revenue)), -1)", "alias": "t"},
         ]),
         "ts/series_nested_by_store": _sales(
-            dimensions=["store"],
-            metrics=[{"metric": "time_shift(cumsum(sum(revenue)), -1)",
+            dimensions=["sales.store"],
+            metrics=[{"metric": "time_shift(cumsum(sum(sales.revenue)), -1)",
                        "alias": "t"}],
         ),
         "ts/series_cm_leaf": _sales(to_many_handling="broadcast", metrics=[
-            {"metric": "time_shift(sum(revenue) + sum(regions.factor), -1)",
+            {"metric": "time_shift(sum(sales.revenue) + sum(regions.factor), -1)",
              "alias": "t"},
         ]),
         "ts/series_in_pred": _sales(metrics=[
-            {"metric": "time_shift(sum(revenue) in (100, 999), -1)", "alias": "t"},
+            {"metric": "time_shift(sum(sales.revenue) in (100, 999), -1)", "alias": "t"},
         ]),
         "ts/series_filters_once": _sales(
-            filter=["status = 'a'"],
-            metrics=[{"metric": "time_shift(cumsum(sum(revenue)), -1)",
+            filter=["sales.status = 'a'"],
+            metrics=[{"metric": "time_shift(cumsum(sum(sales.revenue)), -1)",
                        "alias": "t"}],
         ),
         # Residue split — the two permanent typed errors, recorded as raises.
@@ -117,14 +117,14 @@ def _cases() -> dict:
                         {"field": "CASE WHEN cumsum(amount) > 50 "
                                        "THEN 1 ELSE 0 END", "alias": "b"}],
             time_dimensions=_MONTH,
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
         "res/transform_ungrained": _orders(
             dimensions=["customers.tier",
                         {"field": "CASE WHEN cumsum(sum(amount)) > 50 "
                                        "THEN 1 ELSE 0 END", "alias": "b"}],
             time_dimensions=_MONTH,
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
     }
 

@@ -45,12 +45,12 @@ _BARE_ALIAS_RE = re.compile(_IDENT)
 _DOTTED_ALIAS_RE = re.compile(rf"{_IDENT}(\.{_IDENT})*")
 
 _SHAPES = {
-    "arithmetic": "sum(logo_churn) / sum(logo_bop)",
-    "transform": "time_shift(sum(cmrr_eop), -1, 'year')",
-    "transform_of_composite": "time_shift(sum(logo_churn) / sum(logo_bop), -1)",
-    "mixed_literal": "sum(logo_churn) * 100",
-    "cross_model_composite": "sum(logo_churn) / sum(targets.goal)",
-    "parametric_agg": "percentile(price, p=0.9)",
+    "arithmetic": "sum(mart.logo_churn) / sum(mart.logo_bop)",
+    "transform": "time_shift(sum(mart.cmrr_eop), -1, 'year')",
+    "transform_of_composite": "time_shift(sum(mart.logo_churn) / sum(mart.logo_bop), -1)",
+    "mixed_literal": "sum(mart.logo_churn) * 100",
+    "cross_model_composite": "sum(mart.logo_churn) / sum(targets.goal)",
+    "parametric_agg": "percentile(mart.price, p=0.9)",
 }
 
 # Capability gaps, not alias concerns: these dialects raise a loud

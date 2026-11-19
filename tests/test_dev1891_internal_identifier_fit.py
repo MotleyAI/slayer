@@ -85,14 +85,14 @@ LONG_COL_NAME = "user_metric_" + "z" * 60        # 72 bytes, a user COLUMN NAME
 CANON_REGION = "amount_sum_partition_by_region"
 CANON_CITY = "amount_sum_partition_by_city"
 FORCED_LIMIT = 24
-RBAND = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
+RBAND = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 THEN 1 ELSE 0 END"
 COLLIDE_QUERY = q(
     dimensions=[
-        "region",
+        "orders.region",
         {"field": RBAND, "alias": "rband"},
         {"field": BAND35, "alias": "cband"},
     ],
-    metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+    metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
 )
 
 _GOLDEN_CASES = _cases()
@@ -326,19 +326,19 @@ class TestUserSurfacesExempt:
         model = self._orders(extra_columns=[
             DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
         ])
-        sql = await _dry_sql([model], self._query("sum(wide)"))
+        sql = await _dry_sql([model], self._query("sum(orders.wide)"))
         assert f'"{PHYS_COL}"' in sql
 
     async def test_column_filter_survives(self) -> None:
         model = self._orders(extra_columns=[
             DatasetField(name="okwide", sql="amount", filter=f'"{PHYS_COL}" > 0', datatype=DataType.FLOAT),
         ])
-        sql = await _dry_sql([model], self._query("sum(okwide)"))
+        sql = await _dry_sql([model], self._query("sum(orders.okwide)"))
         assert f'"{PHYS_COL}"' in sql
 
     async def test_model_filters_survive(self) -> None:
         model = self._orders(filters=[f'"{PHYS_COL}" IS NOT NULL'])
-        sql = await _dry_sql([model], self._query("sum(amount)"))
+        sql = await _dry_sql([model], self._query("sum(orders.amount)"))
         assert f'"{PHYS_COL}"' in sql
 
     async def test_sql_table_survives(self) -> None:

@@ -103,36 +103,36 @@ class TestComparisonTable:
     FOUR = {1, 2, 5, 6}
 
     @pytest.mark.parametrize(("filt", "expected"), [
-        ("ts <= '2024-12-31'", {1, 2, 5}),
-        ("ts > '2024-01-01'", {2, 5, 6}),
-        ("ts = '2024-01-01'", {1}),
-        ("ts != '2024-01-01'", {2, 5, 6}),
-        ("ts BETWEEN '2024-01-01' AND '2024-12-31'", {1, 2, 5}),
-        ("ts NOT BETWEEN '2024-01-01' AND '2024-12-31'", {6}),
-        ("ts in '2024-12-31'", {5, 6}),
-        ("ts not in '2024-12-31'", {1, 2}),
+        ("ev.ts <= '2024-12-31'", {1, 2, 5}),
+        ("ev.ts > '2024-01-01'", {2, 5, 6}),
+        ("ev.ts = '2024-01-01'", {1}),
+        ("ev.ts != '2024-01-01'", {2, 5, 6}),
+        ("ev.ts BETWEEN '2024-01-01' AND '2024-12-31'", {1, 2, 5}),
+        ("ev.ts NOT BETWEEN '2024-01-01' AND '2024-12-31'", {6}),
+        ("ev.ts in '2024-12-31'", {5, 6}),
+        ("ev.ts not in '2024-12-31'", {1, 2}),
     ])
     async def test_date_only_bounds_are_midnight(self, engine, filt, expected) -> None:
         assert await ids(engine, filt) & self.FOUR == expected
 
     @pytest.mark.parametrize(("filt", "pred"), [
-        ("ts >= '2025-Q1'", lambda t: t >= D(2025, 1, 1)),
-        ("ts > '2025-Q1'", lambda t: t >= D(2025, 4, 1)),
-        ("ts < '2025-Q1'", lambda t: t < D(2025, 1, 1)),
-        ("ts <= '2025-Q1'", lambda t: t < D(2025, 4, 1)),
-        ("ts = '2025-Q1'", lambda t: D(2025, 1, 1) <= t < D(2025, 4, 1)),
-        ("ts != '2025-Q1'", lambda t: t < D(2025, 1, 1) or t >= D(2025, 4, 1)),
+        ("ev.ts >= '2025-Q1'", lambda t: t >= D(2025, 1, 1)),
+        ("ev.ts > '2025-Q1'", lambda t: t >= D(2025, 4, 1)),
+        ("ev.ts < '2025-Q1'", lambda t: t < D(2025, 1, 1)),
+        ("ev.ts <= '2025-Q1'", lambda t: t < D(2025, 4, 1)),
+        ("ev.ts = '2025-Q1'", lambda t: D(2025, 1, 1) <= t < D(2025, 4, 1)),
+        ("ev.ts != '2025-Q1'", lambda t: t < D(2025, 1, 1) or t >= D(2025, 4, 1)),
     ])
     async def test_period_operators(self, engine, filt, pred) -> None:
         assert await ids(engine, filt) == ids_where(pred)
 
     @pytest.mark.parametrize(("mirrored", "plain"), [
-        ("'2025-Q1' <= ts", "ts >= '2025-Q1'"),
-        ("'2025-Q1' < ts", "ts > '2025-Q1'"),
-        ("'2025-Q1' > ts", "ts < '2025-Q1'"),
-        ("'2025-Q1' >= ts", "ts <= '2025-Q1'"),
-        ("'2025-Q1' = ts", "ts = '2025-Q1'"),
-        ("'2025-Q1' != ts", "ts != '2025-Q1'"),
+        ("'2025-Q1' <= ev.ts", "ev.ts >= '2025-Q1'"),
+        ("'2025-Q1' < ev.ts", "ev.ts > '2025-Q1'"),
+        ("'2025-Q1' > ev.ts", "ev.ts < '2025-Q1'"),
+        ("'2025-Q1' >= ev.ts", "ev.ts <= '2025-Q1'"),
+        ("'2025-Q1' = ev.ts", "ev.ts = '2025-Q1'"),
+        ("'2025-Q1' != ev.ts", "ev.ts != '2025-Q1'"),
     ])
     async def test_literal_on_left_mirrors(self, engine, mirrored, plain) -> None:
         assert await ids(engine, mirrored) == await ids(engine, plain)
@@ -141,7 +141,7 @@ class TestComparisonTable:
         assert await ids(engine, "ts >= 'last month'") == ids_where(lambda t: t >= D(2026, 8, 1))
 
     async def test_period_bound_combines_with_other_conditions(self, engine) -> None:
-        got = await ids(engine, "ts = '2025-Q1' and amount > 10")
+        got = await ids(engine, "ev.ts = '2025-Q1' and ev.amount > 10")
         assert got == {i for i in ids_in(D(2025, 1, 1), D(2025, 4, 1)) if i > 10}
 
 
@@ -188,9 +188,9 @@ class TestTemporalOperands:
         assert {r["ev.code"] for r in resp.data} == expected == {"y"}
 
     @pytest.mark.parametrize(("filt", "expected"), [
-        ("min(ts) < '2024-06'", {"2025", "2025-Q1", "y"}),
-        ("first(ts) < '2021'", {"y"}),
-        ("last(ts) >= 'last month'", {"y"}),
+        ("min(ev.ts) < '2024-06'", {"2025", "2025-Q1", "y"}),
+        ("first(ev.ts) < '2021'", {"y"}),
+        ("last(ev.ts) >= 'last month'", {"y"}),
     ])
     async def test_min_first_last_are_temporal(self, engine, filt, expected) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
@@ -227,7 +227,7 @@ class TestTemporalOperands:
 
 
 class TestTypingErrors:
-    @pytest.mark.parametrize("filt", ["raw_ts >= 'last month'", "raw_ts in '2025-Q1'"])
+    @pytest.mark.parametrize("filt", ["ev.raw_ts >= 'last month'", "ev.raw_ts in '2025-Q1'"])
     async def test_untyped_column_names_column_and_remedy(self, engine, filt) -> None:
         with pytest.raises(DateOperandTypeError) as ei:
             await ids(engine, filt)
@@ -237,12 +237,12 @@ class TestTypingErrors:
 
     async def test_relative_token_against_text_column(self, engine) -> None:
         with pytest.raises(DateOperandTypeError) as ei:
-            await ids(engine, "code = 'last month'")
+            await ids(engine, "ev.code = 'last month'")
         assert "code" in str(ei.value)
 
     async def test_bad_date_function_operand_is_named(self, engine) -> None:
         with pytest.raises(DateOperandTypeError) as ei:
-            await ids(engine, "date_add(code, 1, 'day') >= 'last month'")
+            await ids(engine, "date_add(ev.code, 1, 'day') >= 'last month'")
         msg = str(ei.value)
         assert "`code` is not one" in msg, msg
 
@@ -253,7 +253,7 @@ class TestTypingErrors:
     async def test_plain_date_string_against_untyped_keeps_meaning(self, engine) -> None:
         assert await ids(engine, "raw_ts >= '2026-09-01'") == ids_where(lambda t: t >= D(2026, 9, 1))
 
-    @pytest.mark.parametrize("filt", ["d >= 'last 6 hours'", "d = '2025-01-01 10:00:00'", "d < 'this hour'"])
+    @pytest.mark.parametrize("filt", ["ev.d >= 'last 6 hours'", "ev.d = '2025-01-01 10:00:00'", "ev.d < 'this hour'"])
     async def test_sub_day_point_against_date(self, engine, filt) -> None:
         with pytest.raises(TimeLiteralError) as ei:
             await ids(engine, filt)
@@ -267,7 +267,7 @@ class TestTypingErrors:
         assert UNSHIPPED & expected  # an unshipped Q1 row matches through its ts
 
     async def test_iso_literal_inside_a_conditional_operand(self, engine) -> None:
-        got = await ids(engine, "coalesce(shipped_at, '2099-12-31') >= 'last month'")
+        got = await ids(engine, "coalesce(ev.shipped_at, '2099-12-31') >= 'last month'")
         shipped_late = {i for i in ALL if (s := shipped_dt(i)) is not None and s >= D(2026, 8, 1)}
         assert got == UNSHIPPED | shipped_late
 
@@ -283,7 +283,7 @@ class TestTypingErrors:
 
 
 class TestDateOnlyTextStorage:
-    @pytest.mark.parametrize("filt", ["ts in '2025-03-01'", "ts >= '2025-03-01 00:00:00'"])
+    @pytest.mark.parametrize("filt", ["mixed.ts in '2025-03-01'", "mixed.ts >= '2025-03-01 00:00:00'"])
     async def test_date_only_text_matches_like_midnight(self, engine, filt) -> None:
         assert await ids(engine, filt, dataset="mixed") == {1, 2, 4, 5, 6}
 
@@ -321,14 +321,14 @@ class TestGranularityCalls:
         assert await ids(engine, "date_trunc('month', ts) >= '2024-03-15'") == ids_where(lambda t: t >= D(2024, 4, 1))
 
     @pytest.mark.parametrize(("filt", "pred"), [
-        ("date_trunc('month', ts) > '2025-01'", lambda t: t >= D(2025, 2, 1)),
-        ("date_trunc('month', ts) < '2025-03-15'", lambda t: t < D(2025, 4, 1)),
-        ("date_trunc('month', ts) <= '2025-03-15'", lambda t: t < D(2025, 4, 1)),
-        ("date_trunc('month', ts) = '2025-03'", lambda t: D(2025, 3, 1) <= t < D(2025, 4, 1)),
-        ("date_trunc('quarter', ts) = '2025'", lambda t: D(2025, 1, 1) <= t < D(2026, 1, 1)),
-        ("date_trunc('quarter', ts) = '2025-02'", lambda t: False),  # no quarter starts in February
-        ("date_trunc('year', ts) = 'last year'", lambda t: D(2025, 1, 1) <= t < D(2026, 1, 1)),
-        ("date_trunc('day', ts) >= '2025-03-01 10:00:00'", lambda t: t >= D(2025, 3, 2)),
+        ("date_trunc('month', ev.ts) > '2025-01'", lambda t: t >= D(2025, 2, 1)),
+        ("date_trunc('month', ev.ts) < '2025-03-15'", lambda t: t < D(2025, 4, 1)),
+        ("date_trunc('month', ev.ts) <= '2025-03-15'", lambda t: t < D(2025, 4, 1)),
+        ("date_trunc('month', ev.ts) = '2025-03'", lambda t: D(2025, 3, 1) <= t < D(2025, 4, 1)),
+        ("date_trunc('quarter', ev.ts) = '2025'", lambda t: D(2025, 1, 1) <= t < D(2026, 1, 1)),
+        ("date_trunc('quarter', ev.ts) = '2025-02'", lambda t: False),  # no quarter starts in February
+        ("date_trunc('year', ev.ts) = 'last year'", lambda t: D(2025, 1, 1) <= t < D(2026, 1, 1)),
+        ("date_trunc('day', ev.ts) >= '2025-03-01 10:00:00'", lambda t: t >= D(2025, 3, 2)),
     ])
     async def test_exact_bounds(self, engine, filt, pred) -> None:
         assert await ids(engine, filt) == ids_where(pred)
@@ -360,13 +360,13 @@ class TestGranularityCalls:
         assert got == {f"{y}-01-01": n for y, n in Counter(t.year for t in map(ev_dt, EV_TS)).items()}
 
     async def test_inside_arithmetic(self, engine) -> None:
-        got = await ids(engine, "date_diff('day', date_trunc('month', ts), ts) = 0")
+        got = await ids(engine, "date_diff('day', date_trunc('month', ev.ts), ev.ts) = 0")
         assert got == ids_where(lambda t: t.day == 1)
 
     @pytest.mark.parametrize(("filt", "column"), [
-        ("date_trunc('month', code) = '2025-03'", "code"),
-        ("date_trunc('month', code) = date_trunc('month', ts)", "code"),
-        ("date_diff('day', date_trunc('month', raw_ts), ts) = 0", "raw_ts"),
+        ("date_trunc('month', ev.code) = '2025-03'", "code"),
+        ("date_trunc('month', ev.code) = date_trunc('month', ev.ts)", "code"),
+        ("date_diff('day', date_trunc('month', ev.raw_ts), ev.ts) = 0", "raw_ts"),
     ])
     async def test_non_temporal_operand_rejected(self, engine, filt, column) -> None:
         with pytest.raises(DateOperandTypeError) as ei:
@@ -374,9 +374,9 @@ class TestGranularityCalls:
         assert f"`{column}` is not one" in str(ei.value), str(ei.value)
 
     @pytest.mark.parametrize(("formula", "kind"), [
-        ("sum(date_trunc('month', ts))", "DateTime"),
-        ("avg(date_trunc('month', d))", "Date"),
-        ("sum(date_add(ts, 1, 'day'))", "DateTime"),
+        ("sum(date_trunc('month', ev.ts))", "DateTime"),
+        ("avg(date_trunc('month', ev.d))", "Date"),
+        ("sum(date_add(ev.ts, 1, 'day'))", "DateTime"),
     ])
     async def test_numeric_aggregation_of_temporal_expression_rejected(self, engine, formula, kind) -> None:
         query = SlayerQuery.model_validate({"population": "ev", "metrics": [{"metric": formula, "alias": "m"}]})
@@ -394,7 +394,7 @@ class TestGranularityCalls:
         "date_trunc('month') >= '2024-01-01'",
         "date_trunc('month', ts, d) >= '2024-01-01'",
         "date_trunc('month', *) >= '2024-01-01'",
-        "date_trunc(code, ts) >= '2024-01-01'",
+        "date_trunc(ev.code, ev.ts) >= '2024-01-01'",
         "date_trunc('month', ts, granularity=2) >= '2024-01-01'",
     ])
     async def test_wrong_shape_rejected(self, engine, filt) -> None:
@@ -407,7 +407,7 @@ class TestGranularityCalls:
 
     async def test_non_temporal_expression_operand_rejected(self, engine) -> None:
         with pytest.raises(DateOperandTypeError, match=r"upper\(code\)"):
-            await ids(engine, "date_trunc('month', upper(code)) >= '2024-01-01'")
+            await ids(engine, "date_trunc('month', upper(ev.code)) >= '2024-01-01'")
 
 
 class TestDateFunctionGrammar:

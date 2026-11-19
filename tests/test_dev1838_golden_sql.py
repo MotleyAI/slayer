@@ -31,26 +31,26 @@ ALLOWED_DELTAS: dict[str, str] = {}
 def _cases() -> dict:
     return {
         "fuse/plain_hidden_order": q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            order=[OrderItem.model_validate({"field": "avg(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "avg(orders.amount)", "direction": "desc"})],
         ),
         "fuse/post_filter_on_transform": q(
-            dimensions=["status"], time_dimensions=month_td(),
+            dimensions=["orders.status"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="cumsum(sum(orders.amount))", alias="x"),
             ],
-            filter=["cumsum(sum(amount)) > 50"],
+            filter=["cumsum(sum(orders.amount)) > 50"],
         ),
         "fuse/multi_alias": q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m1"),
                 QueryMetric(metric="sum(orders.amount)", alias="m2"),
             ],
         ),
-        "fuse/dim_only_dedup": q(dimensions=["region", "city"]),
+        "fuse/dim_only_dedup": q(dimensions=["orders.region", "orders.city"]),
         "fuse/scalar_local": q(
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ),

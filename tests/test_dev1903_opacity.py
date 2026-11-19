@@ -35,7 +35,7 @@ KWARG = f"weighted_avg(amount, weight={_REGION_SPEND})"
 TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SPEND}, direction='desc'))"
 #: host column masked to North customers: its own closure crosses to regions.
 NORTH_OUTER = f"sum(north_amount * {_REGION_SPEND})"
-NORTH_INNER = "weighted_avg(amount, weight=sum(north_amount, partition_by=channel))"
+NORTH_INNER = "weighted_avg(orders.amount, weight=sum(orders.north_amount, partition_by=orders.channel))"
 
 CASES = [
     # ok: 10·280 + 30·280 + 5·195 + 15·195 + 7·40 + 12·280 + 3·280 = 19580
@@ -78,7 +78,7 @@ async def unparse_engine(request):
 
 
 def _q(expression: str, mode=None):
-    return mode_q(mode, dimensions=["status"],
+    return mode_q(mode, dimensions=["orders.status"],
                   metrics=[QueryMetric(metric=expression, alias="w")])
 
 
@@ -146,7 +146,7 @@ class TestOwnClosureStillJudged:
     @pytest.mark.parametrize("formula", [
         "weighted_avg(amount, weight=sum(customers.flagged_spend, "
         "partition_by=customers.regions.name))",
-        "sum(amount * sum(customers.flagged_spend, partition_by=customers.regions.name))",
+        "sum(orders.amount * sum(customers.flagged_spend, partition_by=customers.regions.name))",
     ], ids=["kwarg", "source"])
     async def test_unanalysable_filter_inside_input_fails_closed(
         self, unparse_engine, formula,

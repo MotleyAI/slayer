@@ -69,7 +69,7 @@ def _assert_cells(got: dict, expected: dict) -> None:
 class TestPopulationRestriction:
     async def test_association_filter_restricts_shifted_evaluation(self, exec_engine) -> None:
         resp = await exec_engine.execute(orders_q(
-            dimensions=["status"], time_dimensions=month_td(),
+            dimensions=["orders.status"], time_dimensions=month_td(),
             filter=[f"{EVENT_VALUE} > 40"],
             metrics=[QueryMetric(metric=f"time_shift({SHARE}, -1)", alias="t")]))
         _assert_cells(_cells(resp, "orders.status"), ASSOC_FILTER_SHARE)
@@ -98,7 +98,7 @@ class TestCrossModelPartitionKey:
     async def test_fanning_hop_key_is_typed_error(self, exec_engine) -> None:
         """Regression guard: the input-safety error, never a value."""
         query = orders_q(
-            dimensions=["status"], time_dimensions=month_td(),
+            dimensions=["orders.status"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric=f"time_shift(sum(amount) / sum(amount, partition_by=[{EVENT_VALUE}]), -1)",
                 alias="t")])

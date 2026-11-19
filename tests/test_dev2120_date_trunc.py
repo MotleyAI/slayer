@@ -25,7 +25,7 @@ def _q(**kw: Any) -> SlayerQuery:
 
 
 def _explicit(unit: str, **kw: Any) -> SlayerQuery:
-    return _q(time_dimensions=[{"field": "ts", "granularity": unit}], **kw)
+    return _q(time_dimensions=[{"field": "lib.ts", "granularity": unit}], **kw)
 
 
 class TestParse:
@@ -48,7 +48,7 @@ class TestParse:
             parse_expr(text)
 
     async def test_malformed_over_a_column_rejected_at_binding(self, engine: SlayerQueryEngine) -> None:
-        query = lib_query("date_trunc(word, ts)")
+        query = lib_query("date_trunc(lib.word, lib.ts)")
         with pytest.raises(ValueError, match="date_trunc"):
             await engine.execute(query)
 
@@ -58,29 +58,29 @@ class TestParse:
 
 class TestPositions:
     async def test_row_value_filter(self, engine: SlayerQueryEngine) -> None:
-        trunc = lib_ids(await engine.execute(lib_query(filter=["date_trunc('month', ts) = '2025-03'"])))
+        trunc = lib_ids(await engine.execute(lib_query(filter=["date_trunc('month', lib.ts) = '2025-03'"])))
         assert trunc == {1, 2, 7, 10}
 
     async def test_time_dimension(self, engine: SlayerQueryEngine) -> None:
-        trunc = await engine.execute(_q(dimensions=["date_trunc('month', ts)"]))
+        trunc = await engine.execute(_q(dimensions=["date_trunc('month', lib.ts)"]))
         explicit = await engine.execute(_explicit("month"))
         assert trunc.columns == explicit.columns
         assert trunc.sql == explicit.sql
         assert sorted(map(repr, trunc.data)) == sorted(map(repr, explicit.data))  # DuckDB GROUP BY order is arbitrary
 
     async def test_order_key(self, engine: SlayerQueryEngine) -> None:
-        trunc = await engine.execute(_q(dimensions=["date_trunc('month', ts)"],
-                                        order=[{"field": "date_trunc('month', ts)", "direction": "desc"}]))
-        explicit = await engine.execute(_explicit("month", order=[{"field": "ts", "direction": "desc"}]))
+        trunc = await engine.execute(_q(dimensions=["date_trunc('month', lib.ts)"],
+                                        order=[{"field": "date_trunc('month', lib.ts)", "direction": "desc"}]))
+        explicit = await engine.execute(_explicit("month", order=[{"field": "lib.ts", "direction": "desc"}]))
         assert trunc.sql == explicit.sql
 
     async def test_aggregation_source(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_q(metrics=[{"metric": "max(date_trunc('month', ts))", "alias": "v"}]))
+        resp = await engine.execute(_q(metrics=[{"metric": "max(date_trunc('month', lib.ts))", "alias": "v"}]))
         assert str(resp.data[0]["v"])[:10] == "2025-06-01"
 
     async def test_arithmetic(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("date_diff('day', date_trunc('month', ts), ts)",
-                                                           filter=["id IN (1, 2)"])))
+        values = lib_values(await engine.execute(lib_query("date_diff('day', date_trunc('month', lib.ts), lib.ts)",
+                                                           filter=["lib.id IN (1, 2)"])))
         assert {k: int(v) for k, v in values.items()} == {1: 4, 2: 30}
 
     async def test_same_sql_as_the_explicit_time_dimension(self) -> None:
@@ -91,7 +91,7 @@ class TestPositions:
 
 class TestUnknownUnit:
     async def test_dimension_entry(self, engine: SlayerQueryEngine) -> None:
-        query = _q(dimensions=["date_trunc('fortnight', ts)"])
+        query = _q(dimensions=["date_trunc('fortnight', lib.ts)"])
         with pytest.raises(UnknownGranularityError):
             await engine.execute(query)
 
@@ -101,9 +101,9 @@ class TestUnknownUnit:
             parse_expr(f"date_trunc('{unit}', ts)")
 
     async def test_expression_unknown_unit_is_an_unknown_granularity(self, engine: SlayerQueryEngine) -> None:
-        trunc_query = lib_query("date_trunc('fortnight', ts)")
+        trunc_query = lib_query("date_trunc('fortnight', lib.ts)")
         with pytest.raises(UnknownGranularityError):
             await engine.execute(trunc_query)
-        call_query = lib_query("fortnight(ts)")
+        call_query = lib_query("fortnight(lib.ts)")
         with pytest.raises(UnknownFunctionError):
             await engine.execute(call_query)

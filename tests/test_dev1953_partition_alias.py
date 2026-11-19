@@ -38,11 +38,11 @@ from tests._dev1953_fixtures import (
 )
 
 RANK_UREG = "rank(sum(amount), partition_by=ureg, direction='desc')"
-RANK_BAND = "rank(sum(amount), partition_by=spend_band, direction='desc')"
+RANK_BAND = "rank(sum(sales.amount), partition_by=spend_band, direction='desc')"
 PARAM_BAND = "rank(sum(amount, partition_by=[spend_band, city]), partition_by=spend_band, direction='desc')"
 PARAM_UREG = ("weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), "
               "partition_by=ureg, direction='desc'))")
-DIM_R = {"field": "rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg, direction='desc')",
+DIM_R = {"field": "rank(sum(sales.amount, partition_by=[sales.city, ureg]), partition_by=ureg, direction='desc')",
          "alias": "r"}
 
 # Spec constants.
@@ -151,7 +151,7 @@ class TestOracleSelfCheck:
 # --------------------------------------------------------------------------- #
 class TestBindingSymmetry:
     def test_alias_resolves_identically(self):
-        amap = _alias(name="ureg", expr="upper(region)")
+        amap = _alias(name="ureg", expr="upper(sales.region)")
         agg = _bind(expression="sum(amount, partition_by=ureg)", alias_map=amap)
         rank = _bind(expression=RANK_UREG, alias_map=amap)
         assert isinstance(rank, TransformKey)
@@ -159,7 +159,7 @@ class TestBindingSymmetry:
         assert rank.partition_keys == agg.partition_keys == Grain.of([amap["ureg"]])
 
     def test_mixed_list(self):
-        amap = _alias(name="ureg", expr="upper(region)")
+        amap = _alias(name="ureg", expr="upper(sales.region)")
         agg = _bind(expression="sum(amount, partition_by=[ureg, product])", alias_map=amap)
         rank = _bind(expression="rank(sum(amount), partition_by=[ureg, product], direction='desc')", alias_map=amap)
         want = Grain.of([amap["ureg"], FieldKey(path=(), leaf="product")])
@@ -178,7 +178,7 @@ class TestBindingSymmetry:
         "sum(amount, partition_by=sum(amount))",
     ])
     def test_aggregate_element_names_the_computed_dimension_remedy(self, formula):
-        amap = _alias(name="ureg", expr="upper(region)")
+        amap = _alias(name="ureg", expr="upper(sales.region)")
         with pytest.raises(PartitionKeyError, match=r"(?s)'sum\(amount\)'.*computed dimension"):
             _bind(expression=formula, alias_map=amap)
 
@@ -187,7 +187,7 @@ class TestBindingSymmetry:
         "rank(sum(amount), partition_by=[city, upper(region)], direction='desc')",
     ])
     def test_expression_element_equal_to_an_alias_binds_to_it(self, formula):
-        amap = _alias(name="ureg", expr="upper(region)")
+        amap = _alias(name="ureg", expr="upper(sales.region)")
         expression = _bind(expression=formula, alias_map=amap)
         named = _bind(expression=formula.replace("upper(region)", "ureg"), alias_map=amap)
         assert isinstance(expression, (AggregateKey, TransformKey))
@@ -201,7 +201,7 @@ class TestBindingSymmetry:
 class TestExecutedPositions:
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")]))
+            dimensions=[UREG, "sales.city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")]))
         got = {k: v["r"] for k, v in rows_by(resp, "ureg", "sales.city").items()}
         assert got == MEASURE_RANKS
 
@@ -213,13 +213,13 @@ class TestExecutedPositions:
 
     async def test_filter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], metrics=[AMOUNT],
+            dimensions=[UREG, "sales.city"], metrics=[AMOUNT],
             filter=[f"{RANK_UREG} <= 1"]))
         assert set(rows_by(resp, "ureg", "sales.city")) == FILTER_RANK1
 
     async def test_order(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], metrics=[AMOUNT],
+            dimensions=[UREG, "sales.city"], metrics=[AMOUNT],
             order=[{"field": RANK_UREG, "direction": "asc"}]))
         keys = [(r["ureg"], r["sales.city"]) for r in resp.data]
         pos = {MEASURE_RANKS[k]: [] for k in keys}
@@ -235,7 +235,7 @@ class TestExecutedPositions:
 
     async def test_undeclared_name_stays_unknown(self, engine):
         query = sales_q(
-            dimensions=["city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")])
+            dimensions=["sales.city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")])
         with pytest.raises(UnknownReferenceError, match="ureg"):
             await engine.execute(query)
 
@@ -246,20 +246,20 @@ class TestExecutedPositions:
 class TestAttachCarryingKey:
     async def test_filter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], metrics=[AMOUNT], filter=[f"{RANK_BAND} <= 1"]))
+            dimensions=[BAND, "sales.city"], metrics=[AMOUNT], filter=[f"{RANK_BAND} <= 1"]))
         got = {k: v["a"] for k, v in rows_by(resp, "spend_band", "sales.city").items()}
         approx_map(got=got, want=BAND_RANK1)
 
     async def test_order(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], metrics=[AMOUNT],
+            dimensions=[BAND, "sales.city"], metrics=[AMOUNT],
             order=[{"field": RANK_BAND, "direction": "asc"}]))
         keys = [(r["spend_band"], r["sales.city"]) for r in resp.data]
         assert set(keys[:2]) == set(BAND_RANK1)
 
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], metrics=[QueryMetric(metric=RANK_BAND, alias="r")]))
+            dimensions=[BAND, "sales.city"], metrics=[QueryMetric(metric=RANK_BAND, alias="r")]))
         got = {k: v["r"]
                for k, v in rows_by(resp, "spend_band", "sales.city").items()}
         assert got == _band_city_ranks()

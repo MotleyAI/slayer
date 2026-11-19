@@ -35,9 +35,9 @@ from tests._dev1953_fixtures import (
 from tests._dev1919_fixtures import ordered_month_td
 
 CRP = ["city", "region", "product"]
-NONMEMBER = "rank(sum(amount, partition_by=[city, region]), partition_by=product, direction='desc')"
-MEMBER = "rank(sum(amount, partition_by=[city, region]), partition_by=region, direction='desc')"
-UNGRAINED = "rank(sum(amount), partition_by=region, direction='desc')"
+NONMEMBER = "rank(sum(sales.amount, partition_by=[sales.city, sales.region]), partition_by=sales.product, direction='desc')"
+MEMBER = "rank(sum(sales.amount, partition_by=[sales.city, sales.region]), partition_by=sales.region, direction='desc')"
+UNGRAINED = "rank(sum(sales.amount), partition_by=sales.region, direction='desc')"
 LAST_INNER = "last(sum(amount, partition_by=[customers.regions.name, ordered_at]))"
 LAST_SHIFT = "last(time_shift(customers.regions.name, -1))"
 
@@ -124,7 +124,7 @@ class TestNonMemberRejected:
     async def test_dimension_position_plain_column(self, engine):
         dim = {"field": "rank(sum(amount, partition_by=[city, product]), "
                              "partition_by=region, direction='desc')", "alias": "r"}
-        query = sales_q(dimensions=["region", dim], metrics=[AMOUNT])
+        query = sales_q(dimensions=["sales.region", dim], metrics=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         _assert_membership_error(msg=str(ei.value), key="'region'", grain="city, product")
@@ -186,13 +186,13 @@ class TestMemberAccepted:
         assert resp.data
 
     async def test_ntile_member_executes(self, engine):
-        formula = "ntile(sum(amount, partition_by=[city, region]), n=2, partition_by=region)"
+        formula = "ntile(sum(sales.amount, partition_by=[sales.city, sales.region]), n=2, partition_by=sales.region)"
         resp = await engine.execute(sales_q(dimensions=CRP, metrics=[_metric(formula)]))
         assert resp.data
 
     async def test_ungrained_inner_over_region_and_band(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=["region", BAND], metrics=[_metric(UNGRAINED)]))
+            dimensions=["sales.region", BAND], metrics=[_metric(UNGRAINED)]))
         got = {k: v["r"]
                for k, v in rows_by(resp, "sales.region", "spend_band").items()}
         assert got == REGION_BAND_RANKS
@@ -201,14 +201,14 @@ class TestMemberAccepted:
 class TestAggregateFreeInput:
     async def test_leaf_input_takes_query_grain(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=CRP, metrics=[_metric("rank(city, partition_by=region, direction='desc')")]))
+            dimensions=CRP, metrics=[_metric("rank(sales.city, partition_by=sales.region, direction='desc')")]))
         for (city, region, _), row in rows_by(resp, *(f"sales.{d}" for d in CRP)).items():
             assert row["r"] == CITY_NAME_RANKS[(region, city)], (city, region)
 
     # Bind level only: execution is DEV-1962.
     def test_literal_input_takes_query_grain(self):
-        query = sales_q(dimensions=["region"],
-                        metrics=[_metric("rank(1, partition_by=region, direction='desc')")])
+        query = sales_q(dimensions=["sales.region"],
+                        metrics=[_metric("rank(1, partition_by=sales.region, direction='desc')")])
         bind_query_inputs(query=query, bundle=_sales_bundle())
 
 
@@ -224,7 +224,7 @@ class TestPrecedence:
 
     async def test_residue_error_precedes_membership(self, engine):
         dim = {"field": UNGRAINED, "alias": "r"}
-        query = sales_q(dimensions=["region", dim], metrics=[AMOUNT])
+        query = sales_q(dimensions=["sales.region", dim], metrics=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         msg = str(ei.value)
@@ -271,7 +271,7 @@ class TestOperandGrainTimeAxis:
                                  grain="customers.regions.name")
 
     def test_aggregate_free_shift_keeps_the_query_grain(self):
-        _bind_monthly("rank(time_shift(customers.regions.name, -1), partition_by=ordered_at, direction='desc')")
+        _bind_monthly("rank(time_shift(customers.regions.name, -1), partition_by=orders.ordered_at, direction='desc')")
 
 
 class TestRepeatedKeyword:

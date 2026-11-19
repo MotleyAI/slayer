@@ -35,7 +35,7 @@ class TestCyclesIngestVerbatim:
     async def test_two_cycle_forward_edge_reads_the_referenced_row(self) -> None:
         async with live(TWO_CYCLE) as lv:
             await lv.ingest()
-            resp = await lv.query(population="transactions", dimensions=["id", "coupon_usage.code"])
+            resp = await lv.query(population="transactions", dimensions=["transactions.id", "transactions.coupon_usage.code"])
             assert rows_set(resp, "transactions.id", "transactions.coupon_usage.code") == {
                 (1, "A"), (2, "B"), (3, None),
             }
@@ -43,7 +43,7 @@ class TestCyclesIngestVerbatim:
     async def test_two_cycle_reverse_edge_reads_the_referencing_rows(self) -> None:
         async with live(TWO_CYCLE) as lv:
             await lv.ingest()
-            resp = await lv.query(population="transactions", dimensions=["id", "transaction.code"])
+            resp = await lv.query(population="transactions", dimensions=["transactions.id", "transactions.transaction.code"])
             assert rows_set(resp, "transactions.id", "transactions.transaction.code") == {
                 (1, "B"), (2, "A"), (3, "C"),
             }
@@ -53,15 +53,15 @@ class TestCyclesIngestVerbatim:
             await lv.ingest()
             sales = await lv.dataset("sales")
             assert [j.name for j in sales.relationships] == [None]
-            resp = await lv.query(population="sales", dimensions=["id", "stores.name"])
+            resp = await lv.query(population="sales", dimensions=["sales.id", "stores.name"])
             assert rows_set(resp, "sales.id", "stores.name") == {
                 (1, "North"), (2, "North"), (3, "South"),
             }
             resp = await lv.query(
-                population="stores", dimensions=["name"],
+                population="stores", dimensions=["stores.name"],
                 metrics=[{"metric": "sum(sales.total)", "alias": "t"}],
             )
-            assert {r["stores.name"]: r["stores.t"] for r in resp.data} == {"North": 25.0, "South": 4.0}
+            assert {r["stores.name"]: r["t"] for r in resp.data} == {"North": 25.0, "South": 4.0}
 
     async def test_three_cycle_keeps_every_edge(self) -> None:
         async with live(THREE_CYCLE) as lv:
@@ -71,7 +71,7 @@ class TestCyclesIngestVerbatim:
                 ("depts", "offices", (("office_id", "id"),)),
                 ("offices", "employees", (("manager_id", "id"),)),
             }
-            resp = await lv.query(population="employees", dimensions=["name", "depts.offices.city"])
+            resp = await lv.query(population="employees", dimensions=["employees.name", "depts.offices.city"])
             assert rows_set(resp, "employees.name", "depts.offices.city") == {
                 ("Ann", "Paris"), ("Ben", "Rome"), ("Cy", "Paris"),
             }
@@ -80,15 +80,15 @@ class TestCyclesIngestVerbatim:
         async with live(THREE_CYCLE) as lv:
             await lv.ingest()
             resp = await lv.query(
-                population="offices", dimensions=["city"],
-                metrics=[{"metric": "sum(depts.employees.salary)", "alias": "s"}],
+                population="offices", dimensions=["offices.city"],
+                metrics=[{"metric": "sum(offices.depts.employees.salary)", "alias": "s"}],
             )
-            assert {r["offices.city"]: r["offices.s"] for r in resp.data} == {"Paris": 150.0, "Rome": 80.0}
+            assert {r["offices.city"]: r["s"] for r in resp.data} == {"Paris": 150.0, "Rome": 80.0}
 
     async def test_latest_child_pointer_keeps_the_main_fk(self) -> None:
         async with live(LATEST_CHILD) as lv:
             await lv.ingest()
-            resp = await lv.query(population="orders", dimensions=["id", "customer.name"])
+            resp = await lv.query(population="orders", dimensions=["orders.id", "orders.customer.name"])
             assert rows_set(resp, "orders.id", "orders.customer.name") == {
                 (1, "Alice"), (2, "Alice"), (3, "Bob"),
             }

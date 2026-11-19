@@ -1228,7 +1228,7 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
             DatasetField(
                 name="eu_amount",
                 sql="amount",
-                filter="is_eu = 1",
+                filter="orders.is_eu = 1",
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -1650,13 +1650,13 @@ async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) 
 @pytest.mark.parametrize(
     "filter_expr",
     [
-        "is_eu = 1",
-        "is_eu > 0",
-        "is_eu >= 1",
-        "is_eu <> 0",
-        "is_eu in (0, 1)",
-        "is_eu is not None",
-        "not (is_eu = 0)",
+        "orders.is_eu = 1",
+        "orders.is_eu > 0",
+        "orders.is_eu >= 1",
+        "orders.is_eu <> 0",
+        "orders.is_eu in (0, 1)",
+        "orders.is_eu is not None",
+        "not (orders.is_eu = 0)",
     ],
 )
 async def test_dev1334_filter_with_various_comparison_operators_on_derived_col(

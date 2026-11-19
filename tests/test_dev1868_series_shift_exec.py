@@ -39,7 +39,7 @@ def _q(**kw) -> SlayerQuery:
 
 
 def _dr_td() -> list:
-    return [TimeDimension(field="ordered_at",
+    return [TimeDimension(field="sales.ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 
@@ -79,7 +79,7 @@ class TestNestedTransformInput:
 
     async def test_partitions_by_the_query_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["store"], time_dimensions=month_td(),
+            dimensions=["sales.store"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))
@@ -199,7 +199,7 @@ class TestSeriesEdgeVsReaggregation:
 class TestFiltersApplyOnce:
     async def test_row_filter_shapes_the_series_once(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            time_dimensions=month_td(), filter=["status = 'a'"],
+            time_dimensions=month_td(), filter=["sales.status = 'a'"],
             metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))
@@ -207,7 +207,7 @@ class TestFiltersApplyOnce:
 
     async def test_the_predicate_renders_once(self) -> None:
         sql = await gen(_q(
-            time_dimensions=month_td(), filter=["status = 'a'"],
+            time_dimensions=month_td(), filter=["sales.status = 'a'"],
             metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))

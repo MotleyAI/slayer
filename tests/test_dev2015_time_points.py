@@ -61,13 +61,13 @@ class TestCustomUnits:
     async def test_unit_outside_its_datasource(self, backend) -> None:
         async with tp_engine(backend) as eng:
             with pytest.raises(TimeLiteralError):
-                await ids(eng, "ts >= 'last fiscal_year'")
+                await ids(eng, "ev.ts >= 'last fiscal_year'")
             with pytest.raises(TimeLiteralError):
                 await ids_with_range(eng, ["last fiscal_year", None])
 
     async def test_sub_day_custom_unit_against_a_date_column(self, engine) -> None:
         with pytest.raises(TimeLiteralError) as exc:
-            await ids(engine, "d >= 'last 2 quarter_hours'")
+            await ids(engine, "ev.d >= 'last 2 quarter_hours'")
         assert "day resolution" in str(exc.value)
 
 
@@ -79,7 +79,7 @@ class TestWholePeriodsOnly:
 
     async def test_snapping_to_custom_boundaries(self, cg) -> None:
         resp = await cg.execute(SlayerQuery.model_validate({
-            "population": "orders", "metrics": [m("sum(amount)", "s")], "whole_periods_only": True,
+            "population": "orders", "metrics": [m("sum(orders.amount)", "s")], "whole_periods_only": True,
             "time_dimensions": [{"field": "orders.order_date", "granularity": "fiscal_year",
                                  "date_range": ["2024-05-01", "2025-12-31"]}],
         }))
@@ -89,7 +89,7 @@ class TestWholePeriodsOnly:
 
     async def test_month_with_a_mid_month_custom_granularity_warns(self, cg) -> None:
         resp = await cg.execute(SlayerQuery.model_validate({
-            "population": "events", "metrics": [m("sum(amount)", "s")], "whole_periods_only": True,
+            "population": "events", "metrics": [m("sum(events.amount)", "s")], "whole_periods_only": True,
             "time_dimensions": [{"field": "events.ts", "granularity": "month"},
                                 {"field": "events.ts", "granularity": "billing_month"}],
             "filter": ["events.ts >= '2025-01-01'"],

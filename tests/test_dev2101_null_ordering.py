@@ -67,14 +67,14 @@ class TestExecutedPlacement:
 
     @pytest.mark.parametrize(("direction", "nulls"), sorted(DISCOUNT_ORDER))
     async def test_projected_measure(self, engine: SlayerQueryEngine, direction: str, nulls: str) -> None:
-        resp = await engine.execute(q(dimensions=["city"], metrics=[m("max(discount)")], order=[
-            {"field": "v", "direction": direction, "nulls": nulls}, {"field": "city"}]))
+        resp = await engine.execute(q(dimensions=["orders.city"], metrics=[m("max(orders.discount)")], order=[
+            {"field": "v", "direction": direction, "nulls": nulls}, {"field": "orders.city"}]))
         assert [r["orders.city"] for r in resp.data] == CITY_ORDER[(direction, nulls)]
 
     @pytest.mark.parametrize(("direction", "nulls"), sorted(DISCOUNT_ORDER))
     async def test_expression_target(self, engine: SlayerQueryEngine, direction: str, nulls: str) -> None:
-        resp = await engine.execute(q(dimensions=["id"], distinct_dimension_values=False, order=[
-            {"field": "discount * 2", "direction": direction, "nulls": nulls}, {"field": "id"}]))
+        resp = await engine.execute(q(dimensions=["orders.id"], distinct_dimension_values=False, order=[
+            {"field": "orders.discount * 2", "direction": direction, "nulls": nulls}, {"field": "orders.id"}]))
         assert ordered_ids(resp) == DISCOUNT_ORDER[(direction, nulls)]
 
     async def test_hidden_value_is_not_returned(self, engine: SlayerQueryEngine) -> None:
@@ -126,7 +126,7 @@ class TestEmission:
         keys = [t.this.find(exp.Is) for t in tree.args["order"].expressions if t.this.find(exp.Is) is not None]
         assert keys, sql
         assert all(isinstance(k.this, exp.Column) and k.this.name in inner for k in keys), sql
-        same_level = await emit(q(dimensions=["city"], metrics=[{"metric": "max(discount)", "alias": "d"}],
+        same_level = await emit(q(dimensions=["orders.city"], metrics=[{"metric": "max(orders.discount)", "alias": "d"}],
                                   order=[{"field": "d", "direction": "asc", "nulls": "last"}]), dialect="tsql")
         keys = [t.this.find(exp.Is) for t in _null_policy_terms(same_level, dialect="tsql")
                 if t.this.find(exp.Is) is not None]
@@ -135,6 +135,6 @@ class TestEmission:
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
     async def test_no_policy_keeps_nulls_last(self, dialect: str) -> None:
-        sql = await emit(q(dimensions=["id"], distinct_dimension_values=False,
-                           order=[{"field": "discount", "direction": "desc"}]), dialect=dialect)
+        sql = await emit(q(dimensions=["orders.id"], distinct_dimension_values=False,
+                           order=[{"field": "orders.discount", "direction": "desc"}]), dialect=dialect)
         assert "NULLS FIRST" not in sql.upper(), sql

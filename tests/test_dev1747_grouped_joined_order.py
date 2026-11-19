@@ -63,7 +63,7 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
+_MEASURE = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 
 def _wrap_functions(sql: str, column: str, *, dialect: str = "postgres") -> list[str]:

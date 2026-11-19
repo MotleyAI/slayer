@@ -77,7 +77,7 @@ async def _sampled(*, dataset: SlayerDataset, engine, names: tuple[str, ...] | N
 
 class TestAggregationGate:
     @pytest.mark.parametrize("formula", [
-        "count(id)", "count_distinct(id)", "count_distinct_approx(id)", "min(id)", "max(id)",
+        "count(orders.id)", "count_distinct(orders.id)", "count_distinct_approx(orders.id)", "min(orders.id)", "max(orders.id)",
     ])
     def test_sole_primary_key_accepts_count_family_and_min_max(self, formula) -> None:
         _plan(dataset=orders_dataset(), expression=formula)
@@ -90,7 +90,7 @@ class TestAggregationGate:
     def test_sole_primary_key_accepts_collect(self) -> None:
         _plan(dataset=orders_dataset(), expression="collect(id)")
 
-    @pytest.mark.parametrize("formula", ["max(line_no)", "sum(line_no)"])
+    @pytest.mark.parametrize("formula", ["max(order_lines.line_no)", "sum(order_lines.line_no)"])
     def test_composite_member_aggregates_by_type(self, formula) -> None:
         _plan(dataset=order_lines(), expression=formula)
 

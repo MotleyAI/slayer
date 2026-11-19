@@ -103,7 +103,7 @@ class TestBroadcast:
         """orders.status is unreachable from customers over safe hops: every
         status row carries the grand total; the grain is unchanged."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"], metrics=[M, CM], to_many_handling="broadcast")
+        query = q(dimensions=["orders.status"], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status")
         assert set(by) == {("ok",), ("new",)}
@@ -142,7 +142,7 @@ class TestBroadcast:
     async def test_mixed_grain_broadcasts_only_the_unsafe_member(self, exec_backend):
         """S(A) = {tier}: exact per tier, broadcast across status."""
         dialect, engine = exec_backend
-        query = q(dimensions=["customers.tier", "status"], metrics=[M, CM], to_many_handling="broadcast")
+        query = q(dimensions=["customers.tier", "orders.status"], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "customers.tier", "orders.status")
         assert set(by) == set(AMOUNT_BY_TIER_STATUS)

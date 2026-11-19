@@ -52,7 +52,7 @@ async def _by_month(engine, query: SlayerQuery) -> dict:
     ])
 
 
-_STREAK = "consecutive_periods(sum(amount) > 100)"
+_STREAK = "consecutive_periods(sum(orders.amount) > 100)"
 
 
 class TestCalendarStreak:
@@ -62,7 +62,7 @@ class TestCalendarStreak:
 
     async def test_per_group_series(self, exec_engine) -> None:
         resp = await exec_engine.execute(orders_query(
-            expression=_STREAK, dimensions=["customer_id"], filters=[]))
+            expression=_STREAK, dimensions=["orders.customer_id"], filters=[]))
         got = _unique([
             ((int(r["orders.customer_id"]), month_of(r["orders.order_date"])), int(r["v"]))
             for r in resp.data
@@ -80,7 +80,7 @@ class TestCalendarStreak:
 
     async def test_row_filter_that_empties_a_bucket_makes_a_gap(self, exec_engine) -> None:
         got = await _by_month(exec_engine, orders_query(
-            expression=_STREAK, filters=["customer_id = 1", "amount != 500"]))
+            expression=_STREAK, filters=["orders.customer_id = 1", "orders.amount != 500"]))
         assert got == {
             "2024-01": 1, "2024-03": 1, "2024-12": 1, "2025-01": 2,
             "2025-02": 3, "2025-03": 4, "2025-05": 1, "2025-06": 2,
@@ -88,20 +88,20 @@ class TestCalendarStreak:
 
     async def test_measure_filter_keeps_surviving_streaks(self, exec_engine) -> None:
         got = await _by_month(exec_engine, orders_query(
-            expression=_STREAK, filters=["customer_id = 1", "sum(amount) > 200"]))
+            expression=_STREAK, filters=["orders.customer_id = 1", "sum(orders.amount) > 200"]))
         assert got == {"2024-02": 2, "2024-12": 1, "2025-05": 1, "2025-06": 2}
 
     @pytest.mark.parametrize(("formula", "expected"), [
-        ("cumsum(sum(amount))",
+        ("cumsum(sum(orders.amount))",
          {"2024-02": 650, "2024-12": 990, "2025-05": 1695, "2025-06": 1905}),
-        ("lag(sum(amount))",
+        ("lag(sum(orders.amount))",
          {"2024-02": 150, "2024-12": 120, "2025-05": 140, "2025-06": 225}),
     ])
     async def test_measure_filter_keeps_other_transforms_unfiltered(
         self, exec_engine, formula: str, expected: dict,
     ) -> None:
         got = await _by_month(exec_engine, orders_query(
-            expression=formula, filters=["customer_id = 1", "sum(amount) > 200"]))
+            expression=formula, filters=["orders.customer_id = 1", "sum(orders.amount) > 200"]))
         assert got == expected
 
     async def test_null_time_bucket_is_adjacent_to_nothing(self, null_date_engine) -> None:
@@ -150,7 +150,7 @@ async def _ticks_columns(engine, query: SlayerQuery, *names: str) -> dict:
     resp = await engine.execute(query)
     rows = sorted(resp.data, key=lambda r: r["ticks.ts"])
     assert len(rows) == 4, rows
-    return {n: [int_or_none(r[f"ticks.{n}"]) for r in rows] for n in names}
+    return {n: [int_or_none(r[n]) for r in rows] for n in names}
 
 
 class TestEveryGranularity:
@@ -158,7 +158,7 @@ class TestEveryGranularity:
     async def test_own_calendar_step(self, exec_engine, granularity: str) -> None:
         got = await _ticks_columns(exec_engine, ticks_query(
             series=f"streak_{granularity}", granularity=granularity,
-            metrics=[{"metric": "consecutive_periods(sum(amount) > 0)", "alias": "v"}],
+            metrics=[{"metric": "consecutive_periods(sum(ticks.amount) > 0)", "alias": "v"}],
         ), "v")
         assert got["v"] == [1, 2, 1, 2]
 
@@ -171,8 +171,8 @@ class TestSubDayTimeOffsets:
         got = await _ticks_columns(exec_engine, ticks_query(
             series=f"shift_{granularity}", granularity=granularity,
             metrics=[
-                {"metric": "time_shift(sum(amount), -1)", "alias": "prev"},
-                {"metric": "change(sum(amount))", "alias": "chg"},
+                {"metric": "time_shift(sum(ticks.amount), -1)", "alias": "prev"},
+                {"metric": "change(sum(ticks.amount))", "alias": "chg"},
             ],
         ), "prev", "chg")
         assert got == {"prev": [None, 1, 2, None], "chg": [None, 1, 1, None]}
@@ -189,9 +189,9 @@ class TestPeriodKeywordRejected:
 
         # `period` is not a parameter of consecutive_periods, so it fails like its parenthesised twin.
         with pytest.raises(ValueError) as twin:
-            await generate("consecutive_periods(sum(amount) > 100, (period='year'))")
+            await generate("consecutive_periods(sum(orders.amount) > 100, (period='year'))")
         with pytest.raises(ValueError) as info:
-            await generate("consecutive_periods(sum(amount) > 100, period='year')")
+            await generate("consecutive_periods(sum(orders.amount) > 100, period='year')")
         assert type(info.value) is type(twin.value), str(info.value)
         assert "keyword argument 'period'" not in str(info.value)
         assert "==" not in str(info.value)

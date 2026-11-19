@@ -75,11 +75,11 @@ class TestVersions:
 #: (stored measure formula, the formula it loads as).
 MODEL_MEASURES = [
     ("amount:sum", "sum(amount)"),
-    ("*:count", "count(*)"),
+    ("*:count", "count(orders.*)"),
     ("customers.*:count", "count(customers.*)"),
     ("customers.regions.population:sum", "sum(customers.regions.population)"),
-    ("price:percentile(p=0.9)", "percentile(price, p=0.9)"),
-    ("balance:last(updated_at)", "last(balance, updated_at)"),
+    ("price:percentile(p=0.9)", "percentile(orders.price, p=0.9)"),
+    ("balance:last(updated_at)", "last(orders.balance, orders.updated_at)"),
 ]
 
 
@@ -117,17 +117,17 @@ QUERY_POSITIONS = [
                  id="filter"),
     pytest.param("dimensions", [{"name": "d", "expression": "amount:sum(partition_by=region)"}],
                  [{"name": "d", "expression": "sum(amount, partition_by=region)"}], id="computed-dimension"),
-    pytest.param("dimensions", ["created_at:month"], ["date_trunc('month', created_at)"], id="dimension-granularity"),
-    pytest.param("time_dimensions", ["created_at:month"], ["date_trunc('month', created_at)"],
+    pytest.param("dimensions", ["created_at:month"], ["date_trunc('month', orders.created_at)"], id="dimension-granularity"),
+    pytest.param("time_dimensions", ["created_at:month"], ["date_trunc('month', orders.created_at)"],
                  id="time-dimension"),
-    pytest.param("main_time_dimension", "created_at:month", "date_trunc('month', created_at)",
+    pytest.param("main_time_dimension", "created_at:month", "date_trunc('month', orders.created_at)",
                  id="main-time-dimension"),
     pytest.param("order", [{"column": {"name": "amount_sum"}, "direction": "desc", "raw_formula": "amount:sum"}],
                  [{"column": "sum(amount)", "direction": "desc"}], id="order-persisted"),
-    pytest.param("order", [{"column": {"name": "_count"}, "raw_formula": "*:count"}], [{"column": "count(*)"}],
+    pytest.param("order", [{"column": {"name": "_count"}, "raw_formula": "*:count"}], [{"column": "count(orders.*)"}],
                  id="order-star"),
     pytest.param("order", [{"column": {"name": "created_at_month"}, "raw_formula": "created_at:month"}],
-                 [{"column": "date_trunc('month', created_at)"}], id="order-granularity"),
+                 [{"column": "date_trunc('month', orders.created_at)"}], id="order-granularity"),
     pytest.param("order", [{"column": "rank(amount:sum, direction='desc')"}],
                  [{"column": "rank(sum(amount), direction='desc')"}], id="order-expression"),
     pytest.param("order", [{"amount:sum": "desc"}], [{"sum(amount)": "desc"}], id="order-shorthand"),
@@ -156,7 +156,7 @@ class TestExecution:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_order_items_keep_the_row_order(self, make_store: StoreFactory, dialect: str) -> None:  # noqa: F811
         storage = await make_store(dialect=dialect)
-        stored = stored_query(dimensions=["status"], measures=["sum(amount)"], order=[
+        stored = stored_query(dimensions=["orders.status"], measures=["sum(amount)"], order=[
             {"column": {"name": "amount_sum"}, "direction": "desc", "raw_formula": "amount:sum"},
             {"column": {"name": "_count"}, "raw_formula": "*:count"},
         ])
@@ -174,8 +174,8 @@ class TestExecution:
         [order] = by_month.order or []
         assert order.raw_expression == "date_trunc('month', created_at)"
         assert rows(await run(storage, by_month)) == rows(await run(storage, _fresh(
-            metrics=["sum(amount)"], time_dimensions=[{"field": "created_at", "granularity": "month"}],
-            order=[{"field": "date_trunc('month', created_at)", "direction": "desc"}])))
+            metrics=["sum(orders.amount)"], time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+            order=[{"field": "date_trunc('month', orders.created_at)", "direction": "desc"}])))
         by_fiscal = _stored(measures=["sum(amount)"], dimensions=[
             {"name": "created_at_fiscal_quarter", "expression": "created_at:fiscal_quarter"}])
         [dim] = by_fiscal.dimensions or []
@@ -187,7 +187,7 @@ class TestExecution:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_saved_query_and_extension_execute(self, make_store: StoreFactory,  # noqa: F811
                                                      backend: str) -> None:
-        stage = stored_query(dimensions=["status"], measures=[{"name": "rev", "formula": "amount:sum"}])
+        stage = stored_query(dimensions=["orders.status"], measures=[{"name": "rev", "formula": "amount:sum"}])
         storage = await make_store(backend=backend, models=[
             orders_doc(), customers_doc(), regions_doc(), query_backed_doc(name="rev_q", stage=stage)])
         resp = await run(storage, {"population": "rev_q", "dimensions": ["rev_q.status"], "metrics": ["sum(rev_q.rev)"]})
@@ -237,7 +237,7 @@ class TestKeysAndNames:
     async def test_collides_like_the_functional_spelling(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         stored = stored_query(measures=["sum(amount)"],
-                              dimensions=[KEYED_DIMENSIONS[0], "sum(amount, partition_by=region)"])
+                              dimensions=[KEYED_DIMENSIONS[0], "sum(orders.amount, partition_by=orders.region)"])
         with pytest.raises(NameCollisionError):
             await run(storage, stored)
 

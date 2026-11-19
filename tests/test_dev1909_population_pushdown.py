@@ -62,7 +62,7 @@ from tests._dev1900_fixtures import (
 
 MODES = ["broadcast", "associate", "error"]
 OK = "orders.status = 'ok'"
-OR_MIX = "tier = 'bronze' or orders.status = 'ok'"
+OR_MIX = "customers.tier = 'bronze' or orders.status = 'ok'"
 
 SPEND = QueryMetric(metric="sum(customers.spend)", alias="sp")
 PARTITIONED = QueryMetric(metric="sum(customers.spend, partition_by=customers.tier)", alias="pt")
@@ -132,9 +132,9 @@ class TestDateRangeMaskAccounting:
             time_dimensions=[{
                 "field": "orders.ordered_at", "granularity": "month",
                 "date_range": ["2020-01-01", "2020-12-31"]}],
-            dimensions=["tier"],
+            dimensions=["customers.tier"],
             metrics=[PARTITIONED],
-            filter=["tier = 'gold'"])
+            filter=["customers.tier = 'gold'"])
         planned = plan_query(query=q, bundle=_bundle1900())
         (attach,) = planned.regroup_attach_plans
         return attach.producer_plan
@@ -156,7 +156,7 @@ class TestOrderWrapInheritsPopulation:
 
     def _wrap_producer_plan(self):
         q = cust_q(
-            dimensions=["tier"], metrics=[SPEND], filter=[OK],
+            dimensions=["customers.tier"], metrics=[SPEND], filter=[OK],
             order=[{"field": "orders.amount", "direction": "asc"}])
         planned = plan_query(query=q, bundle=_bundle1900())
         (attach,) = planned.regroup_attach_plans
@@ -188,7 +188,7 @@ class TestWindowedDerivedFanningAxisFailsClosed:
     @pytest.mark.parametrize("mode", MODES)
     def test_pathless_derived_window_axis_raises(self, mode):
         q = cust_q(
-            time_dimensions=[{"field": "bad_date", "granularity": "month"}],
+            time_dimensions=[{"field": "customers.bad_date", "granularity": "month"}],
             metrics=[WINDOWED], to_many_handling=mode)
         bundle = self._bundle()
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -204,7 +204,7 @@ class TestMultiMeasureProducerNamesEveryMeasure:
     async def test_every_producer_measure_named(self, backend):
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"],
+            dimensions=["customers.tier"],
             metrics=[
                 QueryMetric(metric="sum(customers.spend, partition_by=customers.tier)", alias="ptsum"),
                 QueryMetric(metric="max(customers.spend, partition_by=customers.tier)", alias="ptmax"),
@@ -281,7 +281,7 @@ class TestProducersInheritDisposition:
         """sum(spend, partition_by=tier) · ok = gold 190 / silver 230 (never 290);
         two entries: the producer measure and the population (no aggregate)."""
         dialect, engine = backend
-        q = cust_q(dimensions=["tier"], metrics=[PARTITIONED], filter=[OK])
+        q = cust_q(dimensions=["customers.tier"], metrics=[PARTITIONED], filter=[OK])
         resp = await engine.execute(q)
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in POP_FILTER_PARTITIONED_BY_TIER}
@@ -298,7 +298,7 @@ class TestProducersInheritDisposition:
         """*:count over the distinct population per tier = gold 3 / silver 2."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], metrics=[COUNT], filter=[OK]))
+            dimensions=["customers.tier"], metrics=[COUNT], filter=[OK]))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in POP_FILTER_COUNT_BY_TIER}
         for tier, n in POP_FILTER_COUNT_BY_TIER.items():
@@ -348,7 +348,7 @@ class TestProducersInheritDisposition:
         disposition: last(spend) picks are per tier, the sibling sum is unmultiplied."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], metrics=[SPEND, LAST], filter=[OK]))
+            dimensions=["customers.tier"], metrics=[SPEND, LAST], filter=[OK]))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in POP_FILTER_PARTITIONED_BY_TIER}
         for tier, spend in POP_FILTER_PARTITIONED_BY_TIER.items():
@@ -360,7 +360,7 @@ class TestProducersInheritDisposition:
         """avg(sum(spend, partition_by=tier)) · dims=[tier]: inner totals count each
         customer once (gold 190, not 290); the EXISTS rides the producer body."""
         dialect, engine = backend
-        q = cust_q(dimensions=["tier"], metrics=[NESTED], filter=[OK])
+        q = cust_q(dimensions=["customers.tier"], metrics=[NESTED], filter=[OK])
         resp = await engine.execute(q)
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in POP_FILTER_NESTED_INNER_BY_TIER}
@@ -401,7 +401,7 @@ class TestRawRowMode:
         customer (5), never one per matching order (6)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filter=[OK], distinct_dimension_values=False))
+            dimensions=["customers.tier"], filter=[OK], distinct_dimension_values=False))
         assert len(resp.data) == POP_FILTER_RAW_ROWS
 
 
@@ -413,7 +413,7 @@ class TestOutOfScopeNowPushed:
         """An out-of-scope OR conjunct restricts dims-only result rows, no warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filter=[OR_MIX]))
+            dimensions=["customers.tier"], filter=[OR_MIX]))
         assert {r["customers.tier"] for r in resp.data} == POP_FILTER_OUT_OF_SCOPE_TIERS
 
     async def test_host_producer_pushes_not_drops(self, backend):
@@ -421,7 +421,7 @@ class TestOutOfScopeNowPushed:
         / silver 230 / bronze 40, no dropped warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], metrics=[PARTITIONED], filter=[OR_MIX]))
+            dimensions=["customers.tier"], metrics=[PARTITIONED], filter=[OR_MIX]))
         by = rows_by(resp, "customers.tier")
         for tier, spend in {"gold": 190.0, "silver": 230.0, "bronze": 40.0}.items():
             assert float(by[(tier,)]["pt"]) == pytest.approx(spend), tier
@@ -433,7 +433,7 @@ class TestOutOfScopeNowPushed:
         error under error mode."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], metrics=[PARTITIONED], filter=[OR_MIX],
+            dimensions=["customers.tier"], metrics=[PARTITIONED], filter=[OR_MIX],
             to_many_handling=mode))
         by = rows_by(resp, "customers.tier")
         for tier, spend in {"gold": 190.0, "silver": 230.0, "bronze": 40.0}.items():
@@ -452,7 +452,7 @@ class TestOutOfScopeNowPushed:
         """OR-mix in raw-row mode returns one row per population customer (6)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filter=[OR_MIX], distinct_dimension_values=False))
+            dimensions=["customers.tier"], filter=[OR_MIX], distinct_dimension_values=False))
         assert len(resp.data) == 6
 
 
@@ -478,7 +478,7 @@ class TestUnaffectedShapes:
     async def test_dimension_only_query_unaffected(self, backend):
         """A fanning filter with no measures executes, restricted by association."""
         _, engine = backend
-        resp = await engine.execute(cust_q(dimensions=["tier"], filter=[OK]))
+        resp = await engine.execute(cust_q(dimensions=["customers.tier"], filter=[OK]))
         assert {r["customers.tier"] for r in resp.data} == {"gold", "silver"}
 
 

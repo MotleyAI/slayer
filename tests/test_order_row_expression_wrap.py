@@ -31,12 +31,12 @@ async def _statuses(engine: SlayerQueryEngine, *, column: str, direction: str) -
 
 # amount - fee: paid 9, 38; open 16, -3.  suppliers.revenue - fee: paid 999, 998; open 1996, 1992.
 @pytest.mark.parametrize(("column", "direction", "expected"), [
-    ("amount - fee", "desc", ["paid", "open"]),
-    ("amount - fee", "asc", ["open", "paid"]),
-    ("fee - amount", "desc", ["open", "paid"]),
-    ("suppliers.revenue - fee", "desc", ["open", "paid"]),
+    ("orders.amount - orders.fee", "desc", ["paid", "open"]),
+    ("orders.amount - orders.fee", "asc", ["open", "paid"]),
+    ("orders.fee - orders.amount", "desc", ["open", "paid"]),
+    ("suppliers.revenue - orders.fee", "desc", ["open", "paid"]),
     ("lower(customers.region)", "asc", ["open", "paid"]),
-    ("amount > 30", "desc", ["paid", "open"]),
+    ("orders.amount > 30", "desc", ["paid", "open"]),
 ])
 async def test_off_grain_row_expression_sorts_by_group_extremum(
     engine: SlayerQueryEngine, column: str, direction: str, expected: list[str],

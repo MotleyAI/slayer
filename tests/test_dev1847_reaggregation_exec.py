@@ -53,7 +53,7 @@ class TestHeadlineOracle:
         """Scenario: Average of city totals per region — unweighted, by executed
         values, distinguishable from the row-count-weighted wrong value."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("avg", INNER_CR, name="acr")]))
         vals = _region_vals(resp)
         for region, expected in AVG_CITY_TOTAL_BY_REGION.items():
@@ -66,10 +66,10 @@ class TestHeadlineOracle:
         """Adding the re-aggregated measure changes neither the row set nor the
         sibling plain measure (the core SLayer invariant)."""
         base = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         with_reagg = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       reagg("avg", INNER_CR, name="acr")]))
         a = {k: v["tot"] for k, v in region_key(base).items()}
@@ -85,7 +85,7 @@ class TestDegenerateIdentity:
         avg(sum(amount)) equals the per-cell sum and warns with the partition_by
         remedy (operand grain == outer grain)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="avg(sum(sales.amount))", alias="acr")]))
         vals = _region_vals(resp)
         for region, total in DEGENERATE_SUM_BY_REGION.items():
@@ -117,7 +117,7 @@ class TestOuterOperatorFamily:
         """Scenario: count over an attached operand counts the inner cells with a
         non-null value."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("count", INNER_CR, name="nc")]))
         vals = _region_vals(resp, "nc")
         for region, n in COUNT_CITY_CELLS_BY_REGION.items():
@@ -133,7 +133,7 @@ class TestOuterOperatorFamily:
         """Requirement: the plain scalar family resolves over the inner grain
         rows — East's city totals are [50, 50, 80]."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg(agg, INNER_CR, name="v")]))
         east = _region_vals(resp, "v")["East"]
         assert float(east) == pytest.approx(float(expected))
@@ -143,7 +143,7 @@ class TestOuterOperatorFamily:
         region's city totals lies within [min, max] of those totals (exact
         interpolation differs by engine, so the bound is the portable oracle)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("percentile", INNER_CR, name="p", p=0.9)]))
         north = float(_region_vals(resp, "p")["North"])
         # North city totals are [30, 60]; the 0.9 percentile sits strictly above
@@ -155,7 +155,7 @@ class TestOuterOperatorFamily:
         """Requirement: a model-defined custom aggregation is a valid OUTER
         aggregation — ``dsum`` (SUM) of the city totals equals the region total."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("dsum", INNER_CR, name="ds")]))
         vals = _region_vals(resp, "ds")
         for region, total in DEGENERATE_SUM_BY_REGION.items():
@@ -169,14 +169,14 @@ class TestNullEmptyKeyless:
         avg(12, 8) = 10, not avg(7, 5, 8)=6.67 nor the NULL-excluded avg(8)=8."""
         # Inner producer grain: the (Gap, NULL) cell totals both NULL-city rows.
         cells = await exec_engine.execute(sales_q(
-            dimensions=["region", "city"],
+            dimensions=["sales.region", "sales.city"],
             metrics=[QueryMetric(metric=INNER_CR, alias="cr")]))
         by_cell = rows_by(cells, "sales.region", "sales.city")
         assert float(by_cell[("Gap", None)]["cr"]) == pytest.approx(
             GAP_NULL_CELL_TOTAL)
         # Re-aggregated by region, that single null cell participates once.
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("avg", INNER_CR, name="acr")]))
         assert float(_region_vals(resp)["Gap"]) == pytest.approx(GAP_AVG)
 
@@ -186,7 +186,7 @@ class TestNullEmptyKeyless:
         fabricating a row. Filtering to product='Q' leaves Gap/Void with no
         rows (both are P-only)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], filter=["product = 'Q'"],
+            dimensions=["sales.region"], filter=["sales.product = 'Q'"],
             metrics=[reagg("avg", INNER_CR, name="acr")]))
         regions = {k[0] for k in region_key(resp)}
         assert "Gap" not in regions
@@ -198,7 +198,7 @@ class TestNullEmptyKeyless:
         composite cannot fabricate cells for filtered-out cities (P-only
         South/Alpha would otherwise average in as 0)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], filter=["product = 'Q'"],
+            dimensions=["sales.region"], filter=["sales.product = 'Q'"],
             metrics=[QueryMetric(
                 metric=f"avg(coalesce({INNER_CR}, 0))", alias="acz")]))
         vals = _region_vals(resp, "acz")
@@ -210,11 +210,11 @@ class TestNullEmptyKeyless:
         """Scenario: All-null operand values — Void's only cell sums to NULL, so
         avg yields NULL and count yields 0 for that cell."""
         avg_resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("avg", INNER_CR, name="acr")]))
         assert region_key(avg_resp)[("Void",)]["acr"] is None
         cnt_resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("count", INNER_CR, name="nc")]))
         assert int(region_key(cnt_resp)[("Void",)]["nc"]) == 0
 

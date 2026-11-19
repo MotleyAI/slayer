@@ -50,13 +50,13 @@ async def shipped_backend(request):
 
 
 def _by_region(resp, col: str) -> dict:
-    return {r["orders.region"]: float(r[f"orders.{col}"]) for r in resp.data}
+    return {r["orders.region"]: float(r[col]) for r in resp.data}
 
 
 def _by_region_month(resp, col: str) -> dict:
     return {
         (r["orders.region"], month_key(r["orders.ordered_at"])):
-            float(r[f"orders.{col}"])
+            float(r[col])
         for r in resp.data
     }
 
@@ -82,9 +82,9 @@ class TestDedupPositive:
         """The same region total inside a computed dimension AND as a selected
         measure: one producer relation, both roles correct."""
         dialect, engine = exec_backend
-        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "rband"}],
+            dimensions=["orders.region", {"field": band, "alias": "rband"}],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
@@ -111,7 +111,7 @@ class TestDedupPositive:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, window='1y')", alias="wb"),
                 QueryMetric(
@@ -131,7 +131,7 @@ class TestDedupPositive:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(metric="last(orders.amount)", alias="lb"),
                 QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="le"),
@@ -149,9 +149,9 @@ class TestDedupPositive:
         """D10 subsumption: the dual-role total dedups to one producer, the
         bare windowed measure adds exactly one more."""
         dialect, engine = exec_backend
-        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "rband"}],
+            dimensions=["orders.region", {"field": band, "alias": "rband"}],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
@@ -174,7 +174,7 @@ class TestDedupNegative:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90"),
                 QueryMetric(metric="sum(orders.amount, window='45d')", alias="w45"),
@@ -191,7 +191,7 @@ class TestDedupNegative:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
                 QueryMetric(metric="sum(orders.ok_amount, window='90d')", alias="wok"),
@@ -210,7 +210,7 @@ class TestDedupNegative:
         ``shipped_at`` ranking column — North's values differ (30 vs 10)."""
         dialect, engine = shipped_backend
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(metric="last(orders.amount)", alias="lo"),
                 QueryMetric(metric="last(orders.amount, orders.shipped_at)", alias="ls"),

@@ -51,7 +51,7 @@ async def test_cross_hop_source_remedy() -> None:
 
 async def test_missing_parameter_remedy_at_bind() -> None:
     with pytest.raises(ValueError, match="requires parameter 'p'") as ei:
-        await orders_agg_sql("percentile(amount)")
+        await orders_agg_sql("percentile(orders.amount)")
     msg = str(ei.value)
     assert "'percentile(metric, p=field)'" in msg
     _assert_no_colon_agg(msg)

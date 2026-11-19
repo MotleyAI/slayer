@@ -69,12 +69,12 @@ def _rcm_rows(resp) -> dict:
 class TestWindowPlusPartition:
     async def test_rolling_total_at_coarser_grain(self, exec_engine) -> None:
         base = q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with_w = base.model_copy(update={"metrics": [
             *(base.metrics or []),
-            QueryMetric(metric="sum(amount, window='90d', partition_by=region)", alias="w"),
+            QueryMetric(metric="sum(orders.amount, window='90d', partition_by=orders.region)", alias="w"),
         ]})
         plain = _rcm_rows(await exec_engine.execute(base))
         rows = _rcm_rows(await exec_engine.execute(with_w))
@@ -98,7 +98,7 @@ class TestWindowPlusPartition:
         # 45d ≠ running total on this dataset (Codex): (N,Feb) drops the
         # Jan 10 row → 90; (S,Mar) drops the Jan 25 row → 25.
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="sum(orders.amount, window='45d', partition_by=orders.region)", alias="w",
             )],
@@ -112,7 +112,7 @@ class TestWindowPlusPartition:
 
     async def test_requires_resolvable_time_dimension(self, exec_engine) -> None:
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(
                 metric="sum(orders.amount, window='1y', partition_by=orders.region)", alias="w",
             )],
@@ -124,7 +124,7 @@ class TestWindowPlusPartition:
 class TestFirstLastPartition:
     async def test_region_last_on_city_rows(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="l"),
@@ -138,7 +138,7 @@ class TestFirstLastPartition:
 
     async def test_region_first_on_city_rows(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="first(orders.amount, partition_by=orders.region)", alias="f")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -154,7 +154,7 @@ class TestFirstLastPartition:
         # raw ordered_at would tie and pick either; the pinned 20 is only
         # deterministic when ranking stays on the model's resolved time column.
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="last(orders.amount, partition_by=[orders.region, orders.ordered_at])", alias="l",
             )],
@@ -172,7 +172,7 @@ class TestTransformOverPartitioned:
         # cumsum at the query grain over the attached (region, month) totals,
         # partitioned by the non-time dims (region, city).
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at]))",
                 alias="c",
@@ -195,7 +195,7 @@ class TestTransformOverPartitioned:
         # As a MEASURE the rank evaluates at query grain: the five (region,
         # city) rows rank by their attached region totals 100/100/100/60/50.
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
                 metric="rank(sum(orders.amount, partition_by=orders.region), direction='desc')", alias="r",
             )],
@@ -211,12 +211,12 @@ class TestTransformOverPartitioned:
 class TestFilterOnPartitioned:
     async def test_keep_rows_whose_partition_total_qualifies(self, exec_engine) -> None:
         unfiltered = rows_by(await exec_engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )), "orders.region", "orders.city")
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -228,13 +228,13 @@ class TestFilterOnPartitioned:
 
     async def test_conjunction_splits_by_scope(self, exec_engine) -> None:
         combined = await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50 and orders.city != 'CityB'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         separate = await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50", "city != 'CityB'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50", "orders.city != 'CityB'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         key = lambda resp: {  # noqa: E731
@@ -249,8 +249,8 @@ class TestFilterOnPartitioned:
 
     async def test_mixed_with_plain_aggregate_is_legal(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50 and sum(amount) > 25"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50 and sum(orders.amount) > 25"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -265,8 +265,8 @@ class TestFilterOnPartitioned:
         # `status` resolves only before aggregation; the partitioned aggregate
         # only after attachment — an OR spanning both has no home.
         query = q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50 or orders.status == 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((ValueError, NotImplementedError)) as ei:
@@ -281,14 +281,14 @@ class TestFilterOnPartitioned:
         self, exec_engine,
     ) -> None:
         keep_all = await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=[]) > 100"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=[]) > 100"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert len(keep_all.data) == len(RC_GROUPS)
         keep_none = await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=[]) > 300"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=[]) > 300"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert keep_none.data == []
@@ -297,7 +297,7 @@ class TestFilterOnPartitioned:
 class TestRowCombinedCoexistence:
     async def test_band_dimension_and_partitioned_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", {"field": BAND35, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND35, "alias": "band"}],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
@@ -316,9 +316,9 @@ class TestRowCombinedCoexistence:
         }
 
     async def test_same_aggregate_in_both_roles(self, exec_engine) -> None:
-        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(q(
-            dimensions=["region", {"field": band, "alias": "band"}],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt")],
         ))
         got = {
@@ -337,9 +337,9 @@ class TestRowCombinedCoexistence:
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
+            dimensions=["orders.region", "orders.city", {"field": BAND35, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
-            order=[{"field": "sum(amount, partition_by=city)", "direction": "asc"}],
+            order=[{"field": "sum(orders.amount, partition_by=orders.city)", "direction": "asc"}],
         ))
         totals = [
             CITY_TOTAL[(r["orders.region"], r["orders.city"])] for r in resp.data
@@ -351,7 +351,7 @@ class TestRowCombinedCoexistence:
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
+            dimensions=["orders.region", "orders.city", {"field": BAND35, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{"field": "band", "direction": "asc"}],
         ))
@@ -367,10 +367,10 @@ class TestRowCombinedCoexistence:
         # combined attach for the order target has no host slot — a clean grain
         # error, never the leaked-placeholder ValueError.
         query = q(
-            dimensions=["region", {"field": BAND35, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND35, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{
-                "field": "sum(amount, partition_by=city)", "direction": "asc",
+                "field": "sum(orders.amount, partition_by=orders.city)", "direction": "asc",
             }],
         )
         with pytest.raises(ValueError, match=r"not a query dimension") as ei:
@@ -409,8 +409,8 @@ class TestCoexistenceAcrossFamilies:
         await self._assert_solo_equality(
             exec_engine, dims=["region", "city"], tds=month_td(),
             metrics=[
-                ("sum(amount, partition_by=region)", "rt"),
-                ("sum(amount, window='1y')", "w"),
+                ("sum(orders.amount, partition_by=orders.region)", "rt"),
+                ("sum(orders.amount, window='1y')", "w"),
             ],
         )
 
@@ -418,8 +418,8 @@ class TestCoexistenceAcrossFamilies:
         await self._assert_solo_equality(
             exec_engine, dims=["region", "city"], tds=None,
             metrics=[
-                ("sum(amount, partition_by=region)", "rt"),
-                ("last(amount)", "l"),
+                ("sum(orders.amount, partition_by=orders.region)", "rt"),
+                ("last(orders.amount)", "l"),
             ],
         )
 
@@ -427,7 +427,7 @@ class TestCoexistenceAcrossFamilies:
         await self._assert_solo_equality(
             exec_engine, dims=["region", "city"], tds=None,
             metrics=[
-                ("sum(amount, partition_by=region)", "rt"),
+                ("sum(orders.amount, partition_by=orders.region)", "rt"),
                 ("sum(customers.spend)", "cm"),
             ],
         )
@@ -436,8 +436,8 @@ class TestCoexistenceAcrossFamilies:
         await self._assert_solo_equality(
             exec_engine, dims=["region", "city"], tds=month_td(),
             metrics=[
-                ("sum(amount, partition_by=region)", "rt"),
-                ("cumsum(sum(amount))", "c"),
+                ("sum(orders.amount, partition_by=orders.region)", "rt"),
+                ("cumsum(sum(orders.amount))", "c"),
             ],
         )
 
@@ -458,7 +458,7 @@ class TestCardinalityNeutral:
         )
         with_rt = base.model_copy(update={"metrics": [
             *(base.metrics or []),
-            QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+            QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
         ]})
         plain = await exec_engine.execute(base)
         extended = await exec_engine.execute(with_rt)
@@ -475,7 +475,7 @@ class TestCardinalityNeutral:
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="sum(orders.amount, partition_by=[])", alias="g")],
         ))
         assert len(resp.data) == len(RC_GROUPS)

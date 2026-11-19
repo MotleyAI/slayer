@@ -104,7 +104,7 @@ class TestMixedGrainRank:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
@@ -132,7 +132,7 @@ class TestKeylessMixed:
     async def test_share_of_total_ranks_regions(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", {"field": KEYLESS_RANK, "alias": "kr"}],
+            dimensions=["orders.region", {"field": KEYLESS_RANK, "alias": "kr"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
@@ -152,7 +152,7 @@ class TestSubsetGrain:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": SUBSET_RANK, "alias": "sr"}],
+            dimensions=["orders.region", "orders.city", {"field": SUBSET_RANK, "alias": "sr"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
@@ -174,7 +174,7 @@ class TestNestedTransform:
         # shift (S,CityC,Mar) and (N,·,Feb) values and reorder the ranks.
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": NESTED_RANK, "alias": "nr"}],
+            dimensions=["orders.region", "orders.city", {"field": NESTED_RANK, "alias": "nr"}],
             time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
@@ -199,7 +199,7 @@ class TestExplicitUnionPartition:
         dialect, engine = exec_backend
         query = q(
             dimensions=[
-                "region", "city", {"field": EXPLICIT_PART_RANK, "alias": "er"},
+                "orders.region", "orders.city", {"field": EXPLICIT_PART_RANK, "alias": "er"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
@@ -220,11 +220,11 @@ class TestUnionAttachStructure:
     async def test_mixed_dim_is_cardinality_neutral(self, exec_backend) -> None:
         _, engine = exec_backend
         base = await engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         plus = await engine.execute(q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         base_by = rows_by(base, "orders.region", "orders.city")
@@ -241,7 +241,7 @@ class TestUnionAttachStructure:
     ) -> None:
         dialect, engine = exec_backend
         sql = await _dry_scope_closed(engine, q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ), dialect)
         # ``_cm_`` is the pinned attach-CTE naming contract (``cm_cte_bodies``
@@ -266,7 +266,7 @@ class TestDuplicateProducerRoles:
         # design D10; stage-2 dedup) — values and cardinality must hold.
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
@@ -294,7 +294,7 @@ class TestDualRole:
         dialect, engine = exec_backend
         query = q(
             dimensions=[
-                "region", "city", "channel",
+                "orders.region", "orders.city", "orders.channel",
                 {"field": MIXED_RANK, "alias": "rr"},
             ],
             metrics=[

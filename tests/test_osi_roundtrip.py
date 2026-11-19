@@ -134,7 +134,7 @@ async def test_same_results_after_round_trip(trip: tuple[Env, Env]) -> None:
             model,
             extra_dimensions={"orders": ["customers.segment"], "customers": ["customer_profiles.email"],
                               "visits": ["visitor.segment"]}.get(model.name, []),
-            empty_filter={"orders": "amount < 0", "customers": "discount < 0"}.get(model.name),
+            empty_filter={"orders": "amount < 0", "customers": "customers.discount < 0"}.get(model.name),
         )
     assert await _mismatches(env, imported, payloads) == []
 

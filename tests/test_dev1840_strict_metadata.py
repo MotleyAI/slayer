@@ -67,7 +67,7 @@ class TestPushedFiltersAreSilent:
             _warnings.simplefilter("always")
             await engine.execute(q(
                 dimensions=["customers.tier"], metrics=[M, CM],
-                filter=["channel = 'app'"],
+                filter=["orders.channel = 'app'"],
             ))
         hits = [c for c in caught
                 if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
@@ -94,7 +94,7 @@ class TestStrictNarrows:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         ))
         by = rows_by(resp, "customers.tier")
         for tier, spend in SPEND_APP_BY_TIER.items():
@@ -118,7 +118,7 @@ class TestStrictNarrows:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.tier = 'bronze' OR channel = 'app'"],
+            filter=["customers.tier = 'bronze' OR orders.channel = 'app'"],
         ))
         by = rows_by(resp, "customers.tier")
         assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
@@ -129,7 +129,7 @@ class TestStrictNarrows:
         """Ambiguous hop errors under strict — same failure as lenient.
         DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
-        query = tq(to_many_handling="error", metrics=[SM], filter=["effort > 2"])
+        query = tq(to_many_handling="error", metrics=[SM], filter=["tickets.effort > 2"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
@@ -158,7 +158,7 @@ class TestBooleanTotalPushdownReplacesTheWarning:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
                 dimensions=["customers.tier"], metrics=[CM],
-                filter=["customers.tier = 'bronze' OR channel = 'app'"],
+                filter=["customers.tier = 'bronze' OR orders.channel = 'app'"],
             ))
         by = rows_by(resp, "customers.tier")
         assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
@@ -171,7 +171,7 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["channel = customers.plans.level"],
+            filter=["orders.channel = customers.plans.level"],
         ))
         assert pushed_filter_infos(resp)
 
@@ -179,7 +179,7 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         """Ambiguous hop errors in BOTH modes — the drop+warn handling is
         retired. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
-        query = tq(metrics=[SM], filter=["effort > 2"])
+        query = tq(metrics=[SM], filter=["tickets.effort > 2"])
         with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(query)
 

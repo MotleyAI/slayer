@@ -63,7 +63,7 @@ BY_NAME_MONTH = ("name", "snapshot_date")
 BY_NAME_ACCOUNT = ("name", "account_id")
 SUM_MAX_Q_BY_OUTER_ACCOUNT = f"sum({MAX_Q}, partition_by=[{ACCOUNT}])"
 EXPLICIT_UNDETERMINED = f"sum({MAX_Q}, partition_by=[name, account_snapshots.snapshot_date])"
-SALES_EXPLICIT_UNDETERMINED = "avg(sum(amount, partition_by=city), partition_by=[region])"
+SALES_EXPLICIT_UNDETERMINED = "avg(sum(sales.amount, partition_by=sales.city), partition_by=[sales.region])"
 CY_NULL_MONTH = {("Cy", None): None}
 
 
@@ -80,11 +80,11 @@ async def sales_engine(request):
 
 
 def _by_month(expression: str, **kw):
-    return query(dimensions=["name"], time_dimensions=[MONTH_TD], metrics=[m(expression)], **kw)
+    return query(dimensions=["customers.name"], time_dimensions=[MONTH_TD], metrics=[m(expression)], **kw)
 
 
 def _by_account(*measures, **kw):
-    return query(dimensions=["name", ACCOUNT], metrics=list(measures), **kw)
+    return query(dimensions=["customers.name", ACCOUNT], metrics=list(measures), **kw)
 
 
 def _clean(resp: SlayerResponse) -> None:
@@ -122,7 +122,7 @@ class TestJoinedTimeBucket:
     async def test_equals_the_snapshot_rooted_query(self, engine, inner):
         rooted = await engine.execute(query(
             population="account_snapshots", dimensions=["customers.name"],
-            time_dimensions=[{"field": "snapshot_date", "granularity": "month"}],
+            time_dimensions=[{"field": "account_snapshots.snapshot_date", "granularity": "month"}],
             metrics=[m(f"sum({inner}(balance, partition_by=[account_id, customer_id, snapshot_date]))")]))
         resp = await engine.execute(_by_month(f"sum({inner}(account_snapshots.balance, {P}))"))
         got = cells(resp, keys=BY_NAME_MONTH)
@@ -146,10 +146,10 @@ class TestJoinedTimeBucket:
 
     async def test_adding_the_measure_keeps_rows_and_siblings(self, engine):
         base = await engine.execute(query(
-            dimensions=["name"], time_dimensions=[MONTH_TD],
+            dimensions=["customers.name"], time_dimensions=[MONTH_TD],
             metrics=[m("sum(account_snapshots.balance)", "b")]))
         both = await engine.execute(query(
-            dimensions=["name"], time_dimensions=[MONTH_TD],
+            dimensions=["customers.name"], time_dimensions=[MONTH_TD],
             metrics=[m("sum(account_snapshots.balance)", "b"),
                       m(f"sum(max(account_snapshots.balance, {P}))")]))
         assert cells(both, keys=BY_NAME_MONTH, value="b") == cells(base, keys=BY_NAME_MONTH, value="b")
@@ -208,7 +208,7 @@ class TestExplicitOuterKeys:
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_undetermined_to_one_key_errors(self, sales_engine, mode):
         q = sales_q(
-            dimensions=["region"], to_many_handling=mode,
+            dimensions=["sales.region"], to_many_handling=mode,
             metrics=[reagg("avg", "sum(amount, partition_by=city)", name="acr",
                             partition_by="[region]")])
         with pytest.raises(PartitionKeyError) as ei:
@@ -218,7 +218,7 @@ class TestExplicitOuterKeys:
     @pytest.mark.parametrize("mode", [None, "associate"])
     async def test_undetermined_to_one_key_associates(self, sales_engine, mode):
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"], to_many_handling=mode,
+            dimensions=["sales.region"], to_many_handling=mode,
             metrics=[reagg("avg", "sum(amount, partition_by=city)", name="acr",
                             partition_by="[region]")]))
         vals = {k[0]: v["acr"] for k, v in region_key(resp).items()}
@@ -235,7 +235,7 @@ class TestPositions:
 
     async def test_order_only_key(self, engine: SlayerQueryEngine):
         resp = await engine.execute(query(
-            dimensions=["name"], time_dimensions=[MONTH_TD],
+            dimensions=["customers.name"], time_dimensions=[MONTH_TD],
             metrics=[m("sum(account_snapshots.balance)", "b")],
             order=[{"field": f"sum(max(account_snapshots.balance, {P}))", "direction": "desc"}]))
         n, t = col(resp.columns, "name"), col(resp.columns, "snapshot_date")
@@ -265,7 +265,7 @@ class TestOtherConsumerShapes:
     async def test_depth_three(self, engine):
         middle = (f"sum(sum(account_snapshots.balance, {P}), "
                   f"partition_by=[{ACCOUNT}, id])")
-        resp = await engine.execute(query(dimensions=["name"], metrics=[m(f"max({middle})")]))
+        resp = await engine.execute(query(dimensions=["customers.name"], metrics=[m(f"max({middle})")]))
         approx_cells(cells(resp, keys=("name",)),
                      {(k,): x for k, x in DEPTH3_MAX_ACCOUNT_TOTAL_BY_NAME.items()})
         _clean(resp)
@@ -273,7 +273,7 @@ class TestOtherConsumerShapes:
     async def test_computed_dimension(self, engine: SlayerQueryEngine):
         size = {"field": f"CASE WHEN {SUM_MAX_Q_BY_OUTER_ACCOUNT} > 100 "
                               f"THEN 'big' ELSE 'small' END", "alias": "size"}
-        resp = await engine.execute(query(dimensions=["name", ACCOUNT, size]))
+        resp = await engine.execute(query(dimensions=["customers.name", ACCOUNT, size]))
         n, a, s = (col(resp.columns, k) for k in ("name", "account_id", "size"))
         got = {(r[n], r[a]): r[s] for r in resp.data}
         assert got == {("Ann", 10): "big", ("Ann", 11): "small", ("Bob", 20): "big",
@@ -287,7 +287,7 @@ class TestOtherConsumerShapes:
         _clean(resp)
 
     async def test_aggregate_parameter(self, engine):
-        resp = await engine.execute(query(dimensions=["name"], metrics=[m(
+        resp = await engine.execute(query(dimensions=["customers.name"], metrics=[m(
             f"weighted_avg(account_snapshots.balance, weight={SUM_MAX_Q_BY_OUTER_ACCOUNT})")]))
         approx_cells(cells(resp, keys=("name",)),
                      {**{(k,): x for k, x in WAVG_BY_ACCOUNT_MAX.items()}, ("Cy",): None})
@@ -295,7 +295,7 @@ class TestOtherConsumerShapes:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_fanning_constituent_key_still_errors(self, engine, mode):
-        q = query(dimensions=["name"], to_many_handling=mode,
+        q = query(dimensions=["customers.name"], to_many_handling=mode,
                   metrics=[m(f"sum(count(name, partition_by=[id, {ACCOUNT}]))")])
         with pytest.raises(PartitionKeyError, match="account_snapshots.account_id") as ei:
             await engine.execute(q)
@@ -305,7 +305,7 @@ class TestOtherConsumerShapes:
 class TestExpressionAndKeylessGrain:
     async def test_band_determined_through_an_attached_expression(self, engine):
         resp = await engine.execute(query(
-            dimensions=["name", {"field": BAND_EXPR, "alias": "band"}],
+            dimensions=["customers.name", {"field": BAND_EXPR, "alias": "band"}],
             metrics=[m(f"sum({MAX_Q})")]))
         approx_cells(cells(resp, keys=("name", "band")), {**SUM_MAX_Q_BY_BAND, ("Cy", "lo"): None})
         _clean(resp)

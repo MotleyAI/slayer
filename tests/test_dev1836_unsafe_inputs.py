@@ -54,7 +54,7 @@ class TestUnsafeInputs:
         """customers.seg_label reads segments.label across the unproven hop."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="count(customers.seg_label)",
                                    alias="x")],
         )
@@ -66,7 +66,7 @@ class TestUnsafeInputs:
         """customers.vip_spend's Column.filter references segments.label."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(customers.vip_spend)",
                                    alias="x")],
         )
@@ -96,7 +96,7 @@ class TestUnsafeExplicitPartitionKeys:
         edge: hard error naming the key and the remedy, never a fanning join."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="sum(customers.spend, partition_by=orders.status)", alias="x",
             )],
@@ -130,7 +130,7 @@ class TestUnsafeExplicitPartitionKeys:
         safe but customers → segments is not."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="sum(orders.amount, partition_by=customers.segments.label)",
                 alias="x",
@@ -162,7 +162,7 @@ class TestUnsafeExplicitPartitionKeys:
     async def test_errors_apply_in_strict_mode_alike(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            to_many_handling="error", dimensions=["status"],
+            to_many_handling="error", dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="sum(customers.spend, partition_by=orders.status)", alias="x",
             )],
@@ -178,7 +178,7 @@ class TestSafeJoinedPartitionKey:
         key when every hop is provably many-to-one."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier", "status"],
+            dimensions=["customers.tier", "orders.status"],
             metrics=[M, QueryMetric(
                 metric="sum(orders.amount, partition_by=customers.tier)", alias="pt",
             )],

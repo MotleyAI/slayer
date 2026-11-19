@@ -102,7 +102,7 @@ class TestOracleConsistency:
 class TestSeededDataset:
     async def test_channel_grain_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city", "channel"],
+            dimensions=["orders.region", "orders.city", "orders.channel"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city", "orders.channel")
@@ -112,7 +112,7 @@ class TestSeededDataset:
 
     async def test_ok_region_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.ok_amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region")

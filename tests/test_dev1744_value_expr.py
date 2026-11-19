@@ -1793,11 +1793,11 @@ class TestNewlyAdmittedScalars:
     @pytest.mark.parametrize(
         "predicate,expected_fragment",
         [
-            ("ceiling(amount) > 25", "CEIL("),
-            ("sign(amount) > 0", "SIGN("),
-            ("ltrim(status) = 'new'", "LTRIM("),
-            ("rtrim(status) = 'new'", "RTRIM("),
-            ("substring(status, 1, 3) = 'new'", "SUBSTRING("),
+            ("ceiling(orders.amount) > 25", "CEIL("),
+            ("sign(orders.amount) > 0", "SIGN("),
+            ("ltrim(orders.status) = 'new'", "LTRIM("),
+            ("rtrim(orders.status) = 'new'", "RTRIM("),
+            ("substring(orders.status, 1, 3) = 'new'", "SUBSTRING("),
         ],
     )
     async def test_binds_renders_and_executes(
@@ -1889,14 +1889,14 @@ class TestArityIsRejectedAtBindTime:
         )
 
     async def test_round_with_three_args_is_rejected(self, e2e) -> None:
-        query = self._query("round(amount, 2, 99) > 1")
+        query = self._query("round(orders.amount, 2, 99) > 1")
         with pytest.raises(ValueError, match="round"):
             await e2e.execute(query, dry_run=True)
 
     async def test_length_with_two_args_is_rejected(self, e2e) -> None:
         """Previously emitted ``LENGTH(a, b)`` — invalid SQL the backend
         rejected with its own, less useful error."""
-        query = self._query("length(status, status) > 1")
+        query = self._query("length(orders.status, orders.status) > 1")
         with pytest.raises(ValueError, match="length"):
             await e2e.execute(query, dry_run=True)
 
@@ -2009,13 +2009,13 @@ class TestIifDirectRender:
     async def test_bind_time_rejects_null_in_list(self, e2e) -> None:
         """The user-facing half: caught at bind, with a message pointing at
         ``is null`` rather than at three-valued logic in the abstract."""
-        query = self._query("status in ('new', None)")
+        query = self._query("orders.status in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
             await e2e.execute(query, dry_run=True)
 
     async def test_bind_time_rejects_null_in_negated_list(self, e2e) -> None:
         """The dangerous one: this previously returned zero rows in silence."""
-        query = self._query("status not in ('new', None)")
+        query = self._query("orders.status not in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
             await e2e.execute(query, dry_run=True)
 

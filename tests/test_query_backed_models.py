@@ -586,8 +586,8 @@ class TestQueryBackedColumnTypes:
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "t",
-                    "metrics": [{"metric": "sum(amount)"}],
-                    "filter": ["orders.amount > {threshold}"],
+                    "metrics": [{"metric": "sum(t.amount)"}],
+                    "filter": ["t.amount > {threshold}"],
                 })],
             ))
             stored = await storage.get_dataset("qb_unbound")

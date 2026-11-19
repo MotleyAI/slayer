@@ -113,7 +113,7 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
     """part(region) ⊕ part(city) queried at (region, city, month): x is typed
     by the union grain (region, city) and constant within each of its cells."""
     resp = await exec_engine.execute(q(
-        dimensions=["region", "city"],
+        dimensions=["orders.region", "orders.city"],
         time_dimensions=month_td(),
         metrics=[QueryMetric(
             metric="sum(orders.amount, partition_by=orders.region) + sum(orders.amount, partition_by=orders.city)",

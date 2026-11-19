@@ -14,11 +14,11 @@ MIXED = "quantity * avg(price, partition_by=product)"
 
 #: (formula, per-region value) over ``dimensions=["region"]``.
 REGION_SHAPES: dict[str, tuple[str, dict[str, Any]]] = {
-    "expression_value": ("last(amount * quantity)", {"EU": 200.0, "US": 80.0}),
+    "expression_value": ("last(orders.amount * orders.quantity)", {"EU": 200.0, "US": 80.0}),
     "expression_key_last": (f"last(amount, {EFF})", {"EU": 50.0, "US": 60.0}),
     "expression_key_first": (f"first(amount, {EFF})", {"EU": 10.0, "US": 30.0}),
     "value_and_key": (f"last(amount * quantity, {EFF})", {"EU": 200.0, "US": 60.0}),
-    "joined_leaves": ("last(amount - coalesce(customers.discount, 0), coalesce(customers.signup_ts, created_at))",
+    "joined_leaves": ("last(orders.amount - coalesce(customers.discount, 0), coalesce(customers.signup_ts, orders.created_at))",
                       {"EU": 49.5, "US": 40.0}),
     "attached_constituent": (f"last({MIXED}, {EFF})", {"EU": pytest.approx(28 / 3), "US": pytest.approx(14 / 3)}),
 }
@@ -32,7 +32,7 @@ WINDOWED_SHAPES: dict[str, tuple[str, dict[str, float]]] = {
 
 
 def _region_query(expression: str) -> SlayerQuery:
-    return q(dimensions=["region"], metrics=[m(expression)])
+    return q(dimensions=["orders.region"], metrics=[m(expression)])
 
 
 def _windowed_query(expression: str) -> SlayerQuery:

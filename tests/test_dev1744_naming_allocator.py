@@ -565,7 +565,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field=column)],
+                dimensions=[QueryDimension(field=f"orders.{column}")],
                 metrics=[QueryMetric(metric="sum(orders.amount)", alias="amt")],
             )
         )

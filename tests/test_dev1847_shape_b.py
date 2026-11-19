@@ -39,7 +39,7 @@ class TestPartitionByBandedDimension:
     async def test_measure_partitioned_by_banded_dimension(self, exec_engine):
         """The band total broadcasts across the band's rows."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", BAND],
+            dimensions=["sales.region", BAND],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       QueryMetric(metric="sum(sales.amount, partition_by=spend_band)",
                                    alias="bt")]))
@@ -55,7 +55,7 @@ class TestPartitionByBandedDimension:
         """Partitioning by an attach-carrying computed dimension compiles — a
         NotImplementedError here means the nested-attach guard is back."""
         await exec_engine.execute(sales_q(
-            dimensions=["region", BAND],
+            dimensions=["sales.region", BAND],
             metrics=[QueryMetric(metric="sum(sales.amount, partition_by=spend_band)",
                                    alias="bt")]))
 
@@ -75,7 +75,7 @@ class TestCombinedConsumerExemption:
         """An inner partition key that is not a query dimension is legal — a
         SlayerError here means the operand wrongly hit the partition-key rule."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("avg", INNER_CR, name="acr")]))
         vals = {k[0]: v["acr"] for k, v in region_key(resp).items()}
         assert float(vals["North"]) == pytest.approx(AVG_CITY_TOTAL_BY_REGION["North"])
@@ -83,7 +83,7 @@ class TestCombinedConsumerExemption:
     async def test_outer_explicit_key_still_carries_the_rule(self, exec_engine):
         """The outer's OWN explicit partition key must be a query dimension."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("avg", INNER_CR, name="acr", partition_by="product")])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await exec_engine.execute(query)
@@ -101,9 +101,9 @@ class TestFilterAndOrderSurfaces:
         """A FILTER's partition_by= resolves the computed dimension name too
         (Codex review find) — only the hi band (340 > 100) survives."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", BAND],
+            dimensions=["sales.region", BAND],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")],
-            filter=["sum(amount, partition_by=spend_band) > 100"]))
+            filter=["sum(sales.amount, partition_by=spend_band) > 100"]))
         labels = {row["spend_band"] for row in resp.data}
         assert resp.data
         assert labels == {"hi"}
@@ -112,9 +112,9 @@ class TestFilterAndOrderSurfaces:
         """A raw ORDER BY target's partition_by= resolves it as well — hi band
         rows (340) sort before lo (90)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", BAND],
+            dimensions=["sales.region", BAND],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")],
-            order=[{"field": "sum(amount, partition_by=spend_band)",
+            order=[{"field": "sum(sales.amount, partition_by=spend_band)",
                     "direction": "desc"}]))
         labels = [row["spend_band"] for row in resp.data]
         assert labels == sorted(labels, key=lambda x: x != "hi")

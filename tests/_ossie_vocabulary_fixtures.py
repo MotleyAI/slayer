@@ -10,7 +10,6 @@ import json
 import os
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, Literal
 
 import pytest
@@ -27,7 +26,6 @@ from tests._stored_upgrade_fixtures import DS, raw_store, seed_shop, stored_byte
 Spelling = Literal["old", "new"]
 SPELLINGS: tuple[Spelling, ...] = ("old", "new")
 BACKENDS = ("sqlite", "duckdb")
-GOLDEN_PATH = Path(__file__).parent / "fixtures" / "ossie_vocabulary" / "golden.json"
 
 _ORDER_FIELDS: list[tuple[str, str]] = [
     ("id", "INT"), ("customer_id", "INT"), ("order_date", "DATE"), ("created_at", "TIMESTAMP"),
@@ -93,10 +91,10 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
         },
         {
             "population": "orders",
-            "dimensions": ["customers.name", {"field": "upper(status)", "alias": "status_uc"}],
-            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-            "metrics": ["sum(orders.amount)", {"metric": "avg(amount)", "alias": "avg_amount"}, "count(*)"],
-            "filter": ["amount > 5"],
+            "dimensions": ["customers.name", {"field": "upper(orders.status)", "alias": "status_uc"}],
+            "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+            "metrics": ["sum(orders.amount)", {"metric": "avg(orders.amount)", "alias": "avg_amount"}, "count(orders.*)"],
+            "filter": ["orders.amount > 5"],
             "order": [{"field": "customers.name"}],
         },
     ),
@@ -107,7 +105,7 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
     ),
     "saved_metric_and_aggregation": (
         {"source_model": "orders", "dimensions": ["status"], "measures": ["revenue", "doubled(amount)"]},
-        {"population": "orders", "dimensions": ["status"], "metrics": ["revenue", "doubled(amount)"]},
+        {"population": "orders", "dimensions": ["orders.status"], "metrics": ["orders.revenue", "doubled(orders.amount)"]},
     ),
     "root_less": (
         {"dimensions": ["customers.name"], "measures": ["sum(orders.amount)"], "filters": ["orders.status = 'ok'"]},
@@ -115,7 +113,7 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
     ),
     "inverse": (
         {"source_model": "customers", "dimensions": ["name"], "measures": ["sum(orders.amount)", "count(*)"]},
-        {"population": "customers", "dimensions": ["name"], "metrics": ["sum(orders.amount)", "count(*)"]},
+        {"population": "customers", "dimensions": ["customers.name"], "metrics": ["sum(orders.amount)", "count(customers.*)"]},
     ),
     "extension": (
         {"source_model": "orders", "dimensions": ["buyer.name"], "measures": ["aov"],
@@ -123,7 +121,7 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
                          "measures": [{"name": "aov", "formula": "sum(amount) / count(*)"}],
                          "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]],
                                     "name": "buyer"}]}]},
-        {"population": "orders", "dimensions": ["buyer.name"], "metrics": ["aov"],
+        {"population": "orders", "dimensions": ["orders.buyer.name"], "metrics": ["orders.aov"],
          "extensions": [{"dataset": "orders",
                          "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
                          "relationships": [{"to": "customers", "from_columns": ["customer_id"],
@@ -138,17 +136,17 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
              "order": [{"column": "avg_revenue", "direction": "desc"}]},
         ],
         [
-            {"name": "per_customer", "population": "orders", "dimensions": ["customer_id"],
-             "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue_total"}], "filter": ["amount > 5"]},
+            {"name": "per_customer", "population": "orders", "dimensions": ["orders.customer_id"],
+             "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue_total"}], "filter": ["orders.amount > 5"]},
             {"population": "per_customer",
-             "metrics": [{"metric": "avg(revenue_total)", "alias": "avg_revenue"}, "count(*)"],
+             "metrics": [{"metric": "avg(per_customer.revenue_total)", "alias": "avg_revenue"}, "count(per_customer.*)"],
              "order": [{"field": "avg_revenue", "direction": "desc"}]},
         ],
     ),
 }
 
 SAVED_QUERY = "monthly_revenue"
-#: The saved query behind the refinement goldens, per spelling.
+#: The saved query behind the refinements, per spelling.
 MONTHLY_REVENUE: dict[Spelling, dict[str, Any]] = {
     "old": {
         "source_model": "orders",
@@ -167,9 +165,9 @@ MONTHLY_REVENUE: dict[Spelling, dict[str, Any]] = {
 REFINEMENTS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
     "repeated_metric": (
         {"measures": [{"formula": "sum(amount)", "name": "revenue"}]},
-        {"metrics": [{"metric": "sum(amount)", "alias": "revenue"}]},
+        {"metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}]},
     ),
-    "added_filter": ({"filters": ["region = 'US'"]}, {"filter": ["region = 'US'"]}),
+    "added_filter": ({"filters": ["region = 'US'"]}, {"filter": ["orders.region = 'US'"]}),
 }
 
 
@@ -188,12 +186,8 @@ def fresh(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
-def golden(name: str, backend: str) -> dict[str, Any]:
-    return json.loads(GOLDEN_PATH.read_text())[name][backend]
-
-
 def normal(response: SlayerResponse) -> dict[str, Any]:
-    """Result keys in order and rows order-independent, as the golden file stores them."""
+    """Result keys in order and rows order-independent."""
     keys = list(response.columns)
     rows = sorted(json.dumps([r[k] for k in keys], default=str) for r in response.data)
     return {"keys": keys, "rows": [json.loads(r) for r in rows]}
@@ -260,7 +254,7 @@ def shop_customers(spelling: Spelling = "new", **extra: Any) -> dict[str, Any]:
 #: ``sum(amount)`` by ``customers.region`` over the ``shop`` tables, per spelling.
 SHOP_REVENUE_BY_REGION: dict[Spelling, dict[str, Any]] = {
     "old": {"source_model": "orders", "dimensions": ["customers.region"], "measures": ["revenue"]},
-    "new": {"population": "orders", "dimensions": ["customers.region"], "metrics": ["revenue"]},
+    "new": {"population": "orders", "dimensions": ["customers.region"], "metrics": ["orders.revenue"]},
 }
 
 

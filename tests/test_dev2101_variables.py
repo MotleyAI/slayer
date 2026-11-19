@@ -34,51 +34,51 @@ async def _rejected(engine: SlayerQueryEngine, *needles: str, **kw: Any) -> str:
 
 class TestLiteralSlots:
     async def test_numeric_string_in_a_bare_position(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["amount > {min}"], variables={"min": "10"}))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.amount > {min}"], variables={"min": "10"}))
         assert ids(resp) == {2, 3, 4}
 
     async def test_number_in_a_bare_position(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["amount > {min}"], variables={"min": 25}))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.amount > {min}"], variables={"min": 25}))
         assert ids(resp) == {3, 4}
 
     async def test_boolean_in_a_bare_position(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=[m("sum(iif({on}, amount, 0))")], variables={"on": True}))
+        resp = await engine.execute(q(metrics=[m("sum(iif({on}, orders.amount, 0))")], variables={"on": True}))
         assert num(single(resp)) == 100.0
 
     async def test_whole_string_literal(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["status = '{s}'"], variables={"s": "Pending"}))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.status = '{s}'"], variables={"s": "Pending"}))
         assert ids(resp) == {3}
 
     async def test_partial_string_literal(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["note LIKE '%{q}%'"], variables={"q": "cats"}))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.note LIKE '%{q}%'"], variables={"q": "cats"}))
         assert ids(resp) == {1}
 
     async def test_quoted_value_with_an_apostrophe(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["customer_name = '{n}'"], variables={"n": "O'Brien"}))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.customer_name = '{n}'"], variables={"n": "O'Brien"}))
         assert ids(resp) == {1}
 
     async def test_hostile_string_stays_a_literal(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["status = '{s}'"],
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.status = '{s}'"],
                                       variables={"s": "x' OR '1' = '1"}))
         assert ids(resp) == set()
 
     async def test_backslash_value_stays_literal(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["path = '{p}'"], variables={"p": r"C:\temp"}))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.path = '{p}'"], variables={"p": r"C:\temp"}))
         assert ids(resp) == {1}
 
     async def test_list_in_the_in_slot(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["customer_name IN ({names})"],
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.customer_name IN ({names})"],
                                       variables={"names": ["O'Brien", "Lee"]}))
         assert ids(resp) == {1, 5}
 
     async def test_doubled_braces_render_literal_braces(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=[{"field": "'{{' || status || '}}'", "alias": "b"}],
-                                      metrics=[m("count(*)")], variables={"k": 1}))
+        resp = await engine.execute(q(dimensions=[{"field": "'{{' || orders.status || '}}'", "alias": "b"}],
+                                      metrics=[m("count(orders.*)")], variables={"k": 1}))
         assert set(by_key(resp, "b")) == {"{paid}", "{Pending}", "{void}"}
 
     async def test_placeholder_in_a_case_branch_and_scalar_argument(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            metrics=[m("sum(CASE WHEN status = '{s}' THEN round(amount / {d}, {p}) ELSE 0 END)")],
+            metrics=[m("sum(CASE WHEN orders.status = '{s}' THEN round(orders.amount / {d}, {p}) ELSE 0 END)")],
             variables={"s": "paid", "d": 3, "p": 0},
         ))
         assert num(single(resp)) == 3 + 7 + 13
@@ -89,11 +89,11 @@ class TestStructureIsNeverInjected:
         await _rejected(engine, "literal values", "quote", metrics=[m("sum({col})")], variables={"col": "amount"})
 
     async def test_non_numeric_string_compared_bare(self, engine: SlayerQueryEngine) -> None:
-        await _rejected(engine, "literal values", dimensions=["id"], filter=["amount > {min}"],
+        await _rejected(engine, "literal values", dimensions=["orders.id"], filter=["orders.amount > {min}"],
                         variables={"min": "1 OR 1 = 1"})
 
     async def test_list_outside_the_in_slot(self, engine: SlayerQueryEngine) -> None:
-        body = q(dimensions=["id"], filter=["amount > {xs}"], variables={"xs": [1, 2]})
+        body = q(dimensions=["orders.id"], filter=["orders.amount > {xs}"], variables={"xs": [1, 2]})
         with pytest.raises(ListTypeError):
             await engine.execute(body)
 
@@ -110,13 +110,13 @@ class TestStructureIsNeverInjected:
 class TestTemplateNames:
     @pytest.mark.parametrize("k", [2, 3])
     async def test_measure_name_comes_from_the_written_text(self, engine: SlayerQueryEngine, k: int) -> None:
-        resp = await engine.execute(q(metrics=["sum(amount) * {k}"], variables={"k": k}))
+        resp = await engine.execute(q(metrics=["sum(orders.amount) * {k}"], variables={"k": k}))
         assert resp.data == [{"orders.amount_sum_k": pytest.approx(100.0 * k)}]
 
     @pytest.mark.parametrize("k", [2, 3])
-    @pytest.mark.parametrize("dimension", ["quantity * {k}", {"field": "quantity * {k}"}])
+    @pytest.mark.parametrize("dimension", ["orders.quantity * {k}", {"field": "orders.quantity * {k}"}])
     async def test_dimension_name_comes_from_the_written_text(self, engine: SlayerQueryEngine, dimension, k: int) -> None:
-        resp = await engine.execute(q(dimensions=[dimension], metrics=[m("count(*)")], variables={"k": k}))
+        resp = await engine.execute(q(dimensions=[dimension], metrics=[m("count(orders.*)")], variables={"k": k}))
         assert {float(v) for v in by_key(resp, "quantity_k")} == {float(x * k) for x in (1, 2, 3, 4)}
 
     def test_no_text_splice_on_computed_dimensions(self) -> None:
@@ -125,36 +125,36 @@ class TestTemplateNames:
 
 class TestDateRangeBounds:
     async def test_both_bounds(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
+        resp = await engine.execute(q(metrics=[m("sum(orders.amount)")], time_dimensions=[
             {**MONTH, "date_range": ["{start}", "{end}"]}], variables={"start": "2024-02-01", "end": "2024-02-29"}))
         assert [num(r["v"]) for r in resp.data] == [70.0]
 
     async def test_one_sided_lower(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
+        resp = await engine.execute(q(metrics=[m("sum(orders.amount)")], time_dimensions=[
             {**MONTH, "date_range": ["{start}", None]}], variables={"start": "2024-02-01"}))
         assert sorted(str(r["orders.created_at"])[:7] for r in resp.data) == ["2024-02", "2024-03"]
 
     async def test_one_sided_upper(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
+        resp = await engine.execute(q(metrics=[m("sum(orders.amount)")], time_dimensions=[
             {**MONTH, "date_range": [None, "{end}"]}], variables={"end": "2024-01-31"}))
         assert [num(r["v"]) for r in resp.data] == [30.0]
 
     async def test_single_period(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
+        resp = await engine.execute(q(metrics=[m("sum(orders.amount)")], time_dimensions=[
             {**MONTH, "date_range": "{p}"}], variables={"p": "2024-02"}))
         assert [num(r["v"]) for r in resp.data] == [70.0]
 
     async def test_missing_variable(self, engine: SlayerQueryEngine) -> None:
-        await _rejected(engine, "end", metrics=[m("sum(amount)")],
+        await _rejected(engine, "end", metrics=[m("sum(orders.amount)")],
                         time_dimensions=[{**MONTH, "date_range": ["{start}", "{end}"]}],
                         variables={"start": "2024-02-01"})
 
     async def test_non_string_year(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
+        resp = await engine.execute(q(metrics=[m("sum(orders.amount)")], time_dimensions=[
             {**MONTH, "date_range": ["{start}", None]}], variables={"start": 2024}))
         assert len(resp.data) == 3
 
     async def test_bound_value_is_not_mode_b(self, engine: SlayerQueryEngine) -> None:
-        await _rejected(engine, metrics=[m("sum(amount)")],
+        await _rejected(engine, metrics=[m("sum(orders.amount)")],
                         time_dimensions=[{**MONTH, "date_range": ["{start}", None]}],
                         variables={"start": "2024-01-01' OR '1'='1"})

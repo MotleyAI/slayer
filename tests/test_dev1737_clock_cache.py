@@ -13,7 +13,7 @@ from slayer.database.client import SlayerSQLClient
 from tests._dev1737_fixtures import exec_engine, scenario_datasets, scenario_tables
 from slayer.engine.query_engine import SlayerQueryEngine
 
-CLOCK_FILTER = "created_at >= date_add(current_date(), -30, 'day')"
+CLOCK_FILTER = "orders.created_at >= date_add(current_date(), -30, 'day')"
 
 
 class _Clock:
@@ -57,8 +57,8 @@ def _data(calls: list[str]) -> list[str]:
 class TestClockBypass:
     @pytest.mark.parametrize("query", [
         _q([CLOCK_FILTER]),
-        _q(["created_at <= now()"]),
-        _q([], dimensions=[{"field": "date_diff('day', created_at, now())", "alias": "age"}]),
+        _q(["orders.created_at <= now()"]),
+        _q([], dimensions=[{"field": "date_diff('day', orders.created_at, now())", "alias": "age"}]),
         SlayerQuery.model_validate({
             "population": "orders", "metrics": [{"metric": "max(date_diff('day', orders.created_at, current_date()))", "alias": "m"}],
         }),
@@ -81,7 +81,7 @@ class TestClockBypass:
         assert engine.cache_size == 0
 
     async def test_plain_date_query_still_cached(self, engine, data_calls) -> None:
-        query = _q(["date_diff('day', created_at, shipped_at) > 3"])
+        query = _q(["date_diff('day', orders.created_at, orders.shipped_at) > 3"])
         first = await engine.execute(query, cache=True)
         second = await engine.execute(query, cache=True)
         assert len(_data(data_calls)) == 1

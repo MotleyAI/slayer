@@ -389,7 +389,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "bogus(amount)", "alias": "result"}],
+                metrics=[{"metric": "bogus(orders.amount)", "alias": "result"}],
             )
 
     async def test_unknown_name_lists_known_aggregations(self) -> None:
@@ -399,7 +399,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "bogus(amount)", "alias": "result"}],
+                metrics=[{"metric": "bogus(orders.amount)", "alias": "result"}],
             )
 
     async def test_unknown_name_suggests_close_match(self) -> None:
@@ -411,7 +411,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "stdev(amount)", "alias": "result"}],
+                metrics=[{"metric": "stdev(orders.amount)", "alias": "result"}],
             )
 
     async def test_type_disallowed_keeps_not_applicable_wording(self) -> None:
@@ -423,7 +423,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "sum(status)", "alias": "result"}],
+                metrics=[{"metric": "sum(orders.status)", "alias": "result"}],
             )
 
     async def test_type_disallowed_is_not_reported_as_unknown(self) -> None:
@@ -433,7 +433,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "sum(status)", "alias": "result"}],
+                metrics=[{"metric": "sum(orders.status)", "alias": "result"}],
             )
         assert "Unknown function" not in str(exc.value)
 
@@ -448,7 +448,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "bogus(*)", "alias": "result"}],
+                metrics=[{"metric": "bogus(orders.*)", "alias": "result"}],
             )
 
     async def test_custom_agg_known_but_disallowed_keeps_not_allowed(self) -> None:
@@ -478,7 +478,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "myagg(rating)", "alias": "result"}],
+                metrics=[{"metric": "myagg(orders.rating)", "alias": "result"}],
             )
         assert "Unknown function" not in str(exc.value)
         assert "not allowed" in str(exc.value)
@@ -501,7 +501,7 @@ class TestDev1576UnknownVsDisallowed:
         sql = await _generate_sql(
             orders=orders,
             customers=_customers_dataset(),
-            metrics=[{"metric": "myagg(amount)", "alias": "result"}],
+            metrics=[{"metric": "myagg(orders.amount)", "alias": "result"}],
         )
         assert "SUM" in sql.upper()
 
@@ -511,7 +511,7 @@ class TestDev1576UnknownVsDisallowed:
         sql = await _generate_sql(
             orders=_orders_with_status(),
             customers=_customers_dataset(),
-            metrics=[{"metric": "countd(amount)", "alias": "result"}],
+            metrics=[{"metric": "countd(orders.amount)", "alias": "result"}],
         )
         assert "COUNT(DISTINCT" in sql.upper()
 
@@ -549,7 +549,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"metric": "round(sum(amount), 2)", "alias": "r"}],
+            metrics=[{"metric": "round(sum(orders.amount), 2)", "alias": "r"}],
             dialect="postgres",
         )
         up = sql.upper()
@@ -561,7 +561,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"metric": "round(sum(amount), 2)", "alias": "r"}],
+            metrics=[{"metric": "round(sum(orders.amount), 2)", "alias": "r"}],
             dialect=dialect,
         )
         up = sql.upper()
@@ -574,7 +574,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"metric": "round(sum(amount))", "alias": "r"}],
+            metrics=[{"metric": "round(sum(orders.amount))", "alias": "r"}],
             dialect="postgres",
         )
         up = sql.upper()
@@ -586,7 +586,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"metric": "abs(sum(amount))", "alias": "a"}],
+            metrics=[{"metric": "abs(sum(orders.amount))", "alias": "a"}],
             dialect=dialect,
         )
         assert "ABS(" in sql.upper()
@@ -640,7 +640,7 @@ class TestDev1576UnknownNamePrecedence:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "bogus(amount)", "alias": "result"}],
+                metrics=[{"metric": "bogus(orders.amount)", "alias": "result"}],
             )
         assert "myagg" in str(exc.value)
 
@@ -651,7 +651,7 @@ class TestDev1576UnknownNamePrecedence:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"metric": "zzzzz(amount)", "alias": "result"}],
+                metrics=[{"metric": "zzzzz(orders.amount)", "alias": "result"}],
             )
         assert "Did you mean" not in str(exc.value)
 
@@ -679,7 +679,7 @@ class TestDev1576CustomAggPrecedence:
         sql = await _generate_sql(
             orders=orders,
             customers=_customers_dataset(),
-            metrics=[{"metric": "countd(amount)", "alias": "result"}],
+            metrics=[{"metric": "countd(orders.amount)", "alias": "result"}],
         )
         # The custom formula (… + 1) must win, not the healed builtin
         # count_distinct (plain COUNT(DISTINCT …)).
@@ -691,7 +691,7 @@ class TestDev1576CustomAggPrecedence:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"metric": "countd(amount)", "alias": "result"}],
+            metrics=[{"metric": "countd(orders.amount)", "alias": "result"}],
         )
         assert "COUNT(DISTINCT" in sql.upper()
         assert "+ 1" not in sql

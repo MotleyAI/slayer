@@ -44,11 +44,11 @@ from tests._engine_helpers import _extract_cte_body, seeded_exec_engine
 from tests.test_dev1903_discovery import _discover
 from slayer.engine.query_engine import SlayerQueryEngine
 
-R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
+R = "avg(sum(sales.amount, partition_by=[sales.city, sales.region]), partition_by=sales.region)"
 RLEVEL = {"field": f"CASE WHEN {R} > 50 THEN 'hi' ELSE 'lo' END", "alias": "rlevel"}
 TLEVEL = {"field": f"CASE WHEN rank({R}, direction='desc') > 1 THEN 'top' ELSE 'rest' END",
           "alias": "tlevel"}
-TOT = QueryMetric(metric="sum(amount)", alias="tot")
+TOT = QueryMetric(metric="sum(sales.amount)", alias="tot")
 
 R_BY_REGION = {"North": 45.0, "South": 70.0, "East": 60.0, "Gap": 10.0, "Void": None}
 TOT_BY_REGION = {"North": 90.0, "South": 140.0, "East": 180.0, "Gap": 20.0, "Void": None}
@@ -57,12 +57,12 @@ RANK_BY_REGION = {"South": 1, "East": 2, "North": 3, "Gap": 4, "Void": None}
 TLEVEL_BY_REGION = {"South": "rest", "East": "top", "North": "top", "Gap": "top",
                     "Void": "rest"}
 
-PLAIN_RANK = "rank(sum(amount, partition_by=region), direction='desc')"
+PLAIN_RANK = "rank(sum(sales.amount, partition_by=sales.region), direction='desc')"
 PBAND = {"field": f"CASE WHEN {PLAIN_RANK} > 1 THEN 'top' ELSE 'rest' END",
          "alias": "pband"}
 
 # Finer-grained re-aggregation: outer grain [city, region] under dimensions [region].
-FINE = "avg(sum(amount, partition_by=[city, region, product]), partition_by=[city, region])"
+FINE = "avg(sum(sales.amount, partition_by=[sales.city, sales.region, sales.product]), partition_by=[sales.city, sales.region])"
 FINE_DIM = {"field": f"CASE WHEN {FINE} > 30 THEN 'hi' ELSE 'lo' END", "alias": "x"}
 FINE_TOT = {("North", "lo"): 30.0, ("North", "hi"): 60.0, ("South", "hi"): 140.0,
             ("East", "hi"): 180.0, ("Gap", "lo"): 20.0, ("Void", "lo"): None}
@@ -89,7 +89,7 @@ def _bundle(source: str = "sales") -> ResolvedSourceBundle:
 
 def _col(resp, name: str) -> dict:
     """``{region: value}`` for result column ``sales.<name>``."""
-    return {r["sales.region"]: r[f"sales.{name}"] for r in resp.data}
+    return {r["sales.region"]: r[name] for r in resp.data}
 
 
 def _regions(resp) -> List[str]:
@@ -106,44 +106,44 @@ def _approx(d: dict) -> dict:
 class TestReaggregationInDimensionAndElsewhere:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], metrics=[TOT], filter=[f"{R} < sum(amount)"]))
+            dimensions=["sales.region", RLEVEL], metrics=[TOT], filter=[f"{R} < sum(amount)"]))
         got = {(r["sales.region"], r["rlevel"]): r["tot"] for r in resp.data}
         assert got == _approx({("East", "hi"): 180.0, ("Gap", "lo"): 20.0,
                                ("North", "lo"): 90.0, ("South", "hi"): 140.0})
 
     async def test_measure_typed_filter_keeping_nothing(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], metrics=[TOT], filter=[f"{R} > sum(amount)"]))
+            dimensions=["sales.region", RLEVEL], metrics=[TOT], filter=[f"{R} > sum(amount)"]))
         assert resp.data == []
 
     async def test_order_target(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], metrics=[TOT],
+            dimensions=["sales.region", RLEVEL], metrics=[TOT],
             order=[{"field": R, "direction": "desc"}]))
         assert _regions(resp) == ["South", "East", "North", "Gap", "Void"]
 
     async def test_measure(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], metrics=[TOT, QueryMetric(metric=R, alias="r")]))
+            dimensions=["sales.region", RLEVEL], metrics=[TOT, QueryMetric(metric=R, alias="r")]))
         assert _col(resp, "r") == _approx(R_BY_REGION)
         assert _col(resp, "rlevel") == RLEVEL_BY_REGION
 
     async def test_filter_by_dimension_name_uses_band(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], metrics=[TOT, QueryMetric(metric=R, alias="r")],
+            dimensions=["sales.region", RLEVEL], metrics=[TOT, QueryMetric(metric=R, alias="r")],
             filter=["rlevel = 'hi'"]))
         assert _col(resp, "r") == _approx({"South": 70.0, "East": 60.0})
 
 
 class TestTransformOverReaggregationInDimension:
     async def test_dimension_only(self, exec_engine):
-        resp = await exec_engine.execute(sales_q(dimensions=["region", TLEVEL], metrics=[TOT]))
+        resp = await exec_engine.execute(sales_q(dimensions=["sales.region", TLEVEL], metrics=[TOT]))
         assert _col(resp, "tlevel") == TLEVEL_BY_REGION
         assert _col(resp, "tot") == _approx(TOT_BY_REGION)
 
     async def test_rank_as_measure(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", TLEVEL],
+            dimensions=["sales.region", TLEVEL],
             metrics=[TOT, QueryMetric(metric=f"rank({R}, direction='desc')", alias="rk")]))
         assert _col(resp, "rk") == RANK_BY_REGION
         assert _col(resp, "tlevel") == TLEVEL_BY_REGION
@@ -154,19 +154,19 @@ class TestTransformOverReaggregationInDimension:
     ])
     async def test_rank_in_filter(self, exec_engine, flt, kept):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", TLEVEL], metrics=[TOT], filter=[flt]))
+            dimensions=["sales.region", TLEVEL], metrics=[TOT], filter=[flt]))
         assert set(_regions(resp)) == kept
         assert _col(resp, "tot") == _approx({k: TOT_BY_REGION[k] for k in kept})
 
     async def test_rank_as_order_target(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", TLEVEL], metrics=[TOT],
+            dimensions=["sales.region", TLEVEL], metrics=[TOT],
             order=[{"field": f"rank({R}, direction='desc')", "direction": "asc"}]))
         assert _regions(resp) == ["South", "East", "North", "Gap", "Void"]
 
     async def test_two_dimensions_share_the_reaggregation(self, exec_engine: SlayerQueryEngine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", TLEVEL, RLEVEL],
+            dimensions=["sales.region", TLEVEL, RLEVEL],
             metrics=[TOT, QueryMetric(metric=R, alias="r")]))
         got = {r["sales.region"]: (r["tlevel"], r["rlevel"]) for r in resp.data}
         assert got == {"South": ("rest", "hi"), "East": ("top", "hi"),
@@ -179,13 +179,13 @@ class TestTransformOverReaggregationInDimension:
 class TestOrderByTransformSharedWithDimension:
     async def test_order_by_expression(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", PBAND], metrics=[TOT],
+            dimensions=["sales.region", PBAND], metrics=[TOT],
             order=[{"field": PLAIN_RANK, "direction": "asc"}]))
         assert _regions(resp) == ["East", "South", "North", "Gap", "Void"]
 
     async def test_order_by_dimension_name_sorts_band(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", PBAND], metrics=[TOT],
+            dimensions=["sales.region", PBAND], metrics=[TOT],
             order=[{"field": "pband", "direction": "asc"}]))
         bands = [r["pband"] for r in resp.data]
         assert bands == ["rest", "rest", "top", "top", "top"]
@@ -198,15 +198,15 @@ class TestFilterOnAggregateOwnedByDimensionTransform:
 
     async def test_executes_at_query_grain(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", PBAND], metrics=[TOT],
-            filter=["sum(amount, partition_by=region) > 100"]))
+            dimensions=["sales.region", PBAND], metrics=[TOT],
+            filter=["sum(sales.amount, partition_by=sales.region) > 100"]))
         assert _col(resp, "tot") == _approx({"South": 140.0, "East": 180.0})
 
     def test_finer_partition_key_is_a_typed_error(self):
         band = {"field": "CASE WHEN rank(sum(amount, partition_by=[city, region]), direction='desc') > 1 "
                               "THEN 'top' ELSE 'rest' END", "alias": "cband"}
-        query = sales_q(dimensions=["region", band], metrics=[TOT],
-                        filter=["sum(amount, partition_by=[city, region]) > 50"])
+        query = sales_q(dimensions=["sales.region", band], metrics=[TOT],
+                        filter=["sum(sales.amount, partition_by=[sales.city, sales.region]) > 50"])
         bundle = _bundle()
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -229,13 +229,13 @@ class TestCrossModelReaggregationInDimension:
 # --------------------------------------------------------------------------- #
 class TestFinerGrainedReaggregationDimension:
     async def test_executes_at_its_declared_grain(self, exec_engine):
-        resp = await exec_engine.execute(sales_q(dimensions=["region", FINE_DIM], metrics=[TOT]))
+        resp = await exec_engine.execute(sales_q(dimensions=["sales.region", FINE_DIM], metrics=[TOT]))
         got = {(r["sales.region"], r["x"]): r["tot"] for r in resp.data}
         assert got == _approx(FINE_TOT)
 
     async def test_order_by_name_of_the_reaggregation_dimension(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", {"field": FINE, "alias": "x"}], metrics=[TOT],
+            dimensions=["sales.region", {"field": FINE, "alias": "x"}], metrics=[TOT],
             order=[{"field": "x", "direction": "desc"}]))
         xs = [r["x"] for r in resp.data if r["x"] is not None]
         assert xs == pytest.approx([100.0, 80.0, 60.0, 50.0, 40.0, 15.0, 12.0, 8.0])
@@ -243,9 +243,9 @@ class TestFinerGrainedReaggregationDimension:
 
 class TestPlainMeasureTypedFilterOverDimensionAggregate:
     def test_same_partition_key_error_as_without_dimension(self):
-        flt = "sum(amount, partition_by=[city, region]) < sum(amount)"
-        bare_q = sales_q(dimensions=["region"], metrics=[TOT], filter=[flt])
-        banded_q = sales_q(dimensions=["region", CITY_BAND], metrics=[TOT], filter=[flt])
+        flt = "sum(sales.amount, partition_by=[sales.city, sales.region]) < sum(sales.amount)"
+        bare_q = sales_q(dimensions=["sales.region"], metrics=[TOT], filter=[flt])
+        banded_q = sales_q(dimensions=["sales.region", CITY_BAND], metrics=[TOT], filter=[flt])
         bundle = _bundle()
         with pytest.raises(PartitionKeyError) as bare:
             plan_query(query=bare_q, bundle=bundle)
@@ -287,7 +287,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
     @pytest.mark.parametrize(("kw", "location"),
                              [pytest.param(kw, loc, id=i) for i, kw, loc in _fine_cases()])
     def test_combined_consumer_rejected(self, kw, location, with_dim):
-        dims = ["region", FINE_DIM] if with_dim else ["region"]
+        dims = ["sales.region", FINE_DIM] if with_dim else ["sales.region"]
         query, bundle = sales_q(dimensions=dims, **kw), _bundle()
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -297,7 +297,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
                                               (FINE_DIM, FINE)], ids=["plain", "reagg"])
     @pytest.mark.parametrize("template", ["rank({}, direction='desc')", "{} + 1"], ids=["transform", "arithmetic"])
     def test_order_expression_over_dimension_aggregate(self, dim, agg, template):
-        query = sales_q(dimensions=["region", dim], metrics=[TOT],
+        query = sales_q(dimensions=["sales.region", dim], metrics=[TOT],
                         order=[{"field": template.format(agg), "direction": "asc"}])
         bundle = _bundle()
         with pytest.raises(PartitionKeyError) as ei:
@@ -305,7 +305,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
         _assert_consumer_error(ei.value, key="city", location=r"order item\b")
 
     def test_cross_model_outer_key(self):
-        formula = "avg(sum(amount, partition_by=customer_id), partition_by=customers.region_id)"
+        formula = "avg(sum(corders.amount, partition_by=corders.customer_id), partition_by=customers.region_id)"
         query = chain_q(dimensions=["customers.regions.name"],
                         metrics=[QueryMetric(metric=formula, alias="c")])
         bundle = _bundle("corders")
@@ -329,7 +329,7 @@ _R_CONSUMERS = [
 
 
 def _r_query(kw: dict):
-    return sales_q(**{"dimensions": ["region", RLEVEL], "metrics": [TOT], **kw})
+    return sales_q(**{"dimensions": ["sales.region", RLEVEL], "metrics": [TOT], **kw})
 
 
 class TestDualPhasePlan:
@@ -366,13 +366,13 @@ def _is_inner_cr(key: ValueKey) -> bool:
 
 class TestDimensionTransformOwnsReaggregation:
     def test_rank_dimension_is_the_only_root(self):
-        ds = _discover(sales_q(dimensions=["region", TLEVEL], metrics=[TOT]), _bundle())
+        ds = _discover(sales_q(dimensions=["sales.region", TLEVEL], metrics=[TOT]), _bundle())
         assert {d.phase for d in ds if _is_rank(d.root)} == {"row"}
         assert not _roots(ds, _is_r)
         assert not _roots(ds, _is_inner_cr)
 
     def test_measure_occurrence_is_combined_only(self):
-        ds = _discover(sales_q(dimensions=["region", TLEVEL],
+        ds = _discover(sales_q(dimensions=["sales.region", TLEVEL],
                                metrics=[TOT, QueryMetric(metric=R, alias="r")]),
                        _bundle())
         assert {d.phase for d in ds if _is_rank(d.root)} == {"row"}

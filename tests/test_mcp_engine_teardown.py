@@ -98,7 +98,7 @@ async def _query_count(server, *, source_dataset: str) -> int:
         arguments={
             "query": {
                 "population": source_dataset,
-                "metrics": [{"metric": "count(*)"}],
+                "metrics": [{"metric": f"count({source_dataset}.*)"}],
             },
             "format": "json",
         },

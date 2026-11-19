@@ -51,8 +51,8 @@ class TestQueryMeasureNamedAfterTransform:
     async def test_order_reference(self, engine: SlayerQueryEngine) -> None:
         await assert_renamed_twin(
             engine,
-            monthly("change", order=[{"field": "change", "direction": "desc"}, {"field": "created_at"}]),
-            monthly("chg", order=[{"field": "chg", "direction": "desc"}, {"field": "created_at"}]),
+            monthly("change", order=[{"field": "change", "direction": "desc"}, {"field": "orders.created_at"}]),
+            monthly("chg", order=[{"field": "chg", "direction": "desc"}, {"field": "orders.created_at"}]),
             ordered=True,
         )
 

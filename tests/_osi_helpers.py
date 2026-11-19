@@ -213,4 +213,4 @@ async def scalar(*, result: ConversionResult, db: Path, dataset: str, expression
     rows = await query(result=result, db=db, dialect=dialect,
                        payload={"population": dataset, "metrics": [{"metric": expression, "alias": "v"}]})
     assert len(rows) == 1
-    return rows[0][f"{dataset}.v"]
+    return rows[0]["v"]

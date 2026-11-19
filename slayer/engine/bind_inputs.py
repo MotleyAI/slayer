@@ -72,7 +72,7 @@ from slayer.core.scope import (
     stale_spelling_position,
 )
 from slayer.engine.population import dimension_routing
-from slayer.engine.population.anchors import AnchoredSpelling, anchored_spelling
+from slayer.engine.population.anchors import AnchoredSpelling, anchor_route, anchored_spelling, find_anchor
 from slayer.engine.extensions import declaring_dataset_path
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension, spelled_aggregate_key
 from slayer.engine.elaborate_env import (
@@ -1041,6 +1041,8 @@ def _resolve_saved_metric_ref(
         return None
     if not isinstance(node, (Ref, DottedRef)):
         return None
+    if is_anchored(scope):
+        return _resolve_anchored_saved_metric_ref(node, host=host, bundle=bundle)
     parts = drop_root_qualifier(
         (node.name,) if isinstance(node, Ref) else node.parts, host.spelling, quoted=dotted_quoting(node),
     )
@@ -1057,6 +1059,31 @@ def _resolve_saved_metric_ref(
     terminal, canonical_ref = located
     mm = terminal.get_metric(leaf)
     return (terminal, mm, canonical_ref) if mm is not None else None
+
+
+def _resolve_anchored_saved_metric_ref(
+    node: Ref | DottedRef, *, host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[SlayerDataset, "DatasetMetric", str]]:
+    """A query reference's saved metric through the anchor resolver; a bare name or an unresolved path is none."""
+    if not isinstance(node, DottedRef):
+        return None
+    parts, quoted = node.parts, dotted_quoting(node)
+    datasets = bundle.datasets_by_name
+    anchor = find_anchor(parts[0], quoted=quoted[0], reader=host, datasets_by_name=datasets)
+    if anchor is None:
+        return None
+    try:
+        reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=datasets, rest=parts[1:])
+    except UnresolvableDimensionRelationshipError:
+        return None  # binding reports the ambiguity
+    *rest, leaf = parts[1:]
+    hops = [*reached.route, *rest]
+    walked = _walk_dotted(source_dataset=host, hops=hops, bundle=bundle) if hops else (host, ())
+    if walked is None:
+        return None
+    terminal, canonical = walked
+    mm = terminal.get_metric(leaf)
+    return (terminal, mm, ".".join((*canonical, leaf))) if mm is not None else None
 
 
 def _locate_dotted_saved_metric(
@@ -1106,12 +1133,13 @@ def _will_group_by(query: SlayerQuery) -> bool:
 
 
 def _reject_computed_dim_name_collision(
-    *, name: str, query: SlayerQuery, scope: DatasetScope | StageSchema,
+    *, name: str, query: SlayerQuery, scope: DatasetScope | StageSchema, ref: Optional[FieldRef] = None,
 ) -> None:
     dataset_collision = None
     if isinstance(scope, DatasetScope) and scope.population is not None:
         dataset = scope.population
-        if dataset.get_field(name) is not None or dataset.get_metric(name) is not None:
+        names_itself = ref is not None and ref.name == name and ref.dataset in (dataset.name, dataset.spelling)
+        if not names_itself and (dataset.get_field(name) is not None or dataset.get_metric(name) is not None):
             dataset_collision = dataset.name
     check_computed_dim_name_collision(
         name=name,
@@ -1131,7 +1159,7 @@ def _declared_computed_dimension(
     dim_alias_map: Optional[Dict[str, ValueKey]] = None,
 ) -> DeclaredMetric:
     name = d.name
-    _reject_computed_dim_name_collision(name=name, query=query, scope=scope)
+    _reject_computed_dim_name_collision(name=name, query=query, scope=scope, ref=d.ref)
     parsed = parse_bound_expr(d.field, query.bound_variables)
     bound = bind_expr(
         parsed=parsed, scope=scope, bundle=bundle, allow_metrics=True,
@@ -1328,7 +1356,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 public_name=public_name,
                 label=m.label,
                 # Keep the canonical alias when the surfaced name differs, so a filter / ORDER BY naming the aggregate resolves.
-                canonical_alias=canonical if alias_name or canonical != public_name else None,
+                canonical_alias=canonical if alias_name or canonical != declared_name else None,
                 name_is_explicit=explicit_name is not None,
                 datatype=m_type,
                 element_type=key_element_type(bound.value_key, scope=scope, bundle=bundle),
@@ -1797,7 +1825,7 @@ def _text_reads_spine(text: str, *, scope: DatasetScope | StageSchema) -> bool:
     """Whether Mode-B ``text`` reads the spine: by a dotted path, or bare from a spine root."""
     return any(
         path[0] == TIME_SPINE_DATASET if len(path) > 1 else _host_is_spine(scope)
-        for path in text_paths(text, root=root_spelling(scope))
+        for path in text_paths(text, root=None if is_anchored(scope) else root_spelling(scope))
     )
 
 

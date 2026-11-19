@@ -103,7 +103,7 @@ class TestDump:
     def test_a_refinement_dumps_in_ossie_keys(self) -> None:
         with recorded() as caught:
             refinement = QueryRefinement.model_validate(
-                {"metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["amount > 5"]})
+                {"metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filter": ["amount > 5"]})
         assert deprecations(caught) == []
         dumped = refinement.model_dump(mode="json", exclude_none=True)
         assert {"metrics", "filter"} <= dumped.keys()
@@ -136,7 +136,7 @@ async def test_a_nested_query_is_stored_in_ossie_keys(backend: str, tmp_path: Pa
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_refinement_in_ossie_keys_applies_as_before(backend: str) -> None:
-    refine = {"metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["region = 'US'"]}
+    refine = {"metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filter": ["orders.region = 'US'"]}
     async with refine_vocab_engine(backend) as engine:
         with recorded() as caught:
             refined = await engine.execute(SAVED_QUERY, refine=fresh(refine))

@@ -205,9 +205,9 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
             return float(resp.data[0]["w"]), dry.sql
 
     ev, explicit_sql = await run(
-        "wsum_region_pop(ship_region.countries.gdp, weight=ship_region.pop)")
+        "wsum_region_pop(orders.ship_region.countries.gdp, weight=orders.ship_region.pop)")
     assert ev == pytest.approx(SINGLE_CANCEL)
-    dv, default_sql = await run("wsum_region_pop(ship_region.countries.gdp)")
+    dv, default_sql = await run("wsum_region_pop(orders.ship_region.countries.gdp)")
     assert dv == pytest.approx(ev)
     # Spelling survives: the default reads pop through the ship_region-joined
     # regions, never a second `regions` join (which the current fan renders).
@@ -223,10 +223,10 @@ class TestKernelExpressionDefaults:
         # engine's current state, so a later execute would otherwise mask it).
         base = "wsum_region_pop_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
-            dimensions=["status"], to_many_handling="associate",
+            dimensions=["orders.status"], to_many_handling="associate",
             metrics=[QueryMetric(metric=base, alias="w")])))
         explicit = _cells(await engine.execute(orders_q(
-            dimensions=["status"], to_many_handling="associate",
+            dimensions=["orders.status"], to_many_handling="associate",
             metrics=[QueryMetric(metric=f"{base[:-1]}, weight=customers.regions.pop)",
                                    alias="w")])))
         assert default == explicit
@@ -259,7 +259,7 @@ class TestStageQueryUnaffected:
     async def test_two_stage_query_has_no_model_host(self, engine):
         """A later stage aggregating a stage's output resolves no definition
         default (a stage has no model host) — executes exactly as before."""
-        stage1 = orders_q(name="stage1", dimensions=["status"],
+        stage1 = orders_q(name="stage1", dimensions=["orders.status"],
                           metrics=[QueryMetric(metric="sum(orders.amount)", alias="amount_sum")])
         root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="stage1.status")],
                            metrics=[QueryMetric(metric="max(stage1.amount_sum)", alias="mx")])
@@ -298,7 +298,7 @@ class TestFailClosed:
 
     async def test_second_order_nowhere_default_raises_unresolvable(self):
         with pytest.raises(UnresolvableDimensionRelationshipError, match="(?i)nowhere"):
-            await _gen("wnowhere(sum(amount, partition_by=status))")
+            await _gen("wnowhere(sum(orders.amount, partition_by=orders.status))")
 
     async def test_query_typed_revisit_raises_circular_join(self):
         # DEV-1952 owns the model-SQL derived-column revisit; only the query-typed
@@ -307,8 +307,8 @@ class TestFailClosed:
             await _gen("sum(customers.regions.customers.spend)")
 
     @pytest.mark.parametrize("formula", [
-        "wsum_cust_spend(pop)",
-        "wsum_cust_spend(pop, weight=customers.spend)"])
+        "wsum_cust_spend(regions.pop)",
+        "wsum_cust_spend(regions.pop, weight=customers.spend)"])
     async def test_reverse_hop_not_on_the_path_stays_refused(self, formula):
         # Rooted at regions, `customers` is not on the path: nothing cancels, and
         # BOTH the default and its explicit twin fail with the same input-safety

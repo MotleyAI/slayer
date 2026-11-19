@@ -224,7 +224,7 @@ class TestHeadlineOracle:
         """Scenario: Row-weighted value distinguishable from pure
         re-aggregation — and from the plain per-row product."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=MIXED_SUM, alias="m")]))
         vals = _region_vals(resp, "m")
         for region, expected in MIXED_SUM_BY_REGION.items():
@@ -239,10 +239,10 @@ class TestHeadlineOracle:
     async def test_adding_mixed_measure_is_cardinality_neutral(self, exec_engine):
         """Scenario: Adding a mixed measure is cardinality-neutral."""
         base = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         with_mixed = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       QueryMetric(metric=MIXED_SUM, alias="m")]))
         assert len(with_mixed.data) == len(base.data)
@@ -257,7 +257,7 @@ class TestUngrainedInner:
         """Scenario: Ungrained inner constituent types at the query's
         dimensions — no degenerate-re-aggregation warning."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.quantity * avg(sales.unit_price))",
                                    alias="m")]))
         vals = _region_vals(resp, "m")
@@ -274,7 +274,7 @@ class TestNullConstituent:
         """Scenario: Missing constituent value is NULL on a surviving row —
         Xi's all-NULL city cell broadcasts NULL, restored by coalesce."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[
                 QueryMetric(metric=f"sum(quantity * {INNER_UP_CITY})",
                              alias="bare"),
@@ -298,7 +298,7 @@ class TestFilterInheritance:
         """Scenario: Row filters bound both the population and the
         constituents — quantity >= 2 shifts avg_P from 5 to 6."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], filter=["quantity >= 2"],
+            dimensions=["sales.region"], filter=["sales.quantity >= 2"],
             metrics=[QueryMetric(metric=MIXED_SUM, alias="m")]))
         vals = _region_vals(resp, "m")
         for region, expected in FILTERED_MIXED_BY_REGION.items():
@@ -311,7 +311,7 @@ class TestCountFamily:
         """Scenario: Count semantics over a mixed source — Void's rows carry a
         NULL city constituent, so its count is 0, not a dropped row."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"count(quantity * {INNER_UP_CITY})",
                                    alias="n")]))
         vals = _region_vals(resp, "n")
@@ -320,7 +320,7 @@ class TestCountFamily:
 
     async def test_count_distinct_over_mixed_values(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"count_distinct(quantity * {INNER_UP_PRODUCT})",
                 alias="nd")]))
@@ -349,7 +349,7 @@ class TestFilterAndOrderPositions:
         """Scenario: Filter and order positions — the filter types as a
         measure, pruning rows with surviving values unchanged."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], filter=[f"{MIXED_SUM} > 40"],
+            dimensions=["sales.region"], filter=[f"{MIXED_SUM} > 40"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         vals = _region_vals(resp, "tot")
         assert set(vals) == {"North", "South", "East"}
@@ -359,7 +359,7 @@ class TestFilterAndOrderPositions:
 
     async def test_order_position_sorts_by_the_mixed_value(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")],
             order=[{"field": MIXED_SUM, "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data]
@@ -383,7 +383,7 @@ class TestOuterModifiers:
     async def test_outer_partition_by_broadcasts_region_totals(self, exec_engine):
         """Scenario: Outer partition_by over a mixed source."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", "product"],
+            dimensions=["sales.region", "sales.product"],
             metrics=[QueryMetric(
                 metric=f"sum(quantity * {INNER_UP_PRODUCT}, "
                         f"partition_by=region)",
@@ -398,7 +398,7 @@ class TestOuterModifiers:
     async def test_parametric_outer_with_row_valued_weight(self, exec_engine):
         """Scenario: Parametric outer with a row-valued parameter."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"wavg(quantity * {INNER_UP_PRODUCT}, weight=quantity)",
                 alias="w")]))
@@ -409,7 +409,7 @@ class TestOuterModifiers:
     async def test_custom_model_defined_outer(self, exec_engine):
         """Scenario: Custom and multi-input aggregations — dsum is SUM."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"dsum(quantity * {INNER_UP_PRODUCT})",
                                    alias="ds")]))
         vals = _region_vals(resp, "ds")
@@ -420,7 +420,7 @@ class TestOuterModifiers:
         """Scenario: Custom and multi-input aggregations — corr's own
         rendering path; Gap's operand is exactly linear in quantity."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"corr(quantity * {INNER_UP_PRODUCT}, other=quantity)",
                 alias="c")]))
@@ -444,7 +444,7 @@ class TestOuterModifiers:
 
 
 class TestWindowedConstituent:
-    _FORMULA = "sum(qty * sum(revenue, window='90d'))"
+    _FORMULA = "sum(sales.qty * sum(sales.revenue, window='90d'))"
 
     def test_windowed_inner_is_exactly_one_nested_producer(self):
         """Scenario: the windowed inner is exactly one nested producer at the
@@ -485,7 +485,7 @@ class TestSqlHygiene:
     ])
     async def test_no_placeholder_leak_and_closed_scopes(self, formula):
         sql = await gen(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=formula, alias="m")]))
         assert "__regroup__" not in sql, f"placeholder leaked:\n{sql}"
         assert_scope_closed(sql)

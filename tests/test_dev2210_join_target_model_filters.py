@@ -48,7 +48,7 @@ def _month(value: Any) -> str:
 
 
 def _per_month(resp: SlayerResponse, *names: str, source: str = "done_orders") -> dict[str, tuple]:
-    got = {_month(r[f"{source}.ordered_at"]): tuple(r[f"{source}.{n}"] for n in names) for r in resp.data}
+    got = {_month(r[f"{source}.ordered_at"]): tuple(r[n] for n in names) for r in resp.data}
     assert len(got) == len(resp.data), resp.data
     return got
 
@@ -64,8 +64,8 @@ class TestJoinTargetReadsFilteredRows:
         assert await _ids(engine, source="orders", filters=["late_returns.id is null or amount > 350"]) == {2, 3, 4}
 
     async def test_pushdown_under_aggregation(self, engine):
-        resp = await _run(engine, population="orders", dimensions=["status"],
-                          metrics=[{"metric": "count(*)", "alias": "n"}], filter=["late_returns.id is null"])
+        resp = await _run(engine, population="orders", dimensions=["orders.status"],
+                          metrics=[{"metric": "count(orders.*)", "alias": "n"}], filter=["late_returns.id is null"])
         assert {r["orders.status"]: int(r["n"]) for r in resp.data} == {"done": 2, "open": 1}
 
     async def test_stage_source(self, engine):
@@ -76,18 +76,18 @@ class TestJoinTargetReadsFilteredRows:
         assert ids(resp, "s") == {1, 2, 3}
 
     async def test_to_one_dimension_null_extends(self, engine):
-        resp = await _run(engine, population="returns", dimensions=["id", "done_orders.status"])
+        resp = await _run(engine, population="returns", dimensions=["returns.id", "done_orders.status"])
         assert by_id(resp, "returns", "done_orders.status") == {10: "done", 11: "done", 12: "done", 13: None}
 
     async def test_to_one_null_test_keeps_outer_rows(self, engine):
         assert await _ids(engine, source="returns", filters=["done_orders.id is null"]) == {13}
 
     async def test_cross_model_aggregate(self, engine):
-        resp = await _run(engine, population="orders", dimensions=["id"], metrics=["count(late_returns.*)"])
+        resp = await _run(engine, population="orders", dimensions=["orders.id"], metrics=["count(late_returns.*)"])
         assert {k: int(v) for k, v in by_id(resp, "orders", "late_returns._count").items()} == {1: 1, 2: 0, 3: 0, 4: 0}
 
     async def test_inner_join_drops_filtered_out_target(self, engine):
-        resp = await _run(engine, population="returns_inner", dimensions=["id", "done_orders.status"])
+        resp = await _run(engine, population="returns_inner", dimensions=["returns_inner.id", "done_orders.status"])
         assert by_id(resp, "returns_inner", "done_orders.status") == {10: "done", 11: "done", 12: "done"}
 
     @pytest.mark.parametrize("target", ["done_orders_sql", "done_orders_qb"])
@@ -100,7 +100,7 @@ class TestJoinTargetReadsFilteredRows:
         assert await _ids(engine, source="returns_of_done") == {10, 11, 12}
 
     async def test_derived_column_reads_joined_models_filtered_rows(self, engine):
-        resp = await _run(engine, population="returns", dimensions=["id", "done_status"])
+        resp = await _run(engine, population="returns", dimensions=["returns.id", "returns.done_status"])
         assert by_id(resp, "returns", "done_status") == {10: "done", 11: "done", 12: "done", 13: None}
 
 
@@ -111,7 +111,7 @@ class TestUnrelatedDatasetReadsFilteredRows:
 
     async def test_filtered_model_as_the_population_side(self, engine):
         resp = await _run(engine, population="done_orders", metrics=[
-            {"metric": "count(*)", "alias": "n"}, {"metric": "count(carriers.id)", "alias": "s"},
+            {"metric": "count(done_orders.*)", "alias": "n"}, {"metric": "count(carriers.id)", "alias": "s"},
         ])
         assert [(int(r["n"]), int(r["s"])) for r in resp.data] == [(3, 2)]
 
@@ -121,7 +121,7 @@ class TestFilteredRoot:
         assert await _ids(engine, source="done_orders") == {1, 2, 3}
 
     async def test_measure(self, engine):
-        resp = await _run(engine, population="done_orders", metrics=[{"metric": "sum(amount)", "alias": "s"}])
+        resp = await _run(engine, population="done_orders", metrics=[{"metric": "sum(done_orders.amount)", "alias": "s"}])
         assert [int(r["s"]) for r in resp.data] == [600]
 
     async def test_isolated_aggregate(self, engine):
@@ -135,8 +135,8 @@ class TestFilteredRoot:
     async def test_windowed_aggregate(self, engine):
         resp = await _run(
             engine, population="done_orders",
-            time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
-            metrics=[{"metric": "sum(amount, window='366d')", "alias": "w"}],
+            time_dimensions=[{"field": "done_orders.ordered_at", "granularity": "month"}],
+            metrics=[{"metric": "sum(done_orders.amount, window='366d')", "alias": "w"}],
         )
         assert {k: int(v) for (k, (v,)) in _per_month(resp, "w").items()} == {
             "2024-01": 100, "2024-02": 300, "2024-03": 600,
@@ -145,8 +145,8 @@ class TestFilteredRoot:
     async def test_time_shifted_aggregate(self, engine):
         resp = await _run(
             engine, population="done_orders",
-            time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}, {"metric": "time_shift(sum(amount), -1)", "alias": "p"}],
+            time_dimensions=[{"field": "done_orders.ordered_at", "granularity": "month"}],
+            metrics=[{"metric": "sum(done_orders.amount)", "alias": "s"}, {"metric": "time_shift(sum(done_orders.amount), -1)", "alias": "p"}],
         )
         got = {k: tuple(None if x is None else int(x) for x in v) for k, v in _per_month(resp, "s", "p").items()}
         assert got == {"2024-01": (100, None), "2024-02": (200, 100), "2024-03": (300, 200)}
@@ -154,16 +154,16 @@ class TestFilteredRoot:
     async def test_date_range(self, engine):
         resp = await _run(
             engine, population="done_orders",
-            time_dimensions=[{"field": "ordered_at", "granularity": "month", "date_range": ["2024-02-01", "2024-02-29"]}],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            time_dimensions=[{"field": "done_orders.ordered_at", "granularity": "month", "date_range": ["2024-02-01", "2024-02-29"]}],
+            metrics=[{"metric": "sum(done_orders.amount)", "alias": "s"}],
         )
         assert {k: int(v) for (k, (v,)) in _per_month(resp, "s").items()} == {"2024-02": 200}
 
     async def test_spine_cells_are_filtered_rows_only(self, engine):
         resp = await _run(
-            engine, population="done_orders", dimensions=["id"],
+            engine, population="done_orders", dimensions=["done_orders.id"],
             time_dimensions=[{"field": "time_spine.timestamp", "granularity": "month", "date_range": JAN_MAR}],
-            metrics=[{"metric": "count(*)", "alias": "n"}],
+            metrics=[{"metric": "count(done_orders.*)", "alias": "n"}],
         )
         cells = {(int(r["done_orders.id"]), _month(r["time_spine.timestamp"])): int(r["n"])
                  for r in resp.data}
@@ -194,11 +194,11 @@ class TestListParentReadsFilteredRows:
 
 class TestAssociation:
     async def test_unproven_hop_counts_each_row_once(self, engine):
-        resp = await _run(engine, population="ups_orders", metrics=[{"metric": "count(*)", "alias": "n"}])
+        resp = await _run(engine, population="ups_orders", metrics=[{"metric": "count(ups_orders.*)", "alias": "n"}])
         assert [int(r["n"]) for r in resp.data] == [2]
 
     async def test_join_target_across_unproven_hop_never_multiplies(self, engine):
-        resp = await _run(engine, population="returns", dimensions=["id", "ups_orders.id"])
+        resp = await _run(engine, population="returns", dimensions=["returns.id", "ups_orders.id"])
         assert len(resp.data) == 4
         assert by_id(resp, "returns", "ups_orders.id") == {10: 1, 11: 1, 12: None, 13: None}
 

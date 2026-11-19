@@ -252,6 +252,6 @@ async def monthly(
     }))
     names = [m["alias"] if isinstance(m, dict) else m for m in metrics]
     return {
-        month_key(r[f"{dataset}.{column}"]): {n: r[f"{dataset}.{n}"] for n in names}
+        month_key(r[f"{dataset}.{column}"]): {n: r[n] for n in names}
         for r in resp.data
     }

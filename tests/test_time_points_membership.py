@@ -9,7 +9,7 @@ from slayer.core.errors import TimeLiteralError
 from tests._time_points_fixtures import ids, tp_engine
 
 
-@pytest.mark.parametrize("filt", ["ts in 'last fortnight'", "ts not in '2025/01'"])
+@pytest.mark.parametrize("filt", ["ev.ts in 'last fortnight'", "ev.ts not in '2025/01'"])
 async def test_non_time_point_membership_lists_the_forms(filt) -> None:
     async with tp_engine("sqlite") as engine:
         with pytest.raises(TimeLiteralError) as ei:

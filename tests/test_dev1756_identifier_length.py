@@ -197,7 +197,7 @@ def _repro_query(*, with_order: bool = False) -> SlayerQuery:
     """The exact query from the original identifier-length report."""
     kwargs = {}
     if with_order:
-        kwargs["order"] = [OrderItem.model_validate({"field": "avg(totalAmount)", "direction": "desc"})]
+        kwargs["order"] = [OrderItem.model_validate({"field": "avg(SandboxInvoiceV2.totalAmount)", "direction": "desc"})]
         kwargs["limit"] = 10
     return SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
             QueryDimension(field=f"{DEEP}.name"),

@@ -45,7 +45,7 @@ def _with_query_backed(datasets: List[SlayerDataset]) -> List[SlayerDataset]:
         name="region_amounts", data_source="test",
         source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.regions.rname"],
-            metrics=[{"metric": "sum(amount)", "alias": "amt"}])])]
+            metrics=[{"metric": "sum(orders.amount)", "alias": "amt"}])])]
 
 
 def _parallel_datasets() -> List[SlayerDataset]:
@@ -81,7 +81,7 @@ def _ambiguous_qb_datasets() -> List[SlayerDataset]:
     return [*models, SlayerDataset(
         name="pq", data_source="test", source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.hr.rname", "customers.hr2.rname"],
-            metrics=[{"metric": "sum(amount)", "alias": "amt"}])])]
+            metrics=[{"metric": "sum(orders.amount)", "alias": "amt"}])])]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -98,13 +98,13 @@ async def parallel_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 def _stage1(**kw) -> SlayerQuery:
     kw.setdefault("dimensions", ["customers.regions.rname"])
-    kw.setdefault("metrics", ["sum(amount)"])
+    kw.setdefault("metrics", ["sum(orders.amount)"])
     return slayer_query(name="s1", population="orders", **kw)
 
 
 def _stage2(*, dim: str, **kw) -> SlayerQuery:
     return slayer_query(population="s1", dimensions=[dim],
-                       metrics=["sum(amount_sum)"], **kw)
+                       metrics=["sum(s1.amount_sum)"], **kw)
 
 
 def _amounts(*, resp, key: str) -> dict:
@@ -125,7 +125,7 @@ class TestStageColumnRespellings:
         bundle = ResolvedSourceBundle(dialect="postgres", population=datasets[0],
                                       referenced_datasets=datasets[1:])
         planned = plan_stages(
-            queries=[stage, slayer_query(population=stage.name, metrics=["count(*)"])],
+            queries=[stage, slayer_query(population=stage.name, metrics=["count(s1.*)"])],
             bundle=bundle)
         schema = planned[0].stage_schema
         assert schema is not None
@@ -145,7 +145,7 @@ class TestStageColumnRespellings:
         _stage1(dimensions=[], metrics=["max(customers.regions.pop)"]),
         _stage1(dimensions=[], metrics=["count(customers.regions.*)"]),
         _stage1(dimensions=[], metrics=["customers.regions.maxpop"]),
-        _stage1(dimensions=[], metrics=["sum(amount)"], time_dimensions=[
+        _stage1(dimensions=[], metrics=["sum(orders.amount)"], time_dimensions=[
             {"field": "customers.regions.founded_at", "granularity": "year"}]),
     ], ids=["functional", "star", "saved", "time"])
     def test_every_path_derived_form(self, stage) -> None:
@@ -178,13 +178,13 @@ class TestStageColumnRespellings:
     def test_pass_through_inherits(self) -> None:
         stage1 = _stage1(metrics=["max(customers.regions.pop)"])
         stage2 = slayer_query(name="s2", population="s1", dimensions=[CANON],
-                              metrics=["max(customers__hr__pop_max)",
-                                        {"metric": "min(customers__hr__pop_max)",
+                              metrics=["max(s1.customers__hr__pop_max)",
+                                        {"metric": "min(s1.customers__hr__pop_max)",
                                          "alias": "customers__hr__lo"}])
         bundle = ResolvedSourceBundle(dialect="postgres", population=dev1954_datasets()[0],
                                       referenced_datasets=dev1954_datasets()[1:])
         planned = plan_stages(queries=[stage1, stage2, slayer_query(
-            population="s2", metrics=["count(*)"])], bundle=bundle)
+            population="s2", metrics=["count(s2.*)"])], bundle=bundle)
         schema = planned[1].stage_schema
         assert schema is not None
         cols = {c.name: c for c in schema.fields}
@@ -216,7 +216,7 @@ class TestDownstreamStageStaleReference:
     async def test_extension_over_the_sibling_stage(self, engine: SlayerQueryEngine) -> None:
         def ext(dim: str) -> SlayerQuery:
             return slayer_query(population="s1", extensions=[{"dataset": "s1"}], dimensions=[dim],
-                                metrics=["sum(amount_sum)"])
+                                metrics=["sum(s1.amount_sum)"])
 
         stale = await engine.execute([_stage1(), ext(STALE)])
         canon = await engine.execute([_stage1(), ext(CANON)])
@@ -226,9 +226,9 @@ class TestDownstreamStageStaleReference:
 
     async def test_survives_a_chain_of_stages(self, engine) -> None:
         stage2 = slayer_query(name="s2", population="s1", dimensions=[STALE],
-                              metrics=["sum(amount_sum)"])
+                              metrics=["sum(s1.amount_sum)"])
         resp = await engine.execute([_stage1(), stage2, slayer_query(
-            population="s2", dimensions=[STALE], metrics=["sum(amount_sum_sum)"])])
+            population="s2", dimensions=[STALE], metrics=["sum(s2.amount_sum_sum)"])])
         assert {r[f"s2.{CANON}"]: r["s2.amount_sum_sum_sum"] for r in resp.data} \
             == AMOUNT_BY_NAME
         warnings = stale_warnings(resp)
@@ -252,7 +252,7 @@ class TestDownstreamStageStaleReference:
             f"region_amounts__{STALE}", f"region_amounts__{CANON}")
 
     async def test_exact_name_wins(self, engine) -> None:
-        stage1 = _stage1(metrics=[{"metric": "sum(amount)", "alias": STALE}])
+        stage1 = _stage1(metrics=[{"metric": "sum(orders.amount)", "alias": STALE}])
         resp = await engine.execute([stage1, slayer_query(
             population="s1", metrics=[{"metric": f"sum({STALE})", "alias": "t"}])])
         assert resp.data[0]["t"] == pytest.approx(167.0)
@@ -274,22 +274,22 @@ class TestDownstreamStageStaleReference:
 # --------------------------------------------------------------------------- #
 class TestQueryBackedConsumer:
     async def test_ambiguous_column_sql_fails_closed(self, ambiguous_qb_engine) -> None:
-        query = slayer_query(population="regions", dimensions=["amb"])
+        query = slayer_query(population="regions", dimensions=["regions.amb"])
         with pytest.raises(UnknownReferenceError, match=STALE):
             await ambiguous_qb_engine.execute(query)
 
     async def test_query_on_the_query_backed_model(self, engine: SlayerQueryEngine) -> None:
         stale = await engine.execute(slayer_query(
-            population="region_amounts", dimensions=[STALE], metrics=["sum(amt)"]))
+            population="region_amounts", dimensions=[STALE], metrics=["sum(region_amounts.amt)"]))
         canon = await engine.execute(slayer_query(
-            population="region_amounts", dimensions=[CANON], metrics=["sum(amt)"]))
+            population="region_amounts", dimensions=[CANON], metrics=["sum(region_amounts.amt)"]))
         assert stale.columns == canon.columns
         assert sorted(map(repr, stale.data)) == sorted(map(repr, canon.data))
         _assert_one_stale(stale)
 
     async def test_other_models_column_sql(self, engine) -> None:
         resp = await engine.execute(slayer_query(
-            population="regions", dimensions=["qb_label"]))
+            population="regions", dimensions=["regions.qb_label"]))
         assert {r["regions.qb_label"] for r in resp.data} == {"North", "South"}
         _assert_one_stale(resp)
 
@@ -304,15 +304,15 @@ class TestQueryBackedConsumer:
         await engine.storage.save_dataset(SlayerDataset(
             name="ra2", data_source="test", source_queries=[slayer_query(
                 population="region_amounts", dimensions=[CANON],
-                metrics=[{"metric": "sum(amt)", "alias": "amt2"}])]))
+                metrics=[{"metric": "sum(region_amounts.amt)", "alias": "amt2"}])]))
         resp = await engine.execute(slayer_query(
-            population="ra2", dimensions=[STALE], metrics=["sum(amt2)"]))
+            population="ra2", dimensions=[STALE], metrics=["sum(ra2.amt2)"]))
         assert {r[f"ra2.{CANON}"] for r in resp.data} == {"North", "South", None}
         _assert_one_stale(resp)
 
     async def test_stored_query_keeps_its_spelling(self, engine: SlayerQueryEngine) -> None:
         await engine.execute(slayer_query(
-            population="region_amounts", dimensions=[STALE], metrics=["sum(amt)"]))
+            population="region_amounts", dimensions=[STALE], metrics=["sum(region_amounts.amt)"]))
         model = await engine.storage.get_dataset("region_amounts", data_source="test")
         assert model is not None
         assert model.source_queries
@@ -335,7 +335,7 @@ class TestQueryBackedConsumer:
 class TestEdgeNamedLater:
     async def test_existing_reference_keeps_resolving(self, unnamed_engine: SlayerQueryEngine) -> None:
         query = slayer_query(population="region_amounts", dimensions=[STALE],
-                            metrics=["sum(amt)"])
+                            metrics=["sum(region_amounts.amt)"])
         before = await unnamed_engine.execute(query)
         assert stale_warnings(before) == []
 

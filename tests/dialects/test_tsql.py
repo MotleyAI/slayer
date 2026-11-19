@@ -200,8 +200,8 @@ async def _tsql(query) -> str:
 
 def _plain_hidden_order(**kw) -> SlayerQuery:
     """A no-transform query whose hidden ORDER BY slot forces the outer trim wrap."""
-    return q(dimensions=["status"], metrics=["sum(amount)"],
-             order=[{"field": "max(amount)", "direction": "desc"}], **kw)
+    return q(dimensions=["orders.status"], metrics=["sum(orders.amount)"],
+             order=[{"field": "max(orders.amount)", "direction": "desc"}], **kw)
 
 
 async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
@@ -254,7 +254,7 @@ async def test_tsql_chain_with_order_and_offset() -> None:
 
 async def test_tsql_hidden_alias_in_order_by() -> None:
     """ORDER BY may name a carried alias that is not in the public projection."""
-    sql = await _tsql(cumsum_chain(order=[{"field": "max(amount)", "direction": "desc"}]))
+    sql = await _tsql(cumsum_chain(order=[{"field": "max(orders.amount)", "direction": "desc"}]))
     top = parse(sql, "tsql")
     assert [c.name for c in top.args["order"].find_all(exp.Column)] == ["orders___amount_max"]
     assert "orders___amount_max" in outer_derived(top).named_selects
@@ -263,8 +263,8 @@ async def test_tsql_hidden_alias_in_order_by() -> None:
 
 async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
     sql = await _tsql(cumsum_chain(metrics=[
-        {"metric": "cumsum(sum(amount))", "alias": "running"},
-        {"metric": "change(cumsum(sum(amount)))", "alias": "d"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "running"},
+        {"metric": "change(cumsum(sum(orders.amount)))", "alias": "d"},
     ]))
     names = cte_names(assert_single_top_level_with(sql, "tsql"))
     assert names[0] == "base", names

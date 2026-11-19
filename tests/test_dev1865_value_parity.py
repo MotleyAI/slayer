@@ -49,7 +49,7 @@ async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None)
 
 
 _SHAPES = [
-    pytest.param(["region"], "sum(amount)", 60, None, id="plain-local"),
+    pytest.param(["region"], "sum(orders.amount)", 60, None, id="plain-local"),
     pytest.param(["customers.tier"], "sum(customers.spend)", 175, None, id="cross-model"),
     pytest.param(
         ["customers.regions.name", "customers.tier"],
@@ -57,7 +57,7 @@ _SHAPES = [
         id="cross-model-partitioned",
     ),
     pytest.param(
-        ["region"], "sum(amount, window='90d', partition_by=region)", 40, month_td(),
+        ["region"], "sum(orders.amount, window='90d', partition_by=orders.region)", 40, month_td(),
         id="windowed",
     ),
 ]
@@ -79,7 +79,7 @@ class TestNullPredicateDropsRow:
         # ``nomatch`` sums a never-true filtered column → NULL for every group;
         # NULL > 0 is NULL, so WHERE/HAVING drops the cell.
         twin = (await exec_engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(metric="sum(orders.nomatch)", alias="e"),
@@ -88,9 +88,9 @@ class TestNullPredicateDropsRow:
         assert twin
         assert all(r["e"] is None for r in twin)
         filtered = (await exec_engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
-            filter=["sum(nomatch) > 0"],
+            filter=["sum(orders.nomatch) > 0"],
         ))).data
         assert filtered == []
 

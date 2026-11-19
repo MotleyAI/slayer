@@ -841,7 +841,7 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
 
 @pytest.mark.parametrize(
     ("column", "alias"),
-    [("created_at", "orders___created_at"), ("max(amount)", "orders___amount_max")],
+    [("created_at", "orders___created_at"), ("max(orders.amount)", "orders___amount_max")],
 )
 async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias: str) -> None:
     """No empty backtick qualifier; the alias keeps its model prefix (public or hidden)."""

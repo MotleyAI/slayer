@@ -33,7 +33,7 @@ from slayer.core.keys import AggregateKey
 from slayer.core.keys import FieldKey
 from slayer.core.keys import Phase
 
-_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
+_MEASURE = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 
 def _plan(query: SlayerQuery):
@@ -180,7 +180,7 @@ class TestScopeClassification:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=_MEASURE,
-            order=[OrderItem.model_validate({"field": "sum(customers.spend) + sum(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(customers.spend) + sum(orders.amount)", "direction": "desc"})],
         ))
         assert entry.scope is OrderScope.OUTER_COMPOSITE
 

@@ -47,7 +47,7 @@ class TestErrorModeRefusesBroadcast:
     async def test_cross_model_broadcast_errors(self, exec_backend):
         """Scenario: broadcast-would-happen errors — cross-model."""
         _, engine = exec_backend
-        query = error_q(dimensions=["status"], metrics=[M, CM])
+        query = error_q(dimensions=["orders.status"], metrics=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
         msg = str(ei.value)
@@ -73,7 +73,7 @@ class TestErrorModeRefusesExcludedFilters:
         _, engine = exec_backend
         resp = await engine.execute(error_q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.tier = 'bronze' OR channel = 'app'"]))
+            filter=["customers.tier = 'bronze' OR orders.channel = 'app'"]))
         by = rows_by(resp, "customers.tier")
         for tier, spend in {"gold": 160.0, "silver": 230.0, "bronze": 40.0}.items():
             assert float(by[(tier,)]["cm"]) == pytest.approx(spend), tier
@@ -82,7 +82,7 @@ class TestErrorModeRefusesExcludedFilters:
         """An ambiguous correlation hop fails closed in every mode — not an
         error-mode concern, but it must not be masked by it."""
         _, engine = exec_backend_amb
-        query = error_q(population="tickets", metrics=[SM], filter=["effort > 2"])
+        query = error_q(population="tickets", metrics=[SM], filter=["tickets.effort > 2"])
         with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(query)
 
@@ -94,7 +94,7 @@ class TestErrorModePasses:
         the broadcast run."""
         _, engine = exec_backend
         kw = dict(dimensions=["customers.tier"], metrics=[M, CM],
-                  filter=["channel = 'app'"])
+                  filter=["orders.channel = 'app'"])
         strict_resp = await engine.execute(error_q(**kw))
         lenient_resp = await engine.execute(bcast_q(**kw))
         strict_by = rows_by(strict_resp, "customers.tier")
@@ -114,7 +114,7 @@ class TestErrorModePasses:
         in error mode (requested grain, by design)."""
         _, engine = exec_backend
         resp = await engine.execute(error_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="sum(customers.spend, partition_by=[])", alias="total")]))
         for row in resp.data:
@@ -129,7 +129,7 @@ class TestStrictParity:
         ok = await engine.execute(
             error_q(dimensions=["customers.tier"], metrics=[CM]))
         assert ok.data
-        broadcast_query = error_q(dimensions=["status"], metrics=[CM])
+        broadcast_query = error_q(dimensions=["orders.status"], metrics=[CM])
         with pytest.raises((SlayerError, ValueError)):
             await engine.execute(broadcast_query)
 

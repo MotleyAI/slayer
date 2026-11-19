@@ -65,7 +65,7 @@ class TestFullyAttachedAccepted:
 
     async def test_reaggregation_compiles_to_sql(self):
         """Accepted end-to-end: emits SQL rather than raising the gate."""
-        sql = await gen(sales_q(dimensions=["region"],
+        sql = await gen(sales_q(dimensions=["sales.region"],
                                 metrics=[QueryMetric(metric=f"avg({INNER_CR})",
                                                        alias="acr")]))
         assert "SELECT" in sql.upper()
@@ -87,7 +87,7 @@ class TestRejections:
         (DEV-1892) names the parameter, the grain, and the partition_by remedy,
         ref-free."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"wavg({INNER_CR}, weight=id)", alias="w")])
         with pytest.raises(SlayerError) as ei:
@@ -103,7 +103,7 @@ class TestRejections:
         weight default (the ``amount`` column) is undetermined at the operand
         grain; same one-rule error."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
@@ -118,7 +118,7 @@ class TestRejections:
         attached operand is a typed error naming the combination, never a
         NotImplementedError."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"sum({INNER_CR}, window='90d')", alias="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -147,7 +147,7 @@ class TestCrossModelAndFilteredOperandNowAccepted:
 
     async def test_filtered_column_operand_accepted(self):
         """A filtered column operand desugars to CASE WHEN, not a rejection."""
-        query = sales_q(dimensions=["region"],
+        query = sales_q(dimensions=["sales.region"],
                         metrics=[QueryMetric(metric="sum(sales.q_amount - 1)",
                                                alias="x")])
         assert "CASE WHEN" in (await gen(query)).upper()
@@ -180,7 +180,7 @@ class TestUnknownOuterAggregationRejectedAtBinding:
     async def test_unknown_custom_name_over_aggregate_errors(self):
         """Unknown custom-aggregation candidates are rejected at binding."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"magic_fn({INNER_CR})", alias="x")])
         with pytest.raises((SlayerError, ValueError), match="(?i)unknown function"):
             await gen(query)

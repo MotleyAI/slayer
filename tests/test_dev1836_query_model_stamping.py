@@ -38,7 +38,7 @@ def _pk_names(dataset: SlayerDataset) -> set[str]:
 class TestStamping:
     async def test_aggregated_query_stamps_composite_grain(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
-            q(dimensions=["status", "channel"],
+            q(dimensions=["orders.status", "orders.channel"],
               metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),
             "vm_agg",
         )
@@ -46,7 +46,7 @@ class TestStamping:
 
     async def test_dimension_only_distinct_stamps_grain(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
-            q(dimensions=["status"]), "vm_dims",
+            q(dimensions=["orders.status"]), "vm_dims",
         )
         # A single-column grain is unique, not a primary key (not an identifier).
         assert _pk_names(model) == set()
@@ -56,7 +56,7 @@ class TestStamping:
         """F2 negative — ``distinct_dimension_values=False`` preserves
         duplicates, so no uniqueness claim may be stamped."""
         model = await engine.create_dataset_from_query(
-            q(dimensions=["status"], distinct_dimension_values=False),
+            q(dimensions=["orders.status"], distinct_dimension_values=False),
             "vm_dup",
         )
         assert _pk_names(model) == set()
@@ -68,7 +68,7 @@ class TestStampedModelProvesJoins:
 
     async def test_join_onto_complete_grain_is_provable(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
-            q(dimensions=["status", "channel"],
+            q(dimensions=["orders.status", "orders.channel"],
               metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),
             "vm_kpis",
         )
@@ -80,7 +80,7 @@ class TestStampedModelProvesJoins:
 
     async def test_join_onto_partial_grain_stays_unproven(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
-            q(dimensions=["status", "channel"],
+            q(dimensions=["orders.status", "orders.channel"],
               metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),
             "vm_kpis2",
         )
@@ -95,7 +95,7 @@ class TestStampedModelProvesJoins:
         """Scenario's executed clause: a cross-model metric over the proven
         join onto the query-backed model keeps exact per-dimension values."""
         await engine.create_dataset_from_query(
-            q(dimensions=["status", "channel"],
+            q(dimensions=["orders.status", "orders.channel"],
               metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),
             "vm_grain",
         )
@@ -107,7 +107,7 @@ class TestStampedModelProvesJoins:
         ))
         await engine.storage.save_dataset(host, _validate=False)
         resp = await engine.execute(q(
-            population="orders_kpi", dimensions=["status"],
+            population="orders_kpi", dimensions=["orders_kpi.status"],
             metrics=[QueryMetric(metric="sum(vm_grain.total)", alias="t")],
         ))
         got = {r["orders_kpi.status"]: float(r["t"])
@@ -117,7 +117,7 @@ class TestStampedModelProvesJoins:
 
     async def test_unstamped_model_proves_nothing(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
-            q(dimensions=["status"], distinct_dimension_values=False),
+            q(dimensions=["orders.status"], distinct_dimension_values=False),
             "vm_dup2",
         )
         join = DatasetRelationship(to="vm_dup2", from_columns=["status"], to_columns=["status"])

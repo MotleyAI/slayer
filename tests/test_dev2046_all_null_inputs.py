@@ -37,9 +37,9 @@ def _metrics(source: str, *, suffix: str = "") -> List[QueryMetric]:
 EXPECTED = {**EMPTY, "bsum": None, "bmax": None}
 
 LOCATIONS: Dict[str, Callable[[], object]] = {
-    "local": lambda: orders_q(dimensions=["region"], metrics=_metrics("amount"), filter=WEST),
+    "local": lambda: orders_q(dimensions=["orders.region"], metrics=_metrics("amount"), filter=WEST),
     "partition": lambda: orders_q(
-        dimensions=["region", "status"], metrics=_metrics("amount", suffix=", partition_by=region"), filter=WEST,
+        dimensions=["orders.region", "orders.status"], metrics=_metrics("amount", suffix=", partition_by=region"), filter=WEST,
     ),
     "window": lambda: orders_q(
         time_dimensions=month_td(), metrics=_metrics("amount", suffix=", window='30d'"), filter=WEST,

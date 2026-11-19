@@ -42,7 +42,7 @@ class TestCrossModelPartitionedStillGuarded:
 
     async def test_cross_model_first_last_plus_partition(self) -> None:
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(
                 metric="last(customers.spend, partition_by=orders.region)", alias="l",
             )],
@@ -71,7 +71,7 @@ class TestMeasureGrainRulePreserved:
         # The COMBINED-attach rule (design D4) survives the generalized
         # discovery; only ROW attaches may use finer-than-query partitions.
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.city)", alias="m")],
         )
         with pytest.raises(ValueError, match=r"not a query dimension"):
@@ -82,9 +82,9 @@ class TestMeasureGrainRulePreserved:
         # measure: the finer-grain leniency must not carry into the combined
         # measure role, or the join-back fails with an internal RuntimeError.
         # It must raise the clean "not a query dimension" error instead.
-        band = "CASE WHEN sum(amount, partition_by=city) > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "band"}],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.city)", alias="ct"),
@@ -97,10 +97,10 @@ class TestMeasureGrainRulePreserved:
         # CR — a filter on the computed dimension's OWN aggregate references the
         # row attach, not a combined consumer, so a finer-than-query grain is
         # legal and must render cleanly (no combined join-back, no internal error).
-        band = "CASE WHEN sum(amount, partition_by=city) > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "band"}],
-            filter=["sum(amount, partition_by=city) > 100"],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
+            filter=["sum(orders.amount, partition_by=orders.city) > 100"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # must not raise
@@ -113,9 +113,9 @@ class TestDimensionGrainSelfContainment:
     (measure⇔dimension symmetry admits only grain-self-contained expressions)."""
 
     async def test_transform_over_bare_aggregate_in_dimension(self) -> None:
-        band = "CASE WHEN cumsum(sum(amount)) > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN cumsum(sum(orders.amount)) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "b"}],
+            dimensions=["orders.region", {"field": band, "alias": "b"}],
             time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
@@ -124,9 +124,9 @@ class TestDimensionGrainSelfContainment:
         assert "partition_by" in str(ei.value)
 
     async def test_bare_windowed_aggregate_in_dimension(self) -> None:
-        band = "CASE WHEN sum(amount, window='1y') > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, window='1y') > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "b"}],
+            dimensions=["orders.region", {"field": band, "alias": "b"}],
             time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
@@ -135,9 +135,9 @@ class TestDimensionGrainSelfContainment:
         assert "partition_by" in str(ei.value)
 
     async def test_bare_first_last_in_dimension(self) -> None:
-        band = "CASE WHEN last(amount) > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN last(orders.amount) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "b"}],
+            dimensions=["orders.region", {"field": band, "alias": "b"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
@@ -148,9 +148,9 @@ class TestDimensionGrainSelfContainment:
         # Two grains in one transform union and broadcast — the
         # former fail-closed guard is gone. Executed ground truth lives in
         # tests/test_dev1839_union_dim_execution.py.
-        band = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
+        band = "rank(sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), direction='desc')"
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "rk"}],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "rk"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # must not raise

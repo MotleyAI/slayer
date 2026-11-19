@@ -75,8 +75,8 @@ class TestFanningPopulationFilterRestrictsByAssociation:
         (``sum(spend) > 1``): the fanning row filter still restricts by
         association, so tiers gold and silver survive without fanning."""
         resp = await engine.execute(cust_q(
-            dimensions=["tier"],
-            filter=["orders.status = 'ok'", "sum(spend) > 1"],
+            dimensions=["customers.tier"],
+            filter=["orders.status = 'ok'", "sum(customers.spend) > 1"],
             to_many_handling=mode))
         assert {r["customers.tier"] for r in resp.data} == {"gold", "silver"}
 
@@ -106,7 +106,7 @@ class TestToOneFilterStaysInline:
 class TestUnaffectedShapes:
     async def test_dimension_only_query_unaffected(self, engine):
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filter=["orders.status = 'ok'"]))
+            dimensions=["customers.tier"], filter=["orders.status = 'ok'"]))
         assert {r["customers.tier"] for r in resp.data} == {"gold", "silver"}
 
     async def test_producer_only_query_unaffected(self, engine):

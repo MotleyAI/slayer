@@ -11,7 +11,7 @@ from slayer.core.query import SlayerQuery
 
 from tests._dev2015_fixtures import BACKENDS, BUILT_IN_GRANULARITIES, GRANULARITY_NAMES, cg_engine, m
 
-COUNT = [m("count(*)", "n")]
+COUNT = [m("count(orders.*)", "n")]
 
 
 @pytest.fixture(params=BACKENDS)
@@ -27,13 +27,13 @@ def _q(**fields) -> SlayerQuery:
 class TestDatasourceCallee:
     async def test_dimension_entry_equals_the_explicit_form(self, engine) -> None:
         functional = await engine.execute(_q(dimensions=["date_trunc('fiscal_year', order_date)"]))
-        explicit = await engine.execute(_q(time_dimensions=[{"field": "order_date", "granularity": "fiscal_year"}]))
+        explicit = await engine.execute(_q(time_dimensions=[{"field": "orders.order_date", "granularity": "fiscal_year"}]))
         assert functional.sql == explicit.sql
         assert sorted(map(repr, functional.data)) == sorted(map(repr, explicit.data))
 
     async def test_time_dimensions_string_equals_the_explicit_form(self, engine) -> None:
         functional = await engine.execute(_q(time_dimensions=["date_trunc('fiscal_year', order_date)"]))
-        explicit = await engine.execute(_q(time_dimensions=[{"field": "order_date", "granularity": "fiscal_year"}]))
+        explicit = await engine.execute(_q(time_dimensions=[{"field": "orders.order_date", "granularity": "fiscal_year"}]))
         assert functional.sql == explicit.sql
 
     async def test_case_insensitive_callee(self, engine) -> None:

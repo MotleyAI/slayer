@@ -116,7 +116,7 @@ class TestGrainRefiningLeafRejected:
 
     async def test_rank_family_covered(self, exec_engine):
         """Scenario: Rank family is covered."""
-        q = _q(dimensions=["store"], time_dimensions=month_td(),
+        q = _q(dimensions=["sales.store"], time_dimensions=month_td(),
                metrics=[QueryMetric(metric="rank(sales.qty, direction='desc')", alias="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
@@ -141,7 +141,7 @@ class TestGrainRefiningLeafRejected:
 
     async def test_filter_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
-               filter=["cumsum(weight) > 0"],
+               filter=["cumsum(sales.weight) > 0"],
                metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
@@ -149,7 +149,7 @@ class TestGrainRefiningLeafRejected:
 
     async def test_order_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
-               order=[{"field": "rank(qty, direction='desc')", "direction": "desc"}],
+               order=[{"field": "rank(sales.qty, direction='desc')", "direction": "desc"}],
                metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
@@ -161,7 +161,7 @@ class TestProjectedGrainKeyStaysLegal:
         """Scenario: A projected grain key stays legal — rank(weight, direction='desc') with
         weight a query dimension, verified sound today."""
         resp = await exec_engine.execute(_q(
-            dimensions=["weight"],
+            dimensions=["sales.weight"],
             metrics=[QueryMetric(metric="rank(sales.weight, direction='desc')", alias="t")]))
         by = rows_by(resp, "sales.weight")
         assert len(resp.data) == 2
@@ -172,7 +172,7 @@ class TestProjectedGrainKeyStaysLegal:
         """The projected leaf evaluates at the query grain — one row per
         (weight, month) pair present, cumulative within the weight group."""
         resp = await exec_engine.execute(_q(
-            dimensions=["weight"], time_dimensions=month_td(),
+            dimensions=["sales.weight"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="cumsum(sales.weight)", alias="t")]))
         got = {(r["sales.weight"], month_key(r["sales.ordered_at"])):
                float(r["t"]) for r in resp.data}
@@ -186,7 +186,7 @@ class TestProjectedGrainKeyStaysLegal:
         a projected grain key (design decision 8): it executes at the query
         grain against the dimension's slot — neither the leg-B rejection nor
         today's transform-layer RuntimeError leak."""
-        wband = "CASE WHEN weight > 1 THEN 2 ELSE 1 END"
+        wband = "CASE WHEN sales.weight > 1 THEN 2 ELSE 1 END"
         resp = await exec_engine.execute(_q(
             dimensions=[{"field": wband, "alias": "wband"}],
             metrics=[QueryMetric(metric=f"rank({wband}, direction='desc')", alias="t")]))
@@ -202,14 +202,14 @@ class TestWalkerBehaviourUnchanged:
 
     async def test_pure_aggregate_input_is_legal(self, exec_engine):
         resp = await exec_engine.execute(_q(
-            dimensions=["store"], time_dimensions=month_td(),
+            dimensions=["sales.store"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="cumsum(sum(sales.weight, partition_by=sales.store))", alias="t")]))
         assert resp.data
 
     async def test_all_projected_composite_is_legal(self, exec_engine):
         resp = await exec_engine.execute(_q(
-            dimensions=["weight", "qty"],
+            dimensions=["sales.weight", "sales.qty"],
             metrics=[QueryMetric(metric="rank(sales.weight * sales.qty, direction='desc')", alias="t")]))
         assert resp.data
 
@@ -219,9 +219,9 @@ class TestShiftFamilyRejectsRowLeaf:
     unprojected row column is rejected, never a multiplied result."""
 
     @pytest.mark.parametrize("formula, op", [
-        ("time_shift(weight, -1)", "time_shift"),
-        ("change(weight)", "change"),
-        ("change_pct(weight)", "change_pct"),
+        ("time_shift(sales.weight, -1)", "time_shift"),
+        ("change(sales.weight)", "change"),
+        ("change_pct(sales.weight)", "change_pct"),
     ])
     async def test_bare_row_leaf_rejected(self, exec_engine, formula, op):
         query = _q(time_dimensions=month_td(),
@@ -254,10 +254,10 @@ class TestLastOverShiftComposition:
         # shape that stalled. Store B revenue 30/60/10 → latest change -50 (kept);
         # store A 30/40/50 → +10 (dropped). Pin the survivors and their change.
         resp = await exec_engine.execute(_q(
-            time_dimensions=month_td(), dimensions=["store"],
-            metrics=["sum(revenue)",
+            time_dimensions=month_td(), dimensions=["sales.store"],
+            metrics=["sum(sales.revenue)",
                       QueryMetric(metric="change(sum(sales.revenue))", alias="ch")],
-            filter=["last(change(sum(revenue))) < 0"]))
+            filter=["last(change(sum(sales.revenue))) < 0"]))
         rows = [(r["sales.store"], month_key(r["sales.ordered_at"]), r["ch"])
                 for r in resp.data]
         assert len(rows) == 3  # no duplicate broadcast rows

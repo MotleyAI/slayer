@@ -169,7 +169,7 @@ class TestDryRun:
         assert warnings_block.splitlines() == [f"  - {_strict_message()}"]
 
     async def test_mcp_json_carries_a_library_name_shadow(self) -> None:
-        query = {"population": "t", "metrics": [metric("reverse(a)")]}
+        query = {"population": "t", "metrics": [metric("reverse(t.a)")]}
         async with stored_engine(datasets=[t_doc(aggregations=[agg("reverse")])]) as engine:
             text = await _dry_run(engine.storage, query, "json")
         shadows = [w for w in json.loads(text)["warnings"] if w.get("kind") == "library_name_shadow"]

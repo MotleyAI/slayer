@@ -19,7 +19,7 @@ from tests._dev2101_fixtures import (
     single,
 )
 
-PAID = "status = 'paid'"
+PAID = "orders.status = 'paid'"
 MONTH = [{"field": "created_at", "granularity": "month"}]
 
 
@@ -43,11 +43,11 @@ async def _filtered_equals_restricted(engine: SlayerQueryEngine, expression: str
 
 class TestFilterValues:
     async def test_filtered_count_by_region(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[m(f"count(*) FILTER (WHERE {PAID})")]))
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m(f"count(*) FILTER (WHERE {PAID})")]))
         assert {k: num(v) for k, v in by_key(resp, "region").items()} == {"EU": 2, "US": 1, None: 0}
 
     async def test_filtered_sum_equals_masked_sum(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[
             m(f"sum(amount) FILTER (WHERE {PAID})", "f"), m(f"sum(iif({PAID}, amount, NULL))", "masked"),
         ]))
         filtered = {r["orders.region"]: num(r["f"]) for r in resp.data}
@@ -55,8 +55,8 @@ class TestFilterValues:
         assert filtered == masked == {"EU": 30.0, "US": 40.0, None: None}
 
     @pytest.mark.parametrize(("formula", "expected"), [
-        ("count(discount)", 1), ("count(distinct region)", 2), ("avg(amount)", 70 / 3), ("min(amount)", 10.0),
-        ("max(amount)", 40.0), ("sum(amount)", 70.0),
+        ("count(discount)", 1), ("count(distinct orders.region)", 2), ("avg(amount)", 70 / 3), ("min(amount)", 10.0),
+        ("max(amount)", 40.0), ("sum(orders.amount)", 70.0),
     ])
     async def test_builtin_aggregations(self, engine: SlayerQueryEngine, formula: str, expected: float) -> None:
         resp = await engine.execute(q(metrics=[m(f"{formula} FILTER (WHERE {PAID})")]))
@@ -68,7 +68,7 @@ class TestFilterValues:
         await _filtered_equals_restricted(engine, "weighted_avg(price, weight=quantity)")
 
     @pytest.mark.parametrize("formula", [
-        "corr(price, other=quantity)", "covar_samp(price, other=quantity)", "covar_pop(price, other=quantity)",
+        "corr(orders.price, other=orders.quantity)", "covar_samp(orders.price, other=orders.quantity)", "covar_pop(orders.price, other=orders.quantity)",
     ])
     async def test_paired_statistics_mask_both_inputs(self, engine: SlayerQueryEngine, formula: str) -> None:
         await _filtered_equals_restricted(engine, formula)
@@ -93,7 +93,7 @@ class TestFilterValues:
         assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 999.0, 2: 70.0}
 
     async def test_with_partition_by(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region", "city"], metrics=[
+        resp = await engine.execute(q(dimensions=["orders.region", "orders.city"], metrics=[
             m(f"sum(amount, partition_by=region) FILTER (WHERE {PAID})"),
         ]))
         got = {(r["orders.region"], r["orders.city"]): num(r["v"]) for r in resp.data}
@@ -101,7 +101,7 @@ class TestFilterValues:
                        (None, "Rome"): None}
 
     async def test_with_window(self, engine: SlayerQueryEngine) -> None:
-        await _filtered_equals_restricted(engine, "sum(amount, window='30d')", time_dimensions=MONTH)
+        await _filtered_equals_restricted(engine, "sum(orders.amount, window='30d')", time_dimensions=MONTH)
         resp = await engine.execute(q(metrics=[m(f"sum(amount, window='30d') FILTER (WHERE {PAID})")],
                                       time_dimensions=MONTH))
         got = {str(r["orders.created_at"])[:7]: num(r["v"]) for r in resp.data}
@@ -110,24 +110,24 @@ class TestFilterValues:
 
 class TestFilterPositions:
     async def test_unnamed_filtered_aggregation_never_collides(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=["sum(amount)", f"sum(amount) FILTER (WHERE {PAID})"]))
+        resp = await engine.execute(q(metrics=["sum(orders.amount)", f"sum(amount) FILTER (WHERE {PAID})"]))
         assert len(resp.columns) == 2
         assert sorted(float(v) for v in resp.data[0].values()) == [70.0, 100.0]
 
     async def test_post_aggregate_filter(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[m("count(*)")],
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m("count(orders.*)")],
                                       filter=[f"count(*) FILTER (WHERE {PAID}) > 1"]))
         assert set(by_key(resp, "region")) == {"EU"}
 
     async def test_order_target(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[m("count(*)")],
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m("count(orders.*)")],
                                       order=[{"field": f"count(*) FILTER (WHERE {PAID})", "direction": "desc"}]))
         assert [r["orders.region"] for r in resp.data] == ["EU", "US", None]
 
     async def test_count_distinct_order_target(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["status"], metrics=[m("count(*)")],
-                                      order=[{"field": "count(distinct region)", "direction": "desc"},
-                                             {"field": "status"}]))
+        resp = await engine.execute(q(dimensions=["orders.status"], metrics=[m("count(orders.*)")],
+                                      order=[{"field": "count(distinct orders.region)", "direction": "desc"},
+                                             {"field": "orders.status"}]))
         assert [r["orders.status"] for r in resp.data] == ["paid", "Pending", "void"]
 
     async def test_inside_arithmetic(self, engine: SlayerQueryEngine) -> None:
@@ -144,16 +144,16 @@ class TestFilterPositions:
             extensions=[{"dataset": "orders", "metrics": [
                 {"name": "paid_total", "expression": f"sum(amount) FILTER (WHERE {PAID})"},
             ]}],
-            metrics=["paid_total"],
+            metrics=["orders.paid_total"],
         ))
         assert num(single(resp, "paid_total")) == 70.0
 
 
 class TestFilterConditionIsRowLevel:
     @pytest.mark.parametrize("measures", [
-        [m("sum(amount) FILTER (WHERE amount > avg(amount))")],
-        [m("sum(amount) FILTER (WHERE cumsum(sum(amount)) > 1)")],
-        [m("sum(amount) FILTER (WHERE amount > avg(amount, partition_by=region))")],
+        [m("sum(orders.amount) FILTER (WHERE orders.amount > avg(orders.amount))")],
+        [m("sum(orders.amount) FILTER (WHERE cumsum(sum(orders.amount)) > 1)")],
+        [m("sum(orders.amount) FILTER (WHERE orders.amount > avg(orders.amount, partition_by=orders.region))")],
     ], ids=["aggregate", "transform", "partitioned-aggregate"])
     async def test_non_row_level_condition_rejected(self, engine: SlayerQueryEngine, measures) -> None:
         query = q(metrics=measures)
@@ -165,8 +165,8 @@ class TestFilterConditionIsRowLevel:
 class TestFilterEmission:
     @pytest.mark.parametrize("dialect", TIER1)
     @pytest.mark.parametrize("formula", [
-        "count(*)", "sum(amount)", "count(distinct region)", "weighted_avg(price, weight=quantity)",
-        "last(amount, created_at)", "corr(price, other=quantity)",
+        "count(orders.*)", "sum(orders.amount)", "count(distinct orders.region)", "weighted_avg(price, weight=quantity)",
+        "last(amount, created_at)", "corr(orders.price, other=orders.quantity)",
     ])
     async def test_emits(self, dialect: str, formula: str) -> None:
-        await emit(q(dimensions=["region"], metrics=[m(f"{formula} FILTER (WHERE {PAID})")]), dialect=dialect)
+        await emit(q(dimensions=["orders.region"], metrics=[m(f"{formula} FILTER (WHERE {PAID})")]), dialect=dialect)

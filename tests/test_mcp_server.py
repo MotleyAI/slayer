@@ -2338,8 +2338,8 @@ class TestEditModelMultiStageRename:
         """Renaming an inner-stage measure old→new refreshes the cached SQL/columns."""
         await self._setup_orders_with_two_stage_dataset(
             storage,
-            inner_metrics=[{"metric": "sum(amount)", "alias": "old"}],
-            outer_metrics=[{"metric": "sum(old)"}],
+            inner_metrics=[{"metric": "sum(orders.amount)", "alias": "old"}],
+            outer_metrics=[{"metric": "sum(raw.old)"}],
         )
         # Sanity: initial cache reflects 'old'.
         before = await storage.get_dataset("qb")
@@ -2392,10 +2392,10 @@ class TestEditModelMultiStageRename:
         await self._setup_orders_with_two_stage_dataset(
             storage,
             inner_metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
-                {"metric": "count(*)", "alias": "n"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
+                {"metric": "count(orders.*)", "alias": "n"},
             ],
-            outer_metrics=[{"metric": "sum(rev)"}],
+            outer_metrics=[{"metric": "sum(raw.rev)"}],
         )
         before = await storage.get_dataset("qb")
         assert before is not None

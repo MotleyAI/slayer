@@ -38,7 +38,7 @@ class TestNaiveValues:
         assert "CURRENT_DATETIME()" in sql, sql
         assert "CURRENT_TIMESTAMP" not in sql, sql
 
-    @pytest.mark.parametrize("expr", ["TRY_CAST(code AS TIMESTAMP)", "json_value(payload, '$.t' RETURNING TIMESTAMP)"])
+    @pytest.mark.parametrize("expr", ["TRY_CAST(lib.code AS TIMESTAMP)", "json_value(lib.payload, '$.t' RETURNING TIMESTAMP)"])
     async def test_portable_timestamp_casts_read_as_datetime(self, expr: str) -> None:
         sql = await _sql(expr)
         assert "AS DATETIME)" in sql, sql
@@ -54,7 +54,7 @@ class TestNaiveValues:
         assert "TIMESTAMP" not in sql, sql
 
     async def test_sub_day_date_diff_uses_datetime_functions(self) -> None:
-        sql = await _sql("date_diff('hour', ts, now())")
+        sql = await _sql("date_diff('hour', lib.ts, now())")
         assert "DATETIME_DIFF(" in sql, sql
         assert "DATETIME_TRUNC(" in sql, sql
         assert "TIMESTAMP_" not in sql, sql
@@ -65,15 +65,15 @@ class TestNaiveValues:
 
 class TestZonedColumn:
     @pytest.mark.parametrize(("expr", "where"), [
-        ("ts < now()", "LIB.TS < CAST(CURRENT_DATETIME() AS TIMESTAMP)"),
-        ("now() > ts", "CAST(CURRENT_DATETIME() AS TIMESTAMP) > LIB.TS"),
-        ("ts < date_add(now(), -1, 'day')", "LIB.TS < CAST(DATETIME_ADD(CURRENT_DATETIME(), INTERVAL -1 DAY) AS TIMESTAMP)"),
+        ("lib.ts < now()", "LIB.TS < CAST(CURRENT_DATETIME() AS TIMESTAMP)"),
+        ("now() > lib.ts", "CAST(CURRENT_DATETIME() AS TIMESTAMP) > LIB.TS"),
+        ("lib.ts < date_add(now(), -1, 'day')", "LIB.TS < CAST(DATETIME_ADD(CURRENT_DATETIME(), INTERVAL -1 DAY) AS TIMESTAMP)"),
     ])
     async def test_other_side_converts_and_the_column_stays_bare(self, expr: str, where: str) -> None:
         assert f"WHERE {where}" in await _sql(expr, filtered=True, zoned=True)
 
     async def test_temporal_literal_keeps_its_iso_text(self) -> None:
-        sql = await _sql("ts > TIMESTAMP '2024-01-01 10:00'", filtered=True, zoned=True)
+        sql = await _sql("lib.ts > TIMESTAMP '2024-01-01 10:00'", filtered=True, zoned=True)
         assert "WHERE LIB.TS > '2024-01-01 10:00:00'" in sql, sql
 
     async def test_column_against_itself_is_untouched(self) -> None:
@@ -87,15 +87,15 @@ class TestZonedColumn:
         assert "WHERE S1.TS < CURRENT_DATETIME()" in sql, sql
 
     async def test_other_dialects_ignore_the_db_type(self) -> None:
-        zoned = await _sql("ts < now()", dialect="postgres", filtered=True, zoned=True)
+        zoned = await _sql("lib.ts < now()", dialect="postgres", filtered=True, zoned=True)
         assert zoned == await _sql("ts < now()", dialect="postgres", filtered=True)
 
 
 class TestZonedColumnReadsNaive:
     @pytest.mark.parametrize(("expr", "fragment"), [
         ("ts", "CAST(LIB.TS AS DATETIME) AS `LIB___V`"),
-        ("coalesce(ts, now())", "COALESCE(CAST(LIB.TS AS DATETIME), CURRENT_DATETIME())"),
-        ("date_trunc('month', ts)", "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)"),
+        ("coalesce(lib.ts, now())", "COALESCE(CAST(LIB.TS AS DATETIME), CURRENT_DATETIME())"),
+        ("date_trunc('month', lib.ts)", "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)"),
     ])
     async def test_value_positions(self, expr: str, fragment: str) -> None:
         assert fragment in await _sql(expr, zoned=True)
@@ -112,7 +112,7 @@ class TestZonedColumnReadsNaive:
         assert "LIB.TS >= '2024-01-01 00:00:00'" in sql, sql
 
     @pytest.mark.parametrize(("formula", "fragment"), [
-        ("max(ts)", "MAX(CAST(LIB.TS AS DATETIME))"), ("count_distinct(ts)", "COUNT(DISTINCT CAST(LIB.TS AS DATETIME))"),
+        ("max(lib.ts)", "MAX(CAST(LIB.TS AS DATETIME))"), ("count_distinct(lib.ts)", "COUNT(DISTINCT CAST(LIB.TS AS DATETIME))"),
     ])
     async def test_aggregate_input_reads_naive(self, formula: str, fragment: str) -> None:
         query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": formula, "alias": "agg_v"}]})

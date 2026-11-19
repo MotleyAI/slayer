@@ -23,14 +23,14 @@ def _q(expression: str, dimensions: list[str]) -> SlayerQuery:
 def _cases() -> dict[str, SlayerQuery]:
     region, region_city = ["region"], ["region", "city"]
     return {
-        "rank/asc": _q("rank(sum(amount), direction='asc')", region),
-        "rank/desc": _q("rank(sum(amount), direction='desc')", region),
-        "rank/asc_partitioned": _q("rank(sum(amount), partition_by=region, direction='asc')", region_city),
-        "dense_rank/asc": _q("dense_rank(sum(amount), direction='asc')", region),
-        "dense_rank/desc": _q("dense_rank(sum(amount), direction='desc')", region),
-        "ntile/n4": _q("ntile(sum(amount), n=4)", region),
-        "percent_rank/plain": _q("percent_rank(sum(amount))", region),
-        "rank/non_numeric": _q("rank(min(city), direction='asc')", region),
+        "rank/asc": _q("rank(sum(sales.amount), direction='asc')", region),
+        "rank/desc": _q("rank(sum(sales.amount), direction='desc')", region),
+        "rank/asc_partitioned": _q("rank(sum(sales.amount), partition_by=sales.region, direction='asc')", region_city),
+        "dense_rank/asc": _q("dense_rank(sum(sales.amount), direction='asc')", region),
+        "dense_rank/desc": _q("dense_rank(sum(sales.amount), direction='desc')", region),
+        "ntile/n4": _q("ntile(sum(sales.amount), n=4)", region),
+        "percent_rank/plain": _q("percent_rank(sum(sales.amount))", region),
+        "rank/non_numeric": _q("rank(min(sales.city), direction='asc')", region),
     }
 
 

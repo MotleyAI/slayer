@@ -47,14 +47,14 @@ class TestIneligiblePositions:
 
     async def test_plain_dimension_entry_errors(self) -> None:
         query = q(dimensions=["customers.aov"],
-                  metrics=[{"metric": "sum(amount)", "alias": "a"}])
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         _assert_names_saved_metric(str(ei.value))
 
     async def test_unselected_filter_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  metrics=[{"metric": "sum(amount)", "alias": "a"}],
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
                   filter=["customers.aov > 100"])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -62,7 +62,7 @@ class TestIneligiblePositions:
 
     async def test_order_by_formula_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  metrics=[{"metric": "sum(amount)", "alias": "a"}],
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
                   order=[{"field": "customers.aov", "direction": "desc"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -70,7 +70,7 @@ class TestIneligiblePositions:
 
     async def test_partition_by_member_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  metrics=[{"metric": "sum(amount, partition_by=customers.aov)",
+                  metrics=[{"metric": "sum(orders.amount, partition_by=customers.aov)",
                              "alias": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -80,7 +80,7 @@ class TestIneligiblePositions:
         """At least one ineligible-position error must say WHERE the reference is
         legal (measure formulas / computed dimensions)."""
         query = q(dimensions=["customers.aov"],
-                  metrics=[{"metric": "sum(amount)", "alias": "a"}])
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         low = str(ei.value).lower()

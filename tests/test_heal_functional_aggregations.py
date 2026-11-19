@@ -42,7 +42,7 @@ def by_region(*measures: str) -> dict[str, Any]:
 
 
 class TestUnknownFunction:
-    @pytest.mark.parametrize("formula", ["bogus(amount)", "bogus(*)", "bogus(amount * 2)"])
+    @pytest.mark.parametrize("formula", ["bogus(orders.amount)", "bogus(orders.*)", "bogus(orders.amount * 2)"])
     async def test_names_function_and_categories(self, engine: SlayerQueryEngine, formula: str) -> None:
         query = by_region(formula)
         with pytest.raises(UnknownFunctionError) as info:
@@ -54,7 +54,7 @@ class TestUnknownFunction:
             assert category in message.lower()
 
     async def test_close_match_suggested(self, engine: SlayerQueryEngine) -> None:
-        query = by_region("summ(amount)")
+        query = by_region("summ(orders.amount)")
         with pytest.raises(UnknownFunctionError, match="Did you mean 'sum'"):
             await engine.execute(query)
 
@@ -66,15 +66,15 @@ class TestUnknownFunction:
 
 class TestCountDistinctParse:
     @pytest.mark.parametrize("spelling", [
-        "count(distinct customer_id)", "COUNT(DISTINCT customer_id)", "Count(Distinct customer_id)",
+        "count(distinct orders.customer_id)", "COUNT(DISTINCT orders.customer_id)", "Count(Distinct customer_id)",
         "count( distinct  customer_id )", "count(\n  distinct\n  customer_id\n)",
     ])
     def test_equals_count_distinct(self, spelling: str) -> None:
         assert parse_expr(spelling) == parse_expr("count_distinct(customer_id)")
 
     @pytest.mark.parametrize(("healed", "canonical_text"), [
-        ("count(distinct coalesce(customer_id, 0), partition_by=region)",
-         "count_distinct(coalesce(customer_id, 0), partition_by=region)"),
+        ("count(distinct coalesce(orders.customer_id, 0), partition_by=orders.region)",
+         "count_distinct(coalesce(orders.customer_id, 0), partition_by=orders.region)"),
         ("count(distinct customer_id) / count(*)", "count_distinct(customer_id) / count(*)"),
         ("count(distinct customers.name)", "count_distinct(customers.name)"),
         ("count(distinct distinct_id)", "count_distinct(distinct_id)"),
@@ -109,17 +109,17 @@ class TestCountDistinctParse:
 
 
 class TestCountDistinctExecuted:
-    @pytest.mark.parametrize("spelling", ["count(distinct customer_id)", "COUNT(DISTINCT customer_id)"])
+    @pytest.mark.parametrize("spelling", ["count(distinct orders.customer_id)", "COUNT(DISTINCT orders.customer_id)"])
     async def test_equals_count_distinct(self, engine: SlayerQueryEngine, spelling: str) -> None:
-        await assert_equivalent(engine, by_region(spelling), by_region("count_distinct(customer_id)"))
+        await assert_equivalent(engine, by_region(spelling), by_region("count_distinct(orders.customer_id)"))
 
     async def test_expression_with_partition(self, engine: SlayerQueryEngine) -> None:
         def query(formula: str) -> dict[str, Any]:
             return {"population": "orders", "dimensions": ["orders.region", "orders.status"], "metrics": [formula]}
 
         await assert_equivalent(
-            engine, query("count(distinct coalesce(customer_id, 0), partition_by=region)"),
-            query("count_distinct(coalesce(customer_id, 0), partition_by=region)"),
+            engine, query("count(distinct coalesce(orders.customer_id, 0), partition_by=orders.region)"),
+            query("count_distinct(coalesce(orders.customer_id, 0), partition_by=orders.region)"),
         )
 
     async def test_mode_a_distinct_unchanged(self) -> None:

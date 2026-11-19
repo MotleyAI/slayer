@@ -37,7 +37,7 @@ from tests._dev2101_fixtures import (
 )
 from tests._engine_helpers import seeded_exec_engine
 
-PAID = "status = 'paid'"
+PAID = "orders.status = 'paid'"
 ROWS_PAID = f"rows(amount) FILTER (WHERE {PAID})"
 MONTH = [{"field": "created_at", "granularity": "month"}]
 
@@ -61,7 +61,7 @@ class TestValues:
     async def test_grouped_and_ungrouped(self, engine: SlayerQueryEngine, formula: str, by_region: dict,
                                          total: float) -> None:
         measure = m(f"{formula} FILTER (WHERE {PAID})")
-        assert _by_region(await engine.execute(q(dimensions=["region"], metrics=[measure]))) == pytest.approx(by_region)
+        assert _by_region(await engine.execute(q(dimensions=["orders.region"], metrics=[measure]))) == pytest.approx(by_region)
         assert num(single(await engine.execute(q(metrics=[measure])))) == pytest.approx(total)
 
     async def test_shared_server_check(self, engine: SlayerQueryEngine) -> None:
@@ -69,35 +69,35 @@ class TestValues:
 
     async def test_placeholder_only_formula_equals_the_restricted_query(self, engine: SlayerQueryEngine) -> None:
         filtered = await engine.execute(q(metrics=[m(f"wsum(price) FILTER (WHERE {PAID})")]))
-        restricted = await engine.execute(q(metrics=[m("wsum(price)")], filter=[PAID]))
+        restricted = await engine.execute(q(metrics=[m("wsum(orders.price)")], filter=[PAID]))
         assert num(single(filtered)) == pytest.approx(18.0)
         assert num(single(filtered)) == pytest.approx(num(single(restricted)))
 
     async def test_ungrouped_with_no_passing_rows_reads_the_formula_over_no_rows(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        resp = await engine.execute(q(metrics=[m("rows(amount) FILTER (WHERE status = 'none')")]))
+        resp = await engine.execute(q(metrics=[m("rows(orders.amount) FILTER (WHERE orders.status = 'none')")]))
         assert num(single(resp)) == 0
 
 
 class TestComposition:
     async def test_with_partition_by(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region", "city"], metrics=[
+        resp = await engine.execute(q(dimensions=["orders.region", "orders.city"], metrics=[
             m(f"rows(amount, partition_by=region) FILTER (WHERE {PAID})"),
         ]))
         got = {(r["orders.region"], r["orders.city"]): num(r["v"]) for r in resp.data}
         assert got == {("EU", "Paris"): 2, ("EU", "Berlin"): 2, ("US", "NYC"): 1, ("US", "LA"): 1, (None, "Rome"): None}
 
     async def test_query_row_filter_and_clause_both_restrict(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=[m(ROWS_PAID)], filter=["amount > 15"]))
+        resp = await engine.execute(q(metrics=[m(ROWS_PAID)], filter=["orders.amount > 15"]))
         assert num(single(resp)) == 2
 
     async def test_joined_model_condition(self, engine: SlayerQueryEngine) -> None:
-        measure = m("rows(amount) FILTER (WHERE customers.tier = 'gold')")
+        measure = m("rows(orders.amount) FILTER (WHERE customers.tier = 'gold')")
         resp = await engine.execute(q(metrics=[measure]))
         assert num(single(resp)) == 3
         assert not resp.warnings
-        resp = await engine.execute(q(dimensions=["region"], metrics=[measure]))
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[measure]))
         assert _by_region(resp) == {"EU": 2, "US": None, None: 1}
         assert not resp.warnings
 
@@ -105,13 +105,13 @@ class TestComposition:
         # The weight averages every row of its region (EU 1.5, US 2.5), paid or not.
         measure = m(f"wsum(price, weight=avg(quantity, partition_by=region)) FILTER (WHERE {PAID})")
         assert num(single(await engine.execute(q(metrics=[measure])))) == pytest.approx(20.0)
-        resp = await engine.execute(q(dimensions=["region"], metrics=[measure]))
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[measure]))
         assert _by_region(resp) == pytest.approx({"EU": 7.5, "US": 12.5, None: None})
 
     async def test_unfiltered_siblings_unchanged(self, engine: SlayerQueryEngine) -> None:
-        siblings = [m("rows(amount)", "r"), m("count(*)", "c")]
-        alone = await engine.execute(q(dimensions=["region"], metrics=siblings))
-        resp = await engine.execute(q(dimensions=["region"], metrics=[m(ROWS_PAID), *siblings]))
+        siblings = [m("rows(orders.amount)", "r"), m("count(orders.*)", "c")]
+        alone = await engine.execute(q(dimensions=["orders.region"], metrics=siblings))
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m(ROWS_PAID), *siblings]))
         assert len(resp.data) == 3
         assert _by_region(resp) == {"EU": 2, "US": 1, None: None}
         for name in ("r", "c"):
@@ -120,7 +120,7 @@ class TestComposition:
 
 class TestWindow:
     async def test_unfiltered_calibration(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(time_dimensions=MONTH, metrics=[m("rows(amount, window='2m')")]))
+        resp = await engine.execute(q(time_dimensions=MONTH, metrics=[m("rows(orders.amount, window='2m')")]))
         assert _by_month(resp) == {"2024-01": 2, "2024-02": 4, "2024-03": 3}
 
     async def test_bucket_without_passing_rows_reads_its_frame(self, engine: SlayerQueryEngine) -> None:
@@ -141,12 +141,12 @@ class TestWindow:
 
     async def test_empty_frame_reads_null(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(time_dimensions=MONTH, metrics=[
-            m("rows(amount, window='2m') FILTER (WHERE status = 'void')"),
+            m("rows(orders.amount, window='2m') FILTER (WHERE orders.status = 'void')"),
         ]))
         assert _by_month(resp) == {"2024-01": None, "2024-02": None, "2024-03": 1}
 
     @pytest.mark.parametrize(("condition", "expected"), [
-        ("created_at >= '2024-02-01'", {"2024-01": None, "2024-02": 2, "2024-03": 3}),
+        ("orders.created_at >= '2024-02-01'", {"2024-01": None, "2024-02": 2, "2024-03": 3}),
         (f"created_at >= '2024-02-01' AND {PAID}", {"2024-01": None, "2024-02": 1, "2024-03": 1}),
     ], ids=["time-bound", "time-bound-and-status"])
     async def test_time_column_condition_restricts_the_frame(
@@ -165,7 +165,7 @@ class TestWindow:
         assert _by_month(resp) == pytest.approx({"2024-01": None, "2024-02": 22.5, "2024-03": 26.5})
 
     async def test_condition_equal_to_a_query_frame_bound(self, engine: SlayerQueryEngine) -> None:
-        bound = "created_at >= '2024-02-01'"
+        bound = "orders.created_at >= '2024-02-01'"
         resp = await engine.execute(q(time_dimensions=MONTH, filter=[bound], metrics=[
             m(f"rows(amount, window='2m') FILTER (WHERE {bound} AND {PAID})"),
             m(f"rows(amount, window='2m') FILTER (WHERE {bound})", "b"),
@@ -192,16 +192,16 @@ class TestPositions:
             assert saved.data == inline.data
 
     async def test_inside_arithmetic(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[m(f"{ROWS_PAID} / count(*)")]))
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m(f"{ROWS_PAID} / count(*)")]))
         assert _by_region(resp) == {"EU": 1, "US": 0.5, None: None}
 
     async def test_measure_typed_filter(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[m("count(*)")], filter=[f"{ROWS_PAID} > 1"]))
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m("count(orders.*)")], filter=[f"{ROWS_PAID} > 1"]))
         assert set(by_key(resp, "region")) == {"EU"}
 
     @pytest.mark.parametrize(("direction", "expected"), [("desc", ["EU", "US", None]), ("asc", ["US", "EU", None])])
     async def test_order_target(self, engine: SlayerQueryEngine, direction: str, expected: list) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[m("count(*)")], order=[
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m("count(orders.*)")], order=[
             {"field": ROWS_PAID, "direction": direction, "nulls": "last"},
         ]))
         assert [r["orders.region"] for r in resp.data] == expected
@@ -221,15 +221,15 @@ def _aggregates(pq: PlannedQuery, agg: str) -> list[AggregateKey]:
 
 class TestProducerIsolation:
     async def test_same_condition(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[
             m(ROWS_PAID, "r"), m(f"per_order(amount) FILTER (WHERE {PAID})", "p"),
         ]))
         assert _by_region(resp, "r") == {"EU": 2, "US": 1, None: None}
         assert _by_region(resp, "p") == pytest.approx({"EU": 15, "US": 40, None: None})
 
     async def test_different_conditions_beside_unfiltered(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region"], metrics=[
-            m(ROWS_PAID, "paid"), m("rows(amount) FILTER (WHERE status = 'Pending')", "pending"), m("rows(amount)", "all"),
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[
+            m(ROWS_PAID, "paid"), m("rows(orders.amount) FILTER (WHERE orders.status = 'Pending')", "pending"), m("rows(orders.amount)", "all"),
         ]))
         assert _by_region(resp, "paid") == {"EU": 2, "US": 1, None: None}
         assert _by_region(resp, "pending") == {"EU": None, "US": 1, None: None}
@@ -238,8 +238,8 @@ class TestProducerIsolation:
     def test_different_conditions_never_share_a_producer(self) -> None:
         orders, *rest = dev2101_datasets()
         bundle = ResolvedSourceBundle(dialect="sqlite", population=orders, referenced_datasets=rest)
-        planned = plan.plan_query(query=q(dimensions=["region"], metrics=[
-            m(ROWS_PAID, "paid"), m("rows(amount) FILTER (WHERE status = 'Pending')", "pending"),
+        planned = plan.plan_query(query=q(dimensions=["orders.region"], metrics=[
+            m(ROWS_PAID, "paid"), m("rows(orders.amount) FILTER (WHERE orders.status = 'Pending')", "pending"),
         ]), bundle=bundle)
         producers = [a for a in _attaches(planned) if _aggregates(a.producer_plan, "rows")]
         assert len(producers) >= 2, planned.regroup_attach_plans
@@ -258,13 +258,13 @@ class TestCrossModelAndStage:
         ("associate", {"EU": 1, "US": None, None: 1}), ("broadcast", {"EU": 2, "US": 2, None: 2}),
     ])
     async def test_unattributable_dimension(self, engine: SlayerQueryEngine, mode: str, expected: dict) -> None:
-        resp = await engine.execute(q(dimensions=["region"], to_many_handling=mode, metrics=[
+        resp = await engine.execute(q(dimensions=["orders.region"], to_many_handling=mode, metrics=[
             m("rows(customers.name) FILTER (WHERE customers.tier = 'gold')"),
         ]))
         assert _by_region(resp) == expected
 
     async def test_non_final_stage(self, engine: SlayerQueryEngine) -> None:
-        stage = q(name="s", dimensions=["region"], metrics=[m(ROWS_PAID, "pr")])
+        stage = q(name="s", dimensions=["orders.region"], metrics=[m(ROWS_PAID, "pr")])
         final = SlayerQuery.model_validate({"population": "s", "metrics": [{"metric": "sum(s.pr)", "alias": "v"}]})
         resp = await engine.execute([stage, final])
         assert num(single(resp, dataset="s")) == 3
@@ -288,7 +288,7 @@ async def override_engine(request):
 
 class TestBuiltinNamedOverride:
     async def test_values(self, override_engine: SlayerQueryEngine) -> None:
-        resp = await override_engine.execute(q(dimensions=["region"], metrics=[
+        resp = await override_engine.execute(q(dimensions=["orders.region"], metrics=[
             m(f"count(amount) FILTER (WHERE {PAID})", "c"), m(f"sum(amount) FILTER (WHERE {PAID})", "s"),
         ]))
         assert _by_region(resp, "c") == {"EU": 2, "US": 1, None: None}
@@ -297,7 +297,7 @@ class TestBuiltinNamedOverride:
     def test_only_the_formula_override_takes_a_producer(self) -> None:
         orders, *rest = _override_datasets()
         bundle = ResolvedSourceBundle(dialect="sqlite", population=orders, referenced_datasets=rest)
-        planned = plan.plan_query(query=q(dimensions=["region"], metrics=[
+        planned = plan.plan_query(query=q(dimensions=["orders.region"], metrics=[
             m(f"count(amount) FILTER (WHERE {PAID})", "c"), m(f"sum(amount) FILTER (WHERE {PAID})", "s"),
         ]), bundle=bundle)
         producers = [a.producer_plan for a in _attaches(planned)]
@@ -307,8 +307,8 @@ class TestBuiltinNamedOverride:
 
 class TestTyping:
     @pytest.mark.parametrize("condition", [
-        "amount > avg(amount)",
-        "cumsum(sum(amount)) > 1",
+        "orders.amount > avg(orders.amount)",
+        "cumsum(sum(orders.amount)) > 1",
         "amount > avg(amount, partition_by=region)",
         "balances.status = 'active'",
     ], ids=["aggregate", "transform", "partitioned-aggregate", "undetermined"])
@@ -326,9 +326,9 @@ class TestTyping:
 
 class TestEmission:
     @pytest.mark.parametrize("dialect", TIER1)
-    @pytest.mark.parametrize("formula", ["rows(amount)", "per_order(amount)", "wsum(price)"])
+    @pytest.mark.parametrize("formula", ["rows(orders.amount)", "per_order(orders.amount)", "wsum(orders.price)"])
     async def test_emits(self, dialect: str, formula: str) -> None:
-        await emit(q(dimensions=["region"], metrics=[m(f"{formula} FILTER (WHERE {PAID})")]), dialect=dialect)
+        await emit(q(dimensions=["orders.region"], metrics=[m(f"{formula} FILTER (WHERE {PAID})")]), dialect=dialect)
 
 
 def _paid_condition() -> ValueKey:

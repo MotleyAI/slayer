@@ -22,7 +22,7 @@ ORDERS = orders_dataset()
 
 
 def _dim(expr: str):
-    return q(dimensions=["id", {"field": expr, "alias": "x"}])
+    return q(dimensions=["orders.id", {"field": expr, "alias": "x"}])
 
 
 def _casts(sql: str, *, dialect: str) -> list[exp.Cast]:
@@ -69,7 +69,7 @@ class TestTypeGrammar:
         assert cast == parse_expr(f"created_at::{type_text}")
 
     def test_precision_between_words_is_kept(self) -> None:
-        cast = parse_expr("CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)")
+        cast = parse_expr("CAST(orders.created_at AS TIMESTAMP(6) WITH TIME ZONE)")
         assert isinstance(cast, Cast)
         assert "6" in cast.type_text, cast.type_text
         assert cast != parse_expr("CAST(created_at AS TIMESTAMP WITH TIME ZONE)")
@@ -96,30 +96,30 @@ class TestTypeGrammar:
 
 class TestLosslessRendering:
     async def test_postgres_keeps_precision_before_time_zone_words(self) -> None:
-        sql = await emit(_dim("CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)"), dialect="postgres")
+        sql = await emit(_dim("CAST(orders.created_at AS TIMESTAMP(6) WITH TIME ZONE)"), dialect="postgres")
         types = _type_sql(sql, dialect="postgres")
         assert any(t in ("TIMESTAMPTZ(6)", "TIMESTAMP(6)WITHTIMEZONE") for t in types), sql
 
     async def test_trino_keeps_precision_before_time_zone_words(self) -> None:
-        sql = await emit(_dim("CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)"), dialect="trino")
+        sql = await emit(_dim("CAST(orders.created_at AS TIMESTAMP(6) WITH TIME ZONE)"), dialect="trino")
         assert "TIMESTAMP(6)WITHTIMEZONE" in _type_sql(sql, dialect="trino"), sql
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "trino", "snowflake"])
     async def test_precision_after_time_zone_words_is_refused(self, dialect: str) -> None:
-        await _refused("CAST(created_at AS TIMESTAMP WITH TIME ZONE(6))", dialect=dialect, needle="TIME ZONE")
+        await _refused("CAST(orders.created_at AS TIMESTAMP WITH TIME ZONE(6))", dialect=dialect, needle="TIME ZONE")
 
     async def test_duckdb_refuses_a_zoned_precision_it_drops(self) -> None:
-        await _refused("CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)", dialect="duckdb", needle="TIME ZONE")
+        await _refused("CAST(orders.created_at AS TIMESTAMP(6) WITH TIME ZONE)", dialect="duckdb", needle="TIME ZONE")
 
     async def test_mysql_keeps_an_unsigned_decimal(self) -> None:
-        sql = await emit(_dim("CAST(amount AS DECIMAL(10,2) UNSIGNED)"), dialect="mysql")
+        sql = await emit(_dim("CAST(orders.amount AS DECIMAL(10,2) UNSIGNED)"), dialect="mysql")
         assert "DECIMAL(10,2)UNSIGNED" in _type_sql(sql, dialect="mysql"), sql
 
     @pytest.mark.parametrize("dialect", [
         "postgres", "duckdb", "sqlite", "trino", "snowflake", "bigquery", "tsql", "clickhouse",
     ])
     async def test_unsigned_decimal_refused_without_unsigned_types(self, dialect: str) -> None:
-        await _refused("CAST(amount AS DECIMAL(10,2) UNSIGNED)", dialect=dialect, needle="UNSIGNED")
+        await _refused("CAST(orders.amount AS DECIMAL(10,2) UNSIGNED)", dialect=dialect, needle="UNSIGNED")
 
     @pytest.mark.parametrize(("dialect", "type_text"), [
         (d, t) for d in TIER1 if d not in ("sqlite", "duckdb", "clickhouse") for t in ("HUGEINT", "INT128", "INT256")
@@ -136,15 +136,15 @@ class TestLosslessRendering:
 
     @pytest.mark.parametrize("dialect", ["postgres", "trino"])
     async def test_zoned_time_accepted(self, dialect: str) -> None:
-        await emit(_dim("CAST(created_at AS TIME WITH TIME ZONE)"), dialect=dialect)
+        await emit(_dim("CAST(orders.created_at AS TIME WITH TIME ZONE)"), dialect=dialect)
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "trino", "snowflake", "bigquery", "tsql"])
     async def test_unsigned_int_refused_without_unsigned_types(self, dialect: str) -> None:
-        await _refused("CAST(amount AS INT UNSIGNED)", dialect=dialect, needle="UNSIGNED")
+        await _refused("CAST(orders.amount AS INT UNSIGNED)", dialect=dialect, needle="UNSIGNED")
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_unsigned_int_accepted_where_the_dialect_has_one(self, dialect: str) -> None:
-        await emit(_dim("CAST(amount AS INT UNSIGNED)"), dialect=dialect)
+        await emit(_dim("CAST(orders.amount AS INT UNSIGNED)"), dialect=dialect)
 
     @pytest.mark.parametrize(("type_text", "dialects"), [
         ("INT4", ["postgres", "duckdb"]),
@@ -165,8 +165,8 @@ class TestLosslessRendering:
 
 class TestArrayCasts:
     @pytest.mark.parametrize(("dialect", "text"), [
-        ("postgres", "CAST(code AS INT[])"), ("duckdb", "code::INT[]"), ("clickhouse", "CAST(code AS INT[])"),
-        ("bigquery", "CAST(code AS INT[])"), ("trino", "CAST(code AS INT[])"),
+        ("postgres", "CAST(orders.code AS INT[])"), ("duckdb", "code::INT[]"), ("clickhouse", "CAST(orders.code AS INT[])"),
+        ("bigquery", "CAST(orders.code AS INT[])"), ("trino", "CAST(orders.code AS INT[])"),
     ])
     async def test_rendered_as_the_database_array_cast(self, dialect: str, text: str) -> None:
         sql = await emit(_dim(f"length({text})"), dialect=dialect)
@@ -174,30 +174,30 @@ class TestArrayCasts:
 
     @pytest.mark.parametrize("dialect", ["sqlite", "mysql", "tsql"])
     async def test_refused_without_array_types(self, dialect: str) -> None:
-        await _refused("CAST(code AS INT[])", dialect=dialect, needle="INT[]")
+        await _refused("CAST(orders.code AS INT[])", dialect=dialect, needle="INT[]")
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb"])
     async def test_array_of_arrays_refused(self, dialect: str) -> None:
-        query = _dim("CAST(code AS INT[][])")
+        query = _dim("CAST(orders.code AS INT[][])")
         with pytest.raises(CastTypeError):
             await emit(query, dialect=dialect)
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_try_cast_to_an_array_refused_everywhere(self, dialect: str) -> None:
-        query = _dim("TRY_CAST(code AS INT[])")
+        query = _dim("TRY_CAST(orders.code AS INT[])")
         with pytest.raises(CastTypeError):
             await emit(query, dialect=dialect)
 
     async def test_plain_cast_to_an_array_accepted_where_try_cast_is_not(self) -> None:
-        await emit(_dim("length(CAST(code AS INT[]))"), dialect="postgres")
-        query = _dim("TRY_CAST(code AS INT[])")
+        await emit(_dim("length(CAST(orders.code AS INT[]))"), dialect="postgres")
+        query = _dim("TRY_CAST(orders.code AS INT[])")
         with pytest.raises(CastTypeError):
             await emit(query, dialect="postgres")
 
 
 class TestArrayTyping:
     @pytest.mark.parametrize(("text", "element"), [
-        ("CAST(code AS INT[])", DataType.INTEGER), ("code::BIGINT[]", DataType.INTEGER), ("CAST(code AS TEXT[])", DataType.STRING),
+        ("CAST(orders.code AS INT[])", DataType.INTEGER), ("code::BIGINT[]", DataType.INTEGER), ("CAST(code AS TEXT[])", DataType.STRING),
         ("CAST(code AS DOUBLE PRECISION[])", DataType.FLOAT), ("CAST(code AS DATE[])", DataType.DATE),
         ("CAST(code AS UUID[])", DataType.OPAQUE),
     ])

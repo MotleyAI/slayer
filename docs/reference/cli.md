@@ -101,16 +101,16 @@ Execute a query from the terminal.
 
 ```bash
 # Inline JSON
-slayer query '{"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}'
+slayer query '{"population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.status"]}'
 
 # From a file
 slayer query @query.json
 
 # JSON output
-slayer query '{"population": "orders", "metrics": ["count(*)"]}' --format json
+slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}' --format json
 
 # Preview SQL without executing
-slayer query '{"population": "orders", "metrics": ["count(*)"]}' --dry-run
+slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}' --dry-run
 
 # Show execution plan
 slayer query @query.json --explain
@@ -513,7 +513,7 @@ slayer search "What stores are in jaffle_shop?"
 slayer search --query @draft_query.json
 
 # Inline query JSON
-slayer search --query '{"population": "orders", "metrics": ["sum(order_total)"]}'
+slayer search --query '{"population": "orders", "metrics": ["sum(orders.order_total)"]}'
 
 # Narrow to one datasource
 slayer search --question "lifetime spend" --datasource jaffle_shop

@@ -17,8 +17,8 @@ from tests._dev1865_fixtures import make_exec_engine, q
 # A combined-select shape (the partitioned measure attaches a producer CTE), so
 # the outer scope the fallback routes to actually exists.
 _QUERY_KWARGS = dict(
-    dimensions=["region", "city"],
-    filter=["sum(amount) > 55"],
+    dimensions=["orders.region", "orders.city"],
+    filter=["sum(orders.amount) > 55"],
     metrics=[
         QueryMetric(metric="sum(orders.amount)", alias="s"),
         QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="part"),

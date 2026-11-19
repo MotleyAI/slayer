@@ -22,8 +22,8 @@ class TestMixedGrainOr:
         # Field typing fails (the aggregate); measure typing fails (status is not
         # a query dimension) — neither scope holds the whole OR.
         query = q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50 or orders.status == 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises(PositionTypingError) as ei:
@@ -38,9 +38,9 @@ class TestMixedGrainOr:
 class TestRawRowsHaveNoMeasurePosition:
     async def test_filter_on_measure_in_raw_rows_errors(self, exec_engine) -> None:
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             distinct_dimension_values=False,
-            filter=["sum(amount) > 100"],
+            filter=["sum(orders.amount) > 100"],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)
@@ -50,9 +50,9 @@ class TestRawRowsHaveNoMeasurePosition:
         # An aggregate order target is valid as neither field nor measure when the
         # query has no measure position — rejected, never silently unsorted.
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             distinct_dimension_values=False,
-            order=[{"field": "sum(amount)", "direction": "desc"}],
+            order=[{"field": "sum(orders.amount)", "direction": "desc"}],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)

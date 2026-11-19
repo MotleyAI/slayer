@@ -56,11 +56,11 @@ CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 #: A local aggregation-derived (row attach) dimension: channel totals band.
 LOCAL_BAND = {
-    "field": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "field": "CASE WHEN sum(orders.amount, partition_by=orders.channel) > 30 THEN 1 ELSE 0 END",
     "alias": "band",
 }
 #: A bare partitioned aggregate as a dimension.
-LOCAL_BARE = {"field": "sum(amount, partition_by=channel)", "alias": "ct"}
+LOCAL_BARE = {"field": "sum(orders.amount, partition_by=orders.channel)", "alias": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:
@@ -121,7 +121,7 @@ class TestRowAttachWithCrossModelMeasure:
         """Transform-root dimension family × cross-model measure."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"field": "rank(sum(amount, partition_by=channel), direction='desc')",
+            dimensions=[{"field": "rank(sum(orders.amount, partition_by=orders.channel), direction='desc')",
                          "alias": "rr"}],
             metrics=[M, CM], to_many_handling="broadcast",
         ))

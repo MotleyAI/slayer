@@ -54,17 +54,17 @@ async def pg(postgresql, tmp_path):
 
 
 @pytest.mark.parametrize(("expr", "kept"), [
-    ("contains(skills, 'go')", {1}),
-    ("contains(levels, 2)", {1, 2}),
-    ("contains_any(skills, ['go'])", {1}),
-    ("contains_any(skills, ['go', 'rust'])", {1, 3}),
-    ("contains_all(skills, ['sql'])", {1, 2}),
-    ("contains_any(levels, [2, 9])", {1, 2}),
-    ("contains_all(levels, [1, 2])", {1}),
-    ("contains_any(skills, required)", {1}),
-    ("contains_all(skills, required)", {3}),
-    ("contains_any(levels, ints)", {1}),
-    ("contains_all(levels, ints)", {1, 3}),
+    ("contains(typed.skills, 'go')", {1}),
+    ("contains(typed.levels, 2)", {1, 2}),
+    ("contains_any(typed.skills, ['go'])", {1}),
+    ("contains_any(typed.skills, ['go', 'rust'])", {1, 3}),
+    ("contains_all(typed.skills, ['sql'])", {1, 2}),
+    ("contains_any(typed.levels, [2, 9])", {1, 2}),
+    ("contains_all(typed.levels, [1, 2])", {1}),
+    ("contains_any(typed.skills, typed.required)", {1}),
+    ("contains_all(typed.skills, typed.required)", {3}),
+    ("contains_any(typed.levels, typed.ints)", {1}),
+    ("contains_all(typed.levels, typed.ints)", {1, 3}),
 ])
 async def test_lists_of_differing_physical_types(pg, expr: str, kept: set[int]) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["typed.id"],
@@ -74,14 +74,14 @@ async def test_lists_of_differing_physical_types(pg, expr: str, kept: set[int]) 
 
 async def test_collect_over_numeric(pg) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["typed.team"],
-                                                        "metrics": [metric("collect(amount)", "c")]}))
+                                                        "metrics": [metric("collect(typed.amount)", "c")]}))
     got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", "c", dataset="typed").items()}
     assert got == {"a": [1.5, 2.25], "b": []}, resp.sql
 
 
 async def test_collect_over_uuid(pg) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["typed.team"],
-                                                        "metrics": [metric("collect(uid)", "c")]}))
+                                                        "metrics": [metric("collect(typed.uid)", "c")]}))
     got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "c", dataset="typed").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql
 

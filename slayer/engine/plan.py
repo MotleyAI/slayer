@@ -364,8 +364,7 @@ class _StagePlanner:
             *(m.metric for m in query.metrics or []), *query.filter_conditions,
             *(d.field for d in query.dimensions or []),
         ]
-        root = query.population_name
-        heads = {path[0] for t in texts for path in text_paths(t, root=root) if len(path) > 1}
+        heads = {path[0] for t in texts for path in text_paths(t, root=None) if len(path) > 1}
         return [n for n in self.bundle.query_backed if n in heads]
 
     def ensure(self, name: str, *, chain: Tuple[str, ...], explicit: bool) -> bool:

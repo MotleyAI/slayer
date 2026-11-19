@@ -169,14 +169,14 @@ class TestOrderShorthandHealing:
     # --- formula key composes with existing normalization ---
 
     def test_shorthand_formula_key(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(orders.revenue)": "desc"}]})
         assert q.order is not None
         assert q.order[0].ref is None
         assert q.order[0].raw_expression == "sum(revenue)"
         assert q.order[0].direction == "desc"
 
     def test_shorthand_formula_key_equals_canonical(self) -> None:
-        shorthand = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
+        shorthand = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(orders.revenue)": "desc"}]})
         canonical = SlayerQuery.model_validate({
             "population": "orders",
             "order": [{"field": "sum(orders.revenue)", "direction": "desc"}],
@@ -339,7 +339,7 @@ class TestOrderShorthandHealing:
     def test_multikey_formula_keys_preserve_raw_formula(self) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "order": [{"sum(revenue)": "desc", "max(amount)": "asc"}],
+            "order": [{"sum(orders.revenue)": "desc", "max(amount)": "asc"}],
         })
         assert q.order is not None
         assert len(q.order) == 2
@@ -351,7 +351,7 @@ class TestOrderShorthandHealing:
         assert q.order[1].direction == "asc"
 
     def test_list_orderitem_passthrough(self) -> None:
-        item = OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})
+        item = OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})
         q = SlayerQuery(population="orders", order=[item])
         assert q.order is not None
         assert len(q.order) == 1
@@ -1636,11 +1636,11 @@ class TestMeasureFilter:
         assert m.filter is None
 
     def test_filter_set(self) -> None:
-        m = DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+        m = DatasetField(name="active_revenue", sql="amount", filter="orders.status = 'active'", datatype=DataType.FLOAT)
         assert m.filter == "status = 'active'"
 
     def test_filter_in_model_dump(self) -> None:
-        m = DatasetField(name="x", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+        m = DatasetField(name="x", sql="amount", filter="orders.status = 'active'", datatype=DataType.FLOAT)
         data = m.model_dump(exclude_none=True)
         assert data["filter"] == "status = 'active'"
 
@@ -1696,7 +1696,7 @@ class TestSubstituteVariables:
 
     def test_no_variables_no_change(self) -> None:
 
-        result = bind_mode_a("status = 'active'", {}, dialect=_SQLITE, field="f")
+        result = bind_mode_a("orders.status = 'active'", {}, dialect=_SQLITE, field="f")
         assert result == "status = 'active'"
 
     def test_variable_in_slayer_query(self) -> None:
@@ -1749,7 +1749,7 @@ _MONTH = {"field": "created_at", "granularity": "month"}
 
 # (root-qualified, bare) spellings of one query.
 _ROOT_QUALIFIED = {
-    "dimension": ({"dimensions": ["orders.status"]}, {"dimensions": ["status"]}),
+    "dimension": ({"dimensions": ["status"]}, {"dimensions": ["orders.status"]}),
     "joined-dimension": ({"dimensions": ["orders.customers.name"]}, {"dimensions": ["customers.name"]}),
     "multihop-dimension": ({"dimensions": ["orders.customers.regions.name"]}, {"dimensions": ["customers.regions.name"]}),
     "dimension-label": ({"dimensions": [{"name": "orders.status", "label": "Status"}]},
@@ -1760,9 +1760,9 @@ _ROOT_QUALIFIED = {
         {"time_dimensions": [{"field": "created_at", "granularity": "month",
                               "date_range": ["2024-01-01", "2024-12-31"], "label": "Month"}]},
     ),
-    "formula": ({"metrics": ["sum(orders.revenue)"]}, {"metrics": ["sum(revenue)"]}),
-    "star-count": ({"metrics": ["count(orders.*)"]}, {"metrics": ["count(*)"]}),
-    "arithmetic": ({"metrics": ["sum(orders.revenue) / count(orders.*)"]}, {"metrics": ["sum(revenue) / count(*)"]}),
+    "formula": ({"metrics": ["sum(revenue)"]}, {"metrics": ["sum(revenue)"]}),
+    "star-count": ({"metrics": ["count(*)"]}, {"metrics": ["count(orders.*)"]}),
+    "arithmetic": ({"metrics": ["sum(revenue) / count(*)"]}, {"metrics": ["sum(orders.revenue) / count(orders.*)"]}),
     "transform": ({"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(orders.revenue))"]},
                   {"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(revenue))"]}),
     "joined-formula": ({"metrics": ["avg(orders.customers.score)"]}, {"metrics": ["avg(customers.score)"]}),

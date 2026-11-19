@@ -81,7 +81,7 @@ class TestNestedAttachInsideProducer:
 
     async def test_row_attach_inside_filtered_local_subplan(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=["status", BAND],
+        query = q(dimensions=["orders.status", BAND],
                   metrics=[M, QueryMetric(metric="sum(orders.gold_amount)", alias="g")])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "band")
@@ -101,7 +101,7 @@ class TestNestedAttachInsideProducer:
 
     async def test_row_attach_inside_host_grain_wrap_subplan(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=["status", BAND], metrics=[M],
+        query = q(dimensions=["orders.status", BAND], metrics=[M],
                   order=[OrderItem(field="customers.tier",
                                    direction="asc")])
         resp = await engine.execute(query)
@@ -117,7 +117,7 @@ class TestNestedAttachInsideProducer:
         producer rides inside the filtered-local sub-plan's grain."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["status", {"field": "last(amount, partition_by=city)",
+            dimensions=["orders.status", {"field": "last(orders.amount, partition_by=orders.city)",
                                    "alias": "cl"}],
             metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
         )
@@ -143,7 +143,7 @@ class TestNestedAttachInsideProducer:
         the band row attach already hoists; the lift must not
         regress it."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status", BAND],
+        query = q(dimensions=["orders.status", BAND],
                   metrics=[QueryMetric(metric="last(customers.spend)",
                                          alias="sl")],
                   to_many_handling="broadcast")
@@ -162,9 +162,9 @@ class TestNestedAttachInsideProducer:
         """Green pin — a hidden ranked order-only aggregate beside a
         filtered-local measure renders one flat WITH today."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"],
+        query = q(dimensions=["orders.status"],
                   metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
-                  order=[OrderItem.model_validate({"field": "last(amount)", "direction": "desc"})])
+                  order=[OrderItem.model_validate({"field": "last(orders.amount)", "direction": "desc"})])
         resp = await engine.execute(query)
         got = [(r["orders.status"], float(r["g"])) for r in resp.data]
         assert got == [("new", 20.0), ("ok", 10.0)]
@@ -189,8 +189,8 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = self._banded_stages(
-            dimensions=["region"], filter=["band == 1"],
-            metrics=[QueryMetric(metric="sum(bt)", alias="total")],
+            dimensions=["region"], filter=["banded.band == 1"],
+            metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         )
         resp = await engine.execute(stages)
         by = rows_by(resp, "banded.region")

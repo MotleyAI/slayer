@@ -13,10 +13,10 @@ from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.mysql import MariadbDialect, MysqlDialect
 from tests._dev2120_fixtures import emit_lib, lib_query, patch_profile
 
-REGEX = ["regexp_like(word, '^a')", "word ~ '^a'", "word !~* '^a'", "regexp_extract(word, 'a(d)', 1)",
-         "regexp_replace(word, 'a', 'b')"]
-NUMERIC_TRY_CAST = ["TRY_CAST(num_txt AS DOUBLE)", "num_txt > 100", "num_txt * 2"]
-JSON_VALUE = ["json_value(payload, '$.a')", "payload ->> 'ok'", "json_extract(payload, '$.ok')"]
+REGEX = ["regexp_like(lib.word, '^a')", "lib.word ~ '^a'", "lib.word !~* '^a'", "regexp_extract(lib.word, 'a(d)', 1)",
+         "regexp_replace(lib.word, 'a', 'b')"]
+NUMERIC_TRY_CAST = ["TRY_CAST(lib.num_txt AS DOUBLE)", "lib.num_txt > 100", "lib.num_txt * 2"]
+JSON_VALUE = ["json_value(lib.payload, '$.a')", "lib.payload ->> 'ok'", "json_extract(lib.payload, '$.ok')"]
 
 
 async def _mysql(monkeypatch: pytest.MonkeyPatch, expr: str, version: Optional[tuple[int, ...]]) -> str:
@@ -56,7 +56,7 @@ class TestProfileVersion:
 
     async def test_message_prints_every_part(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with pytest.raises(ServerVersionError, match=r"8\.0\.20"):
-            await _mysql(monkeypatch, "json_value(payload, '$.a')", (8, 0, 20))
+            await _mysql(monkeypatch, "json_value(lib.payload, '$.a')", (8, 0, 20))
 
 
 class TestMysqlGates:
@@ -93,7 +93,7 @@ class TestMysqlGates:
         patch_profile(monkeypatch, fail=True)
         await emit_lib(lib_query(expr), dialect="mysql")
 
-    @pytest.mark.parametrize("expr", ["abs(a)", "upper(word)", "TRY_CAST(word AS DATE)"])
+    @pytest.mark.parametrize("expr", ["abs(lib.a)", "upper(lib.word)", "TRY_CAST(lib.word AS DATE)"])
     async def test_ungated_never_probes(self, monkeypatch: pytest.MonkeyPatch, expr: str) -> None:
         calls = patch_profile(monkeypatch, version=(5, 7, 44))
         await emit_lib(lib_query(expr), dialect="mysql")
@@ -107,7 +107,7 @@ class TestMysqlGates:
 
 
 class TestMariadbKeepsItsRefusals:
-    @pytest.mark.parametrize("expr", [*REGEX, "num_txt > 100", "TRY_CAST(num_txt AS INT)", *JSON_VALUE])
+    @pytest.mark.parametrize("expr", [*REGEX, "lib.num_txt > 100", "TRY_CAST(lib.num_txt AS INT)", *JSON_VALUE])
     @pytest.mark.parametrize("version", [None, (10, 11, 6)])
     async def test_refused(self, monkeypatch: pytest.MonkeyPatch, expr: str, version: Any) -> None:
         patch_profile(monkeypatch, version=version)

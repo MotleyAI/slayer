@@ -34,8 +34,8 @@ class TestFieldMaskRestrictsPopulation:
         # status='ok' drops the one 'hold' row (South/CityC, amount 25); every
         # aggregate is then computed over the passing rows only.
         by = rows_by(await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["status = 'ok'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["orders.status = 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )), "orders.region", "orders.city")
         expected = {**CITY_TOTAL, ("South", "CityC"): 25.0}
@@ -47,8 +47,8 @@ class TestFieldMaskRestrictsPopulation:
         # The partitioned producer recomputes over the stratum-0 population:
         # South's region total drops from 50 to 25 (the hold row is gone).
         by = rows_by(await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["status = 'ok'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["orders.status = 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="part")],
         )), "orders.region", "orders.city")
         ok_region_total = {"North": 100.0, "South": 25.0, None: 60.0}
@@ -62,11 +62,11 @@ class TestFieldMaskRestrictsPopulation:
             metric="sum(orders.amount, window='90d', partition_by=orders.region)", alias="w",
         )
         unfiltered = {_bucket_key(r): r for r in (await exec_engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(), metrics=[win],
+            dimensions=["orders.region"], time_dimensions=month_td(), metrics=[win],
         ))).data}
         filtered = {_bucket_key(r): r for r in (await exec_engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(),
-            filter=["status = 'ok'"], metrics=[win],
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            filter=["orders.status = 'ok'"], metrics=[win],
         ))).data}
         for key, row in filtered.items():
             assert float(row["w"]) <= float(unfiltered[key]["w"]) + 1e-9
@@ -86,7 +86,7 @@ class TestFieldMaskRestrictsPopulation:
             dimensions=["customers.tier"], metrics=[total],
         ))).data
         filtered = (await exec_engine.execute(q(
-            dimensions=["customers.tier"], filter=["channel = 'app'"], metrics=[total],
+            dimensions=["customers.tier"], filter=["orders.channel = 'app'"], metrics=[total],
         ))).data
         assert all(float(r["total"]) == pytest.approx(350.0) for r in unfiltered)
         assert filtered
@@ -99,8 +99,8 @@ class TestFieldWinsTieBreak:
         # masks host rows and the partition producer sees the row-filtered
         # population — North drops CityB (40) and its NULL-city row, leaving 30.
         by = rows_by(await exec_engine.execute(q(
-            dimensions=["region", "city"],
-            filter=["city != 'CityB'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["orders.city != 'CityB'"],
             metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="part")],
         )), "orders.region", "orders.city")
         assert float(by[("North", "CityA")]["part"]) == pytest.approx(30.0)
@@ -112,8 +112,8 @@ class TestAttachedValueDoesNotFeedProducers:
         # Filtering on the computed dim's own aggregate masks the re-aggregation,
         # but the grand-total producer still sees the unmasked population.
         by = rows_by(await exec_engine.execute(q(
-            dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
-            filter=["sum(amount, partition_by=city) > 45"],
+            dimensions=["orders.region", "orders.city", {"field": BAND35, "alias": "band"}],
+            filter=["sum(orders.amount, partition_by=orders.city) > 45"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(metric="sum(orders.amount, partition_by=[])", alias="grand"),
@@ -130,8 +130,8 @@ class TestAttachedValueDoesNotFeedProducers:
 class TestMeasureMaskPrunesCellsOnly:
     async def test_surviving_cells_keep_their_values(self, exec_engine) -> None:
         by = rows_by(await exec_engine.execute(q(
-            dimensions=["region"],
-            filter=["sum(amount) > 55"],
+            dimensions=["orders.region"],
+            filter=["sum(orders.amount) > 55"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )), "orders.region")
         expected = {k: v for k, v in REGION_TOTAL.items() if v > 55}
@@ -143,10 +143,10 @@ class TestMeasureMaskPrunesCellsOnly:
 class TestHiddenPositionsAddNoColumns:
     async def test_filter_only_and_order_only_add_no_columns(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
-            filter=["count(*) > 0"],
-            order=[{"field": "max(amount)", "direction": "desc"}],
+            filter=["count(orders.*) > 0"],
+            order=[{"field": "max(orders.amount)", "direction": "desc"}],
         ))
         assert resp.columns == ["orders.region", "s"]
         for row in resp.data:

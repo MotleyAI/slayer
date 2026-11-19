@@ -42,7 +42,7 @@ class TestRestatementCollapses:
 
     @pytest.mark.parametrize("form", sorted(RESTATEMENTS))
     def test_picks_the_named_entry_among_several(self, form: str) -> None:
-        base = saved({"metric": "count(*)", "alias": "orders_n"}, REVENUE)
+        base = saved({"metric": "count(orders.*)", "alias": "orders_n"}, REVENUE)
         assert merge(base, RESTATEMENTS[form]) == base
 
     @pytest.mark.parametrize("field", sorted(FIELD_VALUES))
@@ -69,7 +69,7 @@ class TestRestatementConflicts:
         assert "revenue" in message
 
     def test_another_entry_named_like_the_saved_one_still_conflicts(self) -> None:
-        message = conflict(saved(REVENUE), RESTATEMENTS["named"], {"metric": "count(*)", "alias": "revenue"})
+        message = conflict(saved(REVENUE), RESTATEMENTS["named"], {"metric": "count(orders.*)", "alias": "revenue"})
         assert "revenue" in message
 
     def test_same_name_other_formula_still_conflicts(self) -> None:

@@ -225,7 +225,7 @@ class TestDerivedColumnsCompose:
         oracle = ctx.oracle(f"SELECT o.id, lo.amount {_ORDERS_THROUGH_LAST} ORDER BY o.id")
         assert [(i, _num(v)) for i, v in oracle] == [(11, 20.0), (12, 20.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id", "customer.last_amount"], order=[{"field": "id", "direction": "asc"}]))
+            dimensions=["orders.id", "orders.customer.last_amount"], order=[{"field": "orders.id", "direction": "asc"}]))
         got = [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.last_amount")]
         assert got == [(i, _num(v)) for i, v in oracle]
         assert resp.sql is not None
@@ -235,7 +235,7 @@ class TestDerivedColumnsCompose:
         assert meta.label == "Latest amount"
 
     async def test_same_chain_typed_in_one_frame_is_refused(self, ctx: _Ctx) -> None:
-        query = _q(dimensions=["id", "customer.last_order.amount"])
+        query = _q(dimensions=["orders.id", "orders.customer.last_order.amount"])
         with pytest.raises(CircularRelationshipPathError) as ei:
             await ctx.engine.execute(query)
         assert ei.value.hop == "last_order"
@@ -246,8 +246,8 @@ class TestDerivedColumnsCompose:
             f"SELECT c.name, MAX(lo.amount) {_ORDERS_THROUGH_LAST} GROUP BY c.name ORDER BY c.name")
         assert [(n, _num(v)) for n, v in oracle] == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=[{"metric": "max(customer.last_amount)", "alias": "m"}],
-            order=[{"field": "customer.name", "direction": "asc"}]))
+            dimensions=["orders.customer.name"], metrics=[{"metric": "max(orders.customer.last_amount)", "alias": "m"}],
+            order=[{"field": "orders.customer.name", "direction": "asc"}]))
         assert [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "m")] == [
             (n, _num(v)) for n, v in oracle]
         assert _broadcasts(resp) == []
@@ -261,8 +261,8 @@ class TestDerivedColumnsCompose:
         norm = [(i, _num(a), _num(f), _num(lv)) for i, a, f, lv in oracle]
         assert norm == [(11, 10.0, 10.0, 20.0), (12, 20.0, 10.0, 20.0), (21, 5.0, 5.0, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id", "amount", "customer.first_amount", "customer.last_amount"],
-            order=[{"field": "id", "direction": "asc"}]))
+            dimensions=["orders.id", "orders.amount", "orders.customer.first_amount", "orders.customer.last_amount"],
+            order=[{"field": "orders.id", "direction": "asc"}]))
         got = [(i, _num(a), _num(f), _num(lv)) for i, a, f, lv in _rows(
             resp, "orders.id", "orders.amount", "orders.customer.first_amount", "orders.customer.last_amount")]
         assert got == norm
@@ -322,8 +322,8 @@ class TestSavedMeasuresCompose:
         oracle = [(n, _num(v)) for n, v in ctx.oracle(_ORDER_TOTAL_BY_NAME)]
         assert oracle == [("ann", 30.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.order_total"],
-            order=[{"field": "customer.name", "direction": "asc"}]))
+            dimensions=["orders.customer.name"], metrics=["orders.customer.order_total"],
+            order=[{"field": "orders.customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.order_total")]
         assert got == oracle
         assert _broadcasts(resp) == []
@@ -333,7 +333,7 @@ class TestSavedMeasuresCompose:
             "SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id IN (SELECT customer_id FROM orders)")
         assert _num(total) == 35.0
         resp = await ctx.engine.execute(_q(
-            dimensions=["id"], metrics=["customer.order_total"], to_many_handling="broadcast"))
+            dimensions=["orders.id"], metrics=["orders.customer.order_total"], to_many_handling="broadcast"))
         assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [35.0] * 3
         assert _broadcasts(resp) != []
 
@@ -344,8 +344,8 @@ class TestSavedMeasuresCompose:
             "FROM orders o ORDER BY o.id")]
         assert oracle == [(11, 30.0), (12, 30.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id"], metrics=["customer.order_total"], to_many_handling=mode,
-            order=[{"field": "id", "direction": "asc"}]))
+            dimensions=["orders.id"], metrics=["orders.customer.order_total"], to_many_handling=mode,
+            order=[{"field": "orders.id", "direction": "asc"}]))
         assert [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.order_total")] == oracle
 
     async def test_measure_through_a_pointer_back_to_the_host(self, ctx: _Ctx) -> None:
@@ -354,13 +354,13 @@ class TestSavedMeasuresCompose:
             "GROUP BY c.name ORDER BY c.name")]
         assert oracle == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.latest_total"], to_many_handling="associate",
-            order=[{"field": "customer.name", "direction": "asc"}]))
+            dimensions=["orders.customer.name"], metrics=["orders.customer.latest_total"], to_many_handling="associate",
+            order=[{"field": "orders.customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.latest_total")]
         assert got == oracle
 
     async def test_formula_revisiting_its_own_frame_is_refused(self, ctx: _Ctx) -> None:
-        query = _q(dimensions=["customer.name"], metrics=["customer.bad"])
+        query = _q(dimensions=["orders.customer.name"], metrics=["orders.customer.bad"])
         with pytest.raises(CircularRelationshipPathError) as ei:
             await ctx.engine.execute(query)
         assert ei.value.hop == "customer"
@@ -368,11 +368,11 @@ class TestSavedMeasuresCompose:
 
     async def test_composing_measure_has_no_hand_written_equivalent(self, ctx: _Ctx) -> None:
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.latest_total"], to_many_handling="associate"))
+            dimensions=["orders.customer.name"], metrics=["orders.customer.latest_total"], to_many_handling="associate"))
         assert resp.data
         query = _q(
-            dimensions=["customer.name"],
-            metrics=[{"metric": "sum(customer.last_order.amount)", "alias": "h"}],
+            dimensions=["orders.customer.name"],
+            metrics=[{"metric": "sum(orders.customer.last_order.amount)", "alias": "h"}],
             to_many_handling="associate")
         with pytest.raises(CircularRelationshipPathError):
             await ctx.engine.execute(query)
@@ -394,7 +394,7 @@ class TestComposedOccurrenceMetadata:
         assert native.attributes.metrics["s"].format == NumberFormat(type=NumberFormatType.PERCENT)
         assert native.attributes.metrics["t"].format == CURRENCY
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.latest_big_share", "customer.latest_total"],
+            dimensions=["orders.customer.name"], metrics=["orders.customer.latest_big_share", "orders.customer.latest_total"],
             to_many_handling="associate"))
         assert resp.attributes.metrics["orders.customer.latest_big_share"].format == NumberFormat(
             type=NumberFormatType.PERCENT)
@@ -409,8 +409,8 @@ class TestComposedOccurrenceMetadata:
             "ORDER BY c.name")]
         assert oracle == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.last_ranked"],
-            order=[{"field": "customer.name", "direction": "asc"}]))
+            dimensions=["orders.customer.name"], metrics=["orders.customer.last_ranked"],
+            order=[{"field": "orders.customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.last_ranked")]
         assert got == oracle
 
@@ -422,8 +422,8 @@ class TestComposedOccurrenceMetadata:
         td = TimeDimension(field="orders.customer.last_ordered_at",
                            granularity=TimeGranularity.MONTH)
         resp = await ctx.engine.execute(_q(
-            time_dimensions=[td], metrics=[{"metric": "count(*)", "alias": "n"}],
-            order=[{"field": "customer.last_ordered_at", "direction": "desc"}]))
+            time_dimensions=[td], metrics=[{"metric": "count(orders.*)", "alias": "n"}],
+            order=[{"field": "orders.customer.last_ordered_at", "direction": "desc"}]))
         key = next(k for k in resp.columns if "last_ordered_at" in k)
         got = [(str(t)[:7], n) for t, n in _rows(resp, key, "n")]
         assert got == [(str(t)[:7], n) for t, n in oracle]

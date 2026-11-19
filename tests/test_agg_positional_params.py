@@ -26,29 +26,29 @@ async def exec_engine(request):
 
 async def _rows(engine, *measures: str) -> list[dict]:
     resp = await engine.execute(sales_q(
-        dimensions=["region"], metrics=list(measures)))
+        dimensions=["sales.region"], metrics=list(measures)))
     return sorted(resp.data, key=lambda r: (r["sales.region"] is None,
                                             str(r["sales.region"])))
 
 
 class TestPositionalEqualsNamed:
     async def test_percentile_functional(self, exec_engine):
-        pos = await _rows(exec_engine, "percentile(amount, 0.9)")
-        named = await _rows(exec_engine, "percentile(amount, p=0.9)")
+        pos = await _rows(exec_engine, "percentile(sales.amount, 0.9)")
+        named = await _rows(exec_engine, "percentile(sales.amount, p=0.9)")
         assert pos == named  # identical values AND result keys
 
     async def test_custom_aggregation_declared_order(self, exec_engine):
-        pos = await _rows(exec_engine, "wavg(amount, id)")
-        named = await _rows(exec_engine, "wavg(amount, weight=id)")
+        pos = await _rows(exec_engine, "wavg(sales.amount, sales.id)")
+        named = await _rows(exec_engine, "wavg(sales.amount, weight=sales.id)")
         assert pos == named
 
     async def test_reaggregation_outer(self, exec_engine):
         pos = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"percentile({INNER_CR}, 0.9)",
                                    alias="p")]))
         named = await exec_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"percentile({INNER_CR}, p=0.9)",
                                    alias="p")]))
         assert region_key(pos) == region_key(named)
@@ -57,36 +57,36 @@ class TestPositionalEqualsNamed:
 class TestPositionalErrors:
     async def test_duplicate_positional_and_named(self, exec_engine):
         with pytest.raises(ValueError, match="both positionally and by name"):
-            await _rows(exec_engine, "percentile(amount, 0.9, p=0.5)")
+            await _rows(exec_engine, "percentile(sales.amount, 0.9, p=0.5)")
 
     async def test_excess_positionals(self, exec_engine):
         with pytest.raises(ValueError, match="takes at most 1 parameter"):
-            await _rows(exec_engine, "percentile(amount, 0.9, 0.5)")
+            await _rows(exec_engine, "percentile(sales.amount, 0.9, 0.5)")
 
     async def test_parameterless_aggregation_rejects_positional(self, exec_engine):
         with pytest.raises(ValueError, match="takes no parameters"):
-            await _rows(exec_engine, "sum(amount, 1)")
+            await _rows(exec_engine, "sum(sales.amount, 1)")
 
     async def test_parameterless_aggregation_rejects_positional_aggregate(self, exec_engine):
         with pytest.raises(ValueError, match="takes no parameters"):
-            await _rows(exec_engine, "sum(amount, sum(amount, partition_by=region))")
+            await _rows(exec_engine, "sum(sales.amount, sum(sales.amount, partition_by=sales.region))")
 
     async def test_ranked_rejects_aggregate_ranking_key(self, exec_engine):
         with pytest.raises(ValueError, match="ranks by a field"):
-            await _rows(exec_engine, "last(amount, sum(amount, partition_by=region))")
+            await _rows(exec_engine, "last(sales.amount, sum(sales.amount, partition_by=sales.region))")
 
     async def test_ranked_rejects_literal_ranking_key(self, exec_engine):
         with pytest.raises(ValueError, match="ranks by a field"):
-            await _rows(exec_engine, "last(amount, 1)")
+            await _rows(exec_engine, "last(sales.amount, 1)")
 
     async def test_ranked_rejects_extra_positionals(self, exec_engine):
         with pytest.raises(ValueError, match="ranks by at most one field"):
-            await _rows(exec_engine, "last(amount, id, amount)")
+            await _rows(exec_engine, "last(sales.amount, sales.id, sales.amount)")
 
 
 class TestRankedPositionalUntouched:
     async def test_last_ranking_column_still_positional(self, exec_engine):
-        rows = await _rows(exec_engine, "last(amount, id)")
+        rows = await _rows(exec_engine, "last(sales.amount, sales.id)")
         by_region = {r["sales.region"]: r["sales.amount_last_id"] for r in rows}
         # last-by-id per region from the fixture rows.
         assert by_region["North"] == pytest.approx(60.0)

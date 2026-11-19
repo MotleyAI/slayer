@@ -55,7 +55,7 @@ def _squash(sql: str) -> str:
     lines in one context and inline in another; that is not the subject."""
     return " ".join(sql.split())
 
-_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
+_MEASURE = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:

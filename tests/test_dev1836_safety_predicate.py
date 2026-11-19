@@ -249,8 +249,8 @@ class TestMayInlineSeam:
                                segments_dataset()],
         )
         query = q(
-            dimensions=["status"],
-            metrics=[{"metric": "sum(gold_amount)", "alias": "g"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "sum(orders.gold_amount)", "alias": "g"}],
         )
         planned = plan_query(query=query, bundle=bundle)
         assert planned.regroup_attach_plans, (

@@ -24,11 +24,11 @@ class TestDuplicateOppositeDirection:
         # ASC wraps per-group MIN, DESC per-group MAX — two hidden slots for one
         # column must coexist, and neither leaks into the projection.
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[
-                {"field": "ordered_at", "direction": "asc"},
-                {"field": "ordered_at", "direction": "desc"},
+                {"field": "orders.ordered_at", "direction": "asc"},
+                {"field": "orders.ordered_at", "direction": "desc"},
             ],
         )
         resp = await exec_engine.execute(query)
@@ -47,9 +47,9 @@ class TestNullsSortLast:
     @pytest.mark.parametrize("direction", ["asc", "desc"])
     async def test_null_dimension_values_sort_last(self, exec_engine, direction) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["city"],
+            dimensions=["orders.city"],
             distinct_dimension_values=False,
-            order=[{"field": "city", "direction": direction}],
+            order=[{"field": "orders.city", "direction": direction}],
         ))
         cities = [r["orders.city"] for r in resp.data]
         assert None in cities
@@ -61,9 +61,9 @@ class TestNullsSortLast:
 class TestOrderOnlyTrimmed:
     async def test_order_by_undeclared_aggregate_adds_no_column(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
-            order=[{"field": "min(amount)", "direction": "asc"}],
+            order=[{"field": "min(orders.amount)", "direction": "asc"}],
         ))
         assert resp.columns == ["orders.region", "s"]
 

@@ -194,43 +194,43 @@ def _names_the_list_type(msg: str) -> bool:
 
 class TestEligibility:
     @pytest.mark.parametrize(("filter_", "remedy"), [
-        ("skills = 'go'", "contains"), ("skills <> 'go'", "contains"), ("skills IN ('go', 'sql')", "contains_any"),
+        ("contractors.skills = 'go'", "contains"), ("contractors.skills <> 'go'", "contains"), ("contractors.skills IN ('go', 'sql')", "contains_any"),
     ])
     async def test_comparing_a_list(self, engine, filter_: str, remedy: str) -> None:
-        await _refused(engine, names=(remedy,), metrics=[metric("count(*)", "n")], filter=[filter_])
+        await _refused(engine, names=(remedy,), metrics=[metric("count(contractors.*)", "n")], filter=[filter_])
 
     @pytest.mark.parametrize("filter_", [
-        "skills < 'go'", "skills >= 'go'", "skills BETWEEN 'a' AND 'z'",
+        "contractors.skills < 'go'", "contractors.skills >= 'go'", "contractors.skills BETWEEN 'a' AND 'z'",
     ])
     async def test_other_comparisons_refused(self, engine, filter_: str) -> None:
-        await _refused(engine, names=("skills",), metrics=[metric("count(*)", "n")], filter=[filter_])
+        await _refused(engine, names=("skills",), metrics=[metric("count(contractors.*)", "n")], filter=[filter_])
 
     @pytest.mark.parametrize("agg", ["min", "max", "first", "last", "count_distinct_approx"])
     async def test_other_builtins_refused(self, engine, agg: str) -> None:
         await _refused(engine, names=("skills",), metrics=[metric(f"{agg}(skills)", "n")])
 
     async def test_counting_lists(self, engine) -> None:
-        resp = await engine.execute(query(metrics=[metric("count(skills)", "n")],
-                                          filter=["name IN ('Cid', 'Dee', 'Eve')"]))
+        resp = await engine.execute(query(metrics=[metric("count(contractors.skills)", "n")],
+                                          filter=["contractors.name IN ('Cid', 'Dee', 'Eve')"]))
         assert num(resp.data[0]["n"]) == 2
 
     async def test_counting_lists_unnamed_measure(self, engine) -> None:
-        resp = await engine.execute(query(metrics=["count(skills)"]))
+        resp = await engine.execute(query(metrics=["count(contractors.skills)"]))
         assert num(next(iter(resp.data[0].values()))) == 4
 
     async def test_custom_aggregation_over_a_list(self) -> None:
         model = contractors_dataset().model_copy(update={
             "aggregations": [Aggregation(name="my_agg", expression="COUNT({value})")]})
         async with contractors_engine(datasets=[model]) as e:
-            msg = await _refused(e, names=(), metrics=[metric("my_agg(skills)", "n")])
+            msg = await _refused(e, names=(), metrics=[metric("my_agg(contractors.skills)", "n")])
         assert _names_the_list_type(msg), msg
 
     async def test_expression_source_over_a_list(self, engine) -> None:
-        msg = await _refused(engine, names=(), metrics=[metric("max(coalesce(skills, required))", "n")])
+        msg = await _refused(engine, names=(), metrics=[metric("max(coalesce(contractors.skills, contractors.required))", "n")])
         assert _names_the_list_type(msg), msg
 
     async def test_aggregating_a_collected_list(self, engine) -> None:
-        msg = await _refused(engine, names=(), metrics=[metric("min(collect(team))", "n")])
+        msg = await _refused(engine, names=(), metrics=[metric("min(collect(contractors.team))", "n")])
         assert _names_the_list_type(msg), msg
 
     def test_save_time_allowed_aggregations(self) -> None:
@@ -244,21 +244,21 @@ class TestEligibility:
             DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING, allowed_aggregations=["count"])])
 
     async def test_null_test(self, engine) -> None:
-        resp = await engine.execute(query(dimensions=["name"], filter=["skills IS NULL"]))
+        resp = await engine.execute(query(dimensions=["contractors.name"], filter=["contractors.skills IS NULL"]))
         assert {r["contractors.name"] for r in resp.data} == {"Dee"}
 
 
 class TestNullElements:
     async def test_null_element_is_not_an_element(self, engine) -> None:
-        bob = ["name = 'Bob'"]
+        bob = ["contractors.name = 'Bob'"]
         resp = await engine.execute(query(
-            dimensions=["name", {"field": "length(skills)", "alias": "n"},
-                        {"field": "contains(skills, 'go')", "alias": "has_go"}],
+            dimensions=["contractors.name", {"field": "length(contractors.skills)", "alias": "n"},
+                        {"field": "contains(contractors.skills, 'go')", "alias": "has_go"}],
             filter=bob))
         row = resp.data[0]
         assert num(row["n"]) == 1
         assert row["has_go"] in (False, 0)
-        elements = await engine.execute(query(dimensions=["skills.value"], metrics=[metric("count(skills.*)", "n")],
+        elements = await engine.execute(query(dimensions=["contractors.dev_skills.skills.value"], metrics=[metric("count(contractors.skills.*)", "n")],
                                               filter=bob))
         assert {r["contractors.skills.value"]: num(r["n"]) for r in elements.data} == {"sql": 1}
 
@@ -296,7 +296,7 @@ class TestOpaqueElements:
 class TestNoNativeLists:
     async def test_list_function_on_sqlite(self) -> None:
         async with contractors_engine("sqlite") as e:
-            q = query(metrics=[metric("count(*)", "n")], filter=["contains(skills, 'go')"])
+            q = query(metrics=[metric("count(contractors.*)", "n")], filter=["contains(contractors.skills, 'go')"])
             with pytest.raises(SlayerError) as info:
                 await e.execute(q)
         assert "contains" in str(info.value), str(info.value)
@@ -305,7 +305,7 @@ class TestNoNativeLists:
     @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server"),
                                                        ("sqlite", "SQLite")])
     async def test_collect(self, dialect: str, database: str) -> None:
-        q = query(dimensions=["city"], metrics=[metric("collect(team)", "c")])
+        q = query(dimensions=["contractors.city"], metrics=[metric("collect(contractors.team)", "c")])
         with pytest.raises(SlayerError) as info:
             await emit_contractors(q, dialect=dialect)
         assert "collect" in str(info.value), str(info.value)
@@ -314,14 +314,14 @@ class TestNoNativeLists:
     @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server"),
                                                        ("sqlite", "SQLite")])
     async def test_element_access(self, dialect: str, database: str) -> None:
-        q = query(metrics=[metric("count(*)", "n")], filter=["skills.value = 'go'"])
+        q = query(metrics=[metric("count(contractors.*)", "n")], filter=["contractors.skills.value = 'go'"])
         with pytest.raises(SlayerError) as info:
             await emit_contractors(q, dialect=dialect)
         assert database in str(info.value), str(info.value)
 
     @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server")])
     async def test_array_literal(self, dialect: str, database: str) -> None:
-        q = query(metrics=[metric("count(*)", "n")], filter=["contains_any(skills, ['go'])"])
+        q = query(metrics=[metric("count(contractors.*)", "n")], filter=["contains_any(contractors.skills, ['go'])"])
         with pytest.raises(SlayerError) as info:
             await emit_contractors(q, dialect=dialect)
         assert database in str(info.value), str(info.value)
@@ -484,7 +484,7 @@ class TestSnowflakeJson:
     async def test_json_value_reads_an_array_column(self) -> None:
         tags = DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.STRING, db_type="ARRAY")
         model = contractors_dataset().model_copy(update={"fields": [*contractors_dataset().fields, tags]})
-        sql = await emit_contractors(query(dimensions=["id", {"field": "json_value(tags, '$[0]')", "alias": "t"}]),
+        sql = await emit_contractors(query(dimensions=["contractors.id", {"field": "json_value(contractors.tags, '$[0]')", "alias": "t"}]),
                                      dialect="snowflake", datasets=[model])
         assert "TRY_PARSE_JSON" not in sql.upper(), sql
 

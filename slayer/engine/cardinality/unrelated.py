@@ -20,39 +20,37 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import FieldRef, SlayerQuery
 from slayer.core.time_spine import is_spine
 from slayer.engine.reference_closure import key_closure
-from slayer.core.syntax import drop_root_qualifier, text_paths
+from slayer.core.syntax import text_paths
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = ["ProductSides", "first_hop_names", "stamp_unrelated", "unrelated_targets"]
 
 
-def _parsed_heads(text: str, *, root: Optional[str]) -> Iterator[str]:
-    """The first hop of every dotted reference ``text`` makes from ``root``."""
-    return (path[0] for path in text_paths(text, root=root) if len(path) > 1)
+def _parsed_heads(text: str) -> Iterator[str]:
+    """The anchor of every dotted reference in ``text``."""
+    return (path[0] for path in text_paths(text, root=None) if len(path) > 1)
 
 
-def _path_head(ref: FieldRef, *, root: Optional[str]) -> Iterator[str]:
-    parts = drop_root_qualifier(ref.parts, root, quoted=ref.quoted_parts)
-    if len(parts) > 1:
-        yield parts[0]
+def _path_head(ref: FieldRef) -> Iterator[str]:
+    if len(ref.parts) > 1:
+        yield ref.parts[0]
 
 
 def first_hop_names(query: SlayerQuery) -> set[str]:
-    """The first hop of every dotted reference in ``query``'s own fields."""
-    root = query.population_name
+    """The anchor of every dotted reference in ``query``'s own fields."""
     out: set[str] = set()
     for m in query.metrics or []:
-        out.update(_parsed_heads(m.metric, root=root))
+        out.update(_parsed_heads(m.metric))
     for d in query.dimensions or []:
         ref = d.ref
-        out.update(_parsed_heads(d.field, root=root) if d.is_computed or ref is None else _path_head(ref, root=root))
+        out.update(_parsed_heads(d.field) if d.is_computed or ref is None else _path_head(ref))
     for td in query.time_dimensions or []:
-        out.update(_parsed_heads(td.field, root=root))
+        out.update(_parsed_heads(td.field))
     for f in query.filter_conditions:
-        out.update(_parsed_heads(f, root=root))
+        out.update(_parsed_heads(f))
     for o in query.order or []:
         ref = o.ref
-        out.update(_path_head(ref, root=root) if ref is not None else _parsed_heads(o.raw_expression or o.field, root=root))
+        out.update(_path_head(ref) if ref is not None else _parsed_heads(o.raw_expression or o.field))
     return out
 
 

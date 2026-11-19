@@ -264,11 +264,11 @@ class TestCustomAggregationBinding:
 
 class TestGlobalNameValidation:
     async def test_unknown_over_column_gets_standard_error(self) -> None:
-        err = await _binding_error("bogus(price)", dataset=_orders())
+        err = await _binding_error("bogus(orders.price)", dataset=_orders())
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_star_bogus_functional_gets_standard_error(self) -> None:
-        err = await _binding_error("bogus(*)", dataset=_orders())
+        err = await _binding_error("bogus(orders.*)", dataset=_orders())
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_dotted_star_bogus_gets_standard_error(self) -> None:
@@ -278,20 +278,20 @@ class TestGlobalNameValidation:
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_avg_star_rejected(self) -> None:
-        await _binding_error("avg(*)", dataset=_orders())
+        await _binding_error("avg(orders.*)", dataset=_orders())
 
     async def test_unknown_agg_error_hints_scalar_near_miss(self) -> None:
-        err = await _binding_error("rond(price)", dataset=_orders())
+        err = await _binding_error("rond(orders.price)", dataset=_orders())
         msg = str(err)
         assert "round" in msg
         assert "scalar" in msg.lower()
 
     async def test_missing_weight_parameter(self) -> None:
-        err = await _binding_error("weighted_avg(price)", dataset=_orders())
+        err = await _binding_error("weighted_avg(orders.price)", dataset=_orders())
         assert "weight" in str(err)
 
     async def test_missing_other_parameter(self) -> None:
-        err = await _binding_error("corr(price)", dataset=_orders())
+        err = await _binding_error("corr(orders.price)", dataset=_orders())
         assert "other" in str(err)
 
 
@@ -459,7 +459,7 @@ async def exec_engine(request):
 class TestCrossSpellingMatching:
     @pytest.mark.parametrize(
         ("measure", "filter_"),
-        [("sum(amount)", "SUM(amount) > 100"), ("SUM(amount)", "sum(amount) > 100")],
+        [("sum(orders.amount)", "SUM(orders.amount) > 100"), ("SUM(orders.amount)", "sum(orders.amount) > 100")],
     )
     async def test_filter_resolves_to_renamed_measure(self, exec_engine: SlayerQueryEngine, measure, filter_) -> None:
         resp = await exec_engine.execute(SlayerQuery.model_validate({

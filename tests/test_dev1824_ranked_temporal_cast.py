@@ -39,7 +39,7 @@ class TestRankedTemporalValueNotTruncated:
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="last(orders.ordered_at)", alias="lt")],
         ))
         got = {r["orders.region"]: str(r["lt"])[:10] for r in resp.data}
@@ -49,7 +49,7 @@ class TestRankedTemporalValueNotTruncated:
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="first(orders.ordered_at)", alias="ft")],
         ))
         got = {r["orders.region"]: str(r["ft"])[:10] for r in resp.data}

@@ -28,7 +28,7 @@ def _q(**kw) -> SlayerQuery:
 class TestGrainGuards:
     async def test_non_dimension_partition_key_raises(self) -> None:
         q = _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.city)")],
         )
         with pytest.raises(ValueError, match=r"partition_by.*not a query dimension") as ei:
@@ -52,7 +52,7 @@ class TestGrainGuards:
         # The key is checked for attributability from the aggregate's
         # root — `region` is a host column, unreachable from `customers`.
         q = _q(
-            dimensions=["region", "customers.tier"],
+            dimensions=["orders.region", "customers.tier"],
             metrics=[
                 QueryMetric(metric="sum(customers.spend, partition_by=orders.region)"),
             ],
@@ -71,7 +71,7 @@ class TestDeferredShapeGuards:
         # producer is a windowed aggregate at the (partition ∪ active-TD) grain
         # (D5). (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, window='90d', partition_by=orders.region)"),
@@ -85,7 +85,7 @@ class TestDeferredShapeGuards:
         # ranked pick at the partition grain and attaches (executed values in
         # tests/test_dev1824_partitioned_execution.py); cross-model stays deferred.
         q = _q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric=f"{agg}(amount, partition_by=region)")],
         )
         assert "__regroup__" not in await gen(q)
@@ -97,7 +97,7 @@ class TestDeferredShapeGuards:
         # tests/test_dev1824_partitioned_execution.py::TestTransformOverPartitioned;
         # a cross-model source stays deferred (test_dev1824_remaining_guards.py).
         q = _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="cumsum(sum(orders.amount, partition_by=orders.region))"),
@@ -110,21 +110,21 @@ class TestDeferredShapeGuards:
         # renders: it routes to a combined producer + outer WHERE. (Executed
         # values: tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned.)
         q = _q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50"],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         assert "__regroup__" not in await gen(q)
 
 
 _NON_RANK_FORMULAS = {
-    "cumsum": "cumsum(sum(amount), partition_by=region)",
-    "lag": "lag(sum(amount), 1, partition_by=region)",
-    "lead": "lead(sum(amount), 1, partition_by=region)",
-    "time_shift": "time_shift(sum(amount), -1, partition_by=region)",
-    "change": "change(sum(amount), partition_by=region)",
-    "change_pct": "change_pct(sum(amount), partition_by=region)",
-    "consecutive_periods": "consecutive_periods(sum(amount) > 20, partition_by=region)",
+    "cumsum": "cumsum(sum(orders.amount), partition_by=orders.region)",
+    "lag": "lag(sum(orders.amount), 1, partition_by=orders.region)",
+    "lead": "lead(sum(orders.amount), 1, partition_by=orders.region)",
+    "time_shift": "time_shift(sum(orders.amount), -1, partition_by=orders.region)",
+    "change": "change(sum(orders.amount), partition_by=orders.region)",
+    "change_pct": "change_pct(sum(orders.amount), partition_by=orders.region)",
+    "consecutive_periods": "consecutive_periods(sum(orders.amount) > 20, partition_by=orders.region)",
 }
 
 
@@ -133,7 +133,7 @@ class TestDriveByNonRankTransform:
                              ids=list(_NON_RANK_FORMULAS))
     async def test_partition_by_rejected_on_non_rank_transforms(self, formula: str) -> None:
         q = _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             time_dimensions=month_td(),
             metrics=[QueryMetric(metric=formula)],
         )
@@ -142,7 +142,7 @@ class TestDriveByNonRankTransform:
 
     async def test_partition_by_still_accepted_on_rank(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="rank(sum(orders.amount), partition_by=orders.region, direction='desc')")],
         ))
         upper = sql.upper()

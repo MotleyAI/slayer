@@ -59,7 +59,7 @@ class TestCrossModelPartitioned:
         and broadcast to the query rows."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier", "status"],
+            dimensions=["customers.tier", "orders.status"],
             metrics=[M, QueryMetric(
                 metric="sum(customers.spend, partition_by=customers.tier)",
                 alias="pt",

@@ -28,7 +28,7 @@ _MODEL_SETS = {
 _REGION_SUM = "sum(amount, partition_by=region)"
 _HEADLINE = ("weighted_avg(customers.spend, "
              "weight=sum(amount, partition_by=customers.regions.name))")
-_MIXED_TWIN = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
+_MIXED_TWIN = "sum(customers.spend * sum(orders.amount, partition_by=customers.regions.name))"
 _RANKED_TRANSFORM = ("weighted_avg(customers.spend, "
                      "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
 _LOCAL_RANKED_TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SUM}, direction='desc'))"
@@ -38,51 +38,51 @@ def _cases() -> dict:
     return {
         "mixed/headline": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
+            "kw": {"dimensions": ["sales.region"], "metrics": [
                 {"metric": f"sum(quantity * {INNER_UP_PRODUCT})", "alias": "m"}]}},
         "mixed/outer_partition": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region", "product"], "metrics": [
+            "kw": {"dimensions": ["sales.region", "sales.product"], "metrics": [
                 {"metric": f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=region)",
                  "alias": "m"}]}},
         "param/associate": {
             "models": "orders", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["status"],
+            "kw": {"dimensions": ["orders.status"],
                    "metrics": [{"metric": _HEADLINE, "alias": "w"}]}},
         "param/broadcast": {
             "models": "orders", "source": "orders", "mode": "broadcast",
-            "kw": {"dimensions": ["status"],
+            "kw": {"dimensions": ["orders.status"],
                    "metrics": [{"metric": _HEADLINE, "alias": "w"}]}},
         "mixed/cross_model_constituent": {
             "models": "orders", "source": "orders", "mode": "broadcast",
-            "kw": {"dimensions": ["status"],
+            "kw": {"dimensions": ["orders.status"],
                    "metrics": [{"metric": _MIXED_TWIN, "alias": "w"}]}},
         "param/ordinary": {
             "models": "sales_wsum", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
+            "kw": {"dimensions": ["sales.region"], "metrics": [
                 {"metric": f"weighted_avg(amount, weight={_REGION_SUM})",
                  "alias": "w"}]}},
         "param/mixed_plus": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
+            "kw": {"dimensions": ["sales.region"], "metrics": [
                 {"metric": (f"weighted_avg(quantity * {INNER_UP_PRODUCT}, "
                              f"weight={_REGION_SUM})"), "alias": "w"}]}},
         "param/literal": {
             "models": "sales_wsum", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
+            "kw": {"dimensions": ["sales.region"], "metrics": [
                 {"metric": f"wsum(1, weight={_REGION_SUM})", "alias": "w"}]}},
         "param/ungrained_reagg": {
             "models": "sales_wsum", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
+            "kw": {"dimensions": ["sales.region"], "metrics": [
                 {"metric": ("wsum(sum(amount, partition_by=[city, region]), "
                              "weight=count(id))"), "alias": "w"}]}},
         "param/ranked_transform": {
             "models": "orders", "source": "orders", "mode": "broadcast",
-            "kw": {"dimensions": ["status"],
+            "kw": {"dimensions": ["orders.status"],
                    "metrics": [{"metric": _RANKED_TRANSFORM, "alias": "w"}]}},
         "param/local_ranked_transform": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"],
+            "kw": {"dimensions": ["sales.region"],
                    "metrics": [{"metric": _LOCAL_RANKED_TRANSFORM, "alias": "w"}]}},
         "param/windowed": {
             "models": "orders", "source": "orders", "mode": None,

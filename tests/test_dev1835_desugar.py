@@ -75,11 +75,11 @@ class TestBareExplicitTwins:
     async def test_windowed_twin_queries_agree(self, exec_backend) -> None:
         _, engine = exec_backend
         bare = await engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount, window='1y')", alias="w")],
         ))
         explicit = await engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="sum(orders.amount, window='1y', partition_by=orders.region)", alias="w",
             )],
@@ -90,11 +90,11 @@ class TestBareExplicitTwins:
     async def test_ranked_twin_queries_agree(self, exec_backend) -> None:
         _, engine = exec_backend
         bare = await engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         ))
         explicit = await engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(
                 metric="last(orders.amount, partition_by=orders.region)", alias="l",
             )],
@@ -105,7 +105,7 @@ class TestBareExplicitTwins:
     async def test_windowed_twins_combined_agree(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, window='1y')", alias="wb"),
                 QueryMetric(
@@ -127,7 +127,7 @@ class TestMigratedFamilyValuePins:
     async def test_bare_windowed_at_city_grain(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
@@ -147,7 +147,7 @@ class TestMigratedFamilyValuePins:
         a real duration change, not a running total)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount, window='45d')", alias="w")],
         ))
         _assert_map(_by_region_month(resp, "w"), TRAILING_45D_REGION)
@@ -155,7 +155,7 @@ class TestMigratedFamilyValuePins:
     async def test_bare_last_at_city_grain(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         )
         resp = await engine.execute(query)
@@ -170,7 +170,7 @@ class TestMigratedFamilyValuePins:
         """The month bucket joins the ranked grain (every visible slot)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         ))
         got = {
@@ -183,7 +183,7 @@ class TestMigratedFamilyValuePins:
     async def test_bare_first(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="first(orders.amount)", alias="f")],
         ))
         _assert_map(_by_region(resp, "f"), REGION_FIRST)
@@ -229,9 +229,9 @@ class TestOrderOnlyHiddenProducers:
         place (plain 25) to third (windowed 50)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            order=[{"field": "sum(amount, window='90d')", "direction": "desc"}],
+            order=[{"field": "sum(orders.amount, window='90d')", "direction": "desc"}],
         ))
         got = [
             (r["orders.region"], month_key(r["orders.ordered_at"]))
@@ -245,9 +245,9 @@ class TestOrderOnlyHiddenProducers:
     ) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            order=[{"field": "last(amount)", "direction": "desc"}],
+            order=[{"field": "last(orders.amount)", "direction": "desc"}],
         ))
         # REGION_LAST desc: NULL 60, North 30, South 25.
         assert [r["orders.region"] for r in resp.data] == [None, "North", "South"]
@@ -256,8 +256,8 @@ class TestOrderOnlyHiddenProducers:
     async def test_filter_only_bare_last(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["region"],
-            filter=["last(amount) > 28"],
+            dimensions=["orders.region"],
+            filter=["last(orders.amount) > 28"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ))
         _assert_map(_by_region(resp, "m"), {"North": 100.0, None: 60.0})
@@ -269,11 +269,11 @@ class TestFilteredMeasureNeutrality:
     async def test_filtered_windowed_beside_unfiltered(self, exec_backend) -> None:
         _, engine = exec_backend
         base = await engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ))
         plus = await engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(orders.ok_amount, window='90d')", alias="w"),
@@ -290,7 +290,7 @@ class TestFilteredMeasureNeutrality:
         the producer."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="last(orders.ok_amount)", alias="ol"),
@@ -311,7 +311,7 @@ class TestDerivedColumnDimension:
     async def test_derived_dimension_with_bare_last(self, shipped_backend) -> None:
         _, engine = shipped_backend
         resp = await engine.execute(q(
-            dimensions=["region", "city_key"],
+            dimensions=["orders.region", "orders.city_key"],
             metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         ))
         got = {
@@ -329,7 +329,7 @@ class TestDerivedColumnDimension:
     ) -> None:
         _, engine = shipped_backend
         resp = await engine.execute(q(
-            dimensions=["region", "city_key"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city_key"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount, window='1y')", alias="w")],
         ))
         got = {
@@ -355,9 +355,9 @@ class TestDualRoleWithBareWindowed:
         region total as a banding dimension AND a measure, next to a bare
         windowed measure."""
         dialect, engine = exec_backend
-        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "rband"}],
+            dimensions=["orders.region", {"field": band, "alias": "rband"}],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),

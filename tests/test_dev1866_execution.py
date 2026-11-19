@@ -67,7 +67,7 @@ class TestExplicitTwinParity:
             chain_engine,
             rootless=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
                 "filter": ["orders.status = 'ok'"],
             }),
             explicit=SlayerQuery.model_validate({

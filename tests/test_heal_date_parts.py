@@ -121,8 +121,8 @@ class TestExtractParsesAsDatePart:
         assert parse_expr(spelling) == parse_expr(canonical("day_of_week"))
 
     @pytest.mark.parametrize(("healed", "canonical_text"), [
-        ("max(EXTRACT(day FROM coalesce(shipped_at, created_at)))",
-         "max(date_part('day', coalesce(shipped_at, created_at)))"),
+        ("max(EXTRACT(day FROM coalesce(orders.shipped_at, orders.created_at)))",
+         "max(date_part('day', coalesce(orders.shipped_at, orders.created_at)))"),
         ("extract(day from created_at) + 1", "date_part('day', created_at) + 1"),
         ("2 * extract(month from date_add(created_at, 1, 'day'))", "2 * date_part('month', date_add(created_at, 1, 'day'))"),
         ("extract(day from created_at) - extract(day from shipped_at)",
@@ -218,22 +218,22 @@ class TestExecutedEquivalence:
         def query(expr: str) -> dict[str, Any]:
             return {"population": "orders", "dimensions": [{"field": expr, "alias": "dow"}], "metrics": ["count(orders.*)"]}
 
-        resp = await assert_equivalent(engine, query("isodow(created_at)"), query(canonical("day_of_week")))
+        resp = await assert_equivalent(engine, query("isodow(orders.created_at)"), query(canonical("day_of_week")))
         assert {r["dow"]: r["orders._count"] for r in resp.data} == {1: 2, 3: 1, 4: 1, 6: 1, 7: 2}
 
     async def test_extract_with_alias_part(self, engine: SlayerQueryEngine) -> None:
         def query(expr: str) -> dict[str, Any]:
             return {"population": "orders", "dimensions": [{"field": expr, "alias": "p"}], "metrics": ["count(orders.*)"]}
 
-        await assert_equivalent(engine, query("extract(isodow from created_at)"), query(canonical("day_of_week")))
+        await assert_equivalent(engine, query("extract(isodow from orders.created_at)"), query(canonical("day_of_week")))
 
     async def test_extract_over_nested_operand(self, engine: SlayerQueryEngine) -> None:
         def query(formula: str) -> dict[str, Any]:
             return {"population": "orders", "dimensions": ["orders.region"], "metrics": [{"metric": formula, "alias": "m"}]}
 
         await assert_equivalent(
-            engine, query("max(EXTRACT(day FROM coalesce(shipped_at, created_at)))"),
-            query("max(date_part('day', coalesce(shipped_at, created_at)))"),
+            engine, query("max(EXTRACT(day FROM coalesce(orders.shipped_at, orders.created_at)))"),
+            query("max(date_part('day', coalesce(orders.shipped_at, orders.created_at)))"),
         )
 
     async def test_wrong_alias_arity_in_filter(self, engine: SlayerQueryEngine) -> None:

@@ -225,7 +225,7 @@ class TestShiftedCtePartitionShape:
         shifted CTE pulls ``LEFT JOIN stores`` (Law 1), projects the joined dim,
         and the sjoin joins back on it. Today: ``NotImplementedError 7b.12``."""
         sql = await _gen(
-            _qoq_query(metric_expression="change(sum(order_total))", metric_name="qoq"),
+            _qoq_query(metric_expression="change(sum(orders.order_total))", metric_name="qoq"),
             _orders(), extra_datasets=[_stores(), _regions()],
         )
         shifted = _shifted_body(sql)
@@ -719,7 +719,7 @@ class TestQoQExecutionGroundTruth:
         matches hand-computed per-store deltas, including the NULL-store group
         (whose non-null prev proves the null-safe join-back)."""
         resp = await qoq_engine.execute(_qoq_query(
-            metric_expression="change(sum(order_total))", metric_name="qoq",
+            metric_expression="change(sum(orders.order_total))", metric_name="qoq",
         ))
         by = {
             (r["stores.name"], _quarter_key(r["orders.ordered_at"])): r
@@ -749,7 +749,7 @@ class TestQoQExecutionGroundTruth:
     async def test_change_pct_per_store_matches_hand_computed(self, qoq_engine) -> None:
         """``change_pct`` percentages per store (NULL prior → NULL)."""
         resp = await qoq_engine.execute(_qoq_query(
-            metric_expression="change_pct(sum(order_total))", metric_name="qoq_pct",
+            metric_expression="change_pct(sum(orders.order_total))", metric_name="qoq_pct",
         ))
         by = {
             (r["stores.name"], _quarter_key(r["orders.ordered_at"])): r

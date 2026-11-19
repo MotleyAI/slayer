@@ -21,7 +21,7 @@ _TYPES: dict[str, tuple[str, str, str]] = {
 }
 _SUFFIX = {"clickhouse": " ENGINE = MergeTree ORDER BY tuple()"}
 #: Each filter keeps id 1 only.
-MIXED_FILTERS = ("contains(scores, 2.0)", "contains_any(scores, prices)", "contains_any(prices, scores)")
+MIXED_FILTERS = ("contains(mixed.scores, 2.0)", "contains_any(mixed.scores, mixed.prices)", "contains_any(mixed.prices, mixed.scores)")
 
 
 def _list(values: tuple[float, ...], *, dialect: str, sql_type: str, double: bool) -> str:

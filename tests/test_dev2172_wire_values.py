@@ -84,7 +84,7 @@ def _single_cell(text: str, *, fmt: str) -> str:
     assert row.startswith("| "), row
     assert row.endswith(" |"), row
     return row[2:-2]
-UIDS = {"population": "things", "metrics": ["uids"]}
+UIDS = {"population": "things", "metrics": ["things.uids"]}
 
 
 @pytest.mark.parametrize("wire", WIRES)

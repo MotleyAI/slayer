@@ -125,7 +125,7 @@ def _q(**kw) -> SlayerQuery:
 
 class TestExpressionParse:
     def test_arithmetic_source(self) -> None:
-        node = parse_expr("sum(amount - cost)")
+        node = parse_expr("sum(orders.amount - orders.cost)")
         assert isinstance(node, AggCall)
         assert node.agg == "sum"
         assert node.source == parse_expr("amount - cost")
@@ -133,13 +133,13 @@ class TestExpressionParse:
     def test_expression_source_canonical_text_functional(self) -> None:
         # An expression source renders functionally, so its canonical text
         # can't collide with the distinct parse tree ``amount - sum(cost)``.
-        expr_agg = canonical_metric_text(parse_expr("sum(amount - cost)"))
+        expr_agg = canonical_metric_text(parse_expr("sum(orders.amount - orders.cost)"))
         assert expr_agg == "sum(amount - cost)"
         assert expr_agg != canonical_metric_text(parse_expr("amount - sum(cost)"))
         assert canonical_metric_text(parse_expr("sum(amount)")) == "sum(amount)"
 
     def test_scalar_call_source(self) -> None:
-        node = parse_expr("count_distinct(upper(email))")
+        node = parse_expr("count_distinct(upper(orders.email))")
         assert isinstance(node, AggCall)
         assert node.agg == "count_distinct"
         assert node.source == parse_expr("upper(email)")
@@ -156,7 +156,7 @@ class TestExpressionParse:
         orders = _orders()
         bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[_customers()])
         key = bind_expr(
-            parse_expr("sum(amount - cost, partition_by=region)"), scope=DatasetScope(population=orders), bundle=bundle,
+            parse_expr("sum(orders.amount - orders.cost, partition_by=orders.region)"), scope=DatasetScope(population=orders), bundle=bundle,
         ).value_key
         assert isinstance(key, AggregateKey)
         assert isinstance(key.source, ArithmeticKey)
@@ -170,13 +170,13 @@ class TestExpressionParse:
 
 class TestExpressionSql:
     async def test_simple_arithmetic(self) -> None:
-        resp = await _dry(_q(metrics=["sum(amount - cost)"], dimensions=["status"]))
+        resp = await _dry(_q(metrics=["sum(orders.amount - orders.cost)"], dimensions=["orders.status"]))
         sql = _norm(resp.sql)
         assert re.search(r"SUM\s*\(.*?amount.*?-.*?cost.*?\)", sql), sql
         assert "orders.amount_cost_sum" in resp.columns
 
     async def test_scalar_call_inside(self) -> None:
-        resp = await _dry(_q(metrics=["count_distinct(upper(email))"]))
+        resp = await _dry(_q(metrics=["count_distinct(upper(orders.email))"]))
         sql = resp.sql.upper()
         assert "COUNT(DISTINCT" in _norm(sql).replace("( ", "(")
         assert "UPPER(" in sql
@@ -186,27 +186,27 @@ class TestExpressionSql:
         assert re.search(r"COUNT\s*\(\s*1\s*\)", resp.sql, re.IGNORECASE), resp.sql
 
     async def test_percentile_over_expression(self) -> None:
-        resp = await _dry(_q(metrics=["percentile(price * quantity, p=0.5)"]))
+        resp = await _dry(_q(metrics=["percentile(orders.price * orders.quantity, p=0.5)"]))
         assert "price" in resp.sql
         assert "quantity" in resp.sql
         assert "orders.price_quantity_percentile_p_0_5" in resp.columns
 
     async def test_custom_agg_over_expression(self) -> None:
-        resp = await _dry(_q(metrics=["my_agg(price * quantity)"]))
+        resp = await _dry(_q(metrics=["my_agg(orders.price * orders.quantity)"]))
         sql = _norm(resp.sql)
         assert re.search(r"AVG\s*\(.*?price.*?\*.*?quantity.*?\)", sql), sql
 
     async def test_derived_sql_column_operand(self) -> None:
-        resp = await _dry(_q(metrics=["sum(net * 2)"]))
+        resp = await _dry(_q(metrics=["sum(orders.net * 2)"]))
         sql = _norm(resp.sql)
         assert re.search(r"SUM\s*\(.*?amount.*?-.*?tax.*?\)", sql), sql
 
     async def test_expression_in_having_filter(self) -> None:
         resp = await _dry(
             _q(
-                metrics=["sum(amount - cost)"],
-                dimensions=["status"],
-                filter=["sum(amount - cost) > 0"],
+                metrics=["sum(orders.amount - orders.cost)"],
+                dimensions=["orders.status"],
+                filter=["sum(orders.amount - orders.cost) > 0"],
             )
         )
         assert "HAVING" in resp.sql.upper()
@@ -214,8 +214,8 @@ class TestExpressionSql:
     async def test_expression_in_order(self) -> None:
         resp = await _dry(
             _q(
-                metrics=["sum(amount - cost)"],
-                dimensions=["status"],
+                metrics=["sum(orders.amount - orders.cost)"],
+                dimensions=["orders.status"],
                 order=[OrderItem(field="sum(orders.amount - orders.cost)", direction="desc")],
             )
         )
@@ -225,8 +225,8 @@ class TestExpressionSql:
     async def test_expression_with_window_kwarg(self) -> None:
         resp = await _dry(
             _q(
-                metrics=["sum(amount - cost, window='30d')"],
-                dimensions=["status"],
+                metrics=["sum(orders.amount - orders.cost, window='30d')"],
+                dimensions=["orders.status"],
                 time_dimensions=[
                     TimeDimension(
                         field="orders.created_at", granularity=TimeGranularity.MONTH
@@ -264,7 +264,7 @@ class TestExpressionSql:
         resp = await _dry(
             _q(
                 dimensions=[
-                    "region",
+                    "orders.region",
                     {
                         "field": (
                             "CASE WHEN sum(amount - cost, partition_by=region) > 0 "
@@ -281,10 +281,10 @@ class TestExpressionSql:
     async def test_bare_expression_agg_in_dimension_needs_partition_by(self) -> None:
         q = _q(
             dimensions=[
-                "region",
+                "orders.region",
                 {
                     "field": (
-                        "CASE WHEN sum(amount - cost) > 0 THEN 1 ELSE 0 END"
+                        "CASE WHEN sum(orders.amount - orders.cost) > 0 THEN 1 ELSE 0 END"
                     ),
                     "alias": "profitable",
                 },
@@ -302,24 +302,24 @@ class TestExpressionSql:
 
 class TestExpressionNaming:
     async def test_derived_key(self) -> None:
-        resp = await _dry(_q(metrics=["sum(amount - cost)"]))
+        resp = await _dry(_q(metrics=["sum(orders.amount - orders.cost)"]))
         assert "orders.amount_cost_sum" in resp.columns
 
     async def test_formatting_insensitive_key(self) -> None:
-        r1 = await _dry(_q(metrics=["sum(amount-cost)"]))
-        r2 = await _dry(_q(metrics=["sum( amount - cost )"]))
+        r1 = await _dry(_q(metrics=["sum(orders.amount-orders.cost)"]))
+        r2 = await _dry(_q(metrics=["sum( orders.amount - orders.cost )"]))
         assert list(r1.columns) == list(r2.columns)
 
     async def test_rename_override(self) -> None:
         resp = await _dry(
-            _q(metrics=[{"metric": "sum(amount - cost)", "alias": "profit"}])
+            _q(metrics=[{"metric": "sum(orders.amount - orders.cost)", "alias": "profit"}])
         )
         assert "profit" in resp.columns
         assert "orders.amount_cost_sum" not in resp.columns
 
     async def test_long_expression_capped_and_formatting_stable(self) -> None:
-        spaced = "sum(amount + cost + price + quantity + amount * cost * price * quantity)"
-        packed = "sum(amount+cost+price+quantity+amount*cost*price*quantity)"
+        spaced = "sum(orders.amount + orders.cost + orders.price + orders.quantity + orders.amount * orders.cost * orders.price * orders.quantity)"
+        packed = "sum(orders.amount+orders.cost+orders.price+orders.quantity+orders.amount*orders.cost*orders.price*orders.quantity)"
         r1 = await _dry(_q(metrics=[spaced]))
         r2 = await _dry(_q(metrics=[packed]))
         assert list(r1.columns) == list(r2.columns)
@@ -333,8 +333,8 @@ class TestExpressionNaming:
     async def test_expression_partition_by_suffix_key(self) -> None:
         resp = await _dry(
             _q(
-                dimensions=["region"],
-                metrics=["sum(amount - cost, partition_by=region)"],
+                dimensions=["orders.region"],
+                metrics=["sum(orders.amount - orders.cost, partition_by=orders.region)"],
             )
         )
         assert "orders.amount_cost_sum_partition_by_region" in resp.columns
@@ -348,9 +348,9 @@ class TestExpressionNaming:
         resp = await _dry(
             _q(
                 metrics=[
-                    "sum(amount - cost)",
-                    "sum(amount)",
-                    "count_distinct(upper(email))",
+                    "sum(orders.amount - orders.cost)",
+                    "sum(orders.amount)",
+                    "count_distinct(upper(orders.email))",
                 ]
             )
         )
@@ -363,7 +363,7 @@ class TestExpressionNaming:
         assert count_meta.format.type == NumberFormatType.INTEGER
 
     async def test_colliding_derived_keys_fail_loudly(self) -> None:
-        q = _q(metrics=["sum(amount - cost)", "sum(amount + cost)"])
+        q = _q(metrics=["sum(orders.amount - orders.cost)", "sum(orders.amount + orders.cost)"])
         with pytest.raises(ValueError, match="Rename") as ei:
             await _dry(q)
         assert "amount_cost_sum" in str(ei.value)
@@ -422,12 +422,12 @@ class TestExpressionKeyTraversal:
 class TestExpressionErrors:
     async def test_cross_model_expression_accepted(self) -> None:
         # DEV-1832 lifts the cross-model boundary (covered in test_dev1832_*).
-        resp = await _dry(_q(metrics=["sum(amount - customers.discount)"]))
+        resp = await _dry(_q(metrics=["sum(orders.amount - customers.discount)"]))
         assert resp.sql
 
     async def test_filtered_column_operand_accepted(self) -> None:
         # DEV-1832: a filtered operand desugars to CASE WHEN, not a rejection.
-        resp = await _dry(_q(metrics=["sum(ok_amount - cost)"]))
+        resp = await _dry(_q(metrics=["sum(orders.ok_amount - orders.cost)"]))
         assert resp.sql
         assert "CASE WHEN" in resp.sql.upper()
 
@@ -435,7 +435,7 @@ class TestExpressionErrors:
         # ``sum(sum(amount))`` is a degenerate re-aggregation (DEV-1847); a
         # source mixing a row leaf with an attached value is now a row-grain
         # aggregation and compiles (DEV-1859), not the expression gate.
-        q = _q(metrics=["sum(amount + sum(amount))"])
+        q = _q(metrics=["sum(orders.amount + sum(orders.amount))"])
         resp = await _dry(q)
         assert resp.sql
 
@@ -449,20 +449,20 @@ class TestExpressionGates:
     async def test_whitelist_does_not_block_expression(self) -> None:
         # quantity whitelists only min/max, but the expression is a new
         # derived quantity — gates are advisory for multi-token operands.
-        resp = await _dry(_q(metrics=["sum(price * quantity)"]))
+        resp = await _dry(_q(metrics=["sum(orders.price * orders.quantity)"]))
         assert resp.sql
 
     async def test_pk_gate_does_not_block_expression(self) -> None:
-        resp = await _dry(_q(metrics=["max(id * 2)"]))
+        resp = await _dry(_q(metrics=["max(orders.id * 2)"]))
         assert resp.sql
 
     async def test_single_column_functional_still_gated(self) -> None:
-        q = _q(metrics=["sum(quantity)"])
+        q = _q(metrics=["sum(orders.quantity)"])
         with pytest.raises(ValueError):
             await _dry(q)
 
     async def test_confidently_non_numeric_rejected(self) -> None:
-        q = _q(metrics=["sum(lower(name))"])
+        q = _q(metrics=["sum(lower(orders.name))"])
         with pytest.raises(ValueError, match="(?i)numeric"):
             await _dry(q)
 
@@ -473,13 +473,13 @@ class TestExpressionGates:
 
     async def test_boolean_scalar_expression_accepted(self) -> None:
         # like(...) is boolean; iif follows its branch types.
-        for measure in ["sum(like(name, 'A%'))", "sum(iif(amount, True, False))"]:
+        for measure in ["sum(like(orders.name, 'A%'))", "sum(iif(orders.amount, True, False))"]:
             resp = await _dry(_q(metrics=[measure]))
             assert "SUM(CAST(" in (resp.sql or ""), resp.sql
 
     async def test_numeric_iif_expression_allowed(self) -> None:
         # iif with numeric branches stays numeric — must not be over-rejected.
-        resp = await _dry(_q(metrics=["sum(iif(amount, 1, 0))"]))
+        resp = await _dry(_q(metrics=["sum(iif(orders.amount, 1, 0))"]))
         assert resp.sql
 
 
@@ -499,13 +499,13 @@ class TestExpressionPartitionAttribution:
         expr = await _classify(
             _q(
                 dimensions=["customers.discount"],
-                metrics=["sum(amount - cost, partition_by=customers.discount)"],
+                metrics=["sum(orders.amount - orders.cost, partition_by=customers.discount)"],
             )
         )
         col = await _classify(
             _q(
                 dimensions=["customers.discount"],
-                metrics=["sum(amount, partition_by=customers.discount)"],
+                metrics=["sum(orders.amount, partition_by=customers.discount)"],
             )
         )
         assert expr[0] == col[0] == "ok", (expr, col)
@@ -514,13 +514,13 @@ class TestExpressionPartitionAttribution:
         case = "CASE WHEN {agg} > 0 THEN 'profit' ELSE 'loss' END"
         expr = await _classify(
             _q(
-                dimensions=[case.format(agg="sum(amount - cost, partition_by=region)"), "region"],
+                dimensions=[case.format(agg="sum(orders.amount - orders.cost, partition_by=orders.region)"), "orders.region"],
                 metrics=["count(customers.id)"],
             )
         )
         col = await _classify(
             _q(
-                dimensions=[case.format(agg="sum(amount, partition_by=region)"), "region"],
+                dimensions=[case.format(agg="sum(amount, partition_by=region)"), "orders.region"],
                 metrics=["count(customers.id)"],
             )
         )

@@ -349,22 +349,22 @@ def reagg_rank_by_region() -> Dict[str, Optional[float]]:
 # Result extractors.
 # --------------------------------------------------------------------------- #
 def region_vals(resp, name: str = "w") -> Dict[Optional[str], Any]:
-    return {k[0]: v[f"sales.{name}"] for k, v in rows_by(resp, "sales.region").items()}
+    return {k[0]: v[name] for k, v in rows_by(resp, "sales.region").items()}
 
 
 def region_city_vals(resp, name: str = "w") -> Dict[Tuple, Any]:
-    return {k: v[f"sales.{name}"]
+    return {k: v[name]
             for k, v in rows_by(resp, "sales.region", "sales.city").items()}
 
 
 def global_val(resp, name: str = "w") -> Any:
     (row,) = resp.data
-    return row[f"sales.{name}"]
+    return row[name]
 
 
 def ordered_month_vals(resp, name: str = "w") -> Dict[Optional[str], Any]:
     return {(None if r["orders.ordered_at"] is None else month_key(r["orders.ordered_at"])):
-            r[f"orders.{name}"] for r in resp.data}
+            r[name] for r in resp.data}
 
 
 def tier_month_vals(resp, name: str = "w") -> Dict[Tuple, Any]:
@@ -372,7 +372,7 @@ def tier_month_vals(resp, name: str = "w") -> Dict[Tuple, Any]:
     for r in resp.data:
         month = (None if r["orders.ordered_at"] is None
                  else month_key(r["orders.ordered_at"]))
-        out[(r["orders.customers.tier"], month)] = r[f"orders.{name}"]
+        out[(r["orders.customers.tier"], month)] = r[name]
     return out
 
 

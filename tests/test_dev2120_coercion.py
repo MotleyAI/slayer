@@ -40,29 +40,29 @@ def _where(sql: str, *, dialect: str) -> exp.Where:
 
 class TestScenarios:
     async def test_comparison_against_an_integer_literal(self, engine: SlayerQueryEngine) -> None:
-        assert lib_ids(await engine.execute(lib_query(filter=["num_txt > 100"]))) == {1}
+        assert lib_ids(await engine.execute(lib_query(filter=["lib.num_txt > 100"]))) == {1}
 
     async def test_comparison_against_a_numeric_column(self, engine: SlayerQueryEngine) -> None:
-        assert 5 in lib_ids(await engine.execute(lib_query(filter=["num_txt = qty"])))
+        assert 5 in lib_ids(await engine.execute(lib_query(filter=["lib.num_txt = lib.qty"])))
 
     async def test_numeric_not_lexicographic(self, engine: SlayerQueryEngine) -> None:
-        assert 6 not in lib_ids(await engine.execute(lib_query(filter=["num_txt < 9"])))
+        assert 6 not in lib_ids(await engine.execute(lib_query(filter=["lib.num_txt < 9"])))
 
     async def test_arithmetic(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("num_txt * 2", filter=["id = 7"])))
+        values = lib_values(await engine.execute(lib_query("lib.num_txt * 2", filter=["lib.id = 7"])))
         assert float(values[7]) == 3.0
 
     async def test_arithmetic_result_aggregates_as_a_number(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_metric("sum(num_txt * 2)", filter=["id IN (5, 7)"]))
+        resp = await engine.execute(_metric("sum(lib.num_txt * 2)", filter=["lib.id IN (5, 7)"]))
         assert float(resp.data[0]["v"]) == 9.0
 
     async def test_in_list(self, engine: SlayerQueryEngine) -> None:
-        assert lib_ids(await engine.execute(lib_query(filter=["num_txt IN (1, 2)"]))) == {8, 9}
+        assert lib_ids(await engine.execute(lib_query(filter=["lib.num_txt IN (1, 2)"]))) == {8, 9}
 
     async def test_numeric_string_literal(self, engine: SlayerQueryEngine) -> None:
-        assert lib_ids(await engine.execute(lib_query(filter=["qty > '1'"]))) == {1, 4, 5, 7, 9}
+        assert lib_ids(await engine.execute(lib_query(filter=["lib.qty > '1'"]))) == {1, 4, 5, 7, 9}
 
-    @pytest.mark.parametrize("filt", ["qty > 'abc'", "qty IN (1, 'abc')", "qty BETWEEN 'abc' AND 3", "qty + 'abc' > 1"])
+    @pytest.mark.parametrize("filt", ["lib.qty > 'abc'", "lib.qty IN (1, 'abc')", "lib.qty BETWEEN 'abc' AND 3", "lib.qty + 'abc' > 1"])
     async def test_non_numeric_literal_rejected(self, engine: SlayerQueryEngine, filt: str) -> None:
         query = lib_query(filter=[filt])
         with pytest.raises(SlayerError, match="'abc'"):
@@ -77,35 +77,35 @@ class TestScenarios:
 
 
 class TestLimitedToMixedOperands:
-    @pytest.mark.parametrize("formula", ["sum(num_txt)", "avg(num_txt)"])
+    @pytest.mark.parametrize("formula", ["sum(lib.num_txt)", "avg(lib.num_txt)"])
     async def test_numeric_aggregation_over_text_names_try_cast(self, engine: SlayerQueryEngine, formula: str) -> None:
         query = _metric(formula)
         with pytest.raises(SlayerError, match="TRY_CAST"):
             await engine.execute(query)
 
     async def test_numeric_function_over_text_names_try_cast(self, engine: SlayerQueryEngine) -> None:
-        query = lib_query("abs(num_txt)")
+        query = lib_query("abs(lib.num_txt)")
         with pytest.raises(SlayerError, match="TRY_CAST"):
             await engine.execute(query)
 
     async def test_text_against_text_is_untouched(self) -> None:
-        sql = await emit_lib(lib_query(filter=["num_txt = '1'"]), dialect="duckdb")
+        sql = await emit_lib(lib_query(filter=["lib.num_txt = '1'"]), dialect="duckdb")
         assert "TRY_CAST" not in sql.upper(), sql
 
     async def test_text_against_a_timestamp_is_a_time_point(self) -> None:
-        sql = await emit_lib(lib_query(filter=["ts > '2025-03-01'"]), dialect="duckdb")
+        sql = await emit_lib(lib_query(filter=["lib.ts > '2025-03-01'"]), dialect="duckdb")
         assert "DOUBLE" not in sql.upper(), sql
 
     async def test_concat_with_a_number_is_text(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("num_txt || qty", filter=["id = 1"])))
+        values = lib_values(await engine.execute(lib_query("lib.num_txt || lib.qty", filter=["lib.id = 1"])))
         assert values == {1: "120.53"}
 
     async def test_concat_ws_with_a_number_is_text(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("concat_ws('-', word, qty)", filter=["id = 1"])))
+        values = lib_values(await engine.execute(lib_query("concat_ws('-', lib.word, lib.qty)", filter=["lib.id = 1"])))
         assert values == {1: "paid-3"}
 
-    @pytest.mark.parametrize("expr", ["word || (qty > 1)", "concat(word, qty > 1)", "concat_ws('-', word, qty > 1)",
-                                      "concat_ws(qty > 1, word)"])
+    @pytest.mark.parametrize("expr", ["lib.word || (lib.qty > 1)", "concat(lib.word, lib.qty > 1)", "concat_ws('-', lib.word, lib.qty > 1)",
+                                      "concat_ws(lib.qty > 1, lib.word)"])
     async def test_boolean_in_concatenation_is_refused(self, engine: SlayerQueryEngine, expr: str) -> None:
         query = lib_query(expr)
         with pytest.raises(SlayerError, match="CASE WHEN"):
@@ -113,48 +113,48 @@ class TestLimitedToMixedOperands:
 
     @pytest.mark.parametrize("dialect", ["bigquery", "clickhouse"])
     async def test_concat_ws_array_engines_get_text_elements(self, dialect: str) -> None:
-        sql = await emit_lib(lib_query("concat_ws('-', word, qty)"), dialect=dialect)
+        sql = await emit_lib(lib_query("concat_ws('-', lib.word, lib.qty)"), dialect=dialect)
         assert "CAST(LIB.QTY AS " in sql.upper(), sql
 
 
 class TestEmission:
     async def test_text_side_is_a_try_cast_to_double(self) -> None:
-        sql = await emit_lib(lib_query(filter=["num_txt > 100"]), dialect="duckdb")
+        sql = await emit_lib(lib_query(filter=["lib.num_txt > 100"]), dialect="duckdb")
         casts = [c for c in _where(sql, dialect="duckdb").find_all(exp.TryCast)]
         assert any(c.to.is_type(exp.DataType.Type.DOUBLE) for c in casts), sql
 
     async def test_author_cast_is_never_rewritten(self) -> None:
-        sql = await emit_lib(lib_query(filter=["CAST(num_txt AS INT) > 100"]), dialect="duckdb")
+        sql = await emit_lib(lib_query(filter=["CAST(lib.num_txt AS INT) > 100"]), dialect="duckdb")
         where = _where(sql, dialect="duckdb")
         assert not list(where.find_all(exp.TryCast)), sql
         assert len([c for c in where.find_all(exp.Cast) if not isinstance(c, exp.TryCast)]) == 1, sql
 
     async def test_numeric_string_literal_becomes_a_number(self) -> None:
-        sql = await emit_lib(lib_query(filter=["qty > '1'"]), dialect="duckdb")
+        sql = await emit_lib(lib_query(filter=["lib.qty > '1'"]), dialect="duckdb")
         literals = list(_where(sql, dialect="duckdb").find_all(exp.Literal))
         assert literals, sql
         assert not any(lit.is_string for lit in literals), sql
 
     async def test_postgres_16_gets_the_null_on_error_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
         patch_profile(monkeypatch, version=(16, 2))
-        sql = await emit_lib(lib_query(filter=["num_txt > 100"]), dialect="postgres")
+        sql = await emit_lib(lib_query(filter=["lib.num_txt > 100"]), dialect="postgres")
         assert "PG_INPUT_IS_VALID(" in sql.upper(), sql
 
     @pytest.mark.parametrize("version", [(15, 4), None])
     async def test_older_or_unknown_postgres_gets_a_plain_cast(self, monkeypatch: pytest.MonkeyPatch, version) -> None:
         patch_profile(monkeypatch, version=version)
-        sql = await emit_lib(lib_query(filter=["num_txt > 100"]), dialect="postgres")
+        sql = await emit_lib(lib_query(filter=["lib.num_txt > 100"]), dialect="postgres")
         assert "PG_INPUT_IS_VALID(" not in sql.upper(), sql
         assert list(_where(sql, dialect="postgres").find_all(exp.Cast)), sql
 
     async def test_profile_probed_for_coercion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = patch_profile(monkeypatch, version=(16, 2))
-        await emit_lib(lib_query(filter=["qty > 1"]), dialect="postgres")
+        await emit_lib(lib_query(filter=["lib.qty > 1"]), dialect="postgres")
         assert calls == []
-        await emit_lib(lib_query(filter=["num_txt > 1"]), dialect="postgres")
+        await emit_lib(lib_query(filter=["lib.num_txt > 1"]), dialect="postgres")
         assert calls == [1]
 
-    @pytest.mark.parametrize("filt", ["num_txt BETWEEN 1 AND 10", "num_txt IS DISTINCT FROM 99", "greatest(num_txt, 5) > 6"])
+    @pytest.mark.parametrize("filt", ["lib.num_txt BETWEEN 1 AND 10", "lib.num_txt IS DISTINCT FROM 99", "greatest(lib.num_txt, 5) > 6"])
     async def test_every_position_coerces(self, filt: str) -> None:
         sql = await emit_lib(lib_query(filter=[filt]), dialect="duckdb")
         assert list(_where(sql, dialect="duckdb").find_all(exp.TryCast)), sql
@@ -162,16 +162,16 @@ class TestEmission:
 
 class TestClickHouseCasts:
     async def test_is_distinct_from_is_two_valued_outside_join_on(self) -> None:
-        sql = " ".join((await emit_lib(lib_query(filter=["num_txt IS DISTINCT FROM 99"]), dialect="clickhouse")).split())
+        sql = " ".join((await emit_lib(lib_query(filter=["lib.num_txt IS DISTINCT FROM 99"]), dialect="clickhouse")).split())
         assert "IS NOT DISTINCT FROM" not in sql.upper(), sql
         assert "<=>" not in sql, sql
         assert "IS NULL" in sql.upper(), sql
 
     async def test_cast_target_is_nullable(self) -> None:
-        sql = await emit_lib(lib_query("qty || '#'"), dialect="clickhouse")
+        sql = await emit_lib(lib_query("lib.qty || '#'"), dialect="clickhouse")
         assert "CAST(lib.qty AS Nullable(String))" in sql, sql
 
-    @pytest.mark.parametrize("expr", ["CAST(word AS BOOLEAN)", "TRY_CAST(word AS BOOLEAN)"])
+    @pytest.mark.parametrize("expr", ["CAST(lib.word AS BOOLEAN)", "TRY_CAST(lib.word AS BOOLEAN)"])
     async def test_boolean_reads_as_zero_or_one(self, expr: str) -> None:
         sql = await emit_lib(lib_query(expr), dialect="clickhouse")
         assert "toUInt8(" in sql, sql

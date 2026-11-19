@@ -368,10 +368,10 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "stddev_samp(revenue)",
-            "stddev_pop(revenue)",
-            "var_samp(revenue)",
-            "var_pop(revenue)",
+            "stddev_samp(orders.revenue)",
+            "stddev_pop(orders.revenue)",
+            "var_samp(orders.revenue)",
+            "var_pop(orders.revenue)",
         ],
     )
     async def test_one_arg_stat_agg_generation(
@@ -403,9 +403,9 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "corr(revenue, other=quantity)",
-            "covar_samp(revenue, other=quantity)",
-            "covar_pop(revenue, other=quantity)",
+            "corr(orders.revenue, other=orders.quantity)",
+            "covar_samp(orders.revenue, other=orders.quantity)",
+            "covar_pop(orders.revenue, other=orders.quantity)",
         ],
     )
     async def test_two_arg_stat_agg_generation(
@@ -436,9 +436,9 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "corr(revenue, other=quantity)",
-            "covar_samp(revenue, other=quantity)",
-            "covar_pop(revenue, other=quantity)",
+            "corr(orders.revenue, other=orders.quantity)",
+            "covar_samp(orders.revenue, other=orders.quantity)",
+            "covar_pop(orders.revenue, other=orders.quantity)",
         ],
     )
     async def test_two_arg_stat_formula_dialects_generate_valid_sql(
@@ -460,9 +460,9 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize(
         "formula", [
-            "corr(revenue, other=quantity)",
-            "covar_samp(revenue, other=quantity)",
-            "covar_pop(revenue, other=quantity)",
+            "corr(orders.revenue, other=orders.quantity)",
+            "covar_samp(orders.revenue, other=orders.quantity)",
+            "covar_pop(orders.revenue, other=orders.quantity)",
         ],
     )
     async def test_two_arg_stat_agg_mysql_emits_formula_valid_sql(

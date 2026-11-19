@@ -93,7 +93,7 @@ class TestTimeShiftCompositeExecution:
         """``time_shift(sum(revenue) / sum(qty), -1)`` carries each store's prior
         month ratio; the earliest month is NULL, partitions never cross."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[
                 QueryMetric(metric="sum(sales.revenue) / sum(sales.qty)", alias="cur"),
                 QueryMetric(metric="time_shift(sum(sales.revenue) / sum(sales.qty), -1)",
@@ -116,7 +116,7 @@ class TestTimeShiftCompositeExecution:
         time_shift; each store's first month is NULL, later months use that
         store's own MoM growth."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[
                 QueryMetric(metric="change_pct(sum(sales.revenue) / count(sales.*))", alias="pct"),
             ],
@@ -133,7 +133,7 @@ class TestTimeShiftCompositeExecution:
         """``change(sum(revenue) / sum(qty))`` = ratio − prior ratio, per store,
         NULL in each store's first month (A: 6→8→10, B: 6→10→5)."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[
                 QueryMetric(metric="change(sum(sales.revenue) / sum(sales.qty))", alias="delta"),
             ],
@@ -269,7 +269,7 @@ class TestConsecutivePeriodsExecution:
         """A top-level IN over a grouped dimension: both stores are in the set
         every month → each streak 1, 2, 3."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
                 metric="consecutive_periods(sales.store in ('A', 'B'))", alias="streak")],
         ))
@@ -283,7 +283,7 @@ class TestConsecutivePeriodsExecution:
         """A negated IN: store A is never in {B, C} (true → 1,2,3), store B
         always is (false → 0,0,0)."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
                 metric="consecutive_periods(sales.store not in ('B', 'C'))",
                 alias="streak")],
@@ -299,7 +299,7 @@ class TestConsecutivePeriodsExecution:
         clears the >15 filter), so ``sum(hi_rev) > 0 or sum(cost) > 1000`` is NULL
         there → B streak 1, 2, 0; store A never NULL → 1, 2, 3."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
                 metric="consecutive_periods(sum(sales.hi_rev) > 0 or sum(sales.cost) > 1000)",
                 alias="streak")],
@@ -314,7 +314,7 @@ class TestConsecutivePeriodsExecution:
         """An IN nested under ``and`` (its column must materialise): store A
         matches with revenue>0 (1,2,3); store B never matches (0,0,0)."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
                 metric="consecutive_periods(sales.store in ('A', 'C') and sum(sales.revenue) > 0)",
                 alias="streak")],
@@ -339,9 +339,9 @@ class TestPredicateTypingContract:
         assert int(by["2024-03"]["streak"]) == 3
 
     @pytest.mark.parametrize("formula", [
-        "consecutive_periods((sum(revenue) > 0) + (sum(cost) > 0))",
-        "consecutive_periods(coalesce(sum(revenue) > 0, 0))",
-        "consecutive_periods((sum(revenue) > 0) in (1, 0))",
+        "consecutive_periods((sum(sales.revenue) > 0) + (sum(sales.cost) > 0))",
+        "consecutive_periods(coalesce(sum(sales.revenue) > 0, 0))",
+        "consecutive_periods((sum(sales.revenue) > 0) in (1, 0))",
     ])
     async def test_boolean_in_numeric_position_is_its_integer(self, exec_engine, formula: str) -> None:
         """Every month's revenue and cost are positive, so each value is non-zero and the run never breaks."""
@@ -370,9 +370,9 @@ class TestUniformFailClosed:
     #: only (DEV-1868 lifted nested transforms, cross-model leaves, and
     #: aggregate-typed predicates into the series regime).
     SHAPES = {
-        "mixed_composite": "time_shift(sum(revenue) * weight, -1)",
-        "pure_row_composite": "time_shift(weight * qty, -1)",
-        "row_predicate_input": "time_shift(store in ('A', 'B'), -1)",
+        "mixed_composite": "time_shift(sum(sales.revenue) * sales.weight, -1)",
+        "pure_row_composite": "time_shift(sales.weight * sales.qty, -1)",
+        "row_predicate_input": "time_shift(sales.store in ('A', 'B'), -1)",
     }
     #: shape id -> substrings the user-facing message must name.
     TOKENS = {

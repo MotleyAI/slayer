@@ -448,7 +448,7 @@ await engine.create_dataset_from_query(
     },
     name="monthly_revenue",
     description="Monthly revenue by region",
-    variables={"orders.region": "US"},  # default placeholder values, optional
+    variables={"region": "US"},  # default placeholder values, optional
 )
 ```
 
@@ -581,12 +581,12 @@ An explicit `name` on a metric spec **overrides** the canonical naming above, fo
     {
       "name": "raw",
       "population": "orders",
-      "dimensions": ["region"],
-      "metrics": [{"metric": "sum(amount)", "alias": "rev"}]
+      "dimensions": ["orders.region"],
+      "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]
     },
     {
       "population": "raw",
-      "metrics": ["sum(rev)"]
+      "metrics": ["sum(raw.rev)"]
     }
   ]
 }

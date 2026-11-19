@@ -21,9 +21,9 @@ from tests._time_points_fixtures import ids_where, monthly, tp_engine
 D = datetime
 NOTICE = "midnight"
 #: Orders 1 (2024-03-05 08:00) and 2 (2024-04-10 09:30) only.
-FIRST_TWO = "id <= 2"
-WINDOW = {"metric": "sum(amount, window='90d')", "alias": "w"}
-PLAIN = {"metric": "sum(amount)", "alias": "s"}
+FIRST_TWO = "orders.id <= 2"
+WINDOW = {"metric": "sum(ev.amount, window='90d')", "alias": "w"}
+PLAIN = {"metric": "sum(ev.amount)", "alias": "s"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -43,24 +43,24 @@ def notices(resp: SlayerResponse) -> list[Any]:
 
 
 async def _ids(engine: SlayerQueryEngine, *filters: str, **extra: Any) -> set[int]:
-    return ids(await engine.execute(q(dimensions=["id"], filter=list(filters), **extra)))
+    return ids(await engine.execute(q(dimensions=["orders.id"], filter=list(filters), **extra)))
 
 
 # --------------------------------------------------------------------------- #
 # Reading
 # --------------------------------------------------------------------------- #
 class TestInstantReading:
-    @pytest.mark.parametrize("filt", ["ts <= '2024-12-31'", "ts <= '2024-12-31 00:00:00'"])
+    @pytest.mark.parametrize("filt", ["ev.ts <= '2024-12-31'", "ev.ts <= '2024-12-31 00:00:00'"])
     async def test_date_only_is_the_plain_comparison_against_midnight(self, tp, filt: str) -> None:
         assert await tp_ids(tp, filt) == ids_where(lambda t: t <= D(2024, 12, 31))
 
     @pytest.mark.parametrize(("filt", "expected"), [
-        ("created_at <= '2024-04-10'", {1}),
-        ("created_at > '2024-04-10'", {2, 3, 4, 5, 6}),
-        ("created_at = '2024-04-10'", set()),
-        ("created_at != '2024-04-10'", {1, 2, 3, 4, 5, 6}),
-        ("created_at BETWEEN '2024-03-05' AND '2024-04-10'", {1}),
-        ("'2024-04-10' >= created_at", {1}),
+        ("orders.created_at <= '2024-04-10'", {1}),
+        ("orders.created_at > '2024-04-10'", {2, 3, 4, 5, 6}),
+        ("orders.created_at = '2024-04-10'", set()),
+        ("orders.created_at != '2024-04-10'", {1, 2, 3, 4, 5, 6}),
+        ("orders.created_at BETWEEN '2024-03-05' AND '2024-04-10'", {1}),
+        ("'2024-04-10' >= orders.created_at", {1}),
     ])
     async def test_each_operator(self, engine: SlayerQueryEngine, filt: str, expected: set[int]) -> None:
         assert await _ids(engine, filt) == expected
@@ -73,7 +73,7 @@ class TestInstantReading:
 
     async def test_variable_saved_default(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(
-            query=q(dimensions=["id"], filter=["created_at <= '{cutoff}'"]), name="early",
+            query=q(dimensions=["orders.id"], filter=["orders.created_at <= '{cutoff}'"]), name="early",
             variables={"cutoff": "2024-04-10"},
         )
         resp = await engine.execute({"population": "early", "dimensions": ["early.id"]})
@@ -81,8 +81,8 @@ class TestInstantReading:
 
 
 class TestInsideMeasures:
-    FILTERED = "count(*) FILTER (WHERE created_at <= '2024-04-10')"
-    CASED = "sum(CASE WHEN created_at > '2024-04-10' THEN 1 ELSE 0 END)"
+    FILTERED = "count(orders.*) FILTER (WHERE orders.created_at <= '2024-04-10')"
+    CASED = "sum(CASE WHEN orders.created_at > '2024-04-10' THEN 1 ELSE 0 END)"
 
     @pytest.mark.parametrize("formula", [FILTERED, CASED])
     async def test_query_measure(self, engine: SlayerQueryEngine, formula: str) -> None:
@@ -94,7 +94,7 @@ class TestInsideMeasures:
     async def test_saved_measure(self, backend: str, formula: str) -> None:
         model = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="v", expression=formula)]})
         async with dev2215_engine(backend, datasets=[model, *_others()]) as eng:
-            resp = await eng.execute(q(metrics=["v"], filter=[FIRST_TWO]))
+            resp = await eng.execute(q(metrics=["orders.v"], filter=[FIRST_TWO]))
         assert int(single(resp)) == 1
 
 
@@ -104,20 +104,20 @@ def _others() -> list[SlayerDataset]:
 
 class TestFrameBounds:
     @pytest.mark.parametrize(("date_only", "instant"), [
-        ("ts >= '2025-01-01'", "ts >= '2025-01-01 00:00:00'"),
-        ("ts > '2024-12-31'", "ts > '2024-12-31 00:00:00'"),
-        ("ts <= '2024-12-31'", "ts <= '2024-12-31 00:00:00'"),
+        ("ev.ts >= '2025-01-01'", "ts >= '2025-01-01 00:00:00'"),
+        ("ev.ts > '2024-12-31'", "ts > '2024-12-31 00:00:00'"),
+        ("ev.ts <= '2024-12-31'", "ev.ts <= '2024-12-31 00:00:00'"),
     ])
     async def test_date_only_range_bound_is_an_instant_frame_bound(self, tp, date_only: str, instant: str) -> None:
         got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=[date_only])
         assert got == await monthly(tp, metrics=[WINDOW, PLAIN], filters=[instant])
 
     async def test_january_window_reaches_before_january(self, tp) -> None:
-        got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ts >= '2025-01-01'"])
+        got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ev.ts >= '2025-01-01'"])
         assert got["2025-01"]["w"] > got["2025-01"]["s"]
 
     async def test_date_only_equality_restricts_the_window_input(self, tp) -> None:
-        got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ts = '2024-06-01'"])
+        got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ev.ts = '2024-06-01'"])
         instant = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ts = '2024-06-01 00:00:00'"])
         assert got == instant == {"2024-06": {"w": pytest.approx(3.0), "s": pytest.approx(3.0)}}
 
@@ -128,18 +128,18 @@ class TestFrameBounds:
 class TestNotice:
     async def test_inclusive_upper_bound_is_announced(self, engine: SlayerQueryEngine) -> None:
         with recorded_warnings() as caught:
-            resp = await engine.execute(q(dimensions=["id"], filter=["created_at <= '2024-12-31'"]))
+            resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.created_at <= '2024-12-31'"]))
         assert len(notices(resp)) == 1, resp.warnings
         assert warnings_mentioning(resp, "created_at in '2024-12-31'", "created_at < '2025-01-01'")
         assert future_warnings(caught) == []
 
     @pytest.mark.parametrize("filt", [
-        "created_at > '2024-12-31'", "created_at = '2024-12-31'", "created_at != '2024-12-31'",
-        "created_at BETWEEN '2024-01-01' AND '2024-12-31'", "created_at NOT BETWEEN '2024-01-01' AND '2024-12-31'",
-        "'2024-12-31' >= created_at",
+        "orders.created_at > '2024-12-31'", "orders.created_at = '2024-12-31'", "orders.created_at != '2024-12-31'",
+        "orders.created_at BETWEEN '2024-01-01' AND '2024-12-31'", "orders.created_at NOT BETWEEN '2024-01-01' AND '2024-12-31'",
+        "'2024-12-31' >= orders.created_at",
     ])
     async def test_every_changed_operator_is_announced(self, engine: SlayerQueryEngine, filt: str) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=[filt]))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=[filt]))
         assert len(notices(resp)) == 1, resp.warnings
 
     @pytest.mark.parametrize(("period", "op", "everything"), [
@@ -151,7 +151,7 @@ class TestNotice:
     async def test_a_period_at_the_end_of_time(
         self, engine: SlayerQueryEngine, period: str, op: str, everything: bool,
     ) -> None:
-        every = await _ids(engine, "id > 0")
+        every = await _ids(engine, "orders.id > 0")
         assert await _ids(engine, f"created_at {op} '{period}'") == (every if everything else set())
 
     @pytest.mark.parametrize("point", ["9999-12-31", "9999-12-31 10:00:00", "9999-12", "9999"])
@@ -161,7 +161,7 @@ class TestNotice:
     async def test_a_coarse_bucket_against_the_end_of_time(
         self, engine: SlayerQueryEngine, point: str, op: str, everything: bool,
     ) -> None:
-        every = await _ids(engine, "id > 0")
+        every = await _ids(engine, "orders.id > 0")
         found = await _ids(engine, f"date_trunc('month', created_at) {op} '{point}'")
         assert found == (every if everything else set())
 
@@ -171,33 +171,33 @@ class TestNotice:
 
     async def test_one_notice_per_spelling(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[m(TestInsideMeasures.FILTERED)],
-                                      filter=["created_at <= '2024-04-10'", "status = 'paid'"]))
+                                      filter=["orders.created_at <= '2024-04-10'", "orders.status = 'paid'"]))
         assert len(notices(resp)) == 1, resp.warnings
 
     @pytest.mark.parametrize("filt", [
-        "created_at >= '2024-01-01'", "created_at < '2025-01-01'", "order_date <= '2024-12-31'",
-        "note = '2024-12-31'", "created_at <= '2024-12-31 00:00:00'", "created_at in '2024-12-31'",
-        "created_at <= '2024-12'",
+        "orders.created_at >= '2024-01-01'", "orders.created_at < '2025-01-01'", "orders.order_date <= '2024-12-31'",
+        "orders.note = '2024-12-31'", "orders.created_at <= '2024-12-31 00:00:00'", "orders.created_at in '2024-12-31'",
+        "orders.created_at <= '2024-12'",
     ])
     async def test_unaffected_comparisons_are_silent(self, engine: SlayerQueryEngine, filt: str) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=[filt]))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=[filt]))
         assert notices(resp) == [], resp.warnings
 
     async def test_variable_bound_value_names_the_variable(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["created_at <= '{cutoff}'"],
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.created_at <= '{cutoff}'"],
                                       variables={"cutoff": "2024-12-31"}))
         assert len(warnings_mentioning(resp, NOTICE, "cutoff")) == 1, resp.warnings
 
     async def test_variables_sharing_a_value_each_name_their_comparison(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            dimensions=["id"], filter=["created_at <= '{cutoff}'", "shipped_at <= '{ship_cutoff}'"],
+            dimensions=["orders.id"], filter=["orders.created_at <= '{cutoff}'", "orders.shipped_at <= '{ship_cutoff}'"],
             variables={"cutoff": "2024-12-31", "ship_cutoff": "2024-12-31"}))
         assert sorted((w.comparison.split()[0], w.variables) for w in notices(resp)) == [
             ("created_at", ["cutoff"]), ("shipped_at", ["ship_cutoff"])], resp.warnings
 
     async def test_a_literal_equal_to_a_variable_names_no_variable(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            dimensions=["id"], filter=["created_at <= '{cutoff}'", "shipped_at <= '2024-12-31'"],
+            dimensions=["orders.id"], filter=["orders.created_at <= '{cutoff}'", "orders.shipped_at <= '2024-12-31'"],
             variables={"cutoff": "2024-12-31"}))
         assert sorted((w.comparison.split()[0], w.variables) for w in notices(resp)) == [
             ("created_at", ["cutoff"]), ("shipped_at", [])], resp.warnings
@@ -209,7 +209,7 @@ class TestNotice:
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]})
         async with dev2215_engine(backend, datasets=[orders_dataset(), customers_dataset(), events]) as eng:
             resp = await eng.execute(q(
-                population="customers", dimensions=["id"],
+                population="customers", dimensions=["customers.id"],
                 filter=[f"{bound} <= '{{cutoff}}'", "events.updated_at <= '2024-12-31'"],
                 variables={"cutoff": "2024-12-31"}))
         assert sorted((w.comparison.split()[0], w.variables) for w in notices(resp)) == [
@@ -217,13 +217,13 @@ class TestNotice:
 
     async def test_a_literal_spelled_the_other_way_names_no_variable(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            dimensions=["id"], filter=["created_at <= '{cutoff}'", "'2024-12-31' >= created_at"],
+            dimensions=["orders.id"], filter=["orders.created_at <= '{cutoff}'", "'2024-12-31' >= orders.created_at"],
             variables={"cutoff": "2024-12-31"}))
         assert sorted(w.variables for w in notices(resp)) == [[], ["cutoff"]], resp.warnings
 
     async def test_a_variable_in_an_extension_measure_is_named(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            metrics=["early"], variables={"cutoff": "2024-12-31"},
+            metrics=["orders.early"], variables={"cutoff": "2024-12-31"},
             extensions=[{"dataset": "orders", "metrics": [
                 {"name": "early", "expression": "count(*) FILTER (WHERE created_at <= '{cutoff}')"}]}]))
         assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
@@ -242,12 +242,12 @@ class TestNotice:
     async def test_a_bucket_finer_than_a_day_is_announced(
         self, engine: SlayerQueryEngine, operand: str, announced: int,
     ) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=[f"{operand} <= '2024-04-10'"]))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=[f"{operand} <= '2024-04-10'"]))
         assert len(notices(resp)) == announced, resp.warnings
 
     async def test_one_comparison_bound_by_two_variables_names_both(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            dimensions=["id"], filter=["created_at <= '{cutoff}' or created_at <= '{other}'"],
+            dimensions=["orders.id"], filter=["orders.created_at <= '{cutoff}' or orders.created_at <= '{other}'"],
             variables={"cutoff": "2024-12-31", "other": "2024-12-31"}))
         assert [w.variables for w in notices(resp)] == [["cutoff", "other"]], resp.warnings
 
@@ -277,7 +277,7 @@ class TestNotice:
         notes: list[Any] = []
         with recorded_warnings() as caught:
             await engine.create_dataset_from_query(
-                query=q(dimensions=["id"], filter=["created_at <= '2024-04-10'"]), name="early_q",
+                query=q(dimensions=["orders.id"], filter=["orders.created_at <= '2024-04-10'"]), name="early_q",
                 warnings_out=notes,
             )
         assert len([n for n in notes if NOTICE in payload_text(n)]) == 1, notes

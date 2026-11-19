@@ -62,7 +62,7 @@ class TestDepthThree:
         """Scenario: Depth-three re-aggregation — per product, the maximum over
         regions of the average over cities, by hand-computed values."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["product"],
+            dimensions=["sales.product"],
             metrics=[QueryMetric(metric=DEPTH3, alias="d3")]))
         by = rows_by(resp, "sales.product")
         for product, expected in DEPTH3_MAX_AVG_BY_PRODUCT.items():
@@ -74,7 +74,7 @@ class TestDepthThree:
         at depth three, on each emission path. ``gen`` already asserts the SQL
         parses with no nested WITH (``_assert_valid_sql``)."""
         sql = await gen(sales_q(
-            dimensions=["product"],
+            dimensions=["sales.product"],
             metrics=[QueryMetric(metric=DEPTH3, alias="d3")]), dialect=dialect)
         assert "__regroup__" not in sql, sql
         assert_scope_closed(sql, dialect=dialect)
@@ -87,7 +87,7 @@ class TestSharedProducerRendersOnce:
         re-aggregates it; a single city-region producer serves both."""
         band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         both = sales_q(
-            dimensions=["region", band],
+            dimensions=["sales.region", band],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       reagg("avg", INNER_CR, name="acr")])
         resp = await exec_engine.execute(both)
@@ -107,9 +107,9 @@ class TestSharedProducerRendersOnce:
         consumer (interning, DEV-1838)."""
         band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         dialect = "postgres"
-        single = sales_q(dimensions=["region", band],
+        single = sales_q(dimensions=["sales.region", band],
                          metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")])
-        both = sales_q(dimensions=["region", band],
+        both = sales_q(dimensions=["sales.region", band],
                        metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                                  reagg("avg", INNER_CR, name="acr")])
         s_sql = await gen(single, dialect=dialect)

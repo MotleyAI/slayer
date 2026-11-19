@@ -38,7 +38,7 @@ class TestNamedMeasureSQL:
         """Query with ``{formula: "aov"}`` produces the same SQL as
         ``{formula: "revenue:sum / *:count"}``.
         """
-        formula = "sum(revenue) / count(*)"
+        formula = "sum(orders.revenue) / count(orders.*)"
         with_saved = _orders_dataset(
             metrics=[DatasetMetric(name="aov", expression=formula)]
         )
@@ -59,7 +59,7 @@ class TestNamedMeasureSQL:
 
     async def test_in_transform(self) -> None:
         """``cumsum(aov)`` matches ``cumsum(sum(revenue) / count(*))``."""
-        formula = "sum(revenue) / count(*)"
+        formula = "sum(orders.revenue) / count(orders.*)"
         with_saved = _orders_dataset(
             metrics=[DatasetMetric(name="aov", expression=formula)]
         )
@@ -90,7 +90,7 @@ class TestNamedMeasureSQL:
 
     async def test_in_arithmetic(self) -> None:
         """``aov * 1.1`` matches inlined."""
-        formula = "sum(revenue)"
+        formula = "sum(orders.revenue)"
         with_saved = _orders_dataset(
             metrics=[DatasetMetric(name="aov", expression=formula)]
         )

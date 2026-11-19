@@ -42,14 +42,14 @@ BAND = {"field": BAND35, "alias": "band"}
 def _cases() -> dict:
     return {
         "lift/band_time_shift_plain": q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ),
         "lift/band_part_time_shift_cross": q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
@@ -57,14 +57,14 @@ def _cases() -> dict:
             ],
         ),
         "lift/band_cumsum": q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="cumsum(sum(orders.amount))", alias="c"),
             ],
         ),
         "lift/bare_cumsum": q(
-            dimensions=["region", {"field": BARE_DIM, "alias": "ct"}],
+            dimensions=["orders.region", {"field": BARE_DIM, "alias": "ct"}],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
@@ -72,7 +72,7 @@ def _cases() -> dict:
             ],
         ),
         "lift/part_time_shift_fixed": q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
                 QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),

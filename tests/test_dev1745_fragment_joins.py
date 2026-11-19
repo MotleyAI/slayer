@@ -186,7 +186,7 @@ class TestCrossModelFragmentJoins:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status", alias="status")],
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
                 metrics=[{
                     "metric": "wscaled_sum(customers.spend)", "alias": "m0",
                 }],
@@ -208,7 +208,7 @@ class TestCrossModelFragmentJoins:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status", alias="status")],
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
                 metrics=[
                     {"metric": "wscaled_sum(customers.spend)", "alias": "m0"},
                     {"metric": "sum(orders.amount)", "alias": "m1"},
@@ -234,7 +234,7 @@ class TestHostPathFragmentJoinsStillWork:
         sql = await _sql(
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "status", "alias": "status"}],
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
                 "metrics": [{"metric": "wscaled_sum(orders.amount)", "alias": "m0"}],
             }),
             dataset=_orders_local_agg(),
@@ -246,7 +246,7 @@ class TestHostPathFragmentJoinsStillWork:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status", alias="status")],
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
                 metrics=[{
                     "metric": "wscaled_sum(orders.amount, w='customers.regions.weight')",
                     "alias": "m0",
@@ -264,7 +264,7 @@ async def test_cross_model_fragment_executes_on_duckdb() -> None:
     sql = await _sql(
         SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "wscaled_sum(customers.spend)", "alias": "m0"}],
         }),
         dataset=_orders(), dialect="duckdb",

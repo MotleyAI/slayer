@@ -65,7 +65,7 @@ def _cross(prefix: str = "") -> list:
             {"metric": f"count({prefix}orders.id)", "alias": "n"}]
 
 
-LOCAL = [{"metric": "sum(amount)", "alias": "s"}, {"metric": "count(id)", "alias": "n"}]
+LOCAL = [{"metric": "sum(orders.amount)", "alias": "s"}, {"metric": "count(orders.id)", "alias": "n"}]
 
 
 def _assert_cells(actual: dict, expected: dict) -> None:
@@ -133,9 +133,8 @@ class TestParityWithMaterialisedAggregate:
         """Every population cell, NULL included, equals the materialised row (or the empty value)."""
         vm = await materialise(vm_engine, name="vm", payload=_local(case["grain"]))
         resp = await vm_engine.execute(q({**case["payload"], "to_many_handling": mode}))
-        root = case["payload"]["population"]
-        s = cells(resp, case["dim"], f"{root}.s")
-        n = cells(resp, case["dim"], f"{root}.n")
+        s = cells(resp, case["dim"], "s")
+        n = cells(resp, case["dim"], "n")
         assert_parity(s, vm["s"], empty=None)
         assert_parity(n, vm["n"], empty=0)
         _assert_cells(s, case["population"][0])
@@ -157,7 +156,7 @@ class TestParityWithMaterialisedAggregate:
 
 
 SPEND = {"metric": "sum(customers.spend)", "alias": "c"}
-AMOUNT = {"metric": "sum(amount)", "alias": "a"}
+AMOUNT = {"metric": "sum(orders.amount)", "alias": "a"}
 
 
 def _orders_assoc(**kw) -> dict:
@@ -168,7 +167,7 @@ def _orders_assoc(**kw) -> dict:
 class TestSpellingInvariantAssociation:
     @pytest.mark.parametrize("formula", [
         "sum(customers.spend)",
-        "sum(customers.spend, partition_by=status)",
+        "sum(customers.spend, partition_by=orders.status)",
     ])
     async def test_orders_rooted_null_cell_holds_the_orderless_customer(
             self, null_engine, formula):
@@ -204,7 +203,7 @@ class TestRowFilterNarrowsTheVirtualModel:
     async def test_orderless_customer_fails_the_row_filter(self, app_null_engine):
         """channel='app': NULL-status cell = c5 only (80), never c7's null-extended row (135)."""
         resp = await app_null_engine.execute(q(_orders_assoc(
-            metrics=[SPEND], filter=["channel = 'app'"])))
+            metrics=[SPEND], filter=["orders.channel = 'app'"])))
         _assert_cells(cells(resp, "orders.status", "c"), APP_SPEND_BY_STATUS)
 
 
@@ -212,6 +211,6 @@ class TestCompositeGrainNullCell:
     async def test_home_side_and_back_hop_dimensions(self, app_null_engine):
         """(South, NULL) holds c5's NULL-status order and the orderless c7: 80 + 55."""
         resp = await app_null_engine.execute(q(_orders_assoc(
-            dimensions=["customers.regions.name", "status"], metrics=[SPEND])))
+            dimensions=["customers.regions.name", "orders.status"], metrics=[SPEND])))
         by = rows_by(resp, "orders.customers.regions.name", "orders.status")
         _assert_cells({k: v["c"] for k, v in by.items()}, SPEND_BY_REGION_STATUS)

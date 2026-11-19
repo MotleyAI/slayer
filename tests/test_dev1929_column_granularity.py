@@ -253,7 +253,7 @@ class TestQueryBackedCache:
                 "metrics": [{"metric": "count(maxed.*)"}],
             }), dry_run=True)
             # A computed dimension is cached without a granularity.
-            band = "CASE WHEN sum(amount, partition_by=region) > 100 THEN 'big' ELSE 'small' END"
+            band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 100 THEN 'big' ELSE 'small' END"
             banded = await engine.create_dataset_from_query(
                 query={"population": "orders",
                        "dimensions": [{"field": band, "alias": "size_band"}],

@@ -181,7 +181,7 @@ class TestReservedName:
     @pytest.mark.parametrize("variant_engine", BACKENDS, indirect=True)
     async def test_a_query_reading_the_variant_warns(self, variant_engine) -> None:
         resp = await variant_engine.execute(SlayerQuery.model_validate(
-            {"population": "Time_Spine", "metrics": [m("count(*)", "n")]}))
+            {"population": "Time_Spine", "metrics": [m("count(Time_Spine.*)", "n")]}))
         assert [num(value(r, "n")) for r in resp.data] == [181.0]
         assert warnings_mentioning(resp, "Time_Spine", "time_spine")
 

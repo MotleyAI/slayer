@@ -93,10 +93,10 @@ dbt requires separate metric type definitions for each analytical pattern:
 SLayer handles all of these inline in a single query:
 ```json
 "metrics": [
-  "sum(revenue)",
-  {"metric": "sum(revenue) / count(*)", "alias": "aov"},
-  {"metric": "cumsum(sum(revenue))", "alias": "running"},
-  {"metric": "change_pct(sum(revenue))", "alias": "growth"}
+  "sum(orders.revenue)",
+  {"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"},
+  {"metric": "cumsum(sum(orders.revenue))", "alias": "running"},
+  {"metric": "change_pct(sum(orders.revenue))", "alias": "growth"}
 ]
 ```
 

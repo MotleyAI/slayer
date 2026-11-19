@@ -71,10 +71,10 @@ from tests._rank_direction_fixtures import rank_windows
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 # Source formulas under test.
-GRAINED_CUMSUM = "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)"
-UNGRAINED_CUMSUM = "sum(cumsum(sum(amount)))"
-RANK_MIXED = "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))"
-JOINED_ROWLEAF_MIXED = "sum(customers.discount * avg(amount, partition_by=status))"
+GRAINED_CUMSUM = "sum(cumsum(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])) - 1)"
+UNGRAINED_CUMSUM = "sum(cumsum(sum(monthly.amount)))"
+RANK_MIXED = "sum(sales.quantity * rank(avg(sales.unit_price, partition_by=sales.product), direction='desc'))"
+JOINED_ROWLEAF_MIXED = "sum(customers.discount * avg(orders.amount, partition_by=orders.status))"
 
 # Collapsing / family constituents over X = the monthly per-region total.
 _X = "sum(amount, partition_by=[region, ordered_at])"
@@ -89,7 +89,7 @@ COLLAPSE_MIXED = f"sum(amount * last({_X}))"
 HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"
 # The re-aggregation inside HANDWRITTEN_MIN, on its own (the phase-collision case).
 REAGG_STANDALONE = f"min({_X}, partition_by=region)"
-EMPTY_GRAIN_MIXED = "sum(amount * last(sum(amount, partition_by=ordered_at)))"
+EMPTY_GRAIN_MIXED = "sum(monthly.amount * last(sum(monthly.amount, partition_by=monthly.ordered_at)))"
 WAVG_MIN_PARAM = f"weighted_avg(amount, weight=min({_X}, partition_by=region))"
 MIXED_COMBINED = (f"sum(amount * min({_X}, partition_by=region)) "
                   "+ sum(amount, partition_by=region)")
@@ -98,11 +98,11 @@ WINDOWED_INNER = "sum(rank(sum(amount, window='90d', partition_by=region), direc
 # to-one key, and the non-time contrast that still associates.
 XMODEL_BOUNDARY = ("sum(cumsum(sum(customers.spend, "
                    "partition_by=[customers.tier, ordered_at])))")
-XMODEL_TOONE = "sum(cumsum(sum(amount, partition_by=[customers.tier, ordered_at])))"
-XMODEL_CONTRAST = "sum(customers.spend, partition_by=status)"
+XMODEL_TOONE = "sum(cumsum(sum(orders.amount, partition_by=[customers.tier, orders.ordered_at])))"
+XMODEL_CONTRAST = "sum(customers.spend, partition_by=orders.status)"
 # Orders-rooted mixed re-aggregation grouped by a fanning dimension (mode axis).
 FAN_DIM = "customers.regions.region_events.value"
-MIXED_FAN = "sum(weight * min(sum(amount, partition_by=[status, channel]), partition_by=status))"
+MIXED_FAN = "sum(orders.weight * min(sum(orders.amount, partition_by=[orders.status, orders.channel]), partition_by=orders.status))"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -114,7 +114,7 @@ async def exec_backend(request) -> AsyncIterator[tuple[str, SlayerQueryEngine]]:
 def _month_cols(resp: SlayerResponse, name: str) -> tuple[str, str]:
     month_col = next(c for c in resp.columns if c.endswith("ordered_at")
                      or "ordered_at" in c)
-    return month_col, next(c for c in resp.columns if c.endswith("." + name))
+    return month_col, next(c for c in resp.columns if c == name or c.endswith("." + name))
 
 
 def _by_month(resp: SlayerResponse, name: str) -> dict:
@@ -226,7 +226,7 @@ class TestMixedTransformConstituent:
     async def test_rank_mixed_by_region(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(sales_q(
-            dimensions=["region"], metrics=[QueryMetric(metric=RANK_MIXED, alias="m")]))
+            dimensions=["sales.region"], metrics=[QueryMetric(metric=RANK_MIXED, alias="m")]))
         got = {k[0]: v["m"] for k, v in rows_by(resp, "sales.region").items()
                if v["m"] is not None}
         assert got == pytest.approx(MIXED_RANK_SUM_BY_REGION)
@@ -234,7 +234,7 @@ class TestMixedTransformConstituent:
     async def test_joined_model_row_leaf_mixed_by_status(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=JOINED_ROWLEAF_MIXED, alias="m")]))
         got = {k: v["m"] for k, v in status_key(resp).items()
                if v["m"] is not None}
@@ -258,7 +258,7 @@ class TestTransformSourceRejections:
         # — the degenerate identity (one non-null row per region) plus warning.
         _, engine = exec_backend
         resp = await engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(rank(sales.region, direction='desc'))", alias="m")]))
         got = {k[0]: v["m"] for k, v in rows_by(resp, "sales.region").items()}
         assert set(got) == {"North", "South", "East", "Gap", "Void"}
@@ -278,7 +278,7 @@ class TestTransformSourceRejections:
     async def test_axis_check_covers_filter_and_order_positions(self):
         # The axis check must walk filter and order constituents too, not just
         # measures (a coarser producer grain would else reach planning).
-        axis_missing = "sum(cumsum(sum(amount, partition_by=region)))"
+        axis_missing = "sum(cumsum(sum(monthly.amount, partition_by=monthly.region)))"
         filter_query = monthly_q(
             metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s")],
             filter=[f"{axis_missing} > 5"], time_dimensions=month_td())
@@ -302,7 +302,7 @@ class TestTransformSourceRejections:
 
     async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric="first(sales.quantity * avg(sales.unit_price, partition_by=sales.product), sales.id)",
                 alias="m")])
@@ -387,7 +387,7 @@ class TestCollapsingRejections:
         # A collapsing transform over an ungrained aggregate in a computed
         # dimension is the Axiom 9 residue error — collapse does not bypass it.
         query = monthly_q(
-            dimensions=[{"field": "last(sum(amount))", "alias": "b"}],
+            dimensions=[{"field": "last(sum(monthly.amount))", "alias": "b"}],
             metrics=[QueryMetric(metric=UNGRAINED_CUMSUM, alias="m")],
             time_dimensions=month_td())
         with pytest.raises(ValueError, match="partition_by"):
@@ -465,7 +465,7 @@ def _reagg_multi_plan(expression: str):
 def _region_month(resp: SlayerResponse) -> dict:
     """``{(region, YYYY-MM): value}`` over a monthly [region]+month query, NULLs dropped."""
     month_col = next(c for c in resp.columns if "ordered_at" in c)
-    meas_col = next(c for c in resp.columns if c.endswith(".m"))
+    meas_col = next(c for c in resp.columns if c == "m" or c.endswith(".m"))
     return {(row["monthly.region"], month_key(row[month_col])): row[meas_col]
             for row in resp.data if row[meas_col] is not None}
 
@@ -505,7 +505,7 @@ class TestReaggMixedSource:
     async def test_mixed_reagg_combined_with_coarser_measure(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=MIXED_COMBINED, alias="m")],
             time_dimensions=month_td()))
         assert len(resp.data) == 6  # (region, month) cells incl. West's NULL row
@@ -685,7 +685,7 @@ class TestCrossModelGrainedInnerBoundary:
     async def test_non_time_cross_model_key_still_associates(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=XMODEL_CONTRAST, alias="w")],
             to_many_handling="associate"))
         by = {k: v["w"] for k, v in status_key(resp).items()}
@@ -734,15 +734,15 @@ class TestReaggAxiomCompliance:
         # month, the mixed per-cell amount × region-min summed.
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
             time_dimensions=month_td()))
         mcol = next(c for c in resp.columns if "ordered_at" in c)
 
         def rm(name: str) -> dict:
-            return {(r["monthly.region"], month_key(r[mcol])): r[f"monthly.{name}"]
-                    for r in resp.data if r[f"monthly.{name}"] is not None}
+            return {(r["monthly.region"], month_key(r[mcol])): r[name]
+                    for r in resp.data if r[name] is not None}
 
         assert rm("a") == pytest.approx(
             {("North", "2024-01"): 10.0, ("North", "2024-02"): 10.0,

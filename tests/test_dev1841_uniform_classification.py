@@ -101,7 +101,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         star = QueryMetric(metric="count(customers.*)", alias="n")
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[star],
-                   filter=["sum(spend) > 450"],
+                   filter=["sum(customers.spend) > 450"],
                    to_many_handling="associate"))
         # Correct ok=420 fails > 450 → ok dropped; a fanned 520 would keep it.
         keys = set(status_key(resp, root="customers"))
@@ -113,7 +113,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         _, engine = exec_backend
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[SP],
-                   order=[OrderItem.model_validate({"field": "sum(spend)", "direction": "desc"})],
+                   order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
                    to_many_handling="associate"))
         # ok / new / a NULL-status cell for orderless c7 (rooted at customers).
         assert len(resp.data) == 3

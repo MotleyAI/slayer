@@ -95,7 +95,7 @@ async def _dry_sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
 
 
 def _amount_query(**kw) -> dict:
-    return dict(population="Invoice", metrics=[{"metric": "sum(amount)", "alias": "amt"}], **kw)
+    return dict(population="Invoice", metrics=[{"metric": "sum(Invoice.amount)", "alias": "amt"}], **kw)
 
 
 # ===========================================================================

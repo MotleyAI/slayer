@@ -230,8 +230,8 @@ class TestModeBSpellingsRun:
         assert resp.data[0]["s"] == pytest.approx(200.0)
 
     @pytest.mark.parametrize("formula", [
-        "weighted_avg(amount, weight='id * 2')",
-        "weighted_avg(amount, weight=id * 2)",
+        "weighted_avg(orders.amount, weight='id * 2')",
+        "weighted_avg(orders.amount, weight=orders.id * 2)",
     ])
     async def test_a_string_argument_is_mode_b(self, shop: _Shop, formula: str) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({

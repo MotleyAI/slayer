@@ -118,8 +118,8 @@ Query-bearing form:
   "learning": "Total paid revenue",
   "linked_entities": {
     "population": "orders",
-    "metrics": ["sum(amount)"],
-    "filter": ["status = 'paid'"]
+    "metrics": ["sum(orders.amount)"],
+    "filter": ["orders.status = 'paid'"]
   }
 }
 ```

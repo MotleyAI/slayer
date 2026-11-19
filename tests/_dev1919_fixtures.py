@@ -228,17 +228,17 @@ def local_wavg_status_assoc_by_status() -> Dict[str, Optional[float]]:
 # Result helpers.
 # --------------------------------------------------------------------------- #
 def tier_vals(resp, name: str = "w") -> Dict[Optional[str], Any]:
-    return {k[0]: v[f"orders.{name}"]
+    return {k[0]: v[name]
             for k, v in rows_by(resp, "orders.customers.tier").items()}
 
 
 def status_vals(resp, name: str = "w") -> Dict[str, Any]:
-    return {k[0]: v[f"orders.{name}"] for k, v in rows_by(resp, "orders.status").items()}
+    return {k[0]: v[name] for k, v in rows_by(resp, "orders.status").items()}
 
 
 def month_vals(resp, name: str = "w") -> Dict[Optional[str], Any]:
     return {(None if r["orders.customers.signup_at"] is None
-             else month_key(r["orders.customers.signup_at"])): r[f"orders.{name}"]
+             else month_key(r["orders.customers.signup_at"])): r[name]
             for r in resp.data}
 
 

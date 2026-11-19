@@ -113,7 +113,7 @@ class TestShape:
             dataset_name="lines", relationship=reordered)
 
     def test_an_extension_relationship_takes_the_same_shape(self) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(lines.*)"], "extensions": [
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"], "extensions": [
             {"dataset": "orders", "relationships": [{**REL, "name": "buyer"}]}]})
         [ext] = query.model_dump(mode="json")["extensions"]
         [rel] = ext["relationships"]

@@ -46,7 +46,7 @@ class TestNullTestExecution:
         """``sum(hi_rev) is not None`` drives the streak: A never NULL → 1,2,3;
         B NULL in March → 1, 2, 0."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
                 metric="consecutive_periods(sum(sales.hi_rev) is not None)",
                 alias="streak")],
@@ -62,7 +62,7 @@ class TestNullTestExecution:
     async def test_top_level_is_null_by_store(self, exec_engine) -> None:
         """The complementary ``is None`` form: A → 0,0,0; B → 0,0,1."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
                 metric="consecutive_periods(sum(sales.hi_rev) is None)",
                 alias="streak")],
@@ -80,7 +80,7 @@ class TestNullTestExecution:
         always positive, so the conjunction equals the null test → A 1,2,3 /
         B 1,2,0."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
                 metric="consecutive_periods(sum(sales.hi_rev) is not None and sum(sales.cost) > 0)",
                 alias="streak")],
@@ -97,7 +97,7 @@ class TestNullTestExecution:
         """A null test over a grouped dimension column: store is never NULL →
         both streaks 1, 2, 3."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
                 metric="consecutive_periods(sales.store is not None)", alias="streak")],
         ))
@@ -112,7 +112,7 @@ class TestNullTestTypingContract:
     async def test_null_test_in_value_position_is_its_integer(self, exec_engine) -> None:
         """``(… is None) + 1`` is 1 or 2, never 0: B's NULL March keeps the run going."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(metric="consecutive_periods((sum(sales.hi_rev) is None) + 1)", alias="streak")],
         ))
         by = _by_store_month(resp)

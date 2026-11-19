@@ -66,8 +66,8 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "population": "orders",
-    "metrics": ["count(*)"],
-    "dimensions": ["status"]
+    "metrics": ["count(orders.*)"],
+    "dimensions": ["orders.status"]
   }'
 ```
 
@@ -93,8 +93,8 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "population": "orders",
-    "metrics": ["sum(order_total)"],
-    "time_dimensions": [{"field": "ordered_at", "granularity": "month", "date_range": "last 12 months"}]
+    "metrics": ["sum(orders.order_total)"],
+    "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month", "date_range": "last 12 months"}]
   }'
 
 # Top 5 customers
@@ -102,9 +102,9 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "population": "orders",
-    "metrics": ["sum(order_total)"],
+    "metrics": ["sum(orders.order_total)"],
     "dimensions": ["customers.name"],
-    "order": [{"field": "sum(order_total)", "direction": "desc"}],
+    "order": [{"field": "sum(orders.order_total)", "direction": "desc"}],
     "limit": 5
   }'
 
@@ -172,8 +172,8 @@ const res = await fetch("http://localhost:5143/query", {
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({
     "population": "orders",
-    "metrics": ["count(*)"],
-    "dimensions": ["status"],
+    "metrics": ["count(orders.*)"],
+    "dimensions": ["orders.status"],
   }),
 });
 const {data} = await res.json();
@@ -181,7 +181,7 @@ const {data} = await res.json();
 
 **Go:**
 ```go
-body := `{"population": "orders", "metrics": ["count(*)"]}`
+body := `{"population": "orders", "metrics": ["count(orders.*)"]}`
 resp, _ := http.Post("http://localhost:5143/query", "application/json", strings.NewReader(body))
 ```
 

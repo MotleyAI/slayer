@@ -163,7 +163,7 @@ class TestAssociateMode:
 
     async def test_associate_by_status(self, orders_engine):
         resp = await orders_engine.execute(
-            mode_q("associate", dimensions=["status"], metrics=[_m(RANKED)]))
+            mode_q("associate", dimensions=["orders.status"], metrics=[_m(RANKED)]))
         assert_cells(status_vals(resp), ranked_assoc_by_status())
         assert associated_warnings(resp)
 
@@ -173,13 +173,13 @@ class TestLocalRootSales:
 
     async def test_by_region(self, sales_engine):
         resp = await sales_engine.execute(
-            sales_q(dimensions=["region"], metrics=[_m(LOCAL_SALES)]))
+            sales_q(dimensions=["sales.region"], metrics=[_m(LOCAL_SALES)]))
         assert_cells(region_vals(resp), local_sales_by_region())
         _no_mode_warnings(resp)
 
     async def test_by_region_and_city(self, sales_engine):
         resp = await sales_engine.execute(
-            sales_q(dimensions=["region", "city"], metrics=[_m(LOCAL_SALES_CITY)]))
+            sales_q(dimensions=["sales.region", "sales.city"], metrics=[_m(LOCAL_SALES_CITY)]))
         got = region_city_vals(resp)
         want = local_sales_by_region_city()
         assert set(got) == set(want), (set(got), set(want))
@@ -275,7 +275,7 @@ class TestUngrainedInner:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_by_status_fails_closed(self, orders_engine, mode):
-        q = mode_q(mode, dimensions=["status"], metrics=[_m(UNGRAINED_RANK)])
+        q = mode_q(mode, dimensions=["orders.status"], metrics=[_m(UNGRAINED_RANK)])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -333,7 +333,7 @@ class TestNestedParameter:
 
     async def test_broadcast_to_status(self, orders_engine):
         resp = await orders_engine.execute(
-            mode_q("broadcast", dimensions=["status"], metrics=[_m(NESTED)]))
+            mode_q("broadcast", dimensions=["orders.status"], metrics=[_m(NESTED)]))
         got = status_vals(resp)
         assert set(got) == {"ok", "new"}
         for value in got.values():
@@ -362,7 +362,7 @@ class TestCrossModelLocalRoot:
     @pytest.mark.parametrize("mode", MODES)
     async def test_by_status(self, orders_engine, mode):
         resp = await orders_engine.execute(
-            mode_q(mode, dimensions=["status"], metrics=[_m(XMODEL_LOCAL)]))
+            mode_q(mode, dimensions=["orders.status"], metrics=[_m(XMODEL_LOCAL)]))
         assert_cells(status_vals(resp), xmodel_by_status())  # ok 116/11, new 33
         _no_mode_warnings(resp)
 
@@ -416,7 +416,7 @@ class TestPlanShape:
 
     def test_association_kernel_picks_the_weight(self):
         planned = plan_query(
-            query=mode_q("associate", dimensions=["status"], metrics=[_m(RANKED)]),
+            query=mode_q("associate", dimensions=["orders.status"], metrics=[_m(RANKED)]),
             bundle=orders_bundle())
         [attach] = _attaches_of_kind(planned, "association")
         assert "weight" in [p.name for p in attach.kernel.picked_params]
@@ -437,7 +437,7 @@ class TestPlanShape:
     ])
     async def test_scope_closed_no_placeholder_leak(self, formula, tds, mode):
         kw = {} if tds is None else {"time_dimensions": tds}
-        dims = None if tds is not None else ["status"]
+        dims = None if tds is not None else ["orders.status"]
         q = mode_q(mode, metrics=[_m(formula)],
                    **({"dimensions": dims} if dims else {}), **kw)
         sql = await orders_gen(q, dialect="sqlite")
@@ -446,9 +446,9 @@ class TestPlanShape:
 
     async def test_adding_the_measure_is_cardinality_neutral(self, orders_engine):
         base = await orders_engine.execute(
-            mode_q(None, dimensions=["status"], metrics=[AMOUNT]))
+            mode_q(None, dimensions=["orders.status"], metrics=[AMOUNT]))
         withp = await orders_engine.execute(
-            mode_q(None, dimensions=["status"], metrics=[AMOUNT, _m(RANKED)]))
+            mode_q(None, dimensions=["orders.status"], metrics=[AMOUNT, _m(RANKED)]))
         assert len(withp.data) == len(base.data)
         assert status_vals(withp, "a") == pytest.approx(status_vals(base, "a"))
 
@@ -467,7 +467,7 @@ class TestReaggregationOuter:
 
     async def test_by_region(self, sales_engine):
         resp = await sales_engine.execute(
-            sales_q(dimensions=["region"], metrics=[_m(REAGG_RANK_COUNT)]))
+            sales_q(dimensions=["sales.region"], metrics=[_m(REAGG_RANK_COUNT)]))
         assert_cells(region_vals(resp), reagg_rank_by_region())
 
     def test_carrier_picks_the_transform_weight(self):
@@ -479,7 +479,7 @@ class TestReaggregationOuter:
         assert isinstance(dict(bound.value_key.kwargs)["weight"], TransformKey)
         # …and rides the carrier as a picked parameter named ``weight``.
         planned = plan_query(
-            query=sales_q(dimensions=["region"], metrics=[_m(REAGG_RANK_COUNT)]),
+            query=sales_q(dimensions=["sales.region"], metrics=[_m(REAGG_RANK_COUNT)]),
             bundle=bundle)
         picked = [p.name for a in planned.regroup_attach_plans
                   for p in getattr(a.kernel, "picked_params", [])]
@@ -487,13 +487,13 @@ class TestReaggregationOuter:
 
     async def test_scope_closed_no_leak(self):
         sql = await sales_gen(
-            sales_q(dimensions=["region"], metrics=[_m(REAGG_RANK_COUNT)]),
+            sales_q(dimensions=["sales.region"], metrics=[_m(REAGG_RANK_COUNT)]),
             dialect="sqlite")
         assert "__regroup__" not in sql, sql
         assert_scope_closed(sql, dialect="sqlite")
 
     async def test_partition_by_product_fails_closed(self, sales_engine):
-        q = sales_q(dimensions=["region"], metrics=[_m(REAGG_RANK_PRODUCT)])
+        q = sales_q(dimensions=["sales.region"], metrics=[_m(REAGG_RANK_PRODUCT)])
         with pytest.raises(SlayerError) as ei:
             await sales_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")

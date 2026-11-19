@@ -18,7 +18,7 @@ from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._engine_helpers import seeded_exec_engine
 
 PIN = "2025-07-15T12:00:00"
-LAST_3_MONTHS = "ts = 'last 3 months'"
+LAST_3_MONTHS = "ev.ts = 'last 3 months'"
 
 EV_TS: dict[int, str] = {
     1: "2025-03-31 12:00:00", 2: "2025-04-01 00:00:00", 3: "2025-05-10 12:00:00",

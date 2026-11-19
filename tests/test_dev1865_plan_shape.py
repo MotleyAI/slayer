@@ -43,8 +43,8 @@ def _typing(mask) -> str:
 class TestMaskEntries:
     def test_planned_query_exposes_typed_masks_per_conjunct(self) -> None:
         planned = plan(q(
-            dimensions=["region"],
-            filter=["sum(amount) > 100", "status = 'ok'"],
+            dimensions=["orders.region"],
+            filter=["sum(orders.amount) > 100", "orders.status = 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert hasattr(planned, "masks"), "PlannedQuery must carry typed mask entries"
@@ -59,8 +59,8 @@ class TestMaskEntries:
 
     def test_mask_slots_are_hidden(self) -> None:
         planned = plan(q(
-            dimensions=["region"],
-            filter=["sum(amount) > 100", "status = 'ok'"],
+            dimensions=["orders.region"],
+            filter=["sum(orders.amount) > 100", "orders.status = 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert hasattr(planned, "masks")
@@ -72,8 +72,8 @@ class TestMaskEntries:
 
     def test_mask_slot_ids_are_stable_across_planning(self) -> None:
         query = q(
-            dimensions=["region"],
-            filter=["sum(amount) > 100", "status = 'ok'"],
+            dimensions=["orders.region"],
+            filter=["sum(orders.amount) > 100", "orders.status = 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         first, second = plan(query), plan(query)
@@ -82,8 +82,8 @@ class TestMaskEntries:
 
     def test_field_conjunct_is_stratum_zero(self) -> None:
         planned = plan(q(
-            dimensions=["region"],
-            filter=["status = 'ok'"],
+            dimensions=["orders.region"],
+            filter=["orders.status = 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert hasattr(planned, "masks")
@@ -111,7 +111,7 @@ class TestDev1840DispositionUnchanged:
     def test_unsafe_reverse_hop_pushes_one_semi_join(self) -> None:
         att = _dev1840_attach(plan_query(query=_dev1840_q(
             dimensions=["customers.tier"], metrics=[_DEV1840_CM],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         ), bundle=_dev1840_bundle()), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]

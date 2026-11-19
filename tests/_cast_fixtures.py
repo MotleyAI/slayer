@@ -62,9 +62,9 @@ def tags_query(**kw: Any) -> SlayerQuery:
 
 async def check_array_cast(engine: SlayerQueryEngine) -> None:
     """``contains`` / ``length`` over ``CAST(codes AS INT[])`` read it as a list of INT."""
-    resp = await engine.execute(tags_query(dimensions=["id"], filter=["contains(CAST(codes AS INT[]), 3)"]))
+    resp = await engine.execute(tags_query(dimensions=["tags.id"], filter=["contains(CAST(tags.codes AS INT[]), 3)"]))
     assert {int(r["tags.id"]) for r in resp.data} == CONTAINS_3, resp.sql
-    resp = await engine.execute(tags_query(dimensions=["id", {"field": "length(codes::INT[])", "alias": "n"}]))
+    resp = await engine.execute(tags_query(dimensions=["tags.id", {"field": "length(tags.codes::INT[])", "alias": "n"}]))
     got = {int(r["tags.id"]): (None if r["n"] is None else int(r["n"])) for r in resp.data}
     assert got == LENGTHS, resp.sql
 
@@ -127,7 +127,7 @@ async def check_try_cast_targets(engine: SlayerQueryEngine, *, dataset: str) -> 
     resp = await engine.execute(SlayerQuery.model_validate({"population": dataset, "metrics": try_cast_metrics()}))
     assert len(resp.data) == 1, resp.data
     row = resp.data[0]
-    got = {TRY_CAST_CASE_IDS[i]: _normalised(row[f"{dataset}.c{i}"], target=to)
+    got = {TRY_CAST_CASE_IDS[i]: _normalised(row[f"c{i}"], target=to)
            for i, (_, to, _) in enumerate(TRY_CAST_TARGET_CASES)}
     want = {TRY_CAST_CASE_IDS[i]: expected for i, (_, _, expected) in enumerate(TRY_CAST_TARGET_CASES)}
     assert got == want, resp.sql

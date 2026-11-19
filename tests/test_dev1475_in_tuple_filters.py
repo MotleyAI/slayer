@@ -229,7 +229,7 @@ class TestBinder:
     def test_in_filter_binds_to_in_key(self):
 
         model = _make_orders_with_status()
-        parsed = parse_expr("status in ('completed', 'pending')")
+        parsed = parse_expr("orders.status in ('completed', 'pending')")
         bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
         scope = DatasetScope(population=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)

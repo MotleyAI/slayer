@@ -66,7 +66,7 @@ async def _outcome(engine: SlayerQueryEngine, query: SlayerQuery) -> Any:
 
 class TestRootAndStoredEdges:
     async def test_an_inner_join_a_later_extension_names_restricts_by_that_name(self, dialect) -> None:
-        query = q(population="events", dimensions=["id"], extensions=[
+        query = q(population="events", dimensions=["events.id"], extensions=[
             ext("events", relationships=[join("users", [["user_id", "id"]], join_type="inner"),
                                  join("users", [["id", "id"]], name="other")]),
             ext("users", relationships=[join("events", [["id", "user_id"]], name="primary")])])
@@ -76,18 +76,18 @@ class TestRootAndStoredEdges:
 
     async def test_inner_on_root_keeps_matched_rows_once(self, dialect) -> None:
         async with shop(dialect) as engine:
-            resp = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["name"]))
+            resp = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["customers.name"]))
         assert sorted(r["customers.name"] for r in resp.data) == sorted(VIP_CUSTOMERS)
 
     async def test_left_declaration_never_restricts(self, dialect) -> None:
         async with shop(dialect) as engine:
-            resp = await engine.execute(q(population="customers", extensions=[_vip("left")], dimensions=["name"]))
+            resp = await engine.execute(q(population="customers", extensions=[_vip("left")], dimensions=["customers.name"]))
         assert values(resp, "customers.name") == ALL_CUSTOMERS
 
     async def test_inner_over_a_stored_left_edge_restricts_without_a_parallel_edge(self, dialect) -> None:
         query = q(population="orders", extensions=[ext("orders", relationships=[
             join("customers", CUSTOMER_PAIRS, name="c", join_type="inner")])],
-            dimensions=["id", "c.name", "customers.tier"])
+            dimensions=["orders.id", "orders.c.name", "customers.tier"])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
             dry = await engine.execute(query, dry_run=True)
@@ -101,8 +101,8 @@ class TestRootAndStoredEdges:
     async def test_a_reused_stored_inner_edge_still_adds_its_restriction(self, dialect) -> None:
         stored_inner = customers(DatasetRelationship(to="vip_list", from_columns=[p[0] for p in VIP_PAIRS], to_columns=[p[1] for p in VIP_PAIRS], join_type=JoinType.INNER))
         async with shop(dialect, with_datasets(stored_inner)) as engine:
-            untraversed = await engine.execute(q(population="customers", dimensions=["name"]))
-            declared = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["name"]))
+            untraversed = await engine.execute(q(population="customers", dimensions=["customers.name"]))
+            declared = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["customers.name"]))
         assert values(untraversed, "customers.name") == ALL_CUSTOMERS
         assert values(declared, "customers.name") == VIP_CUSTOMERS
 
@@ -110,7 +110,7 @@ class TestRootAndStoredEdges:
         stored_inner = customers(DatasetRelationship(to="vip_list", from_columns=[p[0] for p in VIP_PAIRS], to_columns=[p[1] for p in VIP_PAIRS], join_type=JoinType.INNER))
         async with shop(dialect, with_datasets(stored_inner)) as engine:
             resp = await engine.execute(q(
-                population="customers", extensions=[_vip("left")], dimensions=["name", "vip_list.note"]))
+                population="customers", extensions=[_vip("left")], dimensions=["customers.name", "vip_list.note"]))
         assert rows(resp, "customers.name", "vip_list.note") == [
             ("Ann", "a"), ("Ann", "b"), ("Bob", "c"), ("Eve", "d"),
         ]
@@ -120,7 +120,7 @@ class TestPaths:
     async def test_fanning_path_restricts_by_existence_and_never_multiplies(self, dialect) -> None:
         query = q(population="customers",
                   extensions=[ext("orders", relationships=[join("vip_orders", [["id", "order_id"]], join_type="inner")])],
-                  dimensions=["name"], metrics=[{"metric": "count(orders.id)", "alias": "n"}])
+                  dimensions=["customers.name"], metrics=[{"metric": "count(orders.id)", "alias": "n"}])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
         assert rows(resp, "customers.name", "n") == [("Ann", 1), ("Bob", 1)]
@@ -128,13 +128,13 @@ class TestPaths:
     async def test_multi_hop_chain_through_a_stored_left_hop(self, dialect) -> None:
         query = q(population="orders",
                   extensions=[ext("customers", relationships=[join("regions", REGION_PAIRS, join_type="inner")])],
-                  dimensions=["id"])
+                  dimensions=["orders.id"])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
         assert values(resp, "orders.id") == ORDERS_WITH_REGIONED_CUSTOMER
 
     async def test_declaring_model_two_hops_from_the_root(self, dialect) -> None:
-        query = q(population="orders", dimensions=["id"], metrics=[{"metric": "count(*)", "alias": "n"}],
+        query = q(population="orders", dimensions=["orders.id"], metrics=[{"metric": "count(orders.*)", "alias": "n"}],
                   extensions=[ext("customers", relationships=[join("regions", REGION_PAIRS, join_type="left")]),
                               ext("regions", relationships=[join("countries", [["country_id", "id"]], join_type="inner")])])
         async with shop(dialect) as engine:
@@ -145,17 +145,17 @@ class TestPaths:
         extensions = [ext("customers", relationships=[join("regions", REGION_PAIRS, join_type="inner")])]
         base = {"population": "orders", "extensions": extensions, "dimensions": ["orders.status"]}
         async with shop(dialect) as engine:
-            plain = await engine.execute(q(**base, metrics=[{"metric": "count(*)", "alias": "n"}]))
+            plain = await engine.execute(q(**base, metrics=[{"metric": "count(orders.*)", "alias": "n"}]))
             more = await engine.execute(q(**base, metrics=[
-                {"metric": "count(*)", "alias": "n"}, {"metric": "sum(customers.credit)", "alias": "cr"}]))
+                {"metric": "count(orders.*)", "alias": "n"}, {"metric": "sum(customers.credit)", "alias": "cr"}]))
         assert rows(plain, "orders.status", "n") == rows(more, "orders.status", "n")
         assert rows(plain, "orders.status", "n") == [("new", 1), ("ok", 3)]
 
     async def test_inner_to_a_sibling_stage(self, dialect) -> None:
-        stage = q(name="big_spenders", population="orders", dimensions=["customer_id"],
-                  metrics=[{"metric": "sum(amount)", "alias": "spent"}], filter=["spent > 25"])
+        stage = q(name="big_spenders", population="orders", dimensions=["orders.customer_id"],
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "spent"}], filter=["spent > 25"])
         root = q(population="customers", extensions=[ext("customers", relationships=[
-            join("big_spenders", [["id", "customer_id"]], join_type="inner")])], dimensions=["name"])
+            join("big_spenders", [["id", "customer_id"]], join_type="inner")])], dimensions=["customers.name"])
         async with shop(dialect) as engine:
             resp = await engine.execute([stage, root])
         assert values(resp, "customers.name") == BIG_SPENDERS
@@ -165,20 +165,20 @@ class TestPaths:
             "population": "orders", "dimensions": ["customers.id"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "spent"}], "filter": ["spent > 25"]})])
         root = q(population="customers", extensions=[ext("customers", relationships=[
-            join("big_spenders_qb", [["id", "customers__id"]], join_type="inner")])], dimensions=["name"])
+            join("big_spenders_qb", [["id", "customers__id"]], join_type="inner")])], dimensions=["customers.name"])
         async with shop(dialect, with_datasets(qb)) as engine:
             resp = await engine.execute(root)
         assert values(resp, "customers.name") == BIG_SPENDERS
 
     async def test_target_model_filters_count_as_unmatched(self, dialect) -> None:
         async with shop(dialect, with_datasets(vip_list(filters=["active = 1"]))) as engine:
-            resp = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["name"]))
+            resp = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["customers.name"]))
         assert values(resp, "customers.name") == ACTIVE_VIP_CUSTOMERS
 
     @pytest.mark.parametrize("target", ["part_keys_b", "part_keys"], ids=["new-edge", "reversed-stored-edge"])
     async def test_composite_keys_with_partial_nulls_are_unmatched(self, dialect, target: str) -> None:
         query = q(population="parts", extensions=[ext("parts", relationships=[join(target, PART_PAIRS, join_type="inner")])],
-                  dimensions=["id"])
+                  dimensions=["parts.id"])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
         assert values(resp, "parts.id") == {1}
@@ -210,7 +210,7 @@ class TestReferenceBinding:
             got = await self._assert_as_written(
                 engine, root="orders", m="addresses", target="regions", pairs=REGION_PAIRS, key="id", dims=["id"])
             assert got is AmbiguousRelationshipPathError
-            declared = q(population="orders", dimensions=["id"], extensions=[
+            declared = q(population="orders", dimensions=["orders.id"], extensions=[
                 ext("addresses", relationships=[join("regions", REGION_PAIRS, join_type="inner")])])
             with pytest.raises(AmbiguousRelationshipPathError) as info:
                 await engine.execute(declared)
@@ -231,7 +231,7 @@ class TestReferenceBinding:
                 engine, root="customers", m="addresses", target="regions", pairs=REGION_PAIRS, key="id",
                 dims=["name"])
             assert got is AmbiguousRelationshipPathError
-            declared = q(population="customers", dimensions=["name"], extensions=[
+            declared = q(population="customers", dimensions=["customers.name"], extensions=[
                 ext("addresses", relationships=[join("regions", REGION_PAIRS, join_type="inner")])])
             with pytest.raises(AmbiguousRelationshipPathError) as info:
                 await engine.execute(declared)
@@ -241,7 +241,7 @@ class TestReferenceBinding:
         assert "regions" in message, message
 
     async def test_unreachable_declaration_fails_naming_it(self, dialect) -> None:
-        query = q(population="orders", dimensions=["id"],
+        query = q(population="orders", dimensions=["orders.id"],
                   extensions=[ext("events", relationships=[join("users", [["user_id", "id"]], join_type="inner")])])
         async with shop(dialect) as engine:
             with pytest.raises(SlayerError) as info:
@@ -256,21 +256,21 @@ class TestModes:
     async def test_rootless_query_reads_the_restriction(self, dialect) -> None:
         async with shop(dialect) as engine:
             rootless = await engine.execute(q(extensions=[_vip()], dimensions=["customers.name"]))
-            rooted = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["name"]))
+            rooted = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["customers.name"]))
         assert rootless.population == "customers"
         assert sorted(r[rootless.columns[0]] for r in rootless.data) == sorted(
             r["customers.name"] for r in rooted.data) == sorted(VIP_CUSTOMERS)
 
     async def test_raw_row_mode_applies_the_restriction(self, dialect) -> None:
         async with shop(dialect) as engine:
-            resp = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["name"],
+            resp = await engine.execute(q(population="customers", extensions=[_vip()], dimensions=["customers.name"],
                                           distinct_dimension_values=False))
         assert sorted(r["customers.name"] for r in resp.data) == sorted(VIP_CUSTOMERS)
 
     async def test_declared_inner_on_the_stored_edge_keeps_left_traversal(self, dialect) -> None:
         query = q(population="orders", dimensions=["customers.tier"],
                   extensions=[ext("orders", relationships=[join("customers", CUSTOMER_PAIRS, join_type="inner")])],
-                  metrics=[{"metric": "count(*)", "alias": "n"}])
+                  metrics=[{"metric": "count(orders.*)", "alias": "n"}])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
             dry = await engine.execute(query, dry_run=True)

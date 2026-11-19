@@ -55,7 +55,7 @@ class TestUnionGrainBroadcast:
         union-grain rows (diffs -70/0/-25/0/0 → 5/1/4/1/1)."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", {"field": UNION_WM_DIM, "alias": "ur"}],
+            dimensions=["orders.region", {"field": UNION_WM_DIM, "alias": "ur"}],
             time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
@@ -81,7 +81,7 @@ class TestUnionGrainBroadcast:
         the city total per city (diffs 0/-10/0/-25/0 → 1/4/1/5/1)."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": UNION_RK_DIM, "alias": "ur"}],
+            dimensions=["orders.region", "orders.city", {"field": UNION_RK_DIM, "alias": "ur"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         resp = await engine.execute(query)
@@ -106,7 +106,7 @@ class TestUnionGrainBroadcast:
         as windowed measures (today: the residual union-grain guard instead)."""
         _, engine = exec_backend
         query = q(
-            dimensions=["region", {"field": UNION_WM_DIM, "alias": "ur"}],
+            dimensions=["orders.region", {"field": UNION_WM_DIM, "alias": "ur"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         with pytest.raises(ValueError, match="could not resolve its time dimension"):

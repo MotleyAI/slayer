@@ -289,8 +289,8 @@ class TestRest:
             assert resp.status_code == 400, resp.text
             return resp.json()["detail"]
 
-        twin = detail("custom_agg(amount, (bogus=1))")
-        message = detail("custom_agg(amount, bogus=1)")
+        twin = detail("custom_agg(orders.amount, (orders.bogus=1))")
+        message = detail("custom_agg(orders.amount, bogus=1)")
         assert "got 'bogus'" not in message
         assert "==" not in message
         assert ("bogus" in message) == ("bogus" in twin)

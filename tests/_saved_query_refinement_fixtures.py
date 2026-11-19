@@ -27,7 +27,7 @@ ORDERS_ROWS = [
     (5, "c2", "US", "paid", 50.0, "2025-03-09"),
 ]
 
-REVENUE = {"metric": "sum(amount)", "alias": "revenue"}
+REVENUE = {"metric": "sum(orders.amount)", "alias": "revenue"}
 MONTH_TD = {"field": "ordered_at", "granularity": "month"}
 Q1_RANGE = ["2025-01-01", "2025-02-28"]
 

@@ -19,7 +19,7 @@ from slayer.core.enums import TimeGranularity
 
 from tests._dev1740_fixtures import make_exec_engine, month_key
 
-BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -40,7 +40,7 @@ class TestMultiOutputProducerValues:
         band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
                 "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
-            dimensions=["region", {"field": band, "alias": "band"}],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = {(r["orders.region"], int(r["band"])): float(r["s"])
@@ -52,7 +52,7 @@ class TestMultiOutputProducerValues:
     async def test_two_dimensions_sharing_one_producer(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": BAND, "alias": "band_hi"},
                 {"field": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "alias": "band_n"},
@@ -72,7 +72,7 @@ class TestMultiOutputProducerValues:
 class TestNotFilterOnComputedDim:
     async def test_not_band_keeps_only_band_zero_groups(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
             filter=["not (band == 1)"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
@@ -94,7 +94,7 @@ class TestDateRangeReachesProducer:
             date_range=["2024-01-01", "2024-01-31"],
         )]
         resp = await exec_engine.execute(_q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
             time_dimensions=jan,
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
@@ -109,7 +109,7 @@ class TestDateRangeReachesProducer:
 class TestOrderByComputedDimDescending:
     async def test_order_by_band_desc(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{"field": "band", "direction": "desc"}],
         ))

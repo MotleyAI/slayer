@@ -53,7 +53,7 @@ class TestFilterRoutingIntoAssociation:
         association before the per-cell distinct-entity aggregation."""
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
-            dimensions=["status"], metrics=[CM], filter=["channel = 'app'"]))
+            dimensions=["orders.status"], metrics=[CM], filter=["orders.channel = 'app'"]))
         by = status_key(resp)
         for status, spend in ASSOC_APP_SPEND_BY_STATUS.items():
             assert float(by[(status,)]["cm"]) == pytest.approx(spend)
@@ -65,7 +65,7 @@ class TestFilterRoutingIntoAssociation:
         conjunct restricts the association's membership by semi-join."""
         _, engine = exec_backend_weak
         resp = await engine.execute(assoc_q(
-            dimensions=["status"], metrics=[CM],
+            dimensions=["orders.status"], metrics=[CM],
             filter=["customers.plans.level = 'basic'"]))
         by = status_key(resp)
         for status, spend in ASSOC_BASIC_SPEND_BY_STATUS.items():
@@ -80,7 +80,7 @@ class TestFilterRoutingIntoAssociation:
         ``plans.level != 'pro'``; a NULL-insensitive bug would add its 30 (270)."""
         _, engine = exec_backend_weak
         resp = await engine.execute(assoc_q(
-            dimensions=["status"], metrics=[CM],
+            dimensions=["orders.status"], metrics=[CM],
             filter=["customers.plans.level != 'pro'"]))
         by = status_key(resp)
         assert float(by[("ok",)]["cm"]) == pytest.approx(240.0)
@@ -94,8 +94,8 @@ class TestFilterRoutingIntoAssociation:
         new 250), reported through the informational entry, no dropped warning."""
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
-            dimensions=["status"], metrics=[CM],
-            filter=["customers.tier = 'gold' OR channel = 'app'"]))
+            dimensions=["orders.status"], metrics=[CM],
+            filter=["customers.tier = 'gold' OR orders.channel = 'app'"]))
         by = status_key(resp)
         for status, spend in {"ok": 270.0, "new": 250.0}.items():
             assert float(by[(status,)]["cm"]) == pytest.approx(spend), status

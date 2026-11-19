@@ -20,28 +20,28 @@ ALLOWED_DELTAS: dict[str, str] = {}
 def _cases() -> dict:
     return {
         "reagg/avg_by_region": {
-            "kw": {"dimensions": ["region"],
+            "kw": {"dimensions": ["sales.region"],
                    "metrics": [{"metric": f"avg({INNER_CR})", "alias": "acr"}]}},
         "reagg/count_by_region": {
-            "kw": {"dimensions": ["region"],
+            "kw": {"dimensions": ["sales.region"],
                    "metrics": [{"metric": f"count({INNER_CR})", "alias": "nc"}]}},
         "reagg/degenerate": {
-            "kw": {"dimensions": ["region"],
-                   "metrics": [{"metric": "avg(sum(amount))", "alias": "d"}]}},
+            "kw": {"dimensions": ["sales.region"],
+                   "metrics": [{"metric": "avg(sum(sales.amount))", "alias": "d"}]}},
         "reagg/broadcast_city": {
-            "kw": {"dimensions": ["region"], "to_many_handling": "broadcast",
-                   "metrics": [{"metric": "avg(sum(amount, partition_by=city))",
+            "kw": {"dimensions": ["sales.region"], "to_many_handling": "broadcast",
+                   "metrics": [{"metric": "avg(sum(sales.amount, partition_by=sales.city))",
                                  "alias": "acc"}]}},
         "reagg/associate_city": {
-            "kw": {"dimensions": ["region"], "to_many_handling": "associate",
-                   "metrics": [{"metric": "avg(sum(amount, partition_by=city))",
+            "kw": {"dimensions": ["sales.region"], "to_many_handling": "associate",
+                   "metrics": [{"metric": "avg(sum(sales.amount, partition_by=sales.city))",
                                  "alias": "acc"}]}},
         "reagg/explicit_grain": {
-            "kw": {"dimensions": ["region", "product"],
+            "kw": {"dimensions": ["sales.region", "sales.product"],
                    "metrics": [{"metric": f"avg({INNER_CR}, partition_by=region)",
                                  "alias": "acr"}]}},
         "reagg/depth3": {
-            "kw": {"dimensions": ["product"],
+            "kw": {"dimensions": ["sales.product"],
                    "metrics": [{"metric":
                                  f"max(avg({INNER_CRP}, partition_by=[region, product]))",
                                  "alias": "d3"}]}},

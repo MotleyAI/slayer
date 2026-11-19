@@ -252,7 +252,7 @@ SHAPES: dict[str, Any] = {
         {"population": "per_customer", "metrics": [{"metric": "max(amount_sum)", "alias": "top"}]},
     ],
     "query_backed": _q({"population": "spend", "metrics": [{"metric": "sum(amount_sum)", "alias": "total"}]}),
-    "sql_mode": _q({"population": "order_totals", "dimensions": ["orders.customer_id"], "metrics": ["sum(total)"]}),
+    "sql_mode": _q({"population": "order_totals", "dimensions": ["order_totals.customer_id"], "metrics": ["sum(total)"]}),
     "semi_join": _q({"population": "customers", "dimensions": ["name"], "filter": ["orders.amount > 15"],
                      "metrics": [{"metric": "count(*)", "alias": "n"}]}),
     "list_unnest": _q({"population": "orders", "dimensions": ["tags.value"],

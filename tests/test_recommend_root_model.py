@@ -31,7 +31,7 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.errors import AmbiguousDatasetError, EntityResolutionError
+from slayer.core.errors import AmbiguousDatasetError, EntityResolutionError, UnknownMetricError
 from slayer.core.models import (
     Aggregation,
     DatasetField,
@@ -182,7 +182,7 @@ class TestResolutionValidation:
     async def test_measure_leaf_accepted(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_population(["orders.aov"], data_source="mydb")
         assert rec.population == "orders"
-        assert _paths(rec) == {"orders.aov": "aov"}
+        assert _paths(rec) == {"orders.aov": "orders.aov"}
 
     async def test_unresolvable_item_raises(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(EntityResolutionError):
@@ -225,7 +225,7 @@ class TestRootSelection:
             ["orders.status", "orders.revenue"], data_source="mydb"
         )
         assert rec.population == "orders"
-        assert _paths(rec) == {"orders.status": "status", "orders.revenue": "revenue"}
+        assert _paths(rec) == {"orders.status": "orders.status", "orders.revenue": "orders.revenue"}
 
     async def test_fan_out_picks_bridge_that_determines_both(self, engine: SlayerQueryEngine) -> None:
         # Determination is to-one. Neither customers nor products
@@ -244,15 +244,15 @@ class TestRootSelection:
         # than orders, and is itself mentioned.
         rec = await engine.recommend_population(["customers.name", "regions.name"])
         assert rec.population == "customers"
-        assert _paths(rec) == {"customers.name": "name", "regions.name": "regions.name"}
+        assert _paths(rec) == {"customers.name": "customers.name", "regions.name": "regions.name"}
 
     async def test_multi_hop_diamond_path_lexicographic(self, engine: SlayerQueryEngine) -> None:
         # regions reachable via customers (lex) and warehouses; customers wins.
         rec = await engine.recommend_population(["orders.status", "regions.population"])
         assert rec.population == "orders"
         assert _paths(rec) == {
-            "orders.status": "status",
-            "regions.population": "customers.regions.population",
+            "orders.status": "orders.status",
+            "regions.population": "orders.customers.regions.population",
         }
 
     async def test_shared_child_is_sole_determiner(self, engine: SlayerQueryEngine) -> None:
@@ -269,7 +269,7 @@ class TestRootSelection:
         # → lexicographically smallest name wins: "order_items" < "orders".
         rec = await engine.recommend_population(["orders.status", "order_items.sku"])
         assert rec.population == "order_items"
-        assert _paths(rec) == {"orders.status": "orders.status", "order_items.sku": "sku"}
+        assert _paths(rec) == {"orders.status": "orders.status", "order_items.sku": "order_items.sku"}
 
 
 # --------------------------------------------------------------------------
@@ -279,7 +279,7 @@ class TestAggSuffix:
     async def test_simple_suffix_local(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_population(["sum(orders.revenue)"], data_source="mydb")
         assert rec.population == "orders"
-        assert _paths(rec) == {"sum(orders.revenue)": "sum(revenue)"}
+        assert _paths(rec) == {"sum(orders.revenue)": "sum(orders.revenue)"}
 
     async def test_suffix_cross_model(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_population(["sum(products.price)", "orders.status"])
@@ -288,10 +288,10 @@ class TestAggSuffix:
 
     async def test_kwarg_suffix_local(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_population(
-            ["weighted_avg(orders.amount, weight=qty)"], data_source="mydb"
+            ["weighted_avg(orders.amount, weight=orders.qty)"], data_source="mydb"
         )
         assert _paths(rec) == {
-            "weighted_avg(orders.amount, weight=qty)": "weighted_avg(amount, weight=qty)"
+            "weighted_avg(orders.amount, weight=orders.qty)": "weighted_avg(orders.amount, weight=orders.qty)"
         }
 
     async def test_kwarg_suffix_cross_model_preserved_verbatim(self, engine: SlayerQueryEngine) -> None:
@@ -318,26 +318,22 @@ class TestAggSuffix:
             ["orders.status", "sum(regions.population)"]
         )
         assert rec.population == "orders"
-        assert _paths(rec)["sum(regions.population)"] == "sum(customers.regions.population)"
+        assert _paths(rec)["sum(regions.population)"] == "sum(orders.customers.regions.population)"
 
     @pytest.mark.parametrize(
-        ("item", "expected"),
-        [
-            ("sum(orders.amount)", "sum(amount)"),
-            ("percentile(orders.amount, p=0.9)", "percentile(amount, p=0.9)"),
-            ("last(orders.amount, ordered_at)", "last(amount, ordered_at)"),
-            ("weighted_avg(orders.amount, weight=qty)", "weighted_avg(amount, weight=qty)"),
-        ],
+        "item",
+        ["sum(orders.amount)", "percentile(orders.amount, p=0.9)", "last(orders.amount, orders.ordered_at)",
+         "weighted_avg(orders.amount, weight=orders.qty)"],
     )
-    async def test_local_paths_are_functional(self, engine: SlayerQueryEngine, item: str, expected: str) -> None:
+    async def test_local_paths_are_written_as_given(self, engine: SlayerQueryEngine, item: str) -> None:
         rec = await engine.recommend_population([item], data_source="mydb")
         assert rec.population == "orders"
-        assert _paths(rec) == {item: expected}
+        assert _paths(rec) == {item: item}
 
     async def test_cross_model_path_is_functional(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_population(["orders.status", "sum(regions.population)"])
         assert rec.population == "orders"
-        assert _paths(rec)["sum(regions.population)"] == "sum(customers.regions.population)"
+        assert _paths(rec)["sum(regions.population)"] == "sum(orders.customers.regions.population)"
 
 
 # --------------------------------------------------------------------------
@@ -358,7 +354,7 @@ class TestInnerJoins:
             ["orders.status", "order_items.sku", "products.category"]
         )
         assert rec.population == "order_items"
-        assert _paths(rec)["order_items.sku"] == "sku"
+        assert _paths(rec)["order_items.sku"] == "order_items.sku"
         assert _paths(rec)["orders.status"] == "orders.status"
 
     async def test_inner_path_resolvable_by_engine_walker(self, engine: SlayerQueryEngine) -> None:
@@ -462,7 +458,7 @@ class TestUnrelatedAttachments:
         assert rec.population == "customers"
         assert rec.reachable is True
         flags = {ip.input_item: (ip.path, ip.unrelated) for ip in rec.item_paths}
-        assert flags == {"customers.name": ("name", False), "count(logs.id)": ("count(logs.id)", True)}
+        assert flags == {"customers.name": ("customers.name", False), "count(logs.id)": ("count(logs.id)", True)}
         resp = await engine.execute(
             SlayerQuery.model_validate({"population": "customers", "metrics": [flags["count(logs.id)"][0]]}),
             dry_run=True,
@@ -520,7 +516,7 @@ class TestDataSourceAndDedup:
             await eng.aclose()
 
     async def test_already_datasource_qualified_item_passthrough(self, collision_storage) -> None:
-        # Item already starting with a known datasource is NOT double-prefixed.
+        # Item already starting with a known datasource is NOT double-prefixed; its path drops the datasource.
         eng = SlayerQueryEngine(storage=collision_storage)
         try:
             rec = await eng.recommend_population(
@@ -528,7 +524,7 @@ class TestDataSourceAndDedup:
             )
             assert rec.data_source == "mydb"
             assert rec.population == "orders"
-            assert _paths(rec) == {"mydb.orders.status": "status"}
+            assert _paths(rec) == {"mydb.orders.status": "orders.status"}
         finally:
             await eng.aclose()
 
@@ -564,7 +560,7 @@ class TestDataSourceAndDedup:
                 rec = await eng.recommend_population(["shared.status"], data_source="mydb")
                 assert rec.data_source == "mydb"
                 assert rec.population == "shared"
-                assert _paths(rec) == {"shared.status": "status"}
+                assert _paths(rec) == {"shared.status": "shared.status"}
             finally:
                 await eng.aclose()
 
@@ -585,26 +581,20 @@ class TestDataSourceAndDedup:
             ))
             eng = SlayerQueryEngine(storage=s)
             try:
-                rec = await eng.recommend_population(["revenue"], data_source="d")
-                assert rec.population == "sales"
-                assert _paths(rec) == {"revenue": "revenue"}
+                with pytest.raises(UnknownMetricError) as ei:
+                    await eng.recommend_population(["revenue"], data_source="d")
+                assert "sales.revenue" in str(ei.value) and "calc.revenue" not in str(ei.value)
             finally:
                 await eng.aclose()
 
     async def test_bare_item_scoped_to_requested_datasource(self, collision_storage) -> None:
-        # 'status' is a column on 'orders' in BOTH mydb and otherdb. A bare
-        # item with data_source must resolve WITHIN that datasource, not via
-        # the global priority list (which could pick the other one and then
-        # spuriously reject the scoped request).
+        # 'status' is a column on 'orders' in BOTH mydb and otherdb. A bare item is refused, suggesting the
+        # qualified spelling found WITHIN the requested datasource.
         eng = SlayerQueryEngine(storage=collision_storage)
         try:
-            rec_my = await eng.recommend_population(["status"], data_source="mydb")
-            rec_other = await eng.recommend_population(["status"], data_source="otherdb")
-            assert rec_my.data_source == "mydb"
-            assert rec_my.population == "orders"
-            assert rec_other.data_source == "otherdb"
-            assert rec_other.population == "orders"
-            assert _paths(rec_my) == {"status": "status"}
+            for ds in ("mydb", "otherdb"):
+                with pytest.raises(UnknownMetricError, match="orders.status"):
+                    await eng.recommend_population(["status"], data_source=ds)
         finally:
             await eng.aclose()
 
@@ -616,10 +606,10 @@ class TestDataSourceAndDedup:
 
     async def test_distinct_strings_same_entity_kept_separate(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_population(
-            ["orders.revenue", "revenue"], data_source="mydb"
+            ["orders.revenue", "mydb.orders.revenue"], data_source="mydb"
         )
         assert len(rec.item_paths) == 2
-        assert all(ip.path == "revenue" for ip in rec.item_paths)
+        assert all(ip.path == "orders.revenue" for ip in rec.item_paths)
 
 
 # --------------------------------------------------------------------------
@@ -631,7 +621,7 @@ class TestSyncWrapper:
         rec = eng.recommend_population_sync(["regions.name"])
         assert isinstance(rec, PopulationRecommendation)
         assert rec.population == "regions"
-        assert _paths(rec) == {"regions.name": "name"}
+        assert _paths(rec) == {"regions.name": "regions.name"}
 
 
 class TestDistinctOwningModelHopSum:
@@ -688,7 +678,7 @@ class TestRootHint:
         assert "root_hint" in rec.message
         assert _paths(rec) == {
             "customers.name": "customers.name",
-            "regions.name": "customers.regions.name",
+            "regions.name": "orders.customers.regions.name",
         }
 
     async def test_feasible_hint_equal_to_autopick_honored(self, engine: SlayerQueryEngine) -> None:
@@ -697,7 +687,7 @@ class TestRootHint:
         )
         assert rec.population == "customers"
         assert rec.warnings == []
-        assert _paths(rec) == {"customers.name": "name", "regions.name": "regions.name"}
+        assert _paths(rec) == {"customers.name": "customers.name", "regions.name": "regions.name"}
 
     async def test_bare_and_ds_qualified_hint_equivalent(self, engine: SlayerQueryEngine) -> None:
         bare = await engine.recommend_population(

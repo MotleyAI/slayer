@@ -13,8 +13,8 @@ from tests._time_points_fixtures import (
 )
 
 D = datetime
-PLAIN = {"metric": "sum(amount)", "alias": "s"}
-WINDOW = {"metric": "sum(amount, window='90d')", "alias": "w"}
+PLAIN = {"metric": "sum(ev.amount)", "alias": "s"}
+WINDOW = {"metric": "sum(ev.amount, window='90d')", "alias": "w"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -49,7 +49,7 @@ class TestSnappingAtMonth:
 
     async def test_snapped_filter_bound_keeps_residual_condition(self, engine) -> None:
         got = await monthly(
-            engine, metrics=[PLAIN], filters=["ts >= '2025-01-15' and amount >= 7"], whole_periods_only=True,
+            engine, metrics=[PLAIN], filters=["ev.ts >= '2025-01-15' and ev.amount >= 7"], whole_periods_only=True,
         )
         assert min(got) == "2025-01"
         assert got["2025-01"]["s"] == pytest.approx(24.0)  # ids 7, 8, 9
@@ -59,9 +59,9 @@ class TestSnappingAtMonth:
         assert residual["2025-01"]["s"] == pytest.approx(17.0)  # ids 8, 9
 
     @pytest.mark.parametrize("filt", [
-        "ts >= '2025-01-15' or amount < 0",
-        "not (ts < '2025-01-15')",
-        "shipped_at >= '2025-01-15'",
+        "ev.ts >= '2025-01-15' or ev.amount < 0",
+        "not (ev.ts < '2025-01-15')",
+        "ev.shipped_at >= '2025-01-15'",
     ], ids=["under-or", "under-not", "other-column"])
     async def test_non_frame_bounds_are_untouched(self, engine, filt) -> None:
         got = await monthly(engine, metrics=[PLAIN], filters=[filt], whole_periods_only=True)
@@ -131,7 +131,7 @@ class TestTwoGranularities:
 
 class TestStageTimeDimension:
     async def test_stage_column_snaps(self, engine) -> None:
-        got = await monthly(engine, metrics=[{"metric": "sum(rev)", "alias": "r"}], dataset="daily",
+        got = await monthly(engine, metrics=[{"metric": "sum(daily.rev)", "alias": "r"}], dataset="daily",
                             date_range=["2025-01-15", None], whole_periods_only=True)
         assert min(got) == "2025-01"
         assert max(got) == "2026-08"

@@ -27,7 +27,7 @@ from tests._dev1832_fixtures import (
 
 SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
 REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
-SERIES = "time_shift(cumsum(sum(amount)), -1)"
+SERIES = "time_shift(cumsum(sum(monthly.amount)), -1)"
 
 
 def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
@@ -39,7 +39,7 @@ def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
 
 def _plan(*formulas: str) -> PlannedQuery:
     return plan_query(query=monthly_q(
-        dimensions=["region"], time_dimensions=month_td(),
+        dimensions=["monthly.region"], time_dimensions=month_td(),
         metrics=[QueryMetric(metric=f, alias=f"t{i}") for i, f in enumerate(formulas)]),
         bundle=_bundle())
 

@@ -18,7 +18,7 @@ from slayer.core.query import QueryMetric, SlayerQuery
 from tests._dev1739_fixtures import cm_cte_bodies, gen, month_td
 
 # A computed dimension over a city-partitioned aggregate → legitimate ROW attach.
-BAND_CITY = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND_CITY = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
@@ -35,7 +35,7 @@ class TestDeferredMeasureShapesStillRaise:
         # windowed producer at the (partition ∪ active-TD) grain (D5); executed
         # values in test_dev1824_partitioned_execution.py::TestWindowPlusPartition.
         q = _q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="sum(orders.amount, window='90d', partition_by=orders.region)",
             )],
@@ -48,7 +48,7 @@ class TestDeferredMeasureShapesStillRaise:
         # producer computes the ranked pick at the partition grain and attaches.
         # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric=f"{agg}(amount, partition_by=region)")],
         )
         assert "__regroup__" not in await gen(q)
@@ -59,7 +59,7 @@ class TestDeferredMeasureShapesStillRaise:
         # runs at the query grain over the attached value; it no longer raises.
         # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="cumsum(sum(orders.amount, partition_by=orders.region))",
             )],
@@ -71,8 +71,8 @@ class TestDeferredMeasureShapesStillRaise:
         # combined producer + outer WHERE (executed values in
         # tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned).
         q = _q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         assert "__regroup__" not in await gen(q)
@@ -85,9 +85,9 @@ class TestSharedAggregateRowPlusCombined:
     producers (D10 — cross-phase dedup is Stage 2)."""
 
     async def test_same_key_as_dimension_and_measure(self) -> None:
-        band = "CASE WHEN sum(amount, partition_by=region) > 5000 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 5000 THEN 1 ELSE 0 END"
         q = _q(
-            dimensions=["region", {"field": band, "alias": "band"}],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(
                 metric="sum(orders.amount, partition_by=orders.region)", alias="region_total",
             )],
@@ -105,7 +105,7 @@ class TestGrainGuardsPreserved:
         # A measure's partition_by must be a query dimension; the generalized
         # discovery must NOT relax this to the computed-dimension leniency.
         q = _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.city)")],
         )
         with pytest.raises(
@@ -118,7 +118,7 @@ class TestGrainGuardsPreserved:
         # An explicit partition key must be attributable from the
         # aggregate's root — `region` is a host column, unreachable from customers.
         q = _q(
-            dimensions=["region", "customers.tier"],
+            dimensions=["orders.region", "customers.tier"],
             metrics=[QueryMetric(
                 metric="sum(customers.spend, partition_by=orders.region)",
             )],
@@ -141,8 +141,8 @@ class TestGuardOrderingWithActiveRegroup:
         # (combined producer, partition_by=region, outer WHERE); both render with
         # no placeholder leak.
         q = _q(
-            dimensions=["region", {"field": BAND_CITY, "alias": "band"}],
-            filter=["sum(amount, partition_by=region) > 50"],
+            dimensions=["orders.region", {"field": BAND_CITY, "alias": "band"}],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         assert "__regroup__" not in await gen(q)
@@ -151,7 +151,7 @@ class TestGuardOrderingWithActiveRegroup:
         # The reverse direction: a final-only filter over the computed dimension
         # is legitimate and must NOT be rejected by the reordered guard.
         q = _q(
-            dimensions=["region", {"field": BAND_CITY, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND_CITY, "alias": "band"}],
             filter=["band == 1"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )

@@ -43,9 +43,9 @@ def _m(metric, alias):
 async def test_rolling_count_min_max(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("count(amount, window='90d')", "c"),
-        _m("min(amount, window='90d')", "mn"),
-        _m("max(amount, window='90d')", "mx"),
+        _m("count(orders.amount, window='90d')", "c"),
+        _m("min(orders.amount, window='90d')", "mn"),
+        _m("max(orders.amount, window='90d')", "mx"),
     ]))
     assert {k: int(v) for k, v in F.by_month(resp, "c").items()} == F.COUNT_90D
     assert F.by_month(resp, "mn") == _approx(F.MIN_90D)
@@ -55,7 +55,7 @@ async def test_rolling_count_min_max(exec_backend: tuple[str, SlayerQueryEngine]
 async def test_rolling_count_distinct(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("count_distinct(amount, window='90d')", "cd"),
+        _m("count_distinct(orders.amount, window='90d')", "cd"),
     ]))
     assert {k: int(v) for k, v in F.by_month(resp, "cd").items()} == F.COUNT_DISTINCT_90D
 
@@ -63,8 +63,8 @@ async def test_rolling_count_distinct(exec_backend: tuple[str, SlayerQueryEngine
 async def test_rolling_avg_and_median(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("avg(amount, window='90d')", "a"),
-        _m("median(amount, window='90d')", "md"),
+        _m("avg(orders.amount, window='90d')", "a"),
+        _m("median(orders.amount, window='90d')", "md"),
     ]))
     assert F.by_month(resp, "a") == _approx(F.AVG_90D)
     assert F.by_month(resp, "md") == _approx(F.MEDIAN_90D)
@@ -73,11 +73,11 @@ async def test_rolling_avg_and_median(exec_backend: tuple[str, SlayerQueryEngine
 async def test_statistics_family(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("stddev_samp(amount, window='90d')", "sd"),
-        _m("var_pop(amount, window='90d')", "vp"),
-        _m("corr(amount, other=qty, window='90d')", "co"),
-        _m("covar_samp(amount, other=qty, window='90d')", "cv"),
-        _m("weighted_avg(amount, weight=qty, window='90d')", "wa"),
+        _m("stddev_samp(orders.amount, window='90d')", "sd"),
+        _m("var_pop(orders.amount, window='90d')", "vp"),
+        _m("corr(orders.amount, other=orders.qty, window='90d')", "co"),
+        _m("covar_samp(orders.amount, other=orders.qty, window='90d')", "cv"),
+        _m("weighted_avg(orders.amount, weight=orders.qty, window='90d')", "wa"),
     ]))
     assert F.by_month(resp, "sd") == _approx(F.STDDEV_SAMP_90D)
     assert F.by_month(resp, "vp") == _approx(F.VAR_POP_90D)
@@ -89,7 +89,7 @@ async def test_statistics_family(exec_backend: tuple[str, SlayerQueryEngine]) ->
 async def test_percentile_equals_median(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("percentile(amount, p=0.5, window='90d')", "p"),
+        _m("percentile(orders.amount, p=0.5, window='90d')", "p"),
     ]))
     assert F.by_month(resp, "p") == _approx(F.MEDIAN_90D)
 
@@ -98,7 +98,7 @@ async def test_percentile_literal_p_rule_survives_window(exec_backend: tuple[str
     # A window loosens no parameter rule: percentile's p must still be a literal.
     _, engine = exec_backend
     query = F.q(time_dimensions=F.month_td(),
-                metrics=[_m("percentile(amount, p=qty, window='90d')", "p")])
+                metrics=[_m("percentile(orders.amount, p=orders.qty, window='90d')", "p")])
     with pytest.raises(ValueError, match="must be a numeric literal"):
         await engine.execute(query)
 
@@ -106,7 +106,7 @@ async def test_percentile_literal_p_rule_survives_window(exec_backend: tuple[str
 async def test_attached_aggregate_as_windowed_weight(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("weighted_avg(amount, weight=sum(qty, partition_by=region), window='90d')", "wa"),
+        _m("weighted_avg(orders.amount, weight=sum(orders.qty, partition_by=orders.region), window='90d')", "wa"),
     ]))
     assert F.by_month(resp, "wa") == _approx(F.WEIGHTED_AVG_ATTACHED_90D)
 
@@ -117,8 +117,8 @@ async def test_attached_aggregate_as_windowed_weight(exec_backend: tuple[str, Sl
 async def test_custom_trimmed_mean_with_and_without_overrides(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("trimmed_mean(amount, lo=150, hi=350, window='90d')", "tm"),
-        _m("trimmed_mean(amount, window='90d')", "td"),  # defaults 0..1000 → rolling avg
+        _m("trimmed_mean(orders.amount, lo=150, hi=350, window='90d')", "tm"),
+        _m("trimmed_mean(orders.amount, window='90d')", "td"),  # defaults 0..1000 → rolling avg
     ]))
     assert F.by_month(resp, "tm") == _approx(F.TRIMMED_MEAN_150_350_90D)
     assert F.by_month(resp, "td") == _approx(F.TRIMMED_MEAN_DEFAULT_90D)
@@ -139,8 +139,8 @@ async def test_custom_on_joined_target_default_column(exec_backend: tuple[str, S
 async def test_windowed_first_last_default_axis(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("first(amount, window='90d')", "f"),
-        _m("last(amount, window='90d')", "l"),
+        _m("first(orders.amount, window='90d')", "f"),
+        _m("last(orders.amount, window='90d')", "l"),
     ]))
     assert F.by_month(resp, "f") == _approx(F.FIRST_90D)
     assert F.by_month(resp, "l") == _approx(F.LAST_90D)
@@ -149,7 +149,7 @@ async def test_windowed_first_last_default_axis(exec_backend: tuple[str, SlayerQ
 async def test_windowed_last_explicit_updated_at(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("last(amount, updated_at, window='90d')", "l"),
+        _m("last(orders.amount, orders.updated_at, window='90d')", "l"),
     ]))
     assert F.by_month(resp, "l") == _approx(F.LAST_UPDATED_90D)
 
@@ -157,7 +157,7 @@ async def test_windowed_last_explicit_updated_at(exec_backend: tuple[str, Slayer
 async def test_windowed_first_updated_at_february_skips_null_key(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("first(amount, updated_at, window='90d')", "f"),
+        _m("first(orders.amount, orders.updated_at, window='90d')", "f"),
     ]))
     got = F.by_month(resp, "f")
     assert got["2024-01"] == pytest.approx(F.FIRST_UPDATED_JAN)
@@ -167,8 +167,8 @@ async def test_windowed_first_updated_at_february_skips_null_key(exec_backend: t
 async def test_windowed_last_all_null_key_cell(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(
-        dimensions=["region"], time_dimensions=F.month_td(),
-        metrics=[_m("last(amount, updated_at, window='90d')", "l")],
+        dimensions=["orders.region"], time_dimensions=F.month_td(),
+        metrics=[_m("last(orders.amount, orders.updated_at, window='90d')", "l")],
     ))
     cell = {(r["orders.region"], F.month_key(r["orders.created_at"])): r["l"]
             for r in resp.data}
@@ -182,10 +182,10 @@ async def test_windowed_last_all_null_key_cell(exec_backend: tuple[str, SlayerQu
 async def test_empty_interval_one_day(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("count(amount, window='1d')", "c"),
-        _m("count(*, window='1d')", "sc"),
-        _m("sum(amount, window='1d')", "s"),
-        _m("last(amount, window='1d')", "l"),
+        _m("count(orders.amount, window='1d')", "c"),
+        _m("count(orders.*, window='1d')", "sc"),
+        _m("sum(orders.amount, window='1d')", "s"),
+        _m("last(orders.amount, window='1d')", "l"),
     ]))
     assert set(F.by_month(resp, "c")) == set(F.EMPTY_MONTHS)  # every bucket present
     assert all(int(v) == 0 for v in F.by_month(resp, "c").values())
@@ -197,8 +197,8 @@ async def test_empty_interval_one_day(exec_backend: tuple[str, SlayerQueryEngine
 async def test_partitioned_count_by_region(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     resp = await engine.execute(F.q(
-        dimensions=["region"], time_dimensions=F.month_td(),
-        metrics=[_m("count(amount, window='90d', partition_by=region)", "pc")],
+        dimensions=["orders.region"], time_dimensions=F.month_td(),
+        metrics=[_m("count(orders.amount, window='90d', partition_by=orders.region)", "pc")],
     ))
     got = {(r["orders.region"], F.month_key(r["orders.created_at"])): int(r["pc"])
            for r in resp.data}
@@ -222,8 +222,8 @@ async def test_filter_only_windowed_count(exec_backend: tuple[str, SlayerQueryEn
     _, engine = exec_backend
     resp = await engine.execute(F.q(
         time_dimensions=F.month_td(),
-        metrics=[_m("sum(amount)", "s")],
-        filter=["count(amount, window='90d') >= 3"],
+        metrics=[_m("sum(orders.amount)", "s")],
+        filter=["count(orders.amount, window='90d') >= 3"],
     ))
     assert set(F.by_month(resp, "s")) == set(F.FILTER_COUNT_GE3_MONTHS)
 
@@ -232,9 +232,9 @@ async def test_order_only_windowed_max(exec_backend: tuple[str, SlayerQueryEngin
     _, engine = exec_backend
     resp = await engine.execute(F.q(
         time_dimensions=F.month_td(),
-        metrics=[_m("sum(amount)", "s")],
+        metrics=[_m("sum(orders.amount)", "s")],
         order=[OrderItem.model_validate(
-            {"field": "max(amount, window='90d')", "direction": "desc"})],
+            {"field": "max(orders.amount, window='90d')", "direction": "desc"})],
     ))
     order = [F.month_key(r["orders.created_at"]) for r in resp.data]
     assert order == F.ORDER_MAX_DESC_MONTHS
@@ -245,9 +245,9 @@ async def test_order_only_windowed_max(exec_backend: tuple[str, SlayerQueryEngin
 async def test_cardinality_neutrality(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     base = await engine.execute(F.q(time_dimensions=F.month_td(),
-                                    metrics=[_m("sum(amount)", "s")]))
+                                    metrics=[_m("sum(orders.amount)", "s")]))
     withw = await engine.execute(F.q(time_dimensions=F.month_td(), metrics=[
-        _m("sum(amount)", "s"), _m("count(amount, window='90d')", "w"),
+        _m("sum(orders.amount)", "s"), _m("count(orders.amount, window='90d')", "w"),
     ]))
     assert len(base.data) == len(withw.data)
     assert F.by_month(base, "s") == F.by_month(withw, "s")
@@ -325,7 +325,7 @@ async def test_windowed_corr_other_across_fanning_hop_fails_closed(exec_backend:
     _, engine = exec_backend
     query = SlayerQuery(
         population="customers", time_dimensions=F.month_td("signup_at"),
-        metrics=[_m("corr(spend, other=orders.amount, window='1y')", "m")],
+        metrics=[_m("corr(customers.spend, other=orders.amount, window='1y')", "m")],
     )
     with pytest.raises(ValueError, match="unproven relationship hop"):
         await engine.execute(query)
@@ -335,7 +335,7 @@ async def test_windowed_last_ranking_across_fanning_hop_fails_closed(exec_backen
     _, engine = exec_backend
     query = SlayerQuery(
         population="customers", time_dimensions=F.month_td("signup_at"),
-        metrics=[_m("last(spend, orders.created_at, window='1y')", "m")],
+        metrics=[_m("last(customers.spend, orders.created_at, window='1y')", "m")],
     )
     with pytest.raises(ValueError, match="unproven relationship hop"):
         await engine.execute(query)
@@ -345,7 +345,7 @@ async def test_windowed_star_non_count_fails_closed():
     # `*` is legal only with count, windowed or not — a non-count star must raise,
     # never silently render <agg>(1) over the interval rows.
     query = F.q(time_dimensions=F.month_td(),
-                metrics=[_m("sum(*, window='90d')", "w")])
+                metrics=[_m("sum(orders.*, window='90d')", "w")])
     with pytest.raises(ValueError, match="not allowed with metric"):
         await F.gen(query)
 
@@ -354,7 +354,7 @@ async def test_windowed_star_count_rejects_stray_args():
     # `count(*)` takes no inputs but its own window= — a stray kwarg would otherwise
     # be projected and silently ignored.
     query = F.q(time_dimensions=F.month_td(),
-                metrics=[_m("count(*, other=qty, window='90d')", "w")])
+                metrics=[_m("count(orders.*, other=orders.qty, window='90d')", "w")])
     with pytest.raises(ValueError, match="no args or kwargs"):
         await F.gen(query)
 
@@ -364,6 +364,6 @@ async def test_windowed_custom_def_resolves_on_source_owner():
     # (orders) column widens the home to orders while the def stays on customers.
     # The renderer must resolve the definition on the source owner, not the root.
     query = F.q(time_dimensions=F.month_td("customers.signup_at"),
-                metrics=[_m("wprod(customers.spend, w=amount, window='1y')", "w")])
+                metrics=[_m("wprod(customers.spend, w=orders.amount, window='1y')", "w")])
     sql = await F.gen(query)
     assert "__regroup__" not in sql

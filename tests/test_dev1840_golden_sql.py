@@ -47,43 +47,43 @@ def _cases() -> dict:
     return {
         "exists/app_by_tier": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[M, CM],
-            filter=["channel = 'app'"])},
+            filter=["orders.channel = 'app'"])},
         "exists/same_branch_two_conjuncts": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["status = 'ok'", "channel = 'app'"])},
+            filter=["orders.status = 'ok'", "orders.channel = 'app'"])},
         "exists/two_branches": {"models": "weak", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["channel = 'web'", "customers.plans.level = 'basic'"])},
+            filter=["orders.channel = 'web'", "customers.plans.level = 'basic'"])},
         "exists/composite_inverted_hop": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, RM],
-            filter=["channel = 'app'"])},
+            dimensions=["orders.status"], metrics=[M, RM],
+            filter=["orders.channel = 'app'"])},
         "exists/multi_hop_union_tree": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, RM],
-            filter=["channel = 'app'", "customers.tier = 'gold'"])},
+            dimensions=["orders.status"], metrics=[M, RM],
+            filter=["orders.channel = 'app'", "customers.tier = 'gold'"])},
         "exists/correlated_outer_ref": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.spend > amount"])},
+            filter=["customers.spend > orders.amount"])},
         "exists/forward_unproven_hop": {"models": "weak", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.plans.level = 'basic'"])},
         "exists/derived_deps_cust_tier": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[CM],
-            filter=["cust_tier = 'gold'"])},
+            dimensions=["orders.status"], metrics=[CM],
+            filter=["orders.cust_tier = 'gold'"])},
         "exists/derived_1n_last_status": {"models": "rev", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.last_status = 'ok'"])},
         "exists/nested_band_producer": {"models": "default", "query": q(
             dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
-            metrics=[M], filter=["channel = 'app'"])},
+            metrics=[M], filter=["orders.channel = 'app'"])},
         "exists/declared_reverse": {"models": "rev", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["channel = 'app'"])},
+            filter=["orders.channel = 'app'"])},
         "exists/negated_cross_path": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["NOT (channel = 'app')"])},
+            filter=["NOT (orders.channel = 'app')"])},
         "inline/safe_hop_regions": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.regions.name = 'North'"])},
@@ -92,13 +92,13 @@ def _cases() -> dict:
             filter=["customers.plans.level = 'basic'"])},
         "inline/composite_n1_root_local": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, RM],
+            dimensions=["orders.status"], metrics=[M, RM],
             filter=["stores.city = 'NYC'"])},
         "excluded/mixed_or": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.tier = 'gold' OR channel = 'app'"])},
+            filter=["customers.tier = 'gold' OR orders.channel = 'app'"])},
         "excluded/ambiguous_inversion": {"models": "amb", "query": tq(
-            metrics=[SM], filter=["effort > 2"])},
+            metrics=[SM], filter=["tickets.effort > 2"])},
     }
 
 

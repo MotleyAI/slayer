@@ -225,12 +225,12 @@ async def _sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
 # Group 1 — entry point: composite ORDER BY strings become expressible.
 class TestOrderItemEntryPoint:
     def test_composite_string_yields_placeholder_and_raw_formula(self) -> None:
-        item = OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})
+        item = OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"})
         assert item.ref is None, item.ref
         assert item.raw_expression == "sum(amount) / count(id)", item.raw_expression
 
     def test_transform_call_string_keeps_funcstyle_placeholder(self) -> None:
-        item = OrderItem.model_validate({"field": "change(sum(amount))", "direction": "desc"})
+        item = OrderItem.model_validate({"field": "change(sum(orders.amount))", "direction": "desc"})
         assert item.ref is None, item.ref
         assert item.raw_expression == "change(sum(amount))"
 
@@ -258,7 +258,7 @@ class TestOrderItemEntryPoint:
         dotted = OrderItem(field="customers.region").ref
         assert dotted is not None
         assert (dotted.dataset, dotted.name) == ("customers", "region")
-        agg = OrderItem.model_validate({"field": "sum(amount)"})
+        agg = OrderItem.model_validate({"field": "sum(orders.amount)"})
         assert (agg.ref, agg.raw_expression) == (None, "sum(amount)")
 
     async def test_root_qualified_composite_order_equals_bare(self, exec_engine) -> None:
@@ -271,7 +271,7 @@ class TestOrderItemEntryPoint:
             )
 
         qualified = await exec_engine.execute(query("sum(orders.amount) / count(orders.id)"))
-        bare = await exec_engine.execute(query("sum(amount) / count(id)"))
+        bare = await exec_engine.execute(query("sum(orders.amount) / count(orders.id)"))
         assert qualified.sql == bare.sql
         assert qualified.data == bare.data
 
@@ -313,7 +313,7 @@ class TestOrderOnlyTransform:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders.amount_sum"], sql
@@ -323,7 +323,7 @@ class TestOrderOnlyTransform:
             f"hidden transform {alias!r} must be materialised in a step CTE.\n{sql}"
         )
 
-    @pytest.mark.parametrize("formula", ["cumsum(sum(amount))", "lag(sum(amount))", "lead(sum(amount))"])
+    @pytest.mark.parametrize("formula", ["cumsum(sum(orders.amount))", "lag(sum(orders.amount))", "lead(sum(orders.amount))"])
     async def test_time_ordered_transforms_order_only(self, engine, formula: str) -> None:
         query = SlayerQuery(
             population="orders",
@@ -340,7 +340,7 @@ class TestOrderOnlyTransform:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "ntile(sum(amount), n=4)", "direction": "asc"})],
+            order=[OrderItem.model_validate({"field": "ntile(sum(orders.amount), n=4)", "direction": "asc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders.amount_sum"], sql
@@ -353,7 +353,7 @@ class TestOrderOnlyTransform:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="cumsum(sum(orders.amount))", alias="cs")],
-            order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "cs"], sql
@@ -364,7 +364,7 @@ class TestOrderOnlyTransform:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"})],
             limit=2, offset=1,
         )
         sql = await _sql(engine, query)
@@ -380,7 +380,7 @@ class TestOrderOnlyTransform:
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="cumsum(sum(orders.amount))", alias="cs")],
             filter=["cs > 5"],
-            order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "cs"], sql
@@ -390,7 +390,7 @@ class TestOrderOnlyTransform:
 # Group 3 — change / change_pct: arithmetic-wrapped transforms. Stage 8 dropped
 # these ORDER BY clauses entirely (top-level ArithmeticKey interned no slot).
 class TestOrderOnlyChangeFamily:
-    @pytest.mark.parametrize("formula", ["change(sum(amount))", "change_pct(sum(amount))"])
+    @pytest.mark.parametrize("formula", ["change(sum(orders.amount))", "change_pct(sum(orders.amount))"])
     async def test_change_family_order_only_emits_order_by(self, engine, formula: str) -> None:
         query = SlayerQuery(
             population="orders",
@@ -414,7 +414,7 @@ class TestOrderOnlyChangeFamily:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "change(sum(amount))", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "change(sum(orders.amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert "shifted_" in sql, sql
@@ -425,7 +425,7 @@ class TestOrderOnlyChangeFamily:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "cumsum(sum(amount)) / 2", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "cumsum(sum(orders.amount)) / 2", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.amount_sum"], sql
@@ -440,7 +440,7 @@ class TestOrderOnlyCompositeLocal:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
@@ -454,7 +454,7 @@ class TestOrderOnlyCompositeLocal:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "abs(sum(amount))", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "abs(sum(orders.amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
@@ -479,7 +479,7 @@ class TestOrderOnlyCompositeLocal:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"})],
             limit=1,
         )
         sql = await _sql(engine, query)
@@ -495,7 +495,7 @@ class TestOrderOnlyCompositeCrossModel:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / sum(customers.revenue)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / sum(customers.revenue)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
@@ -508,7 +508,7 @@ class TestOrderOnlyCompositeCrossModel:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(customers.revenue) / sum(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(customers.revenue) / sum(orders.amount)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
@@ -590,8 +590,8 @@ class TestHiddenAliasUniqueness:
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
             order=[
-                OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"}),
-                OrderItem.model_validate({"field": "rank(sum(fee), direction='desc')", "direction": "asc"}),
+                OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"}),
+                OrderItem.model_validate({"field": "rank(sum(orders.fee), direction='desc')", "direction": "asc"}),
             ],
         )
         sql = await _sql(engine, query)
@@ -610,8 +610,8 @@ class TestHiddenAliasUniqueness:
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
             order=[
-                OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"}),
-                OrderItem.model_validate({"field": "sum(fee) / count(id)", "direction": "asc"}),
+                OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"}),
+                OrderItem.model_validate({"field": "sum(orders.fee) / count(orders.id)", "direction": "asc"}),
             ],
         )
         sql = await _sql(engine, query)
@@ -685,7 +685,7 @@ class TestWindowedOrderOnly:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         # Windowed producers render under uniform ``_cm_`` naming.
@@ -706,7 +706,7 @@ class TestWindowedOrderOnly:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         terms = _outer_order_by_sql(sql)
@@ -720,7 +720,7 @@ class TestWindowedOrderOnly:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d') / count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d') / count(orders.id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert "_cm_" in sql, sql
@@ -749,7 +749,7 @@ class TestWindowedOrderOnly:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90")],
-            order=[OrderItem.model_validate({"field": "sum(fee, window='30d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.fee, window='30d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "w90"], sql
@@ -763,7 +763,7 @@ class TestWindowedOrderOnly:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "w90"], sql
@@ -792,7 +792,7 @@ class TestWindowedOrderOnly:
             dimensions=[QueryDimension(field="orders.status")],
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert "_w_dim_0" in sql, f"the status grain must reach _src.\n{sql}"
@@ -812,7 +812,7 @@ class TestWindowedOrderOnly:
             )],
             metrics=[QueryMetric(metric="count(orders.id)")],
             filter=["orders.status = 'paid'"],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         src = _src_subquery_sql(sql)
@@ -828,7 +828,7 @@ class TestWindowedOrderOnly:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
             limit=1,
         )
         sql = await _sql(engine, query)
@@ -841,7 +841,7 @@ class TestWindowedOrderOnly:
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90")],
             filter=["w90 > 0"],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 1, sql
@@ -869,7 +869,7 @@ class TestWindowedStillGuarded:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)")],
-            order=[OrderItem.model_validate({"field": "cumsum(sum(amount, window='90d'))", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "cumsum(sum(orders.amount, window='90d'))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert_scope_closed(sql, dialect="sqlite")
@@ -897,7 +897,7 @@ class TestWindowedStillGuarded:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)")],
-            order=[OrderItem.model_validate({"field": "max(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "max(orders.amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert_scope_closed(sql, dialect="sqlite")
@@ -956,7 +956,7 @@ class TestStillGuarded:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) in (1, 2)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) in (1, 2)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
@@ -968,16 +968,16 @@ class TestStillGuarded:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) > 1 and sum(amount) < 500", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) > 1 and sum(orders.amount) < 500", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
         _hidden_order_alias(sql)
 
     @pytest.mark.parametrize(("formula", "error"), [
-        ("coalesce(sum(amount), id)", _ROW_OPERAND_REJECTED),  # scalar call with a row-column arg
+        ("coalesce(sum(orders.amount), orders.id)", _ROW_OPERAND_REJECTED),  # scalar call with a row-column arg
         # ... and a time-dimension arg, whose mismatched branch types are reported first
-        ("coalesce(sum(amount), created_at)", ScalarOperandTypeError),
+        ("coalesce(sum(orders.amount), orders.created_at)", ScalarOperandTypeError),
     ])
     async def test_scalar_call_with_row_operand_raises_not_stringified(
         self, engine, formula: str, error: type[Exception],
@@ -998,7 +998,7 @@ class TestStillGuarded:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / id", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / orders.id", "direction": "desc"})],
         )
         with pytest.raises(_ROW_OPERAND_REJECTED):
             await _sql(engine, query)
@@ -1044,7 +1044,7 @@ class TestStillGuarded:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount)", "direction": "desc"})],
             limit=3,
         )
         sql = await _sql(engine, query)
@@ -1074,7 +1074,7 @@ class TestDialectEmission:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"})],
         )
         resp = await eng.execute(query, dry_run=True)
         sql = resp.sql or ""
@@ -1099,7 +1099,7 @@ class TestDialectEmission:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"})],
         )
         resp = await eng.execute(query, dry_run=True)
         sql = resp.sql or ""
@@ -1132,7 +1132,7 @@ class TestExecution:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == ["open", "paid"], resp.data
@@ -1143,7 +1143,7 @@ class TestExecution:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == ["paid", "open"], resp.data
@@ -1153,7 +1153,7 @@ class TestExecution:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "asc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "asc"})],
         )
         resp = await exec_engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == ["open", "paid"], resp.data
@@ -1174,12 +1174,12 @@ class TestExecution:
             )
 
         resp_desc = await exec_engine.execute(
-            _query(OrderItem.model_validate({"field": "change(sum(amount))", "direction": "desc"})),
+            _query(OrderItem.model_validate({"field": "change(sum(orders.amount))", "direction": "desc"})),
         )
         assert _months(resp_desc.data) == ["2025-02", "2025-01"], resp_desc.data
 
         resp_asc = await exec_engine.execute(
-            _query(OrderItem.model_validate({"field": "change(sum(amount))", "direction": "asc"})),
+            _query(OrderItem.model_validate({"field": "change(sum(orders.amount))", "direction": "asc"})),
         )
         assert _months(resp_asc.data) == ["2025-02", "2025-01"], resp_asc.data
         assert set(resp_asc.columns) == {"orders.created_at", "orders.amount_sum"}
@@ -1196,7 +1196,7 @@ class TestExecution:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert resp.columns == ["orders.status", "orders._count"], resp.columns
@@ -1214,7 +1214,7 @@ class TestExecution:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert resp.columns == ["orders.status", "orders.amount_sum"], resp.columns
@@ -1227,7 +1227,7 @@ class TestExecution:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert resp.columns == ["orders.created_at", "orders.id_count"], resp.columns
@@ -1250,7 +1250,7 @@ class TestMultiStage:
             population="s1",
             dimensions=[QueryDimension(field="s1.status")],
             metrics=[QueryMetric(metric="sum(s1.amt)", alias="total")],
-            order=[OrderItem.model_validate({"field": "sum(amt) / sum(cnt)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(s1.amt) / sum(s1.cnt)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query=[inner, outer])
         assert resp.columns == ["s1.status", "total"], resp.columns
@@ -1267,7 +1267,7 @@ class TestMultiStage:
             population="s1",
             dimensions=[QueryDimension(field="s1.status")],
             metrics=[QueryMetric(metric="sum(s1.amt)", alias="total")],
-            order=[OrderItem.model_validate({"field": "rank(sum(amt), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(s1.amt), direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query=[inner, outer])
         assert resp.columns == ["s1.status", "total"], resp.columns
@@ -1282,7 +1282,7 @@ class TestMultiStage:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)", alias="cnt")],
-            order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"})],
         )
         outer = SlayerQuery(
             population="s1",
@@ -1301,7 +1301,7 @@ class TestMultiStage:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)", alias="n")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         outer = SlayerQuery(
             population="s1",
@@ -1320,7 +1320,7 @@ class TestMultiStage:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(metric="count(orders.id)", alias="n")],
-            order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount, window='90d')", "direction": "desc"})],
         )
         outer = SlayerQuery(
             population="s1",
@@ -1379,7 +1379,7 @@ class TestSupersededByDev1703Phase1:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "rank(sum(orders.amount), direction='desc')", "direction": "desc"})],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await _sql(engine, query)

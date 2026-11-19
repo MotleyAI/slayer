@@ -38,10 +38,10 @@ class TestBroadcastMetadataInherited:
     async def test_unattributable_dim_broadcasts_identically(self, exec_backend):
         _, engine = exec_backend
         dotted = await engine.execute(
-            q(dimensions=["status"], metrics=[{"metric": DOTTED, "alias": "x"}], to_many_handling="broadcast"),
+            q(dimensions=["orders.status"], metrics=[{"metric": DOTTED, "alias": "x"}], to_many_handling="broadcast"),
         )
         hand = await engine.execute(
-            q(dimensions=["status"], metrics=[{"metric": HAND, "alias": "x"}], to_many_handling="broadcast"),
+            q(dimensions=["orders.status"], metrics=[{"metric": HAND, "alias": "x"}], to_many_handling="broadcast"),
         )
         assert _warn_signature(dotted) == _warn_signature(hand)
         assert _warn_signature(dotted), "expected a broadcast warning over status"
@@ -60,7 +60,7 @@ class TestBroadcastMetadataInherited:
         hand-written ``partition_by=[]`` form."""
         _, engine = exec_backend
         resp = await engine.execute(
-            q(dimensions=["status"],
+            q(dimensions=["orders.status"],
               metrics=[{"metric": "customers.spend_grand", "alias": "x"}]),
         )
         assert broadcast_warnings(resp) == []
@@ -69,9 +69,9 @@ class TestBroadcastMetadataInherited:
 class TestStrictInherited:
     async def test_strict_broadcast_errors_like_hand(self, exec_backend):
         _, engine = exec_backend
-        dotted_query = q(to_many_handling="error", dimensions=["status"],
+        dotted_query = q(to_many_handling="error", dimensions=["orders.status"],
                          metrics=[{"metric": DOTTED, "alias": "x"}])
-        hand_query = q(to_many_handling="error", dimensions=["status"],
+        hand_query = q(to_many_handling="error", dimensions=["orders.status"],
                        metrics=[{"metric": HAND, "alias": "x"}])
         with pytest.raises((SlayerError, ValueError)) as dotted_err:
             await engine.execute(dotted_query)

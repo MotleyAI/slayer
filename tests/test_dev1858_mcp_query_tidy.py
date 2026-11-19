@@ -427,7 +427,7 @@ class TestRunByNameRefine:
     ], ids=["object", "list"])
     async def test_refine_with_non_name_errors(self, refine_server, query: Any) -> None:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
-            await _call(refine_server, query=query, refine={"dimensions": ["region"]})
+            await _call(refine_server, query=query, refine={"dimensions": ["orders.region"]})
 
     async def test_empty_refine_with_non_name_errors(self, refine_server) -> None:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):

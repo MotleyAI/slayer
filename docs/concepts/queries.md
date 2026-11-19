@@ -166,7 +166,7 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 - `metrics` must be empty — `DistinctDimensionValuesError` otherwise.
 - At least one of `dimensions` / `time_dimensions` must be non-empty (nothing to project otherwise).
-- Filters / order items must not reference any metric — neither an aggregation (`sum(amount) > 100`, `count(*) > 0`), transform calls (`rank(sum(amount), direction='desc') <= 5`), nor a bare saved-`DatasetMetric` name.
+- Filters / order items must not reference any metric — neither an aggregation (`sum(orders.amount) > 100`, `count(orders.*) > 0`), transform calls (`rank(sum(orders.amount), direction='desc') <= 5`), nor a saved `DatasetMetric`.
 
 **Time dimensions** are allowed: each one emits its `DATE_TRUNC` truncation as a projected column without aggregating. For raw field values (no truncation), put the time field in `dimensions` instead.
 
@@ -199,14 +199,14 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 
 ## OrderItem
 
-A sort specification: `field` is text naming a dimension (`status`, `customers.region`), a declared metric's short alias (`revenue_sum`), or an expression (`count(*)`); `direction` is `asc` or `desc`.
+A sort specification: `field` is text naming a dimension (`orders.status`, `customers.region`), a declared metric's alias (`revenue`), or an expression (`count(orders.*)`); `direction` is `asc` or `desc`.
 An optional `nulls` (`first` or `last`) places NULL values first or last on every dialect; without it the database's default placement applies.
 
 ```json
-{"field": "count(*)", "direction": "desc"}
+{"field": "count(orders.*)", "direction": "desc"}
 ```
 
-Via MCP: `{"field": "count(*)", "direction": "desc"}`
+Via MCP: `{"field": "count(orders.*)", "direction": "desc"}`
 
 A query (or the final stage of a query list) with no `order` that projects dimensions is ordered by its dimensions and time dimensions ascending, in result-column order, exactly as if it listed them in `order`; raw-row queries and inner stages are left unordered.
 
@@ -581,7 +581,7 @@ await engine.execute("monthly_revenue", refine={"order": [{"field": "revenue", "
 - `filter` conditions are appended to the saved ones, skipping any the saved filter already has (the merged filter is then a list); `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit; a null `to_many_handling` keeps the saved mode).
 - `population`, `name` and `variables` are not refinable; `refine` with a query object or list is an error.
 
-For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"population": "per_customer", "metrics": [{"metric": "avg(revenue)", "alias": "avg_revenue"}]}]` with `{"dimensions": ["region"]}` averages per region, provided `per_customer` projects `region`.
+For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"population": "per_customer", "metrics": [{"metric": "avg(per_customer.revenue)", "alias": "avg_revenue"}]}]` with `{"dimensions": ["per_customer.region"]}` averages per region, provided `per_customer` projects `region`.
 
 Adding a second granularity of a saved time field (`{"time_dimensions": ["date_trunc('year', ordered_at)"]}` on a monthly query) renames the saved key `orders.ordered_at` to `orders.ordered_at.month`, as in any query with two granularities. A saved query's population is fixed when it is saved (see [Population](#population)), so a refinement never changes it.
 
@@ -808,7 +808,7 @@ repeated across the dimension, with a `kind: "broadcast"` warning naming the
 metric and each broadcast dimension with the reason), or `error` (refuse) — where
 a stored query saved with the old `"broadcast"` default loads with the mode
 omitted, and a semi-join-pushed filter is applied, never erroring, in every mode.
-Example: `{"population": "orders", "dimensions": ["status"], "metrics": ["sum(customers.spend)"]}` gives each status the spend of the distinct customers with an order in it.
+Example: `{"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(customers.spend)"]}` gives each status the spend of the distinct customers with an order in it.
 
 Association serves every plain scalar aggregate. A dataset without a primary key uses a
 per-query row identity. This includes datasets with a standalone unique field that may
@@ -879,7 +879,7 @@ You can also join named queries to datasets:
   },
   {
     "population": "orders",
-    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["customers.id"]}]}],
+    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
     "metrics": ["count(orders.*)", "avg(customer_scores.score_avg)"],
     "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]
   }
@@ -901,7 +901,7 @@ Sibling stages can also reference each other — any non-final stage may use a *
   {
     "name": "tagged_orders",
     "population": "orders",
-    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["customers.id"]}]}],
+    "extensions": [{"dataset": "orders", "relationships": [{"to": "customer_scores", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
     "dimensions": ["customer_scores.score_avg"],
     "metrics": ["count(orders.*)"]
   },

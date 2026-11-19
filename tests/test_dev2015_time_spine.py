@@ -185,7 +185,7 @@ class TestAxes:
     async def test_stage_with_one_temporal_column_is_wired(self, engine) -> None:
         firsts = SlayerQuery.model_validate({
             "name": "firsts", "population": "orders", "dimensions": ["orders.customer_id"],
-            "metrics": [m("min(order_date)", "first_order")],
+            "metrics": [m("min(orders.order_date)", "first_order")],
         })
         resp = await engine.execute([firsts, spine_query(metrics=[m("count(firsts.customer_id)", "c")])])
         assert by_bucket(resp, ["c"]) == {
@@ -197,7 +197,7 @@ class TestAxes:
         stage = SlayerQuery.model_validate({
             "name": "ob", "population": "orders", "dimensions": ["orders.customer_id"],
             "time_dimensions": [{"field": "orders.order_date", "granularity": "day"}],
-            "metrics": [m("sum(amount)", "rev"), m("min(customers.signed_up_at)", "signup")],
+            "metrics": [m("sum(orders.amount)", "rev"), m("min(customers.signed_up_at)", "signup")],
         })
         async with spine_engine(backend, datasets=spine_datasets(signed_up_at=True)) as eng:
             resp = await eng.execute([stage, spine_query(metrics=[m("sum(ob.rev)", "rev")])])
@@ -210,7 +210,7 @@ class TestAxes:
             "population": "returns",
             "time_dimensions": [{"field": "returns.return_date", "granularity": "month"},
                                 {"field": "customers.signed_up_at", "granularity": "month"}],
-            "metrics": [m("cumsum(sum(amount))", "cs")],
+            "metrics": [m("cumsum(sum(returns.amount))", "cs")],
         })
         got = {}
         for default in (None, "return_date"):
@@ -222,7 +222,7 @@ class TestAxes:
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_sole_column_default_feeds_last(self, backend) -> None:
-        query = SlayerQuery.model_validate({"population": "returns", "metrics": [m("last(amount)", "l")]})
+        query = SlayerQuery.model_validate({"population": "returns", "metrics": [m("last(returns.amount)", "l")]})
         for default in (None, "return_date"):
             async with spine_engine(backend, datasets=spine_datasets(returns_default=default)) as eng:
                 resp = await eng.execute(query)
@@ -357,7 +357,7 @@ class TestSpineStages:
 
     async def test_a_per_group_spine_stage(self, engine) -> None:
         resp = await engine.execute([_monthly_stage(dimensions=["customers.region"]),
-                                     _over_monthly(dimensions=["region"])])
+                                     _over_monthly(dimensions=["monthly.region"])])
         assert {value(r, "region"): (num(value(r, "t")), num(value(r, "c"))) for r in resp.data} == {
             "N": (170.0, 3.0), "S": (50.0, 3.0), "E": (None, 3.0),
         }
@@ -499,7 +499,7 @@ class TestFilters:
 
 class TestNoCountableRows:
     @pytest.mark.parametrize(("measure", "extra"), [
-        (m("count(*)", "c"), {"population": "time_spine"}),
+        (m("count(time_spine.*)", "c"), {"population": "time_spine"}),
         (m("min(time_spine.timestamp)", "t"), {}),
     ], ids=["count-star", "min-timestamp"])
     async def test_aggregation_over_the_spine(self, engine, measure, extra) -> None:
@@ -530,7 +530,7 @@ class TestNoCountableRows:
 
     async def test_spine_order_key_outside_a_spine_query(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": [m("sum(amount)", "s")], "dimensions": ["orders.customer_id"],
+            "population": "orders", "metrics": [m("sum(orders.amount)", "s")], "dimensions": ["orders.customer_id"],
             "order": [{"field": "time_spine.timestamp", "direction": "asc"}],
         })
         with pytest.raises(QueryTypeError) as exc:

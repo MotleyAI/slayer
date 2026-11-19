@@ -55,7 +55,7 @@ class TestCompositeMeasureLift:
     async def test_mixed_grain_arithmetic_as_measure(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric=MEASURE_DIFF, alias="d"),
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
@@ -75,7 +75,7 @@ class TestCompositeMeasureLift:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric=SAMEGRAIN_DIFF, alias="d")],
         )
         resp = await engine.execute(query)
@@ -90,7 +90,7 @@ class TestCompositeMeasureLift:
     async def test_keyless_operand_broadcasts_in_measure(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
                 metric="sum(amount, partition_by=region) - "
                         "sum(amount, partition_by=[])",
@@ -109,7 +109,7 @@ class TestCompositeMeasureLift:
     async def test_scalar_call_over_partitioned_operands(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric=f"abs({MEASURE_DIFF})", alias="d")],
         )
         resp = await engine.execute(query)
@@ -124,7 +124,7 @@ class TestCompositeMeasureLift:
     async def test_case_over_partitioned_operands(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
                 metric=f"CASE WHEN {MEASURE_DIFF} > 0 THEN 1 ELSE 0 END",
                 alias="d",
@@ -142,7 +142,7 @@ class TestConformingSurfaces:
     async def test_plain_and_partitioned_mix(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
                 metric="sum(orders.amount) - sum(orders.amount, partition_by=orders.region)", alias="d",
             )],
@@ -162,7 +162,7 @@ class TestConformingSurfaces:
         # the two on a finer grain.
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric=MIXED_RANK, alias="r"),
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
@@ -175,7 +175,7 @@ class TestConformingSurfaces:
             assert int(r["r"]) == MIXED_RANK_OF[key], f"{key}"
 
         solo = await engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         solo_by = rows_by(solo, "orders.region", "orders.city")
@@ -189,11 +189,11 @@ class TestConformingSurfaces:
     async def test_filter_over_mixed_arithmetic(self, exec_backend) -> None:
         dialect, engine = exec_backend
         unfiltered = rows_by(await engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )), "orders.region", "orders.city")
         query = q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             filter=[f"{MEASURE_DIFF} > 0"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
@@ -216,10 +216,10 @@ class TestConformingSurfaces:
             QueryMetric(metric=MEASURE_DIFF, alias="d"),
         ]
         unfiltered = rows_by(await engine.execute(q(
-            dimensions=["region", "city"], metrics=measures,
+            dimensions=["orders.region", "orders.city"], metrics=measures,
         )), "orders.region", "orders.city")
         resp = await engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             filter=[f"{MEASURE_DIFF} > 0"],
             metrics=measures,
         ))

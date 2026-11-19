@@ -34,7 +34,7 @@ def _has_output_alias(body: str, leaf: str) -> bool:
 class TestProducerOutputAlias:
     async def test_named_measure_uses_public_alias(self, dialect: str) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
                 metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
             )],
@@ -46,7 +46,7 @@ class TestProducerOutputAlias:
 
     async def test_composite_leaf_uses_canonical_alias(self, dialect: str) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
                 metric="sum(orders.amount) / sum(orders.amount, partition_by=orders.region)", alias="sh",
             )],
@@ -63,7 +63,7 @@ async def test_filtered_measure_predicate_lives_in_producer(dialect: str) -> Non
     # The measure's ``Column.filter`` (CASE WHEN status='ok') renders inside the
     # producer CTE, at the partition grain — unchanged from the DEV-1739 path.
     sql = await gen(_q(
-        dimensions=["region", "city"],
+        dimensions=["orders.region", "orders.city"],
         metrics=[QueryMetric(
             metric="sum(orders.ok_amount, partition_by=orders.region)", alias="o",
         )],

@@ -175,7 +175,7 @@ class TestProjectionTrimRepros:
         query = SlayerQuery(
             population="funds",
             dimensions=[QueryDimension(field="funds.geozone")],
-            order=[OrderItem.model_validate({"field": "sum(expensenet)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(funds.expensenet)", "direction": "desc"})],
             limit=3,
         )
         sql = await _generate(query, funds_dataset)
@@ -305,18 +305,18 @@ class TestWindowArgReuse:
     @pytest.mark.parametrize(
         "transform_formula,measure_name",
         [
-            ("rank(sum(revenue), direction='desc')",                       "r_rank"),
-            ("percent_rank(sum(revenue))",               "r_pct_rank"),
-            ("dense_rank(sum(revenue), direction='desc')",                 "r_dense"),
-            ("ntile(sum(revenue), n=3)",                 "r_ntile"),
-            ("cumsum(sum(revenue))",                     "r_cumsum"),
-            ("lag(sum(revenue), -1)",                    "r_lag"),
-            ("lead(sum(revenue), 1)",                    "r_lead"),
-            ("first(sum(revenue))",                      "r_first"),
-            ("last(sum(revenue))",                       "r_last"),
-            ("time_shift(sum(revenue), -1, 'year')",     "r_shift"),
-            ("change(sum(revenue))",                     "r_change"),
-            ("change_pct(sum(revenue))",                 "r_change_pct"),
+            ("rank(sum(orders.revenue), direction='desc')",                       "r_rank"),
+            ("percent_rank(sum(orders.revenue))",               "r_pct_rank"),
+            ("dense_rank(sum(orders.revenue), direction='desc')",                 "r_dense"),
+            ("ntile(sum(orders.revenue), n=3)",                 "r_ntile"),
+            ("cumsum(sum(orders.revenue))",                     "r_cumsum"),
+            ("lag(sum(orders.revenue), -1)",                    "r_lag"),
+            ("lead(sum(orders.revenue), 1)",                    "r_lead"),
+            ("first(sum(orders.revenue))",                      "r_first"),
+            ("last(sum(orders.revenue))",                       "r_last"),
+            ("time_shift(sum(orders.revenue), -1, 'year')",     "r_shift"),
+            ("change(sum(orders.revenue))",                     "r_change"),
+            ("change_pct(sum(orders.revenue))",                 "r_change_pct"),
         ],
     )
     async def test_window_transform_with_declared_inner_measure(
@@ -857,7 +857,7 @@ class TestProvenance:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
-            order=[OrderItem.model_validate({"field": "sum(quantity)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.quantity)", "direction": "desc"})],
             filter=["change(sum(orders.revenue)) > 0"],
             time_dimensions=[TimeDimension(
                 field="orders.created_at",
@@ -941,7 +941,7 @@ class TestProvenance:
                 QueryMetric(metric="sum(orders.revenue)", alias="total"),
                 QueryMetric(metric="count(orders.*)", alias="n"),
             ],
-            order=[OrderItem.model_validate({"field": "sum(quantity)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.quantity)", "direction": "desc"})],
         )
         sql = await _generate(query, orders_dataset)
         assert _outer_select_columns(sql) == [
@@ -1023,7 +1023,7 @@ class TestDryRunAlignment:
         query = SlayerQuery(
             population="funds",
             dimensions=[QueryDimension(field="funds.geozone")],
-            order=[OrderItem.model_validate({"field": "sum(expensenet)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(funds.expensenet)", "direction": "desc"})],
         )
         resp = await engine.execute(query=query, dry_run=True)
         assert resp.columns == ["funds.geozone"], (
@@ -1247,7 +1247,7 @@ class TestCallSitesAndContractPins:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
-            order=[OrderItem.model_validate({"field": "sum(quantity)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.quantity)", "direction": "desc"})],
             limit=10,
             offset=20,
         )
@@ -1364,7 +1364,7 @@ class TestOuterOrderByQualifierStripping:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
-            order=[OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})],
             limit=5,
         )
         resp = await engine.execute(query=query, dry_run=True)

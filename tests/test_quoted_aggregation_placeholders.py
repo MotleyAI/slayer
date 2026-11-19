@@ -107,7 +107,7 @@ class TestQuotedDefaultExecutes:
         async with seeded_exec_engine(
             dialect=dialect, seed=_seed, datasets=[_orders(_agg(formula, name="sum_n", n="2"))],
         ) as (engine, _db):
-            resp = await engine.execute(_q("sum_n(amount)"))
+            resp = await engine.execute(_q("sum_n(orders.amount)"))
         assert float(resp.data[0]["m"]) == pytest.approx(TWICE_SUM)
 
     @pytest.mark.parametrize(("dialect", "formula"), [("sqlite", _SUM_N), ("duckdb", _SUM_N_CAST)])
@@ -115,7 +115,7 @@ class TestQuotedDefaultExecutes:
         async with seeded_exec_engine(
             dialect=dialect, seed=_seed, datasets=[_orders(_agg(formula, name="sum_n", n="2"))],
         ) as (engine, _db):
-            resp = await engine.execute(_q("sum_n(amount, n=3)"))
+            resp = await engine.execute(_q("sum_n(orders.amount, n=3)"))
         assert float(resp.data[0]["m"]) == pytest.approx(3 * sum(_AMOUNTS))
 
 
@@ -139,7 +139,7 @@ class TestDoubledBraces:
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
     async def test_doubled_braces_emit_one_brace(self, dialect: str) -> None:
-        sql = await _dry("lit(amount)", agg=_agg(self.FORMULA, name="lit"), dialect=dialect)
+        sql = await _dry("lit(orders.amount)", agg=_agg(self.FORMULA, name="lit"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
         assert isinstance(lit, exp.Literal)
         assert lit.is_string
@@ -190,7 +190,7 @@ class TestNonOrdinaryLiteralRejected:
     async def test_rejected_at_render(self, dialect: str, formula: str) -> None:
         agg = _agg(formula, name="lit", n="2")
         with pytest.raises(SqlTemplateError) as ei:
-            await _dry("lit(amount)", agg=agg, dialect=dialect)
+            await _dry("lit(orders.amount)", agg=agg, dialect=dialect)
         _names_placeholder(err=ei.value, name="n", expression=formula)
 
 
@@ -219,7 +219,7 @@ class TestQuotedBindingValue:
         ("2", "2"), ("-2", "-2"), ("'x'", "x"), ("'it''s'", "it's"),
     ])
     async def test_literal_default_value_spliced(self, default: str, value: str) -> None:
-        sql = await _dry("lbl(amount)", agg=_agg(_LABEL, name="lbl", n=default), validate=True)
+        sql = await _dry("lbl(orders.amount)", agg=_agg(_LABEL, name="lbl", n=default), validate=True)
         lit = _then_literal(sql, dialect="postgres")
         assert isinstance(lit, exp.Literal)
         assert lit.is_string
@@ -227,7 +227,7 @@ class TestQuotedBindingValue:
 
     async def test_quoted_and_unquoted_uses_bind_alike(self) -> None:
         formula = "MAX(CASE WHEN {value} > {n} THEN 'gt {n}' END)"
-        sql = " ".join((await _dry("gt(amount)", agg=_agg(formula, name="gt", n="2"), validate=True)).split())
+        sql = " ".join((await _dry("gt(orders.amount)", agg=_agg(formula, name="gt", n="2"), validate=True)).split())
         assert "WHEN orders.amount > 2 THEN 'gt 2' END" in sql
 
 
@@ -241,7 +241,7 @@ class TestTypedLiteral:
     async def test_typed_literal_placeholder_renders(self, dialect: str, kind: str) -> None:
         agg = _agg(_DATED.replace("{kind}", kind), name="dated", d="'2024-01-02'")
         check_aggregation_definition(where="w", agg=agg, dialect=dialect)
-        sql = await _dry("dated(amount)", agg=agg, dialect=dialect)
+        sql = await _dry("dated(orders.amount)", agg=agg, dialect=dialect)
         literals = [lit.this for lit in _then_literal(sql, dialect=dialect).find_all(exp.Literal)]
         assert literals == ["2024-01-02"], sql
 
@@ -249,19 +249,19 @@ class TestTypedLiteral:
     async def test_sentinel_shaped_text_in_another_literal_is_kept(self, dialect: str) -> None:
         kept = "p__slayer_ph0____slayer_ph1____slayer_ph2__s"
         agg = _agg(f"MAX(CASE WHEN {{value}} > 0 THEN CONCAT('{kept}', '{{d}}') END)", name="tagged", d="'x'")
-        sql = await _dry("tagged(amount)", agg=agg, dialect=dialect)
+        sql = await _dry("tagged(orders.amount)", agg=agg, dialect=dialect)
         literals = [lit.this for lit in _then_literal(sql, dialect=dialect).find_all(exp.Literal)]
         assert literals == [kept, "x"], sql
 
     async def test_typed_literal_placeholder_executes(self) -> None:
         agg = _agg("SUM({value}) * EXTRACT(DAY FROM DATE '{d}')", name="dated", d="'2024-01-02'")
         async with seeded_exec_engine(dialect="duckdb", seed=_seed, datasets=[_orders(agg)]) as (engine, _db):
-            resp = await engine.execute(_q("dated(amount)"))
+            resp = await engine.execute(_q("dated(orders.amount)"))
         assert float(resp.data[0]["m"]) == pytest.approx(TWICE_SUM)
 
     @pytest.mark.parametrize("dialect", ["postgres", "snowflake", "duckdb"])
     async def test_interval_value_renders(self, dialect: str) -> None:
-        sql = await _dry("days(amount, n=3)", agg=_agg(_DAYS, name="days", n="2"), dialect=dialect)
+        sql = await _dry("days(orders.amount, n=3)", agg=_agg(_DAYS, name="days", n="2"), dialect=dialect)
         interval = sqlglot.parse_one(sql, read=dialect).find(exp.Interval)
         assert interval is not None, sql
         assert str(interval.this.this).startswith("3"), sql
@@ -301,7 +301,7 @@ class TestNonLiteralBindingRejected:
         async with seeded_exec_engine(
             dialect="sqlite", seed=_seed, datasets=[_orders(_agg(_SUM_N, name="sum_n", n="2"))],
         ) as (engine, _db):
-            query = _q("sum_n(amount, n=id)")
+            query = _q("sum_n(orders.amount, n=orders.id)")
             with pytest.raises(SqlTemplateError) as ei:
                 await engine.execute(query)
         assert re.search(r"[{'\"]n[}'\"]", str(ei.value)), str(ei.value)

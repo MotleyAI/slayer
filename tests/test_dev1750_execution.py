@@ -239,7 +239,7 @@ class TestNullDimPartitionSurvival:
         #   'hold': Mar (o4 10)=10
         #   NULL  : Feb (o5 4)=4,  Mar (o6 8)=8
         resp = await exec_engine.execute(_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),

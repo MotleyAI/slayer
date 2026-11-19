@@ -24,7 +24,7 @@ from slayer.engine.compile.regroup import (
 from tests._dev1740_fixtures import cm_cte_bodies, dev1740_datasets, gen
 from tests._engine_helpers import _engine_generate
 
-BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
@@ -105,7 +105,7 @@ class TestMultiOutputProducer:
         band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
                 "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         sql = await gen(_q(
-            dimensions=["region", {"field": band, "alias": "band"}],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -113,7 +113,7 @@ class TestMultiOutputProducer:
     async def test_two_dimensions_share_one_producer(self) -> None:
         sql = await gen(_q(
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": BAND, "alias": "band_hi"},
                 {"field": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "alias": "band_n"},
@@ -129,7 +129,7 @@ class TestMultiOutputProducer:
 class TestFilterClassifier:
     async def test_not_over_computed_dim_stays_final(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
             filter=["not (band == 1)"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
@@ -139,14 +139,14 @@ class TestFilterClassifier:
         """Top-level AND conjuncts route independently: the
         one-string form renders identically to the separate-filters form."""
         base_kwargs = dict(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         anded = await gen(_q(
-            filter=["band == 1 and status == 'ok'"], **base_kwargs,
+            filter=["band == 1 and orders.status == 'ok'"], **base_kwargs,
         ))
         separate = await gen(_q(
-            filter=["band == 1", "status == 'ok'"], **base_kwargs,
+            filter=["band == 1", "orders.status == 'ok'"], **base_kwargs,
         ))
         assert anded == separate
 
@@ -154,8 +154,8 @@ class TestFilterClassifier:
         # Lifted: the attached band value and the base column
         # both resolve at row scope, so the OR row-masks before re-aggregation.
         query = _q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
-            filter=["band == 1 or status == 'ok'"],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
+            filter=["band == 1 or orders.status == 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)
@@ -163,8 +163,8 @@ class TestFilterClassifier:
 
     async def test_scalar_call_row_filter_copies_into_producer(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
-            filter=["coalesce(city, 'x') != 'Lyon'"],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
+            filter=["coalesce(orders.city, 'x') != 'Lyon'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert "Lyon" in cm_cte_bodies(sql)
@@ -174,8 +174,8 @@ class TestFilterClassifier:
         # producer CTE (so per-city totals see only ok rows) AND the consumer
         # (so the final GROUP BY counts only ok rows).
         sql = await gen(_q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
-            filter=["status == 'ok'"],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
+            filter=["orders.status == 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert "status" in cm_cte_bodies(sql)
@@ -185,8 +185,8 @@ class TestFilterClassifier:
         # AGGREGATE-phase filter with NO dim-aggregate — untouched routing (d):
         # a HAVING on the final stage, never inside the producer.
         sql = await gen(_q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
-            filter=["sum(amount) > 0"],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
+            filter=["sum(orders.amount) > 0"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert "> 0" not in cm_cte_bodies(sql)
@@ -203,7 +203,7 @@ class TestDiscoveryGuards:
         # from the aggregate's root (customers) — a hard error (F4).
         q = _q(
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": "CASE WHEN sum(customers.spend, partition_by=city) "
                                "> 100 THEN 1 ELSE 0 END", "alias": "band"},
             ],
@@ -215,7 +215,7 @@ class TestDiscoveryGuards:
 
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
         q = _q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises(ValueError, match=r"__regroup__"):
@@ -223,7 +223,7 @@ class TestDiscoveryGuards:
 
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await _gen_with_reserved_column(q)

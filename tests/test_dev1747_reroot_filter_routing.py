@@ -36,11 +36,11 @@ _CROSS_MODEL_MEASURE = {"metric": "sum(customers.spend)", "alias": "cs"}
 FILTER_REACHABLE = "customers.regions.name == 'Alpha'"
 #: Host-local — filters host rows AND pushes into the producer by semi-join
 #: over the inverted orders→customers edge (divergences.md class (c)).
-FILTER_HOST_LOCAL = "status == 'A'"
+FILTER_HOST_LOCAL = "orders.status == 'A'"
 #: Mixes a producer-root-local ref (``customers.tier``) with a cross-path ref
 #: under OR — the D2 shape that STAYS dropped + warned (the old
 #: ambiguous-reverse-hop route to drop+warn is retired; divergences.md class (d)).
-FILTER_MIXED_OR = "customers.tier == 'gold' or status == 'A'"
+FILTER_MIXED_OR = "customers.tier == 'gold' or orders.status == 'A'"
 #: Off the host's forward graph (``orders -> order_tags``) — now REACHABLE from
 #: a CTE rooted at ``customers`` via the inverted hop; pushes by semi-join.
 FILTER_TAGS = "order_tags.name == 'rush'"

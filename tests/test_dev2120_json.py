@@ -65,16 +65,16 @@ async def _rejected(engine: SlayerQueryEngine, expr: str, *, any_of: tuple[str, 
 
 class TestSpellings:
     @pytest.mark.parametrize(("spelling", "canonical"), [
-        ("payload ->> 'a'", "json_value(payload, '$.a')"),
-        ("payload -> 'a' -> 0 ->> 'b'", "json_value(payload, '$.a[0].b')"),
-        ("payload ->> '$.a.b'", "json_value(payload, '$.a.b')"),
+        ("payload ->> 'a'", "json_value(lib.payload, '$.a')"),
+        ("lib.payload -> 'a' -> 0 ->> 'b'", "json_value(payload, '$.a[0].b')"),
+        ("payload ->> '$.a.b'", "json_value(lib.payload, '$.a.b')"),
         ("payload ->> 'unit price'", "json_value(payload, '$.\"unit price\"')"),
-        ("json_extract(payload, '$.a.b')", "json_value(payload, '$.a.b')"),
-        ("json_extract_scalar(payload, '$.a.b')", "json_value(payload, '$.a.b')"),
-        ("json_extract_path_text(payload, 'a', 'b')", "json_value(payload, '$.a.b')"),
-        ("jsonb_extract_path_text(payload, 'a', 'b')", "json_value(payload, '$.a.b')"),
-        ("JSON_VALUE(payload, '$.a')", "json_value(payload, '$.a')"),
-        ("json_value(payload, '$.a' RETURNING INT)", "TRY_CAST(json_value(payload, '$.a') AS INT)"),
+        ("json_extract(payload, '$.a.b')", "json_value(lib.payload, '$.a.b')"),
+        ("json_extract_scalar(payload, '$.a.b')", "json_value(lib.payload, '$.a.b')"),
+        ("json_extract_path_text(payload, 'a', 'b')", "json_value(lib.payload, '$.a.b')"),
+        ("jsonb_extract_path_text(payload, 'a', 'b')", "json_value(lib.payload, '$.a.b')"),
+        ("JSON_VALUE(payload, '$.a')", "json_value(lib.payload, '$.a')"),
+        ("json_value(lib.payload, '$.a' RETURNING INT)", "TRY_CAST(json_value(payload, '$.a') AS INT)"),
         ("json_value(payload, '$.a' returning double)", "TRY_CAST(json_value(payload, '$.a') AS DOUBLE)"),
     ])
     def test_collapses_to_json_value(self, spelling: str, canonical: str) -> None:
@@ -100,8 +100,8 @@ class TestSpellings:
             parse_expr(text)
 
     @pytest.mark.parametrize("text", [
-        "json_extract(payload, '$.a' RETURNING INT)", "json_extract(payload, '$.a', '$.b')",
-        "json_extract_scalar(payload)", "json_value(payload)", "json_value(payload, '$.a' RETURNING JSON)",
+        "json_extract(payload, '$.a' RETURNING INT)", "json_extract(lib.payload, '$.a', '$.b')",
+        "json_extract_scalar(lib.payload)", "json_value(lib.payload)", "json_value(payload, '$.a' RETURNING JSON)",
     ])
     async def test_malformed_call_rejected(self, engine: SlayerQueryEngine, text: str) -> None:
         query = lib_query(text)
@@ -149,14 +149,14 @@ class TestPathSubset:
             parse_expr("payload ->> 'a\tb'")
 
     async def test_non_literal_path_rejected(self, engine: SlayerQueryEngine) -> None:
-        await _rejected(engine, "json_value(payload, prefix)", any_of=("path",))
+        await _rejected(engine, "json_value(lib.payload, lib.prefix)", any_of=("path",))
 
     async def test_variable_path(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(lib_query("json_value(payload, {p})", filter=["id = 1"], variables={"p": "$.a.b"}))
+        resp = await engine.execute(lib_query("json_value(lib.payload, {p})", filter=["lib.id = 1"], variables={"p": "$.a.b"}))
         assert lib_values(resp) == {1: "x"}
 
     async def test_bad_variable_path_rejected(self, engine: SlayerQueryEngine) -> None:
-        await _rejected(engine, "json_value(payload, {p})", any_of=("wildcard", "*"), variables={"p": "$.a[*]"})
+        await _rejected(engine, "json_value(lib.payload, {p})", any_of=("wildcard", "*"), variables={"p": "$.a[*]"})
 
 
 def _metric_query(expression: str, **kw: Any) -> SlayerQuery:
@@ -165,16 +165,16 @@ def _metric_query(expression: str, **kw: Any) -> SlayerQuery:
 
 class TestTyping:
     async def test_typed_sum(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_metric_query("sum(json_value(payload, '$.qty' RETURNING INT))",
-                                                   filter=["id IN (1, 2, 3, 8)"]))
+        resp = await engine.execute(_metric_query("sum(json_value(lib.payload, '$.qty' RETURNING INT))",
+                                                   filter=["lib.id IN (1, 2, 3, 8)"]))
         assert float(resp.data[0]["v"]) == 5
 
     async def test_text_result_keeps_the_numeric_aggregation_error(self, engine: SlayerQueryEngine) -> None:
-        query = _metric_query("sum(json_value(payload, '$.qty'))")
+        query = _metric_query("sum(json_value(lib.payload, '$.qty'))")
         with pytest.raises(SlayerError, match="TRY_CAST"):
             await engine.execute(query)
 
-    @pytest.mark.parametrize("expr", ["json_value(qty, '$.a')", "json_value(ts, '$.a')", "qty ->> 'a'"])
+    @pytest.mark.parametrize("expr", ["json_value(lib.qty, '$.a')", "json_value(lib.ts, '$.a')", "lib.qty ->> 'a'"])
     async def test_non_text_input_rejected(self, engine: SlayerQueryEngine, expr: str) -> None:
         await _rejected(engine, expr, any_of=("json",))
 
@@ -186,7 +186,7 @@ def _json_dataset(*, db_type: Optional[str], type_: DataType = DataType.STRING) 
     return base.model_copy(update={"fields": columns})
 
 
-JSON_VALUE_Q = lib_query("json_value(payload, '$.a')")
+JSON_VALUE_Q = lib_query("json_value(lib.payload, '$.a')")
 
 
 class TestInputForms:
@@ -218,7 +218,7 @@ class TestInputForms:
     ])
     async def test_native_json_column_emits(self, dialect: str, db_type: str) -> None:
         for type_ in (DataType.STRING, DataType.OPAQUE):
-            await emit_lib(lib_query("json_value(payload, '$.a' RETURNING INT)"), dialect=dialect,
+            await emit_lib(lib_query("json_value(lib.payload, '$.a' RETURNING INT)"), dialect=dialect,
                            datasets=[_json_dataset(db_type=db_type, type_=type_)])
 
     async def test_opaque_non_json_column_rejected(self) -> None:
@@ -233,15 +233,15 @@ class TestInputForms:
 
 
 class TestSnowflakeTemporalTryCast:
-    @pytest.mark.parametrize("expr", ["json_value(payload, '$.t' RETURNING DATE)",
-                                      "json_value(payload, '$.t' RETURNING TIMESTAMP)", "TRY_CAST(code AS DATE)"])
+    @pytest.mark.parametrize("expr", ["json_value(lib.payload, '$.t' RETURNING DATE)",
+                                      "json_value(lib.payload, '$.t' RETURNING TIMESTAMP)", "TRY_CAST(lib.code AS DATE)"])
     async def test_digits_are_no_time_point(self, expr: str) -> None:
         # Snowflake reads a digits-only string as epoch seconds.
         sql = "".join((await emit_lib(lib_query(expr), dialect="snowflake")).split())
         assert "'[+-]?[0-9]+')THENNULL" in sql, sql
 
     async def test_numeric_target_is_untouched(self) -> None:
-        sql = await emit_lib(lib_query("TRY_CAST(code AS INT)"), dialect="snowflake")
+        sql = await emit_lib(lib_query("TRY_CAST(lib.code AS INT)"), dialect="snowflake")
         assert "REGEXP_LIKE" not in sql.upper(), sql
 
 
@@ -265,7 +265,7 @@ class TestPostgresVersion:
 
     async def test_profile_probed_for_json_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = patch_profile(monkeypatch, version=(16, 2))
-        await emit_lib(lib_query("lower(word)"), dialect="postgres")
+        await emit_lib(lib_query("lower(lib.word)"), dialect="postgres")
         assert calls == []
         await emit_lib(JSON_VALUE_Q, dialect="postgres")
         assert calls == [1]
@@ -328,9 +328,9 @@ class TestIngestionKeepsJsonDbType:
 
 class TestMySQLJsonValueScalarsOnly:
     async def test_object_array_and_null_read_null(self) -> None:
-        sql = " ".join((await emit_lib(lib_query("json_value(payload, '$.a.b')"), dialect="mysql")).split())
+        sql = " ".join((await emit_lib(lib_query("json_value(lib.payload, '$.a.b')"), dialect="mysql")).split())
         assert "JSON_TYPE(JSON_EXTRACT(lib.payload, '$.a.b')) IN ('OBJECT', 'ARRAY', 'NULL')" in sql, sql
 
     async def test_index_needs_an_array_parent(self) -> None:
-        sql = " ".join((await emit_lib(lib_query("payload -> 'a' -> 0 ->> 'b'"), dialect="mysql")).split())
+        sql = " ".join((await emit_lib(lib_query("lib.payload -> 'a' -> 0 ->> 'b'"), dialect="mysql")).split())
         assert "JSON_TYPE(JSON_EXTRACT(lib.payload, '$.a')) = 'ARRAY'" in sql, sql

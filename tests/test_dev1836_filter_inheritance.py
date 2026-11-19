@@ -43,7 +43,7 @@ class TestAttributableRowFilters:
         AND to the result rows — no warning."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["status"], metrics=[M, CM],
+            dimensions=["orders.status"], metrics=[M, CM],
             filter=["customers.tier = 'gold'"],
             to_many_handling="broadcast",
         )
@@ -70,7 +70,7 @@ class TestUnsafeRowFilters:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
                 dimensions=["customers.tier"], metrics=[M, CM],
-                filter=["channel = 'web'"],
+                filter=["orders.channel = 'web'"],
             ))
         by = rows_by(resp, "customers.tier")
         # Spine: web orders → o1 (c1), o3 (c2), o6 (c4), o7 (orphan).
@@ -91,8 +91,8 @@ class TestUnsafeRowFilters:
         still restricts the result rows."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], metrics=[M, CM],
-            filter=["channel = 'app'"],
+            dimensions=["orders.status"], metrics=[M, CM],
+            filter=["orders.channel = 'app'"],
             to_many_handling="broadcast",
         ))
         by = rows_by(resp, "orders.status")
@@ -133,7 +133,7 @@ class TestAggregatePhaseRouting:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[M],
-            filter=["sum(amount) > 30"],
+            filter=["sum(orders.amount) > 30"],
         ))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("bronze",)}

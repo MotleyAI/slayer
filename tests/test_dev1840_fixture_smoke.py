@@ -86,7 +86,7 @@ class TestGraphExecutes:
 def test_planner_entry_point_builds_the_producer() -> None:
     planned = plan_query(
         query=q(dimensions=["customers.tier"], metrics=[CM],
-                filter=["channel = 'app'"]),
+                filter=["orders.channel = 'app'"]),
         bundle=bundle(),
     )
     assert len(planned.regroup_attach_plans) == 1

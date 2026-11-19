@@ -778,7 +778,7 @@ class TestMultiStageAndByName:
 
 
 class TestRefinedByName:
-    REFINE = {"filter": ["status = 'completed'"]}
+    REFINE = {"filter": ["orders.status = 'completed'"]}
 
     async def _engine_with_saved(self, tmp_path) -> SlayerQueryEngine:
         engine = await _build_engine(tmp_path)

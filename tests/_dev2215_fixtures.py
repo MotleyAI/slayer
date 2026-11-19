@@ -201,13 +201,13 @@ def m(expression: str, name: str = "v") -> dict[str, str]:
     return {"metric": expression, "alias": name}
 
 
-FIRST_LAST = [m("first(status, updated_at)", "f"), m("last(status, updated_at)", "l")]
+FIRST_LAST = [m("first(events.status, events.updated_at)", "f"), m("last(events.status, events.updated_at)", "l")]
 #: customer_id → (first, last) over the events seed.
 FIRST_LAST_BY_CUSTOMER = {1: ("a", "c"), 2: (None, None), 3: ("p", None)}
 
 
 def events_query() -> SlayerQuery:
-    return q(population="events", dimensions=["customer_id"], metrics=FIRST_LAST)
+    return q(population="events", dimensions=["events.customer_id"], metrics=FIRST_LAST)
 
 
 async def check_events(engine: SlayerQueryEngine) -> None:
@@ -218,7 +218,7 @@ async def check_events(engine: SlayerQueryEngine) -> None:
 
 def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{dataset}.{name}"]
+    return resp.data[0][name]
 
 
 def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:
@@ -235,7 +235,7 @@ def day(value: Any) -> Optional[str]:
 
 
 def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str = "orders") -> dict[Any, Any]:
-    out = {r[f"{dataset}.{key}"]: r[f"{dataset}.{value}"] for r in resp.data}
+    out = {r[f"{dataset}.{key}"]: r[value] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 

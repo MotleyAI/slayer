@@ -83,7 +83,7 @@ As we want to use a result of a child query as a dimension, we use a [dynamic re
     "population": "orders",
     "extensions": [{
       "dataset": "orders",
-      "relationships": [{"to": "customer_activity", "from_columns": ["orders.customer_id"], "to_columns": ["orders.customer_id"]}]
+      "relationships": [{"to": "customer_activity", "from_columns": ["customer_id"], "to_columns": ["customer_id"]}]
     }],
     "metrics": ["count(orders.*)", "sum(orders.order_total)"],
     "dimensions": [{"field": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "alias": "activity_bucket"}]
@@ -100,17 +100,17 @@ Stages in a query list are not restricted to a linear pipeline. Any stage may us
 ```json
 [
   {
-    "customers.name": "kpis",
+    "name": "kpis",
     "population": "orders",
     "dimensions": ["orders.customer_id"],
     "metrics": ["sum(orders.order_total)"]
   },
   {
-    "customers.name": "tagged",
+    "name": "tagged",
     "population": "customers",
     "extensions": [{
       "dataset": "customers",
-      "relationships": [{"to": "kpis", "from_columns": ["id"], "to_columns": ["orders.customer_id"]}]
+      "relationships": [{"to": "kpis", "from_columns": ["id"], "to_columns": ["customer_id"]}]
     }],
     "dimensions": ["customers.name", "kpis.order_total_sum"]
   },

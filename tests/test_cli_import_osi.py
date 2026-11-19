@@ -167,7 +167,7 @@ def test_current_spec_document_imports_end_to_end(duck_store, capsys) -> None:
     loaded = {name: run_sync(storage.get_dataset(name, data_source=DATASOURCE)) for name in ("orders", "customers")}
     [home] = [name for name, model in loaded.items()
               if model is not None and any(x.name == "net_amount" for x in model.metrics)]
-    rows = run_sync(_rows(store, db, {"population": home, "metrics": ["net_amount", "amount_per_customer"]}))
+    rows = run_sync(_rows(store, db, {"population": home, "metrics": [f"{home}.net_amount", f"{home}.amount_per_customer"]}))
     assert float(rows[0][f"{home}.net_amount"]) == pytest.approx(19.5)
     assert float(rows[0][f"{home}.amount_per_customer"]) == pytest.approx(11)
 

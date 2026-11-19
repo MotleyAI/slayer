@@ -24,7 +24,7 @@ from slayer.sql.dialects import get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from tests._dev1739_fixtures import customers_dataset, make_exec_engine
 
-REVENUE = {"metric": "sum(amount)", "alias": "revenue"}
+REVENUE = {"metric": "sum(orders.amount)", "alias": "revenue"}
 REGION_ID = {"alias": "region_id", "field": "customers.region_id"}
 REGION_NAME = {"alias": "region_name", "field": "customers.regions.name"}
 RID = {"alias": "rid", "field": "customers.region_id"}
@@ -58,20 +58,20 @@ def _rows(resp, *keys: str) -> List[tuple]:
 SINGLE_NAMED_ONE_HOP = {"population": "orders", "dimensions": [REGION_ID], "metrics": [REVENUE]}
 STAGE_NAMED_ONE_HOP = [
     _stage(dimensions=[REGION_ID, "customer_id"]),
-    _outer(dimensions=["region_id", "customer_id", "revenue"]),
+    _outer(dimensions=["region_id", "customer_id", "cr.revenue"]),
 ]
 STAGE_NAMED_TWO_HOP = [
     _stage(dimensions=[REGION_NAME]),
-    _outer(dimensions=["region_name", "revenue"]),
+    _outer(dimensions=["cr.region_name", "cr.revenue"]),
 ]
 STAGE_DOWNSTREAM_AGG = [
     _stage(dimensions=[RID, "customer_id"]),
-    _outer(dimensions=["rid"], metrics=[{"metric": "sum(revenue)", "alias": "tot"}]),
+    _outer(dimensions=["rid"], metrics=[{"metric": "sum(cr.revenue)", "alias": "tot"}]),
 ]
 SINGLE_UNNAMED_PATH = {"population": "orders", "dimensions": [UNNAMED_PATH], "metrics": [REVENUE]}
 STAGE_UNNAMED_PATH = [
     _stage(dimensions=[UNNAMED_PATH]),
-    _outer(dimensions=["customers__region_id", "revenue"]),
+    _outer(dimensions=["cr.customers__region_id", "cr.revenue"]),
 ]
 SINGLE_PLAIN_AND_NAMED = {
     "population": "orders",
@@ -80,7 +80,7 @@ SINGLE_PLAIN_AND_NAMED = {
 }
 STAGE_PLAIN_AND_NAMED: list[SlayerQuery | dict] = [
     _stage(dimensions=["customers.region_id", "status", RID]),
-    _outer(dimensions=["customers__region_id", "status", "rid", "revenue"]),
+    _outer(dimensions=["cr.customers__region_id", "status", "rid", "cr.revenue"]),
 ]
 SINGLE_ORDER_BY_NAME = {
     **SINGLE_NAMED_ONE_HOP, "dimensions": [RID],
@@ -89,11 +89,11 @@ SINGLE_ORDER_BY_NAME = {
 SINGLE_FILTER_BY_NAME = {**SINGLE_NAMED_ONE_HOP, "dimensions": [RID], "filter": ["rid = 1"]}
 STAGE_PLAIN_PATH = [
     _stage(dimensions=["customers.region_id"]),
-    _outer(dimensions=["customers__region_id", "revenue"]),
+    _outer(dimensions=["cr.customers__region_id", "cr.revenue"]),
 ]
 STAGE_LOCAL_RENAME = [
     _stage(dimensions=[{"alias": "cust", "field": "customer_id"}]),
-    _outer(dimensions=["cust", "revenue"]),
+    _outer(dimensions=["cr.cust", "cr.revenue"]),
 ]
 QUERY_BACKED_OUTER = {"population": "cr", "dimensions": ["cr.region_id", "cr.revenue"]}
 
@@ -257,7 +257,7 @@ async def _assert_parity(engine: SlayerQueryEngine, payload: Any) -> None:
 async def test_stage_column_names(exec_engine, dimension, flat, public) -> None:
     rendered = await _plan(exec_engine, [
         _stage(dimensions=[dimension]),
-        _outer(dimensions=[flat, "revenue"]),
+        _outer(dimensions=[flat, "cr.revenue"]),
     ])
     schema = next(
         p.stage_schema for p in rendered.planned_list

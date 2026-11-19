@@ -31,7 +31,7 @@ AGG_NAMES = sorted(BUILTIN_AGGREGATIONS | set(AGGREGATION_ALIASES))
 #: (colon text, its twin) — one colon span each.
 SPANS = [
     pytest.param("amount:sum", "sum(amount)", id="measure"),
-    pytest.param("*:count", "count(*)", id="star"),
+    pytest.param("*:count", "count(orders.*)", id="star"),
     pytest.param("customers.*:count", "count(customers.*)", id="cross-model-star"),
     pytest.param("customers.regions.population:sum", "sum(customers.regions.population)", id="join-path"),
     pytest.param('"order total":sum', 'sum("order total")', id="quoted-source"),
@@ -66,7 +66,7 @@ class TestParser:
     @pytest.mark.parametrize(("text", "span", "twin"), [
         pytest.param("amount:sum > 100", "amount:sum", "sum(amount)", id="comparison"),
         pytest.param("rank(amount:sum, direction='desc')", "amount:sum", "sum(amount)", id="transform-input"),
-        pytest.param("sum(amount) / *:count", "*:count", "count(*)", id="arithmetic"),
+        pytest.param("sum(amount) / *:count", "*:count", "count(orders.*)", id="arithmetic"),
         pytest.param("amount:sum FILTER (WHERE status = 'paid')", "amount:sum", "sum(amount)", id="filter-clause"),
     ])
     def test_span_inside_larger_text(self, text: str, span: str, twin: str) -> None:
@@ -77,9 +77,9 @@ class TestParser:
         assert isinstance(_refused("amount:sum"), ValueError)
 
     @pytest.mark.parametrize("text", [
-        "note = 'a:sum'",
-        "sum(amount::INT)",
-        "sum(amount) FILTER (WHERE note = 'x:count')",
+        "orders.note = 'a:sum'",
+        "sum(orders.amount::INT)",
+        "sum(orders.amount) FILTER (WHERE orders.note = 'x:count')",
         '"x:sum"',
         "sum(amount) -- x:sum",
     ])
@@ -107,7 +107,7 @@ QUERY_POSITIONS = [
     pytest.param({"metrics": ["amount:sum"]}, "amount:sum", "sum(amount)", id="measure"),
     pytest.param({"metrics": [{"alias": "t", "metric": "amount:sum"}]}, "amount:sum", "sum(amount)",
                  id="named-measure"),
-    pytest.param({"metrics": ["*:count"]}, "*:count", "count(*)", id="star"),
+    pytest.param({"metrics": ["*:count"]}, "*:count", "count(orders.*)", id="star"),
     pytest.param({"metrics": ["customers.*:count"]}, "customers.*:count", "count(customers.*)",
                  id="cross-model-star"),
     pytest.param({"metrics": ["price:percentile(p=0.9)"]}, "price:percentile(p=0.9)", "percentile(price, p=0.9)",
@@ -116,29 +116,29 @@ QUERY_POSITIONS = [
                  "last(balance, updated_at)", id="positional-param"),
     pytest.param({"metrics": ["amount:sum(window='30d')"], "time_dimensions": ["date_trunc('month', created_at)"]},
                  "amount:sum(window='30d')", "sum(amount, window='30d')", id="window"),
-    pytest.param({"metrics": ["count(*)"], "filter": ["amount:sum > 100"]}, "amount:sum", "sum(amount)",
+    pytest.param({"metrics": ["count(orders.*)"], "filter": ["amount:sum > 100"]}, "amount:sum", "sum(amount)",
                  id="filter"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["status"],
                   "order": [{"field": "amount:sum", "direction": "desc"}]}, "amount:sum", "sum(amount)",
                  id="order-string"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["status"],
                   "order": [{"field": "amount:sum", "direction": "desc"}]}, "amount:sum", "sum(amount)",
                  id="order-object"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"], "order": [{"amount:sum": "desc"}]},
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["status"], "order": [{"amount:sum": "desc"}]},
                  "amount:sum", "sum(amount)", id="order-shorthand"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["created_at:month"]}, "created_at:month",
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["created_at:month"]}, "created_at:month",
                  "date_trunc('month', created_at)", id="dimension"),
-    pytest.param({"metrics": ["count(*)"], "time_dimensions": ["created_at:month"]}, "created_at:month",
+    pytest.param({"metrics": ["count(orders.*)"], "time_dimensions": ["created_at:month"]}, "created_at:month",
                  "date_trunc('month', created_at)", id="time-dimension"),
-    pytest.param({"metrics": ["count(*)"], "time_dimensions": [{"field": "created_at:month",
+    pytest.param({"metrics": ["count(orders.*)"], "time_dimensions": [{"field": "created_at:month",
                                                                   "granularity": "month"}]},
                  "created_at:month", "date_trunc('month', created_at)", id="time-dimension-column"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["status"],
                   "order": [{"field": "customers.created_at:month", "direction": "asc"}]},
                  "customers.created_at:month", "date_trunc('month', customers.created_at)", id="order-granularity"),
-    pytest.param({"metrics": ["count(*)"], "main_time_dimension": "created_at:month"}, "created_at:month",
+    pytest.param({"metrics": ["count(orders.*)"], "main_time_dimension": "created_at:month"}, "created_at:month",
                  "date_trunc('month', created_at)", id="main-time-dimension"),
-    pytest.param({"metrics": ["count(*)"],
+    pytest.param({"metrics": ["count(orders.*)"],
                   "dimensions": [{"alias": "d", "field": "amount:sum(partition_by=region)"}]},
                  "amount:sum(partition_by=region)", "sum(amount, partition_by=region)", id="computed-dimension"),
     pytest.param({"population": {"dataset": "orders", "metrics": [{"name": "m", "expression": "amount:sum"}]},
@@ -203,7 +203,7 @@ class TestSaves:
         doc = {"name": "order_count", "data_source": DS,
                "source_queries": [{"population": "orders", "metrics": [{"alias": "n", "metric": "*:count"}]}]}
         exc = await _save_failure(storage, doc)
-        assert_colon_refused(exc, span="*:count", twin="count(*)")
+        assert_colon_refused(exc, span="*:count", twin="count(orders.*)")
         assert await storage.get_dataset("order_count", data_source=DS) is None
 
 

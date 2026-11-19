@@ -38,7 +38,7 @@ def _q(expression: str, *, date_range: bool = False):
                          granularity=TimeGranularity.MONTH,
                          date_range=["2024-02-01", "2024-03-31"])]
           if date_range else month_td())
-    return monthly_q(dimensions=["region"], time_dimensions=td,
+    return monthly_q(dimensions=["monthly.region"], time_dimensions=td,
                      metrics=[QueryMetric(metric=f"time_shift({expression}, -1)", alias="t")])
 
 

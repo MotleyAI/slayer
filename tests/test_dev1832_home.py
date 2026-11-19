@@ -112,7 +112,7 @@ class TestHomeIsSpellingInvariant:
             "sum(customers.spend - customers.regions.pop)") == ("customers",)
 
     @pytest.mark.parametrize("formula,expected", [
-        ("sum(amount - cost)", ()),                       # both host-local
+        ("sum(orders.amount - orders.cost)", ()),                       # both host-local
         ("sum(customers.spend - customers.discount)", ("customers",)),
     ])
     def test_home_path_matrix(self, formula, expected):
@@ -136,7 +136,7 @@ class TestAttachedConstituentGrainWidensTheHome:
 
     def test_ungrained_constituent_takes_the_query_dimension(self):
         assert _home_path(
-            "sum(customers.discount * avg(amount))", dimensions=["status"]) == ()
+            "sum(customers.discount * avg(amount))", dimensions=["orders.status"]) == ()
         assert _home_path(
             "sum(customers.discount * avg(amount))",
             dimensions=["customers.tier"]) == ("customers",)

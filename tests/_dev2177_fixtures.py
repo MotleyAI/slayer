@@ -24,7 +24,7 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._mcp_idiom_fixtures import idiom_datasets
 
-PAID = "status = 'paid'"
+PAID = "orders.status = 'paid'"
 #: Orders 1–11: amount and the integer of ``status = 'paid'``.
 _AMOUNTS = [10, 20, 45, 100, 50, 70, 30, 60, 25, 75, 5]
 _PAID01 = [1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1]
@@ -69,7 +69,7 @@ def num(value: Any) -> float | None:
 
 def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{dataset}.{name}"]
+    return resp.data[0][name]
 
 
 # --------------------------------------------------------------------------- #
@@ -98,7 +98,7 @@ async def check_boolean_weight_windowed(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(q(time_dimensions=MONTH, metrics=[
         m(f"weighted_avg(amount, weight={PAID}, window='90d')"),
     ]))
-    restricted = await engine.execute(q(time_dimensions=MONTH, metrics=[m("avg(amount, window='90d')")],
+    restricted = await engine.execute(q(time_dimensions=MONTH, metrics=[m("avg(orders.amount, window='90d')")],
                                          filter=[PAID]))
     got = {str(r["orders.order_date"])[:7]: num(r["v"]) for r in resp.data}
     want = {str(r["orders.order_date"])[:7]: num(r["v"]) for r in restricted.data}
@@ -109,7 +109,7 @@ async def check_boolean_weight_windowed(engine: SlayerQueryEngine) -> None:
 
 
 async def check_boolean_weight_partitioned(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(dimensions=["customer_id", "status"], metrics=[
+    resp = await engine.execute(q(dimensions=["orders.customer_id", "orders.status"], metrics=[
         m(f"weighted_avg(amount, weight={PAID}, partition_by=customer_id)"),
     ]))
     assert len(resp.data) == 6, resp.data
@@ -129,7 +129,7 @@ async def check_boolean_weight_cross_dataset(engine: SlayerQueryEngine) -> None:
 async def check_boolean_weight_associated(engine: SlayerQueryEngine) -> None:
     """The association producer picks the boolean parameter per entity before weighting."""
     resp = await engine.execute(q(
-        dimensions=["status"], to_many_handling="associate",
+        dimensions=["orders.status"], to_many_handling="associate",
         metrics=[m("weighted_avg(customers.credit, weight=customers.credit > 150)")],
     ))
     got = {r["orders.status"]: num(r["v"]) for r in resp.data}
@@ -145,7 +145,7 @@ async def check_custom_aggregation_receives_raw_boolean(engine: SlayerQueryEngin
 async def check_builtin_named_override_lowers(engine: SlayerQueryEngine) -> None:
     """Regions 2, 3 and 4 weigh 1, North 0."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": "regions", "metrics": [m("weighted_avg(rank, weight=name <> 'North')")],
+        "population": "regions", "metrics": [m("weighted_avg(regions.rank, weight=regions.name <> 'North')")],
     }))
     assert num(single(resp, dataset="regions")) == pytest.approx(3.0), resp.sql
 
@@ -161,9 +161,9 @@ BOOLEAN_PARAMETER_CHECKS = [
 # Conditional branch types (spec: queries/mixed-type-coercion)
 # --------------------------------------------------------------------------- #
 CONCAT_BRANCHES = [
-    "CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END",
-    "CASE WHEN amount > 1 THEN concat('a', 'b') ELSE amount END",
-    "CASE WHEN amount > 1 THEN status || 'b' ELSE amount END",
+    "CASE WHEN orders.amount > 1 THEN 'a' || 'b' ELSE orders.amount END",
+    "CASE WHEN orders.amount > 1 THEN concat('a', 'b') ELSE orders.amount END",
+    "CASE WHEN orders.amount > 1 THEN orders.status || 'b' ELSE orders.amount END",
 ]
 
 

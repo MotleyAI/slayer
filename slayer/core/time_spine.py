@@ -152,18 +152,17 @@ def names_spine(ref: str) -> bool:
     return ref.split(".")[0] == TIME_SPINE_DATASET
 
 
-def reads_spine(text: str, *, root: Optional[str]) -> bool:
-    """A Mode-B text reading the spine by a dotted path from ``root``."""
-    return any(len(path) > 1 and path[0] == TIME_SPINE_DATASET for path in text_paths(text, root=root))
+def reads_spine(text: str) -> bool:
+    """A query text reading the spine: a dotted reference anchored at it."""
+    return any(len(path) > 1 and path[0] == TIME_SPINE_DATASET for path in text_paths(text, root=None))
 
 
 def is_spine_query(query: SlayerQuery) -> bool:
     """A query rooted at the spine, or reading it in a time dimension, dimension or filter."""
     dims = [d.field for d in query.dimensions or []]
     tds = [td.field for td in query.time_dimensions or []]
-    root = query.population_name
-    return root == TIME_SPINE_DATASET or any(
-        reads_spine(t, root=root) for t in [*dims, *tds, *(query.filter_conditions)]
+    return query.population_name == TIME_SPINE_DATASET or any(
+        reads_spine(t) for t in [*dims, *tds, *(query.filter_conditions)]
     )
 
 

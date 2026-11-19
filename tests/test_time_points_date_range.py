@@ -81,7 +81,7 @@ class TestBounds:
             await ids_with_range(engine, ["2025-01-01 10:00:00", None], column="d", granularity="day")
 
     async def test_monthly_buckets_with_open_upper(self, engine) -> None:
-        got = await monthly(engine, metrics=[{"metric": "sum(amount)", "alias": "s"}], date_range=["2026-06", None])
+        got = await monthly(engine, metrics=[{"metric": "sum(ev.amount)", "alias": "s"}], date_range=["2026-06", None])
         assert set(got) == {t.strftime("%Y-%m") for t in map(ev_dt, EV_TS) if t >= D(2026, 6, 1)}
 
 

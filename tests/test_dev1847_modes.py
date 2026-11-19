@@ -41,7 +41,7 @@ async def exec_engine(request):
 
 
 def _q(mode=None):
-    kw = {"dimensions": ["region"], "metrics": [reagg("avg", INNER_CITY, name="acc")]}
+    kw = {"dimensions": ["sales.region"], "metrics": [reagg("avg", INNER_CITY, name="acc")]}
     if mode is not None:
         kw["to_many_handling"] = mode
     return sales_q(**kw)
@@ -110,7 +110,7 @@ class TestExplicitOuterKeyUnattributable:
         # product is a query dimension but not a function of the [city,region]
         # operand cells, so it is unattributable to the operand dataset.
         return sales_q(
-            dimensions=["region", "product"], to_many_handling=mode,
+            dimensions=["sales.region", "sales.product"], to_many_handling=mode,
             metrics=[reagg("avg", INNER_CR, name="acc", partition_by="product")])
 
     async def test_broadcast_mode_refuses(self, exec_engine):
@@ -137,7 +137,7 @@ class TestExpressionGrainNonTransitivity:
         carries its band's cell value and region broadcasts with a warning."""
         band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         resp = await exec_engine.execute(sales_q(
-            dimensions=[band, "region"],
+            dimensions=[band, "sales.region"],
             metrics=[QueryMetric(
                 metric="avg(sum(sales.amount, partition_by=spend_band))", alias="abt")],
             to_many_handling="broadcast"))

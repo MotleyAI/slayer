@@ -47,7 +47,7 @@ class TestKeywordOrComparison:
         assert await _value(engine, "weighted_avg(amount, weight = qty)") == pytest.approx(
             await _value(engine, "weighted_avg(amount, weight=qty)"))
 
-    @pytest.mark.parametrize("formula", ["sum((weight = 1))", 'sum("weight" = 1)'])
+    @pytest.mark.parametrize("formula", ["sum((orders.weight = 1))", 'sum(orders."weight" = 1)'])
     async def test_parenthesised_or_quoted_left_side_is_a_comparison(self, engine: SlayerQueryEngine,
                                                                       formula: str) -> None:
         assert await _value(engine, formula) == 3.0
@@ -65,18 +65,18 @@ class TestKeywordOrComparison:
             await _value(engine, "corr(amount, iif(qty = 1, 1, 0))"))
 
     async def test_duplicate_keyword_after_classification(self, engine: SlayerQueryEngine) -> None:
-        query = q(metrics=[m("weighted_avg(amount, weight = qty, WEIGHT = qty)")])
+        query = q(metrics=[m("weighted_avg(orders.amount, weight = orders.qty, WEIGHT = orders.qty)")])
         with pytest.raises(SlayerError, match="(?i)weight"):
             await engine.execute(query)
 
     async def test_positional_after_keyword_after_classification(self, engine: SlayerQueryEngine) -> None:
-        query = q(metrics=[m("weighted_avg(weight = qty, amount)")])
+        query = q(metrics=[m("weighted_avg(weight = orders.qty, orders.amount)")])
         with pytest.raises(SlayerError):
             await engine.execute(query)
 
     async def test_transform_parameters(self, engine: SlayerQueryEngine) -> None:
-        keyword = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(amount), PERIODS = -1)")]))
-        plain = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(amount), -1)")]))
+        keyword = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(orders.amount), PERIODS = -1)")]))
+        plain = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(orders.amount), -1)")]))
         assert keyword.data == plain.data
 
     async def test_comparison_inside_a_scalar_call(self, engine: SlayerQueryEngine) -> None:
@@ -116,7 +116,7 @@ class TestAggIsReserved:
         async with dev2215_engine("sqlite", datasets=[with_column, with_measure]) as eng:
             await eng.storage.save_dataset(with_column)
             await eng.storage.save_dataset(with_measure)
-            column = await eng.execute(q(metrics=[m("sum(agg)")]))
-            measure = await eng.execute(q(population="totals", metrics=["agg"]))
+            column = await eng.execute(q(metrics=[m("sum(orders.agg)")]))
+            measure = await eng.execute(q(population="totals", metrics=["totals.agg"]))
         assert num(single(column)) == 160.0
         assert num(measure.data[0]["totals.agg"]) == 160.0

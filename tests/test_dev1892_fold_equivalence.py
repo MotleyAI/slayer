@@ -80,7 +80,7 @@ class TestBaseValueFoldRegression:
     async def test_star_count_still_counts_distinct_entities(self, assoc_engine):
         """The fold's no-value (``count(*)``) branch is unchanged."""
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="count(customers.*)", alias="nc")]))
         vals = _vals(resp, "nc")
         for status, n in ASSOC_COUNT_BY_STATUS.items():
@@ -91,7 +91,7 @@ class TestBaseValueFoldRegression:
         (regions.name='North') restricts the association identically after the
         fold."""
         resp = await toone_filter_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(customers.north_spend)", alias="ns")]))
         vals = _vals(resp, "ns")
         for status, spend in NORTH_SPEND_BY_STATUS.items():
@@ -104,7 +104,7 @@ class TestParameterOverSourceShapes:
         weight, picked once per entity; NULL-region c4 contributes a NULL numerator
         term."""
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="weighted_avg(customers.regions.pop, weight=customers.spend)",
                 alias="w")]))
@@ -117,7 +117,7 @@ class TestParameterOverSourceShapes:
         even though the host (orders) also declares a ``spend`` column — the
         owner-anchored default, never the host's per-order value."""
         resp = await shared_default_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum(customers.spend)", alias="w")]))
         vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
@@ -127,7 +127,7 @@ class TestParameterOverSourceShapes:
         """An expression default (``spend * 1``) anchors on the owner (customers)
         and evaluates once per entity — SUM(spend * spend)."""
         resp = await expr_default_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum2(customers.spend)", alias="w")]))
         vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
@@ -138,7 +138,7 @@ class TestParameterOverSourceShapes:
         owner (customers) and joins its hop, picked once per entity —
         SUM(spend * pop)."""
         resp = await toone_default_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum3(customers.spend)", alias="w")]))
         vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM3_BY_STATUS.items():

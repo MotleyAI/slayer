@@ -63,8 +63,8 @@ MEASURE_REQUIRED_FAMILY = {k: "cmgrain" for k in CM_PARTITIONED_MEASURES}
 
 #: A local ratio composite and a transform over it.
 RATIO_MEASURES = {
-    "ratio": "sum(amount) / count(*)",
-    "ratio_cumsum": "cumsum(sum(amount) / count(*))",
+    "ratio": "sum(orders.amount) / count(orders.*)",
+    "ratio_cumsum": "cumsum(sum(orders.amount) / count(orders.*))",
 }
 TD_RATIO = frozenset({"ratio_cumsum"})
 
@@ -84,8 +84,8 @@ LAW_DIM_FAMILY_DIMS = {
 #: Row-level filter pool (tag → predicate; ``f0`` = unfiltered).
 FILTERS = {
     "f0": None,
-    "fr": "region = 'North'",
-    "fs": "status = 'ok'",
+    "fr": "orders.region = 'North'",
+    "fs": "orders.status = 'ok'",
     "fc": "customers.tier = 'gold'",
 }
 
@@ -111,11 +111,11 @@ OPERAND_GRAIN = {
 
 #: Broadcast-coherence operand families (design D4) × arithmetic ops.
 OPERANDS = {
-    "plain": "sum(amount)",
-    "part_region": "sum(amount, partition_by=region)",
-    "part_city": "sum(amount, partition_by=city)",
-    "last_part": "last(amount, partition_by=region)",
-    "win_part": "sum(amount, window='90d', partition_by=region)",
+    "plain": "sum(orders.amount)",
+    "part_region": "sum(orders.amount, partition_by=orders.region)",
+    "part_city": "sum(orders.amount, partition_by=orders.city)",
+    "last_part": "last(orders.amount, partition_by=orders.region)",
+    "win_part": "sum(orders.amount, window='90d', partition_by=orders.region)",
     "cm": "sum(customers.spend)",
     "cm_part": CM_PARTITIONED_MEASURES["cm_part"],
     "cm_last": CM_PARTITIONED_MEASURES["cm_last"],

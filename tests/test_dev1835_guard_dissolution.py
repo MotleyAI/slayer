@@ -45,7 +45,7 @@ async def exec_backend(request):
 
 def _by_region_month(resp, col: str) -> dict:
     return {
-        (r["orders.region"], month_key(r["orders.ordered_at"])): r[f"orders.{col}"]
+        (r["orders.region"], month_key(r["orders.ordered_at"])): r[col]
         for r in resp.data
     }
 
@@ -123,7 +123,7 @@ class TestWindowedFilters:
         resp = await _run_x(
             engine, dialect,
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            filters=["sum(amount, window='90d') > 40"],
+            filters=["sum(orders.amount, window='90d') > 40"],
         )
         _assert_map(_by_region_month(resp, "m"), {
             ("North", "2024-02"): 70.0, ("South", "2024-03"): 25.0,
@@ -137,7 +137,7 @@ class TestWindowedFilters:
         resp = await _run_x(
             engine, dialect,
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            filters=["sum(amount, window='90d') > sum(amount)"],
+            filters=["sum(orders.amount, window='90d') > sum(orders.amount)"],
         )
         _assert_map(_by_region_month(resp, "m"), {
             ("North", "2024-02"): 70.0, ("South", "2024-03"): 25.0,
@@ -150,7 +150,7 @@ class TestWindowedFilters:
         resp = await _run_x(
             engine, dialect,
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            filters=["sum(amount, window='90d') > 40 and status = 'ok'"],
+            filters=["sum(orders.amount, window='90d') > 40 and orders.status = 'ok'"],
         )
         # OK rows only: South loses its March bucket; the windowed values are
         # computed over the OK population, then > 40 keeps (N,Feb) and (NULL,Mar).
@@ -163,7 +163,7 @@ class TestWindowedFilters:
         resp = await _run_x(
             engine, dialect,
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            filters=["sum(amount, window='90d') > 40", "status = 'ok'"],
+            filters=["sum(orders.amount, window='90d') > 40", "orders.status = 'ok'"],
         )
         _assert_map(_by_region_month(resp, "m"), {
             ("North", "2024-02"): 70.0, (None, "2024-03"): 60.0,
@@ -176,8 +176,8 @@ class TestWindowedFilters:
         without changing meaning — it fails as the position typing error."""
         _, engine = exec_backend
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            filter=["sum(amount, window='90d') > 40 or status = 'ok'"],
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            filter=["sum(orders.amount, window='90d') > 40 or orders.status = 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         with pytest.raises(ValueError, match="neither a field nor a metric"):

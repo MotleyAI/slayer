@@ -64,12 +64,12 @@ async def exec_backend(request):
 
 
 ATTACH_MEASURES = {
-    "plain": "sum(amount)",
-    "part": "sum(amount, partition_by=region)",
-    "win_part": "sum(amount, window='90d', partition_by=region)",
-    "last_part": "last(amount, partition_by=region)",
-    "wm": "sum(amount, window='1y')",
-    "rk": "last(amount)",
+    "plain": "sum(orders.amount)",
+    "part": "sum(orders.amount, partition_by=orders.region)",
+    "win_part": "sum(orders.amount, window='90d', partition_by=orders.region)",
+    "last_part": "last(orders.amount, partition_by=orders.region)",
+    "wm": "sum(orders.amount, window='1y')",
+    "rk": "last(orders.amount)",
     "cm": "sum(customers.spend)",
 }
 TD_ATTACH = frozenset({"win_part", "wm"})
@@ -130,7 +130,7 @@ def _expected_maps(family: str, meas: str):
 def _keyed(resp, *, family: str, with_month: bool, cols=("m", "x")) -> dict:
     out = {
         dim_key(r, family=family, with_month=with_month):
-            tuple(r[f"orders.{c}"] for c in cols)
+            tuple(r[c] for c in cols)
         for r in resp.data
     }
     # Codex F5 — a dict build silently collapses duplicate group keys; the
@@ -291,7 +291,7 @@ class TestPartitionedShiftFix:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
@@ -316,7 +316,7 @@ class TestPartitionedShiftFix:
     ) -> None:
         dialect, engine = exec_backend
         dry = await engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),

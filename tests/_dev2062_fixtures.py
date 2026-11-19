@@ -178,7 +178,7 @@ def month_key(value) -> str:
 
 def by_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "order_date" in k)
-    out = {month_key(r[tkey]): r[f"orders.{name}"] for r in resp.data}
+    out = {month_key(r[tkey]): r[name] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one month"
     return out
 

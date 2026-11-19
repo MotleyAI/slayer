@@ -133,14 +133,14 @@ _INVARIANT_QUERIES = [
          filter=[f"change({CM}) + sum(amount) > 0"]),
     # a row-typed and a measure-typed mask together
     dict(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-         filter=["amount > 5", "sum(amount) > 50"]),
+         filter=["orders.amount > 5", "sum(orders.amount) > 50"]),
     # ORDER-BY key over a transform composite (an order slot must be staged)
     dict(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
          order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}]),
     # the alternation class (D10): a transform over a composite over a transform,
     # beside the projected composite — the dev1859 stall shape
     dict(metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="ch")],
-         filter=["last(change(sum(amount))) < 0"]),
+         filter=["last(change(sum(orders.amount))) < 0"]),
     dict(metrics=[QueryMetric(metric="last(change(cumsum(sum(orders.amount))))", alias="t")]),
 ]
 
@@ -256,7 +256,7 @@ class TestConcreteStages:
         assert comp.stage == Stage(kind=StageKind.COMBINED)
 
     def test_computed_dimension_is_base(self) -> None:
-        pq = _plan(dimensions=[{"field": "amount * 2", "alias": "amt2"}],
+        pq = _plan(dimensions=[{"field": "orders.amount * 2", "alias": "amt2"}],
                    metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")], time_dimensions=[])
         [dim] = [s for s in pq.row_slots if s.is_dimension and isinstance(s.key, ArithmeticKey)]
         assert dim.stage == Stage(kind=StageKind.BASE)
@@ -267,7 +267,7 @@ class TestConcreteStages:
 # --------------------------------------------------------------------------- #
 _LOCAL_STALL: dict = dict(
     metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="ch")],
-    filter=["last(change(sum(amount))) < 0"],
+    filter=["last(change(sum(orders.amount))) < 0"],
 )
 
 
@@ -306,10 +306,10 @@ class TestTransparentCompositeLevels:
         """The same term carries the same stage with and without ``change(x)``
         projected (interning parity)."""
         without = _plan(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-                        filter=["last(change(sum(amount))) < 0"])
+                        filter=["last(change(sum(orders.amount))) < 0"])
         with_proj = _plan(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a"),
                                     QueryMetric(metric="change(sum(orders.amount))", alias="ch")],
-                          filter=["last(change(sum(amount))) < 0"])
+                          filter=["last(change(sum(orders.amount))) < 0"])
         a = {s.key: s.stage for s in _all_slots(without)}
         b = {s.key: s.stage for s in _all_slots(with_proj)}
         shared = set(a) & set(b)
@@ -362,7 +362,7 @@ class TestNeedsColumn:
         """A measure mask over a hidden ``last(change(x))`` marks ``last`` (mask
         dep) and its ``time_shift`` (read by a later level) as columns."""
         pq = _plan(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-                   filter=["last(change(sum(amount))) < 0"])
+                   filter=["last(change(sum(orders.amount))) < 0"])
         [last] = [s for s in _transform_slots(pq) if _op(s) == "last"]
         [ts] = [s for s in _transform_slots(pq) if _op(s) == "time_shift"]
         assert last.needs_field is True

@@ -48,8 +48,8 @@ def _rows(resp, names: list[str], *, column: str = "order_date", width: int = 10
 class TestCustomSteps:
     async def test_shift_and_change_by_the_fiscal_year(self, cg) -> None:
         resp = await cg.execute(_orders(granularity="fiscal_year", metrics=[
-            m("time_shift(sum(amount), -1)", "prev"), m("change(sum(amount))", "chg"),
-            m("change_pct(sum(amount))", "pct"),
+            m("time_shift(sum(orders.amount), -1)", "prev"), m("change(sum(orders.amount))", "chg"),
+            m("change_pct(sum(orders.amount))", "pct"),
         ]))
         got = _rows(resp, ["prev", "chg", "pct"])
         assert [got[k][:2] for k in FY] == [(None, None), (10.0, 40.0), (50.0, -10.0)]
@@ -58,7 +58,7 @@ class TestCustomSteps:
 
     async def test_custom_unit_on_a_finer_axis(self, cg) -> None:
         resp = await cg.execute(_orders(granularity="month", metrics=[
-            m("time_shift(sum(amount), -1, 'fiscal_year')", "fy"), m("time_shift(sum(amount), -1, 'year')", "y"),
+            m("time_shift(sum(orders.amount), -1, 'fiscal_year')", "fy"), m("time_shift(sum(orders.amount), -1, 'year')", "y"),
         ]))
         got = _rows(resp, ["fy", "y"], width=7)
         assert got == {
@@ -69,7 +69,7 @@ class TestCustomSteps:
         resp = await cg.execute(SlayerQuery.model_validate({
             "population": "events", "filter": ["events.series = 'streak'"],
             "time_dimensions": [{"field": "events.ts", "granularity": "sprint"}],
-            "metrics": [m("consecutive_periods(count(*) > 0)", "cp")],
+            "metrics": [m("consecutive_periods(count(events.*) > 0)", "cp")],
         }))
         got = _rows(resp, ["cp"], column="ts")
         assert got == {"2025-01-06": (1.0,), "2025-01-20": (2.0,), "2025-02-17": (1.0,)}

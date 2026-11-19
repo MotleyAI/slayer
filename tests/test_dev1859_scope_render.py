@@ -31,7 +31,7 @@ from tests._dev1847_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-_CROSS_MIXED = ("sum(region_id * sum(corders.amount, partition_by=region_id))")
+_CROSS_MIXED = ("sum(customers.region_id * sum(corders.amount, partition_by=customers.region_id))")
 
 
 def _join_count_to(sql: str, table: str) -> int:

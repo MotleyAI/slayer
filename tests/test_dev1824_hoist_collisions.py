@@ -65,7 +65,7 @@ def _assert_flat_and_unique(
 #: Two ranked producers (partition sets {region} and {city}) — identical
 #: internal CTE shapes that must hoist under distinct names.
 TWO_PRODUCERS = dict(
-    dimensions=["region", "city"],
+    dimensions=["orders.region", "orders.city"],
     metrics=[
         QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="a"),
         QueryMetric(metric="last(orders.amount, partition_by=orders.city)", alias="b"),
@@ -104,7 +104,7 @@ class TestThreeLevelNesting:
 
     def _query(self):
         return q(
-            dimensions=["region", {"field": self.CBAND, "alias": "cband"}],
+            dimensions=["orders.region", {"field": self.CBAND, "alias": "cband"}],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),

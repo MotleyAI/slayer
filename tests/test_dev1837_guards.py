@@ -96,11 +96,11 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestLiftedDirection:
     @pytest.mark.parametrize(
-        "formula", ["cumsum(sum(amount))", "time_shift(sum(amount), -1)"],
+        "formula", ["cumsum(sum(orders.amount))", "time_shift(sum(orders.amount), -1)"],
     )
     async def test_band_with_transform_renders(self, formula: str) -> None:
         sql = await gen(q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
@@ -113,7 +113,7 @@ class TestLiftedDirection:
         """The cross-model chain's lifted direction (Codex F8 — behavioral
         negative alongside the source scan)."""
         sql = await gen(q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
@@ -132,7 +132,7 @@ class TestRemainingArmsExactMessages:
         """Lifted direction: the former windowed-arm shape renders
         (executed ground truth: the band-wm matrix cell)."""
         sql = await gen(q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
@@ -144,7 +144,7 @@ class TestRemainingArmsExactMessages:
     async def test_ranked_measure_renders(self) -> None:
         """Lifted direction: the former ranked-arm shape renders."""
         sql = await gen(q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="last(orders.amount)", alias="l"),
@@ -157,7 +157,7 @@ class TestRemainingArmsExactMessages:
         measure broadcasts across the host-derived band) and the old arm message
         is gone from the sources."""
         sql = await gen(q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
@@ -191,7 +191,7 @@ class TestCteBodyArms:
     def test_row_attach_renders_as_hoistable_cte_body(self) -> None:
         bundle = _bundle()
         planned = plan_query(query=q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
@@ -199,7 +199,7 @@ class TestCteBodyArms:
     def test_combined_attach_renders_as_hoistable_cte_body(self) -> None:
         bundle = _bundle()
         planned = plan_query(query=q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
@@ -229,7 +229,7 @@ class TestStalePlannerRefsRepointed:
             "THEN 1 ELSE 0 END"
         )
         query = q(
-            dimensions=["region", {"field": cband, "alias": "cband"}],
+            dimensions=["orders.region", {"field": cband, "alias": "cband"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             to_many_handling="broadcast",
         )

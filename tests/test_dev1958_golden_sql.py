@@ -49,34 +49,34 @@ def _cases() -> dict:
         "leaf/change": _monthly(f"change({_SHARE})"),
         "leaf/change_pct": _monthly(f"change_pct({_SHARE})"),
         "leaf/trivial_composite": _monthly(
-            "time_shift(sum(amount, partition_by=[ordered_at]) / 2, -1)"),
+            "time_shift(sum(monthly.amount, partition_by=[monthly.ordered_at]) / 2, -1)"),
         "leaf/non_time_partition": _monthly(f"time_shift({_REGION_SHARE}, -1)"),
         "leaf/reaggregation": _monthly(
             "avg(time_shift(sum(amount, partition_by=[region, ordered_at]) "
             "/ sum(amount, partition_by=[ordered_at]), -1))", dims=()),
-        "leaf/ranked_composite": _monthly("time_shift(last(amount) / 2, -1)"),
-        "leaf/windowed_composite": _monthly("time_shift(sum(amount, window='90d') / 2, -1)"),
+        "leaf/ranked_composite": _monthly("time_shift(last(monthly.amount) / 2, -1)"),
+        "leaf/windowed_composite": _monthly("time_shift(sum(monthly.amount, window='90d') / 2, -1)"),
         "leaf/carried_degenerate": _monthly(
             "time_shift(sum(amount) / max(sum(amount, partition_by=[region]), "
             "partition_by=region), -1)"),
         "frame/bare_partitioned": _monthly(
-            "time_shift(sum(amount, partition_by=[ordered_at]), -1)", dr=True),
-        "frame/bare_ranked": _monthly("time_shift(last(amount), -1)", dr=True),
-        "frame/bare_windowed": _monthly("time_shift(sum(amount, window='90d'), -1)", dr=True),
+            "time_shift(sum(monthly.amount, partition_by=[monthly.ordered_at]), -1)", dr=True),
+        "frame/bare_ranked": _monthly("time_shift(last(monthly.amount), -1)", dr=True),
+        "frame/bare_windowed": _monthly("time_shift(sum(monthly.amount, window='90d'), -1)", dr=True),
         "frame/non_time_partition": _monthly(f"time_shift({_REGION_SHARE}, -1)", dr=True),
         "frame/mixed_conjunction": _monthly(
-            "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
-            filter=["ordered_at >= '2024-02-01' and region = 'North'"]),
+            "time_shift(sum(monthly.amount) + sum(monthly.amount, partition_by=[monthly.ordered_at]), -1)",
+            filter=["monthly.ordered_at >= '2024-02-01' and monthly.region = 'North'"]),
         "join/two_offsets": {**_monthly(""), "metrics": [
             {"metric": f"time_shift({_SHARE}, -1)", "alias": "t1"},
             {"metric": f"time_shift({_SHARE}, -2)", "alias": "t2"}]},
-        "join/unaligned_day": _monthly("time_shift(sum(amount), -1, 'day')"),
+        "join/unaligned_day": _monthly("time_shift(sum(monthly.amount), -1, 'day')"),
         "population/association_filter": _orders(
             f"time_shift({_SHARE}, -1)", dims=["status"], filter=[f"{_EVENT} > 40"]),
         "population/associate_dimension": _orders(
-            "time_shift(sum(amount), -1)", dims=[_EVENT], to_many_handling="associate"),
+            "time_shift(sum(orders.amount), -1)", dims=[_EVENT], to_many_handling="associate"),
         "population/tier_partition": _orders(
-            "time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)",
+            "time_shift(sum(orders.amount) / sum(orders.amount, partition_by=[customers.tier]), -1)",
             dims=["customers.tier"]),
         "population/fanning_partition": _orders(
             f"time_shift(sum(amount) / sum(amount, partition_by=[{_EVENT}]), -1)",

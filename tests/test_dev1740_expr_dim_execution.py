@@ -34,7 +34,7 @@ LOWER_CITY_TOTAL = {"paris": 7000.0, "berlin": 9000.0, "lyon": 1000.0,
 class TestRowLevelValues:
     async def test_scalar_expression_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "lower(city)", "alias": "lc"}],
+            dimensions=[{"field": "lower(orders.city)", "alias": "lc"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
         got = {r["lc"]: float(r["rev"]) for r in resp.data}
@@ -43,7 +43,7 @@ class TestRowLevelValues:
     async def test_case_band_over_plain_column(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[{
-                "field": "CASE WHEN amount > 2000 THEN 'big' ELSE 'small' END",
+                "field": "CASE WHEN orders.amount > 2000 THEN 'big' ELSE 'small' END",
                 "alias": "sz",
             }],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
@@ -55,7 +55,7 @@ class TestRowLevelValues:
 class TestNoSecondPass:
     async def test_row_level_dim_emits_no_isolated_regroup_cte(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", {"field": "lower(city)", "alias": "lc"}],
+            dimensions=["orders.region", {"field": "lower(orders.city)", "alias": "lc"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
         # ``_cm_`` is the isolated-aggregate (regroup) CTE prefix used by the B2
@@ -92,7 +92,7 @@ class TestNameReferences:
     async def test_order_by_computed_name(self, exec_engine) -> None:
         # Order by the COMPUTED dimension's name (not a measure).
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "lower(city)", "alias": "lc"}],
+            dimensions=[{"field": "lower(orders.city)", "alias": "lc"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
             order=[{"field": "lc", "direction": "asc"}],
         ))
@@ -101,7 +101,7 @@ class TestNameReferences:
 
     async def test_filter_by_computed_name(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "lower(city)", "alias": "lc"}],
+            dimensions=[{"field": "lower(orders.city)", "alias": "lc"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
             filter=["lc == 'paris'"],
         ))
@@ -114,14 +114,14 @@ class TestDedupInteraction:
     async def test_dim_only_dedups_computed_values(self, exec_engine) -> None:
         # No measures: distinct computed values (5 cities incl. the NULL group).
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "lower(city)", "alias": "lc"}],
+            dimensions=[{"field": "lower(orders.city)", "alias": "lc"}],
         ))
         assert len(resp.data) == 5
 
     async def test_ddv_false_projects_per_row(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[{
-                "field": "CASE WHEN amount > 2000 THEN 'big' ELSE 'small' END",
+                "field": "CASE WHEN orders.amount > 2000 THEN 'big' ELSE 'small' END",
                 "alias": "sz",
             }],
             distinct_dimension_values=False,
@@ -136,7 +136,7 @@ class TestCollisionFailsClosed:
         # fail). Naming a computed dimension ``channel`` shadows that column and
         # must be rejected fail-closed.
         q = _q(
-            dimensions=["region", {"field": "lower(city)", "alias": "channel"}],
+            dimensions=["orders.region", {"field": "lower(orders.city)", "alias": "channel"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         )
         with pytest.raises(ValueError, match=r"(?i)collid|conflict|already|exists|shadow"):
@@ -145,7 +145,7 @@ class TestCollisionFailsClosed:
     async def test_name_colliding_with_a_measure_raises(self) -> None:
         # A computed dimension named the same as a query measure must fail closed.
         q = _q(
-            dimensions=["region", {"field": "lower(city)", "alias": "rev"}],
+            dimensions=["orders.region", {"field": "lower(orders.city)", "alias": "rev"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         )
         with pytest.raises(ValueError, match=r"(?i)collid|conflict|already|exists|shadow"):

@@ -199,7 +199,7 @@ def test_aggregation_eligibility_allowed_aggregations_whitelist():
     )
     bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
     scope = DatasetScope(population=orders)
-    bind_expr(parsed=parse_expr("sum(amount)"), scope=scope, bundle=bundle)
+    bind_expr(parsed=parse_expr("sum(orders.amount)"), scope=scope, bundle=bundle)
     bind_expr(parsed=parse_expr("max(amount)"), scope=scope, bundle=bundle)
     parsed = parse_expr("avg(amount)")
     with pytest.raises(AggregationNotAllowedError, match="allowed_aggregations"):

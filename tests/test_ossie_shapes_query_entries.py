@@ -75,7 +75,7 @@ class TestEntryClasses:
     def test_dimension_entries_are_query_dimensions(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders", "metrics": ["count(orders.*)"],
-            "dimensions": ["status", {"field": "customers.name"}, {"field": "upper(status)", "alias": "s", "label": "S"}],
+            "dimensions": ["orders.status", {"field": "customers.name"}, {"field": "upper(status)", "alias": "s", "label": "S"}],
         })
         assert all(isinstance(d, QueryDimension) for d in query.dimensions or [])
         assert [(d.field, d.alias, d.label) for d in query.dimensions or []] == [
@@ -93,13 +93,13 @@ class TestEntryClasses:
 
     def test_a_dimension_name_is_derived_and_not_serialized(self) -> None:
         dims = SlayerQuery.model_validate({"population": "orders", "dimensions": [
-            {"field": "status", "alias": "s"}, "customers.region", "upper(status)"]}).dimensions or []
+            {"field": "orders.status", "alias": "s"}, "customers.region", "upper(status)"]}).dimensions or []
         assert [d.name for d in dims] == ["s", "region", computed_dimension_name("upper(status)")]
         assert all("name" not in d.model_dump() for d in dims)
 
     def test_a_bare_reference_dumps_as_text(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "dimensions": [
-            {"field": "customers.region"}, {"field": "status", "alias": "s"}, "upper(status)"]})
+            {"field": "customers.region"}, {"field": "orders.status", "alias": "s"}, "upper(status)"]})
         assert query.model_dump(mode="json")["dimensions"] == [
             "customers.region", {"field": "status", "alias": "s"}, "upper(status)"]
 
@@ -120,7 +120,7 @@ class TestUnknownEntryKeys:
 
     def test_an_unknown_dimension_entry_key_is_refused(self) -> None:
         with pytest.raises(ValidationError) as info:
-            SlayerQuery.model_validate({"population": "orders", "dimensions": [{"field": "status", "alais": "s"}]})
+            SlayerQuery.model_validate({"population": "orders", "dimensions": [{"field": "orders.status", "alais": "s"}]})
         assert unknown_key_error(info.value).key == "alais"
 
 
@@ -265,9 +265,9 @@ class TestExecution:
     async def test_an_alias_equal_to_the_default_name_changes_nothing(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
         aliased = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
-                                          "dimensions": [{"field": "status", "alias": "status"}]})
+                                          "dimensions": [{"field": "orders.status", "alias": "status"}]})
         plain = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
-                                        "dimensions": ["status"]})
+                                        "dimensions": ["orders.status"]})
         assert list(aliased.columns) == list(plain.columns)
         assert sorted_rows(aliased) == sorted_rows(plain)
 

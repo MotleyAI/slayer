@@ -66,18 +66,18 @@ REPRO_KEY = "customers.orders.iif_order_date_2025_01_01_1_0_sum"
 
 async def test_repro_date_comparison_inside_a_scalar_call(engine) -> None:
     for _ in range(2):
-        resp = await engine.execute(q(population="regions", dimensions=["name"], metrics=[REPRO]))
+        resp = await engine.execute(q(population="regions", dimensions=["regions.name"], metrics=[REPRO]))
         assert by(resp, dim="regions.name", key=REPRO_KEY) == {"north": 1, "south": 1}
 
 
 @pytest.mark.parametrize(
     ("formula", "key", "value"),
     [
-        ("sum(iif(ordered_at == '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 2),
-        ("sum(iif(ordered_at != '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 4),
-        ("sum(iif(date_trunc('month', ordered_at) >= '2024-02', 1, 0))", "orders.iif_date_trunc_month_ordered_at_2024_02_1_0_sum", 5),
-        ("sum(amount > 5 and ordered_at >= '2024-02-01')", "orders.amount_5_and_ordered_at_2024_02_01_sum", 4),
-        ("sum(iif('2024-02-01' <= ordered_at, 1, 0))", "orders.iif_2024_02_01_ordered_at_1_0_sum", 5),
+        ("sum(iif(orders.ordered_at == '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 2),
+        ("sum(iif(orders.ordered_at != '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 4),
+        ("sum(iif(date_trunc('month', orders.ordered_at) >= '2024-02', 1, 0))", "orders.iif_date_trunc_month_ordered_at_2024_02_1_0_sum", 5),
+        ("sum(orders.amount > 5 and orders.ordered_at >= '2024-02-01')", "orders.amount_5_and_ordered_at_2024_02_01_sum", 4),
+        ("sum(iif('2024-02-01' <= orders.ordered_at, 1, 0))", "orders.iif_2024_02_01_ordered_at_1_0_sum", 5),
     ],
 )
 async def test_date_comparison_forms(engine, formula, key, value) -> None:
@@ -106,7 +106,7 @@ async def test_plain_comparison_as_the_whole_source(engine) -> None:
 # --------------------------------------------------------------------------- #
 async def test_nested_aggregate_operand(engine) -> None:
     value = await only_value(
-        engine, "sum(amount * avg(amount, partition_by=status))", "orders.amount_avg_amount_partition_by_status_sum",
+        engine, "sum(orders.amount * avg(orders.amount, partition_by=orders.status))", "orders.amount_avg_amount_partition_by_status_sum",
     )
     assert value == pytest.approx(5456.25)
 
@@ -131,7 +131,7 @@ async def test_nested_transform_operand(engine: SlayerQueryEngine, partition) ->
 
 
 async def test_decimal_literal_spelled_plainly(engine) -> None:
-    value = await only_value(engine, "sum(amount * 0.0000001)", "orders.amount_0_0000001_sum")
+    value = await only_value(engine, "sum(orders.amount * 0.0000001)", "orders.amount_0_0000001_sum")
     assert value == pytest.approx(0.0000175)
 
 
@@ -156,7 +156,7 @@ async def test_null_literal_spelled_null(engine) -> None:
             "sum(iif(customers.region_id in (1, 3), customers.spend, 0))",
             "customers.iif_region_id_in_1_3_spend_0_sum", 150,
         ),
-        ("sum(amount - customers.spend)", "sum_orders_amount_customers_spend", -525),
+        ("sum(orders.amount - customers.spend)", "sum_orders_amount_customers_spend", -525),
     ],
 )
 async def test_home_relative_operand_spelling(engine, formula, key, value) -> None:
@@ -167,7 +167,7 @@ async def test_nested_constituent_keeps_its_spelling(engine) -> None:
     key = "orders.customers." + auto_name_from_expression(
         "spend * sum(amount, partition_by=[customers.regions.name])",
     ) + "_sum"
-    formula = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
+    formula = "sum(customers.spend * sum(orders.amount, partition_by=customers.regions.name))"
     assert await only_value(engine, formula, key) == 29000
 
 
@@ -175,7 +175,7 @@ async def test_nested_constituent_keeps_its_spelling(engine) -> None:
 # Collisions
 # --------------------------------------------------------------------------- #
 async def test_equal_and_not_equal_date_comparisons_collide_loudly(engine) -> None:
-    eq, ne = "sum(iif(ordered_at == '2024-02', 1, 0))", "sum(iif(ordered_at != '2024-02', 1, 0))"
+    eq, ne = "sum(iif(orders.ordered_at == '2024-02', 1, 0))", "sum(iif(orders.ordered_at != '2024-02', 1, 0))"
     query = q(metrics=[eq, ne])
     with pytest.raises(NameCollisionError, match="(?s)Rename") as exc:
         await engine.execute(query)

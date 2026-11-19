@@ -170,7 +170,7 @@ class TestExecution:
 
     def test_nested_source_queries_rejected(self) -> None:
         outer = {"name": "outer", "source_queries": [
-            {"population": "x", "dimensions": ["customers.tier"], "metrics": [{"metric": "sum(x.total_spend)", "alias": "s"}]}]}
+            {"population": "x", "dimensions": ["x.tier"], "metrics": [{"metric": "sum(x.total_spend)", "alias": "s"}]}]}
         with pytest.raises(ValueError, match=r"(?is)inline.*named stages?|named stages?.*inline"):
             SlayerQuery.model_validate({
                 "name": "n", "population": outer, "dimensions": ["customers.tier"],
@@ -215,8 +215,8 @@ def _bundle() -> ResolvedSourceBundle:
 
 def _q(name, source, **kw) -> SlayerQuery:
     kw.setdefault("dimensions", ["status"] if source == "orders" else [])
-    kw.setdefault("metrics", [{"metric": "sum(amount)", "alias": "amt"}]
-                  if source == "orders" else [{"metric": "sum(amt)", "alias": "total"}])
+    kw.setdefault("metrics", [{"metric": "sum(orders.amount)", "alias": "amt"}]
+                  if source == "orders" else [{"metric": "sum(b.amt)", "alias": "total"}])
     return SlayerQuery(name=name, population=source, **kw)
 
 

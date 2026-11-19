@@ -92,7 +92,7 @@ async def test_forward_time_shift_reads_after_date_range(engine: SlayerQueryEngi
     (fx.CHANGE, "2025-04", None, 30),
     (fx.CHANGE_PCT, "2025-04", None, pytest.approx(1.0)),
     (fx.TIME_SHIFT, "2025-04", None, 30),
-    ("time_shift(sum(amount), 1)", "2025-01", None, 70),
+    ("time_shift(sum(orders.amount), 1)", "2025-01", None, 70),
 ])
 async def test_non_time_filter_restricts_calendar_look_backs(
     engine: SlayerQueryEngine, expression: str, month: str, paid: Any, unfiltered: Any,
@@ -344,17 +344,17 @@ async def test_filter_on_a_transform_value_applies_after_it(engine: SlayerQueryE
 
 @pytest.mark.parametrize(("expression", "filtered", "unfiltered"), [
     (fx.CUMSUM, (70, 100), (295, 325)),
-    ("lag(sum(amount), 1)", (None, 70), (150, 70)),
-    ("lead(sum(amount), 1)", (30, None), (30, 60)),
-    ("consecutive_periods(sum(amount) > 0)", (1, 2), (5, 6)),
-    ("rank(sum(amount), direction='desc')", (1, 2), (3, 6)),
-    ("ntile(sum(amount), n=2)", (2, 1), (2, 1)),
-    ("sum(amount, partition_by=[])", (100, 100), (490, 490)),
+    ("lag(sum(orders.amount), 1)", (None, 70), (150, 70)),
+    ("lead(sum(orders.amount), 1)", (30, None), (30, 60)),
+    ("consecutive_periods(sum(orders.amount) > 0)", (1, 2), (5, 6)),
+    ("rank(sum(orders.amount), direction='desc')", (1, 2), (3, 6)),
+    ("ntile(sum(orders.amount), n=2)", (2, 1), (2, 1)),
+    ("sum(orders.amount, partition_by=[])", (100, 100), (490, 490)),
     (fx.CHANGE, (-80, -40), (-80, -40)),
     (fx.CHANGE_PCT, pytest.approx((-80 / 150, -40 / 70)), pytest.approx((-80 / 150, -40 / 70))),
     (fx.TIME_SHIFT, (150, 70), (150, 70)),
-    ("time_shift(sum(amount), 1)", (30, 60), (30, 60)),
-    ("sum(amount, window='3m')", (265, 250), (265, 250)),
+    ("time_shift(sum(orders.amount), 1)", (30, 60), (30, 60)),
+    ("sum(orders.amount, window='3m')", (265, 250), (265, 250)),
 ])
 async def test_time_filter_restricts_cross_row_values_except_calendar_look_backs(
     engine: SlayerQueryEngine, expression: str, filtered: tuple[Any, Any], unfiltered: tuple[Any, Any],
@@ -372,12 +372,12 @@ async def test_time_filter_restricts_cross_row_values_except_calendar_look_backs
 
 
 @pytest.mark.parametrize(("expression", "filtered", "unfiltered"), [
-    ("rank(sum(amount), direction='desc')", 1, 2),
-    ("dense_rank(sum(amount), direction='desc')", 1, 2),
-    ("ntile(sum(amount), n=3)", 1, 2),
-    ("sum(amount, partition_by=[])", 170, 490),
+    ("rank(sum(orders.amount), direction='desc')", 1, 2),
+    ("dense_rank(sum(orders.amount), direction='desc')", 1, 2),
+    ("ntile(sum(orders.amount), n=3)", 1, 2),
+    ("sum(orders.amount, partition_by=[])", 170, 490),
     (fx.SHARE_OF_GROUP, pytest.approx(1.0), pytest.approx(170 / 300)),
-    ("avg(sum(amount, partition_by=[customers.name]), partition_by=[])", pytest.approx(170), pytest.approx(490 / 3)),
+    ("avg(sum(orders.amount, partition_by=[customers.name]), partition_by=[])", pytest.approx(170), pytest.approx(490 / 3)),
 ])
 async def test_dimension_filter_restricts_peer_values(
     engine: SlayerQueryEngine, expression: str, filtered: Any, unfiltered: Any,
@@ -473,9 +473,9 @@ async def test_computed_dimension_over_a_fixed_grain_aggregate(engine: SlayerQue
 
 
 @pytest.mark.parametrize(("condition", "count"), [
-    ("order_date >= '2025-Q1'", 8),
-    ("order_date <= '2025-Q1'", 7),
-    ("order_date in '2025-Q1'", 4),
+    ("orders.order_date >= '2025-Q1'", 8),
+    ("orders.order_date <= '2025-Q1'", 7),
+    ("orders.order_date in '2025-Q1'", 4),
 ])
 async def test_time_points_are_half_open_periods(engine: SlayerQueryEngine, condition: str, count: int) -> None:
     resp = await _run(engine, {"population": "orders", "metrics": ["count(orders.*)"], "filter": [condition]})
@@ -495,8 +495,8 @@ async def test_regex_braces_are_pattern_text(items_engine: SlayerQueryEngine) ->
 
 
 @pytest.mark.parametrize(("condition", "codes"), [
-    ("flag IS NOT TRUE", {"A12", "B123", "XA123"}),
-    ("status IS DISTINCT FROM 'paid'", {"A12", "A1234", "XA123"}),
+    ("items.flag IS NOT TRUE", {"A12", "B123", "XA123"}),
+    ("items.status IS DISTINCT FROM 'paid'", {"A12", "A1234", "XA123"}),
 ])
 async def test_null_aware_boolean_and_distinctness_tests(
     items_engine: SlayerQueryEngine, condition: str, codes: set[str],
@@ -505,10 +505,10 @@ async def test_null_aware_boolean_and_distinctness_tests(
 
 
 @pytest.mark.parametrize(("condition", "codes"), [
-    ("contains(tags, 'x')", {"A123", "A12"}),
-    ("tags.value = 'x'", {"A123", "A12"}),
-    ("contains_any(tags, ['x', 'y'])", {"A123", "A12", "B123"}),
-    ("contains_all(tags, ['x', 'y'])", {"A123"}),
+    ("contains(items.tags, 'x')", {"A123", "A12"}),
+    ("items.tags.value = 'x'", {"A123", "A12"}),
+    ("contains_any(items.tags, ['x', 'y'])", {"A123", "A12", "B123"}),
+    ("contains_all(items.tags, ['x', 'y'])", {"A123"}),
 ])
 async def test_list_column_filters(items_engine: SlayerQueryEngine, condition: str, codes: set[str]) -> None:
     assert await _codes(items_engine, [condition]) == codes

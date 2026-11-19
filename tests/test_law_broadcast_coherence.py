@@ -36,20 +36,20 @@ async def exec_engine(request):
 
 def _pair_kwargs(pair, grain: str) -> dict:
     if grain == "rc":
-        kwargs: dict = {"dimensions": ["region", "city"]}
+        kwargs: dict = {"dimensions": ["orders.region", "orders.city"]}
         if pair.with_month:
             kwargs["time_dimensions"] = month_td()
     elif grain == "rn":
-        kwargs = {"dimensions": ["region", "customers.regions.name"]}
+        kwargs = {"dimensions": ["orders.region", "customers.regions.name"]}
         if pair.with_month:
             kwargs["time_dimensions"] = month_td()
     else:
-        kwargs = {"dimensions": ["region"], "time_dimensions": month_td()}
+        kwargs = {"dimensions": ["orders.region"], "time_dimensions": month_td()}
     return kwargs
 
 
 def _row_key(row: dict, kwargs: dict) -> tuple:
-    key = tuple(row[f"orders.{d}"] for d in kwargs["dimensions"])
+    key = tuple(row[d] for d in kwargs["dimensions"])
     if "time_dimensions" in kwargs:
         key += (month_key(row["orders.ordered_at"]),)
     return key
@@ -94,7 +94,7 @@ async def test_ill_typed_operand_refuses_identically_in_both_phrasings(exec_engi
     """part(city) outside a city-bearing grain is ill-typed (axiom 6); the
     typed refusal must not depend on phrasing (formula vs separate measures).
     The rm-grain pair sample excludes part_city for exactly this reason."""
-    kwargs: dict = {"dimensions": ["region"], "time_dimensions": month_td()}
+    kwargs: dict = {"dimensions": ["orders.region"], "time_dimensions": month_td()}
     refusal = r"partition_by field 'city' is not a query dimension"
     as_formula = q(**kwargs, metrics=[
         QueryMetric(
@@ -120,8 +120,8 @@ async def test_region_grain_operand_agrees_along_the_grain_chain(exec_engine):
     per_region: list[dict] = []
     for kwargs in (
         {"dimensions": ["orders.region"]},
-        {"dimensions": ["orders.region", "city"]},
-        {"dimensions": ["orders.region", "city"], "time_dimensions": month_td()},
+        {"dimensions": ["orders.region", "orders.city"]},
+        {"dimensions": ["orders.region", "orders.city"], "time_dimensions": month_td()},
     ):
         resp = await exec_engine.execute(q(**kwargs, metrics=[rt]))
         values: dict = {}

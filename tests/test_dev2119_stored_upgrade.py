@@ -94,7 +94,7 @@ class TestObjectFormBecomesText:
 
     def test_every_stage_of_a_multi_stage_model(self) -> None:
         inner = {**_query(version=None, tds=[_td(SIGNUP_OBJECT)]), "name": "s1"}
-        outer = {"population": "s1", "metrics": [{"metric": "sum(rev_q.rev)", "alias": "rev"}],
+        outer = {"population": "s1", "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
                  "time_dimensions": [_td({"name": "customers__signed_up_at"}, key="column", granularity="year")]}
         model = SlayerDataset.model_validate(query_backed_v10(name="two", version=16, stages=[inner, outer]))
         assert [[td.field for td in s.time_dimensions or []]

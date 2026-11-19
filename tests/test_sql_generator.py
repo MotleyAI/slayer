@@ -2503,10 +2503,10 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "stddev_samp(revenue)",
-            "stddev_pop(revenue)",
-            "var_samp(revenue)",
-            "var_pop(revenue)",
+            "stddev_samp(orders.revenue)",
+            "stddev_pop(orders.revenue)",
+            "var_samp(orders.revenue)",
+            "var_pop(orders.revenue)",
         ],
     )
     async def test_one_arg_stat_agg_generation(
@@ -2534,9 +2534,9 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "corr(revenue, other=quantity)",
-            "covar_samp(revenue, other=quantity)",
-            "covar_pop(revenue, other=quantity)",
+            "corr(orders.revenue, other=orders.quantity)",
+            "covar_samp(orders.revenue, other=orders.quantity)",
+            "covar_pop(orders.revenue, other=orders.quantity)",
         ],
     )
     async def test_two_arg_stat_agg_generation(
@@ -2584,8 +2584,8 @@ class TestMultiDialectGeneration:
             "metrics": ["count(orders.*)"],
             "dimensions": [QueryDimension(field="orders.status")],
             "order": [
-                OrderItem.model_validate({"field": "last(revenue, created_at)", "direction": "desc"}),
-                OrderItem.model_validate({"field": "last(revenue, updated_at)", "direction": "asc"}),
+                OrderItem.model_validate({"field": "last(orders.revenue, orders.created_at)", "direction": "desc"}),
+                OrderItem.model_validate({"field": "last(orders.revenue, orders.updated_at)", "direction": "asc"}),
             ],
         })
         sql = await _generate(generator=gen, query=query, dataset=m)
@@ -2644,10 +2644,10 @@ class TestStatAggsViaQueryEnrichment:
     @pytest.mark.parametrize(
         "formula,expected_fragment",
         [
-            ("stddev_samp(latency)", "STDDEV_SAMP"),
-            ("stddev_pop(latency)", "STDDEV_POP"),
-            ("var_samp(latency)", "VAR_SAMP"),
-            ("var_pop(latency)", "VAR_POP"),
+            ("stddev_samp(sales.latency)", "STDDEV_SAMP"),
+            ("stddev_pop(sales.latency)", "STDDEV_POP"),
+            ("var_samp(sales.latency)", "VAR_SAMP"),
+            ("var_pop(sales.latency)", "VAR_POP"),
         ],
     )
     async def test_stat_agg_functional(
@@ -3719,7 +3719,7 @@ class TestDev1709WidenedIsolationShapes:
             population="orders",
             metrics=[QueryMetric(metric="sum(orders.amount)")],
             dimensions=[QueryDimension(field="orders.customer_id")],
-            order=[OrderItem.model_validate({"field": "sum(region_pop_sum)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.region_pop_sum)", "direction": "desc"})],
         )
         sql = await self._sql(query, orders)
         assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
@@ -3897,7 +3897,7 @@ class TestAggParamSanitization:
 
     async def test_empty_param_rejected(self) -> None:
         with pytest.raises(ValueError, match="weighted_avg"):
-            await orders_agg_sql("weighted_avg(amount, weight='')")
+            await orders_agg_sql("weighted_avg(orders.amount, weight='')")
 
     async def test_model_level_defaults_not_validated(self, gen: SQLGenerator, agg_dataset: SlayerDataset) -> None:
         """Model-level aggregation param defaults (trusted) bypass query-time validation."""
@@ -4061,7 +4061,7 @@ class TestFilteredMeasures:
         NULL. A row restriction belongs in a query filter, not the column."""
         orders_dataset.default_time_dimension = "created_at"
         orders_dataset.fields.append(
-            DatasetField(name="completed_balance", sql="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
+            DatasetField(name="completed_balance", sql="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4088,7 +4088,7 @@ class TestFilteredMeasures:
         runs ascending over every row."""
         orders_dataset.default_time_dimension = "created_at"
         orders_dataset.fields.append(
-            DatasetField(name="completed_balance", sql="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
+            DatasetField(name="completed_balance", sql="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4133,7 +4133,7 @@ class TestFilteredMeasures:
         orders_dataset.default_time_dimension = "created_at"
         orders_dataset.fields.append(DatasetField(name="balance", sql="amount", datatype=DataType.FLOAT))
         orders_dataset.fields.append(
-            DatasetField(name="completed_balance", sql="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
+            DatasetField(name="completed_balance", sql="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4287,7 +4287,7 @@ class TestFilteredMeasures:
             DatasetField(name="active_balance", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         )
         orders_dataset.fields.append(
-            DatasetField(name="completed_balance", sql="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
+            DatasetField(name="completed_balance", sql="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -5120,8 +5120,8 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
                 "order": [
-                    OrderItem.model_validate({"field": "last(revenue, created_at)", "direction": "desc"}),
-                    OrderItem.model_validate({"field": "last(revenue, updated_at)", "direction": "asc"}),
+                    OrderItem.model_validate({"field": "last(orders.revenue, orders.created_at)", "direction": "desc"}),
+                    OrderItem.model_validate({"field": "last(orders.revenue, orders.updated_at)", "direction": "asc"}),
                 ],
             })
             res = await engine.execute(query, dry_run=True)
@@ -5289,7 +5289,7 @@ class TestDev1501HiddenFirstLastRender:
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
                 "order": [
-                    OrderItem.model_validate({"field": "first(revenue, created_at)", "direction": "asc"}),
+                    OrderItem.model_validate({"field": "first(orders.revenue, orders.created_at)", "direction": "asc"}),
                     OrderItem(field="last(orders.revenue, orders.updated_at)", direction="desc"),
                 ],
             })
@@ -5325,7 +5325,7 @@ class TestDev1501HiddenFirstLastRender:
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
                 "order": [
-                    OrderItem.model_validate({"field": "first(revenue, created_at)", "direction": "asc"}),
+                    OrderItem.model_validate({"field": "first(orders.revenue, orders.created_at)", "direction": "asc"}),
                     OrderItem(field="last(orders.revenue, orders.created_at)", direction="desc"),
                 ],
             })
@@ -5355,7 +5355,7 @@ class TestDev1501HiddenFirstLastRender:
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
                 "order": [
-                    OrderItem.model_validate({"field": "last(revenue, created_at)", "direction": "desc"}),
+                    OrderItem.model_validate({"field": "last(orders.revenue, orders.created_at)", "direction": "desc"}),
                 ],
             })
             sql = (await engine.execute(query, dry_run=True)).sql
@@ -5373,7 +5373,7 @@ class TestDev1501HiddenFirstLastRender:
                 "population": "orders",
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
-                "order": [OrderItem.model_validate({"field": "last(revenue)", "direction": "desc"})],
+                "order": [OrderItem.model_validate({"field": "last(orders.revenue)", "direction": "desc"})],
             })
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
@@ -5392,7 +5392,7 @@ class TestDev1501HiddenFirstLastRender:
                     QueryMetric(metric="last(orders.revenue, orders.created_at)", alias="latest_cr"),
                 ],
                 dimensions=[QueryDimension(field="orders.status")],
-                order=[OrderItem.model_validate({"field": "last(revenue, updated_at)", "direction": "desc"})],
+                order=[OrderItem.model_validate({"field": "last(orders.revenue, orders.updated_at)", "direction": "desc"})],
             )
             res = await engine.execute(query, dry_run=True)
             sql = res.sql
@@ -5477,7 +5477,7 @@ class TestDev1501HiddenFirstLastRender:
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
                 "filter": ["last(orders.revenue, orders.created_at) > 100"],
-                "order": [OrderItem.model_validate({"field": "last(revenue, updated_at)", "direction": "desc"})],
+                "order": [OrderItem.model_validate({"field": "last(orders.revenue, orders.updated_at)", "direction": "desc"})],
             })
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
@@ -5885,7 +5885,7 @@ class TestDev1501HiddenFirstLastRender:
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
                 "order": [
-                    OrderItem.model_validate({"field": "last(amount, net_signed_at)", "direction": "desc"}),
+                    OrderItem.model_validate({"field": "last(orders.amount, orders.net_signed_at)", "direction": "desc"}),
                 ],
             })
             sql = (await engine.execute(query, dry_run=True)).sql
@@ -5935,7 +5935,7 @@ class TestDev1501BroadTriggerAndGuards:
                 "population": "orders",
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
-                "order": [OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})],
+                "order": [OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})],
             })
             res = await engine.execute(query, dry_run=True)
             sql = res.sql
@@ -5979,7 +5979,7 @@ class TestDev1501BroadTriggerAndGuards:
             query = SlayerQuery(
                 population="orders",
                 dimensions=[QueryDimension(field="orders.status")],
-                order=[OrderItem.model_validate({"field": "last(revenue, created_at)", "direction": "desc"})],
+                order=[OrderItem.model_validate({"field": "last(orders.revenue, orders.created_at)", "direction": "desc"})],
             )
             res = await engine.execute(query, dry_run=True)
             sql = res.sql
@@ -6072,7 +6072,7 @@ class TestDev1501BroadTriggerAndGuards:
                 "population": "orders",
                 "metrics": ["count(orders.*)"],
                 "dimensions": [QueryDimension(field="orders.status")],
-                "order": [OrderItem.model_validate({"field": "last(revenue, created_at)", "direction": "desc"})],
+                "order": [OrderItem.model_validate({"field": "last(orders.revenue, orders.created_at)", "direction": "desc"})],
                 "limit": 5,
                 "offset": 2,
             })
@@ -6115,7 +6115,7 @@ class TestDev1501BroadTriggerAndGuards:
                 ],
                 dimensions=[QueryDimension(field="orders.status")],
                 # Force an outer wrap by adding a hidden order aggregate.
-                order=[OrderItem.model_validate({"field": "last(revenue, created_at)", "direction": "desc"})],
+                order=[OrderItem.model_validate({"field": "last(orders.revenue, orders.created_at)", "direction": "desc"})],
             )
             res = await engine.execute(query, dry_run=True)
             sql = res.sql
@@ -6705,7 +6705,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             population="orders",
             metrics=[QueryMetric(metric="sum(orders.revenue)")],
             dimensions=[QueryDimension(field="orders.status")],
-            order=[OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
@@ -6726,7 +6726,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             population="orders",
             metrics=[QueryMetric(metric="count(orders.*)")],
             dimensions=[QueryDimension(field="orders.status")],
-            order=[OrderItem.model_validate({"field": "count(*)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "count(orders.*)", "direction": "desc"})],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
@@ -6851,7 +6851,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             population="orders",
             metrics=[QueryMetric(metric="count(orders.*)")],
             dimensions=[QueryDimension(field="orders.status")],
-            order=[OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
@@ -6878,7 +6878,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             ],
             dimensions=[QueryDimension(field="orders.status")],
             time_dimensions=[TimeDimension(field="orders.ordered_at", granularity="month")],
-            order=[OrderItem.model_validate({"field": "last(revenue, ordered_at)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "last(orders.revenue, orders.ordered_at)", "direction": "desc"})],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
@@ -8465,7 +8465,7 @@ class TestLogAliasPreservation:
                 DatasetField(
                     name="log_completed_amount",
                     sql="log10(amount)",
-                    filter="status = 'completed'",
+                    filter="orders.status = 'completed'",
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -9138,7 +9138,7 @@ class TestReplaceFunctionInPredicate:
             DatasetField(
                 name="cleaned_amt",
                 sql="amount",
-                filter="replace(status, ',', '') = 'foo'",
+                filter="replace(orders.status, ',', '') = 'foo'",
                 datatype=DataType.FLOAT,
             )
         )
@@ -9793,7 +9793,7 @@ class TestBigQueryAliasMangling:
                 SlayerQuery(
                     population="stg",
                     dimensions=[QueryDimension(field="status")],
-                    metrics=[QueryMetric(metric="sum(revenue_sum)")],
+                    metrics=[QueryMetric(metric="sum(__slayer_qb__qb_stage__stg.revenue_sum)")],
                 ),
             ],
         )
@@ -10329,7 +10329,7 @@ class TestWindowedMeasureGuards:
             created_at,
             DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ]
-        td = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
+        td = [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)]
 
         def _plain() -> SlayerDataset:
             return SlayerDataset(

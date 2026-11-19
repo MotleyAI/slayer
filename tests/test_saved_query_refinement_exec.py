@@ -64,11 +64,11 @@ def with_fields(base: Dict[str, Any], **fields: Any) -> Dict[str, Any]:
 PARITY = {
     "extra_dimension": ({"dimensions": ["region"]}, with_fields(MONTHLY_REVENUE, dimensions=["region"])),
     "extra_measure": (
-        {"metrics": ["count(*)"]}, with_fields(MONTHLY_REVENUE, metrics=[REVENUE, "count(*)"]),
+        {"metrics": ["count(orders.*)"]}, with_fields(MONTHLY_REVENUE, metrics=[REVENUE, "count(orders.*)"]),
     ),
     "extra_filter": (
-        {"filter": ["amount >= 50"]},
-        with_fields(MONTHLY_REVENUE, filter=["status = 'paid'", "amount >= 50"]),
+        {"filter": ["orders.amount >= 50"]},
+        with_fields(MONTHLY_REVENUE, filter=["orders.status = 'paid'", "orders.amount >= 50"]),
     ),
     "window": (
         {"time_dimensions": [{**MONTH_TD, "date_range": ["2025-02-01", "2025-03-31"]}]},
@@ -165,7 +165,7 @@ class TestSingleStage:
         calls = executed_sql(monkeypatch)
         with pytest.raises(RefinementConflictError) as info:
             await engine.execute("monthly_revenue", refine={"metrics": [{"metric": "count(orders.*)", "alias": "revenue"}]})
-        for part in ("metrics", "revenue", "sum(amount)", "count(*)"):
+        for part in ("metrics", "revenue", "sum(orders.amount)", "count(orders.*)"):
             assert part in str(info.value)
         assert calls == []
 
@@ -245,7 +245,7 @@ class TestMultiStage:
     async def test_parity_with_hand_written(self, engine: SlayerQueryEngine) -> None:
         refined = await engine.execute("avg_customer_revenue", refine={"dimensions": ["per_customer.region"]})
         first, final = AVG_CUSTOMER_REVENUE
-        expected = await engine.execute([first, {**final, "dimensions": ["region"]}])
+        expected = await engine.execute([first, {**final, "dimensions": ["per_customer.region"]}])
         assert refined.columns == expected.columns
         assert canonical_rows(refined) == canonical_rows(expected)
 
@@ -320,4 +320,4 @@ class TestSyncWrappers:
         resp = engine.execute_sync("monthly_revenue", refine={"dimensions": ["region"]})
         assert region_month(resp) == BY_REGION_MONTH
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
-            engine.execute_sync(REVENUE_BY_STATUS, refine={"dimensions": ["status"]})
+            engine.execute_sync(REVENUE_BY_STATUS, refine={"dimensions": ["per_customer.status"]})

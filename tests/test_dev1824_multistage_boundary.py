@@ -43,9 +43,9 @@ def _stages(**stage2_kwargs) -> list:
 class TestDownstreamStageConsumesRegroupedDimension:
     async def test_select_order_and_reaggregate_over_band(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
-            dimensions=["band"],
+            dimensions=["banded.band"],
             metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
-            order=[{"field": "band", "direction": "desc"}],
+            order=[{"field": "banded.band", "direction": "desc"}],
         ))
         # Exact public result keys: upstream stage name + PUBLIC column names.
         assert resp.columns == ["banded.band", "total"]
@@ -58,7 +58,7 @@ class TestDownstreamStageConsumesRegroupedDimension:
     async def test_filter_on_band_in_downstream_stage(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["region"],
-            filter=["band == 1"],
+            filter=["banded.band == 1"],
             metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         ))
         assert resp.columns == ["banded.region", "total"]
@@ -73,7 +73,7 @@ class TestDownstreamStageConsumesRegroupedDimension:
 class TestNoInternalNamesLeak:
     async def test_response_surface_is_placeholder_free(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
-            dimensions=["band"],
+            dimensions=["banded.band"],
             metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         ))
         assert all("__regroup__" not in c for c in resp.columns)
@@ -86,7 +86,7 @@ class TestNoInternalNamesLeak:
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(_stages(
-            dimensions=["band"],
+            dimensions=["banded.band"],
             metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         ), dry_run=True)
         assert resp.sql is not None

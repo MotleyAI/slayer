@@ -100,9 +100,9 @@ class TestCompositesBecomeCombinedSlots:
     AGGREGATE slot with target-rooted producers — none reaches the seam."""
 
     @pytest.mark.parametrize("formula, n_producers", [
-        ("sum(amount) / sum(customers.spend)", 1),
+        ("sum(orders.amount) / sum(customers.spend)", 1),
         ("sum(customers.spend) * 2", 1),
-        ("round(sum(customers.spend) / sum(amount), 2)", 1),
+        ("round(sum(customers.spend) / sum(orders.amount), 2)", 1),
         ("sum(customers.spend) - max(customers.spend)", 2),
     ])
     def test_composite_plans_with_producers(

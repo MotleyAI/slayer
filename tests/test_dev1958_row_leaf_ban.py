@@ -25,10 +25,10 @@ import slayer.core.enums
 
 RULED_OPS = sorted(slayer.core.enums.ALL_TRANSFORMS - {"first", "last"})
 SHIFT_CASES = [
-    ("time_shift", "time_shift(weight, -1)", "weight"),
-    ("change", "change(weight)", "weight"),
-    ("change_pct", "change_pct(weight)", "weight"),
-    ("time_shift", "time_shift(hi_rev, -1)", "hi_rev"),
+    ("time_shift", "time_shift(sales.weight, -1)", "weight"),
+    ("change", "change(sales.weight)", "weight"),
+    ("change_pct", "change_pct(sales.weight)", "weight"),
+    ("time_shift", "time_shift(sales.hi_rev, -1)", "hi_rev"),
 ]
 
 
@@ -101,7 +101,7 @@ class TestOneMessageForEveryOp:
 
 class TestProjectedGrainKeyUnderShift:
     async def test_time_shift_over_projected_dimension(self, exec_engine) -> None:
-        kw = {"dimensions": ["store"], "time_dimensions": month_td()}
+        kw = {"dimensions": ["sales.store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
             metrics=[QueryMetric(metric="time_shift(sales.store, -1)", alias="t")], **kw))
         plain = await exec_engine.execute(_q(
@@ -113,7 +113,7 @@ class TestProjectedGrainKeyUnderShift:
         assert any(r["t"] is not None for r in resp.data)
 
     async def test_predicate_over_projected_dimension(self, exec_engine) -> None:
-        kw = {"dimensions": ["store"], "time_dimensions": month_td()}
+        kw = {"dimensions": ["sales.store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
             metrics=[QueryMetric(metric="time_shift(sales.store in ('A', 'B'), -1)",
                                    alias="t")], **kw))
@@ -125,9 +125,9 @@ class TestProjectedGrainKeyUnderShift:
         assert any(r["t"] is not None for r in resp.data)
 
     async def test_time_shift_in_filter_position(self, exec_engine) -> None:
-        kw = {"dimensions": ["store"], "time_dimensions": month_td()}
+        kw = {"dimensions": ["sales.store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            filter=["time_shift(store, -1) = 'A'"],
+            filter=["time_shift(sales.store, -1) = 'A'"],
             metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")], **kw))
         plain = await exec_engine.execute(_q(
             metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")], **kw))

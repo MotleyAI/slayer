@@ -48,7 +48,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 def _plan(expression: str):
     return plan_query(
-        query=sales_q(dimensions=["region"],
+        query=sales_q(dimensions=["sales.region"],
                       metrics=[QueryMetric(metric=expression, alias="m")]),
         bundle=_bundle())
 
@@ -124,7 +124,7 @@ class TestEmittedGroupByStaysPure:
     @pytest.mark.parametrize("formula", [MIXED_SUM, TWO_CONSTITUENTS])
     async def test_no_group_by_references_the_row_leaf(self, formula):
         sql = await gen(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=formula, alias="m")]))
         ast = sqlglot.parse_one(sql, read="postgres")
         groups = list(ast.find_all(exp.Group))
@@ -168,7 +168,7 @@ class TestDedupOneProducer:
 
     def test_shared_between_two_measures(self):
         planned = plan_query(
-            query=sales_q(dimensions=["region"], metrics=[
+            query=sales_q(dimensions=["sales.region"], metrics=[
                 QueryMetric(metric=f"sum(quantity * {_REGION_SUM})", alias="a"),
                 QueryMetric(metric=f"sum(unit_price * {_REGION_SUM})", alias="b")]),
             bundle=_bundle())
@@ -218,7 +218,7 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
 class TestFirstOverMixedSource:
     async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         q = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"first(quantity * {INNER_UP_PRODUCT}, id)",
                 alias="f")])

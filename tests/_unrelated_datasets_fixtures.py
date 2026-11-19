@@ -208,7 +208,7 @@ def m(expression: str, name: str) -> dict[str, str]:
     return {"metric": expression, "alias": name}
 
 
-RATIO = m("count(events.id) / count(*)", "events_per_customer")
+RATIO = m("count(events.id) / count(customers.*)", "events_per_customer")
 GROUPED = [m("count(*)", "n_customers"), m("count(events.id)", "n_events")]
 
 

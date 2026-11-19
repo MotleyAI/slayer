@@ -397,7 +397,7 @@ class TestLocalAggregateHiddenOrder:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount)", "direction": "desc"})],
             limit=3,
         )
         sql = await _sql(engine, query)
@@ -416,7 +416,7 @@ class TestLocalAggregateHiddenOrder:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount)", "direction": "desc"})],
         )
         with pytest.raises(DistinctDimensionValuesError):
             await _sql(engine, query)
@@ -427,7 +427,7 @@ class TestLocalAggregateHiddenOrder:
             population="orders",
             dimensions=[QueryDimension(field="customers.region")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount)"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount)"})],
             limit=10,
         )
         sql = await _sql(engine, query)
@@ -455,7 +455,7 @@ class TestLocalAggregateHiddenOrder:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="rank(sum(orders.amount), direction='desc')", alias="rk")],
-            order=[OrderItem.model_validate({"field": "count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "count(orders.id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
@@ -486,7 +486,7 @@ class TestLocalAggregateHiddenOrder:
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
             metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="ch")],
-            order=[OrderItem.model_validate({"field": "count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "count(orders.id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
@@ -503,7 +503,7 @@ class TestLocalAggregateHiddenOrder:
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
             metrics=[QueryMetric(metric="cumsum(sum(customers.revenue))", alias="ccr")],
-            order=[OrderItem.model_validate({"field": "count(id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "count(orders.id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
@@ -519,7 +519,7 @@ class TestExecutionHiddenOrder:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         statuses = [r["orders.status"] for r in resp.data]
@@ -567,7 +567,7 @@ class TestExecutionHiddenOrder:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.amount)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         keys = set(resp.attributes.dimensions) | set(resp.attributes.metrics)
@@ -807,7 +807,7 @@ class TestTransformOrderSupported:
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "change(sum(amount))", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "change(sum(orders.amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.amount_sum"]
@@ -818,7 +818,7 @@ class TestTransformOrderSupported:
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
             metrics=[QueryMetric(metric="sum(orders.amount)")],
-            order=[OrderItem.model_validate({"field": "cumsum(sum(amount))", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "cumsum(sum(orders.amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.amount_sum"]
@@ -843,7 +843,7 @@ class TestHostRootedIsolatedHiddenOrder:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="count(orders.*)")],
-            order=[OrderItem.model_validate({"field": "sum(flagged_amount)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.flagged_amount)", "direction": "desc"})],
             limit=3,
         )
         sql = await _sql(engine, query)

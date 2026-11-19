@@ -268,11 +268,11 @@ async def cycle_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 class TestDirectedCycle:
-    async def test_inference_needs_an_explicit_population(self, cycle_engine) -> None:
+    async def test_inference_ties(self, cycle_engine) -> None:
         query = SlayerQuery.model_validate({"dimensions": ["x.v", "y.v", "z.v"]})
         with pytest.raises(PopulationInferenceError) as ei:
             await cycle_engine.execute(query)
-        assert ei.value.reason == PopulationErrorReason.NO_VIABLE_CANDIDATE
+        assert ei.value.reason == PopulationErrorReason.TIE
 
     async def test_the_named_population_executes(self, cycle_engine) -> None:
         resp = await cycle_engine.execute(SlayerQuery.model_validate({"population": "x", "dimensions": ["x.v", "y.v", "y.z.v"]}))
@@ -284,4 +284,4 @@ class TestDirectedCycle:
         assert rec.reachable is False
         assert rec.population is None
         coverage = {c.dataset_name: set(c.reachable_items) for c in rec.coverage}
-        assert coverage == {"x": {"x.v", "y.v"}, "y": {"y.v", "z.v"}, "z": {"z.v", "x.v"}}
+        assert coverage == {name: {"x.v", "y.v", "z.v"} for name in ("x", "y", "z")}

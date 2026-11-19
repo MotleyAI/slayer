@@ -189,7 +189,7 @@ class TestOrderByRenamedMeasureRemap:
             metrics=[
                 QueryMetric(metric="count_distinct(orders.customer_id)", alias="num_customers"),
             ],
-            order=[OrderItem.model_validate({"field": "count_distinct(customer_id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "count_distinct(orders.customer_id)", "direction": "desc"})],
         )
         sql = await _generate(query, model)
 
@@ -262,11 +262,11 @@ class TestRemapEdgeCases:
         ("formula_a", "formula_b"),
         [
             # Two plain aggregates.
-            ("sum(amount)", "avg(profit)"),
+            ("sum(orders.amount)", "avg(orders.profit)"),
             # Two arithmetic / non-aggregate measures — CodeRabbit + Codex
             # round 4: the duplicate-name check must cover all measure
             # kinds, not just the local legacy aggregated-measure node rename branch.
-            ("sum(amount) / 100", "avg(profit) * 2"),
+            ("sum(orders.amount) / 100", "avg(orders.profit) * 2"),
         ],
         ids=["plain_agg", "arithmetic"],
     )

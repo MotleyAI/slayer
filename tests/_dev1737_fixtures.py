@@ -345,7 +345,7 @@ def assert_value(actual: Any, expected: Any, *, where: str) -> None:
 
 
 def assert_case(data: list[dict[str, Any]], case: DateCase, *, dataset: str = "dt") -> None:
-    got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in data}
+    got = {int(r[f"{dataset}.id"]): r["v"] for r in data}
     assert set(got) == set(case.expected), f"{case.case_id}: row ids {sorted(got)}"
     for rid, expected in case.expected.items():
         assert_value(got[rid], expected, where=f"{case.case_id} id={rid}")
@@ -467,13 +467,13 @@ async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
     """Spec scenarios whose values need a real backend (clock, joins, literals)."""
     async def by_id(expr: str, model: str = "orders") -> dict[int, Any]:
         resp = await engine.execute(SlayerQuery.model_validate(
-            {"population": model, "dimensions": ["id", {"field": expr, "alias": "v"}]}))
-        return {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+            {"population": model, "dimensions": [f"{model}.id", {"field": expr, "alias": "v"}]}))
+        return {int(r[f"{model}.id"]): r["v"] for r in resp.data}
 
     async def count(filt: str, model: str = "orders") -> int:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": model, "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": [filt]}))
-        return int(resp.data[0][f"{model}.n"])
+            "population": model, "metrics": [{"metric": f"count({model}.*)", "alias": "n"}], "filter": [filt]}))
+        return int(resp.data[0]["n"])
 
     assert await count("created_at >= date_add(current_date(), -30, 'day')", model="recent") == 1
     assert await count("created_at <= now()") == 5

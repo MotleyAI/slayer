@@ -28,14 +28,14 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_STREAK = "consecutive_periods(sum(amount) > 100)"
+_STREAK = "consecutive_periods(sum(orders.amount) > 100)"
 
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
         "cp/month": orders_query(expression=_STREAK),
-        "cp/grouped": orders_query(expression=_STREAK, dimensions=["customer_id"], filters=[]),
+        "cp/grouped": orders_query(expression=_STREAK, dimensions=["orders.customer_id"], filters=[]),
         "cp/quarter": orders_query(expression=_STREAK, granularity="quarter"),
         "cp/week_sunday": orders_query(expression=_STREAK, granularity="week_sunday"),
         "cp/hour": orders_query(expression=_STREAK, granularity="hour"),

@@ -227,12 +227,12 @@ class TestInjectedRemovals:
 
     async def test_a_measure_used_by_name(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
-            with _inject(RemoveSpec(metrics=["m_bad"])):
+            with _inject(RemoveSpec(metrics=["orders.m_bad"])):
                 await _wrapped(env.engine, {"population": "orders", "metrics": ["orders.m_bad"]})
 
     async def test_an_unused_measure(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
-            with _inject(RemoveSpec(metrics=["m_bad"])):
+            with _inject(RemoveSpec(metrics=["orders.m_bad"])):
                 await _unwrapped(env.engine, _ORDERS_BAD)
 
     async def test_a_used_aggregation(self, tmp_path: Path) -> None:

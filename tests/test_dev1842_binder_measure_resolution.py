@@ -110,19 +110,19 @@ class TestAggregationScopeNotExpanded:
     async def test_agg_source_not_expanded(self) -> None:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "sum(rev)")
+            await _gen(model, "sum(orders.rev)")
         assert "saved metric" in str(ei.value).lower()
 
     async def test_agg_positional_arg_not_expanded(self) -> None:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "last(amount, rev)")
+            await _gen(model, "last(orders.amount, orders.rev)")
         assert "saved metric" in str(ei.value).lower()
 
     async def test_agg_kwarg_not_expanded(self) -> None:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "weighted_avg(amount, weight=rev)")
+            await _gen(model, "weighted_avg(orders.amount, weight=orders.rev)")
         assert "saved metric" in str(ei.value).lower()
 
 
@@ -175,9 +175,9 @@ class TestTransformArgEligibilityDropped:
     async def test_transform_partition_by_measure_not_expanded(self) -> None:
         model = _dataset([_REV, _GRP])
         with pytest.raises(ValueError):
-            await _gen(model, "rank(sum(amount), partition_by=grp, direction='desc')",
-                       dimensions=["status"],
-                       time_dimensions=[{"field": "created_at",
+            await _gen(model, "rank(sum(orders.amount), partition_by=orders.grp, direction='desc')",
+                       dimensions=["orders.status"],
+                       time_dimensions=[{"field": "orders.created_at",
                                          "granularity": "month"}])
 
 

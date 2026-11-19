@@ -77,7 +77,7 @@ class TestAssociationColumnParameter:
         """Scenario: parameter determined by the entity key — the weight column
         is picked once per distinct customer (never join-multiplied)."""
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="weighted_avg(customers.spend, weight=customers.spend)",
                 alias="w")]))
@@ -96,9 +96,9 @@ class TestAssociationColumnParameter:
         pos = QueryMetric(
             metric="weighted_avg(customers.spend, customers.spend)", alias="w")
         kw_by = status_key(await assoc_engine.execute(
-            assoc_q(dimensions=["status"], metrics=[kw])))
+            assoc_q(dimensions=["orders.status"], metrics=[kw])))
         pos_by = status_key(await assoc_engine.execute(
-            assoc_q(dimensions=["status"], metrics=[pos])))
+            assoc_q(dimensions=["orders.status"], metrics=[pos])))
         for status in ("ok", "new"):
             assert float(pos_by[(status,)]["w"]) == pytest.approx(
                 float(kw_by[(status,)]["w"]))
@@ -108,7 +108,7 @@ class TestAssociationColumnParameter:
         NULL weight (c4 has no region) contributing nothing to the ``new`` cell
         per SQL SUM semantics."""
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="weighted_avg(customers.spend, weight=customers.regions.pop)",
                 alias="w")]))
@@ -121,10 +121,10 @@ class TestAssociationColumnParameter:
         per distinct entity, and is identical to spelling the parameter
         explicitly (``wsum(weight=customers.spend)``)."""
         default = await assoc_coldef_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum(customers.spend)", alias="w")]))
         explicit = await assoc_coldef_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="wsum(customers.spend, weight=customers.spend)", alias="w")]))
         by, ex = status_key(default), status_key(explicit)
@@ -137,7 +137,7 @@ class TestAssociationColumnParameter:
         rides the pick unchanged; each cell's 0.5-percentile lies within its
         distinct population's [min, max]."""
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="percentile(customers.spend, p=0.5)", alias="p")]))
         by = status_key(resp)
@@ -149,10 +149,10 @@ class TestAssociationColumnParameter:
         """The weighted measure is cardinality-neutral — adding it changes
         neither the row set nor the sibling plain measure."""
         base = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")]))
         withw = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m"),
                       QueryMetric(
                           metric="weighted_avg(customers.spend, weight=customers.spend)",
@@ -169,7 +169,7 @@ class TestReaggregationOperandParameter:
         averaged with each city's row count as weight, distinguishable from the
         unweighted average where the weights differ."""
         resp = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         vals = _region_vals(resp, "w")
         for region, expected in WAVG_CITY_BY_REGION.items():
@@ -185,12 +185,12 @@ class TestReaggregationOperandParameter:
         """The re-aggregation equals the manual stage-1-sum/count →
         stage-2-weighted_avg ``source_queries`` model, region by region."""
         reagg = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         manual = await reagg_engine.execute("wavg_city_by_region")
         got = _region_vals(reagg, "w")
         man_r = next(c for c in manual.columns if c.endswith(".region"))
-        man_w = next(c for c in manual.columns if c.endswith(".w"))
+        man_w = next(c for c in manual.columns if c == "w" or c.endswith(".w"))
         want = {row[man_r]: row[man_w] for row in manual.data}
         for region, w in want.items():
             if w is None:
@@ -215,7 +215,7 @@ class TestReaggregationOperandParameter:
         """Scenario: explicit outer grain with a parameter — the per-region
         weighted value broadcasts identically across ``product``."""
         resp = await reagg_engine.execute(sales_q(
-            dimensions=["region", "product"],
+            dimensions=["sales.region", "sales.product"],
             metrics=[QueryMetric(
                 metric=f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT}, partition_by=region)",
                 alias="w")]))
@@ -232,12 +232,12 @@ class TestReaggregationOperandParameter:
         the weight passed positionally equals the keyword spelling, region by
         region."""
         kw = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"wavg({INNER_CR}, weight=count(id, partition_by=[city, region]))",
                 alias="w")]))
         pos = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"wavg({INNER_CR}, count(id, partition_by=[city, region]))",
                 alias="w")]))
@@ -254,7 +254,7 @@ class TestReaggregationOperandParameter:
         a parameter is identity (weight cancels over the single cell) plus the
         degenerate warning; Void's NULL-total cell stays NULL."""
         resp = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=("weighted_avg(sum(amount, partition_by=region), "
                          "weight=count(id, partition_by=region))"),
@@ -275,10 +275,10 @@ class TestWeightedValueAsConsumer:
         dropping North (37.5), Gap (10.67), Void (NULL), and every surviving
         sibling equals its unfiltered value."""
         full = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         pruned = await reagg_engine.execute(sales_q(
-            dimensions=["region"], filter=[f"{_WAVG_REAGG} > 50"],
+            dimensions=["sales.region"], filter=[f"{_WAVG_REAGG} > 50"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         kept = {k[0] for k in region_key(pruned)}
         assert kept == {"South", "East"}

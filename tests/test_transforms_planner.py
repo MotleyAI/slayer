@@ -144,7 +144,7 @@ class TestBindTransformValidation:
 
     def test_time_shift_with_periods_binds(self) -> None:
         bound = bind_expr(
-            parsed=parse_expr("time_shift(sum(amount), periods=-1)"),
+            parsed=parse_expr("time_shift(sum(orders.amount), periods=-1)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)

@@ -197,7 +197,7 @@ class TestColumnFilterSubstitution:
                 DatasetField(
                     name="region_amount",
                     sql="amount",
-                    filter="region = '{region}'",
+                    filter="orders.region = '{region}'",
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -851,11 +851,11 @@ def _in_values(text: Optional[str], *, dialect=None) -> list:
 
 class TestSubstituteVariablesHardened:
     def test_sql_mode_string_value_with_single_quote(self) -> None:
-        bound = _bind(template="status = '{v}'", variables={"v": "O'Brien"})
+        bound = _bind(template="t.status = '{v}'", variables={"v": "O'Brien"})
         assert _literals(bound) == ["O'Brien"]
 
     def test_sql_mode_string_value_without_quote_unchanged(self) -> None:
-        bound = _bind(template="status = '{v}'", variables={"v": "active"})
+        bound = _bind(template="t.status = '{v}'", variables={"v": "active"})
         assert _literals(bound) == ["active"]
 
     def test_sql_mode_backslash_standard_dialect(self) -> None:

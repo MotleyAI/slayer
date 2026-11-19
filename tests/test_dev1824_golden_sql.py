@@ -23,9 +23,9 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 WORKING_PREFIX = "lift/"
 
-RANK_DIM = "rank(sum(amount, partition_by=region), direction='desc')"
+RANK_DIM = "rank(sum(orders.amount, partition_by=orders.region), direction='desc')"
 WBAND = (
-    "CASE WHEN sum(amount, window='90d', partition_by=region) > 50 THEN 1 ELSE 0 END"
+    "CASE WHEN sum(orders.amount, window='90d', partition_by=orders.region) > 50 THEN 1 ELSE 0 END"
 )
 CBAND = (
     "CASE WHEN cumsum(sum(amount, partition_by=[region, ordered_at])) > 50 "
@@ -36,20 +36,20 @@ CBAND = (
 def _cases() -> dict:
     return {
         "lift/window_partition": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="sum(orders.amount, window='90d', partition_by=orders.region)", alias="w",
             )],
         ),
         "lift/two_ranked_producers": q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="a"),
                 QueryMetric(metric="last(orders.amount, partition_by=orders.city)", alias="b"),
             ],
         ),
         "lift/three_level_nesting": q(
-            dimensions=["region", {"field": CBAND, "alias": "cband"}],
+            dimensions=["orders.region", {"field": CBAND, "alias": "cband"}],
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
@@ -61,40 +61,40 @@ def _cases() -> dict:
             ],
         ),
         "lift/first_last_partition": q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
                 metric="last(orders.amount, partition_by=orders.region)", alias="l",
             )],
         ),
         "lift/temporal_partition_last": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="last(orders.amount, partition_by=[orders.region, orders.ordered_at])", alias="l",
             )],
         ),
         "lift/cumsum_partitioned": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
                 metric="cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at]))",
                 alias="c",
             )],
         ),
         "lift/rank_partitioned_measure": q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric=RANK_DIM, alias="r")],
         ),
         "lift/filter_partitioned": q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/filter_conjunct_split": q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50 and orders.city != 'CityB'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/coexist_row_combined": q(
-            dimensions=["region", {"field": BAND35, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND35, "alias": "band"}],
             metrics=[
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
@@ -102,7 +102,7 @@ def _cases() -> dict:
         ),
         "lift/coexist_same_agg_both": q(
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": "CASE WHEN sum(amount, partition_by=region) > 55 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
@@ -111,19 +111,19 @@ def _cases() -> dict:
             )],
         ),
         "lift/order_raw_aggregate": q(
-            dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
+            dimensions=["orders.region", "orders.city", {"field": BAND35, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
-            order=[{"field": "sum(amount, partition_by=city)", "direction": "asc"}],
+            order=[{"field": "sum(orders.amount, partition_by=orders.city)", "direction": "asc"}],
         ),
         "lift/coexist_windowed": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
                 QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         ),
         "lift/coexist_first_last": q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
                 QueryMetric(metric="last(orders.amount)", alias="l"),
@@ -131,14 +131,14 @@ def _cases() -> dict:
         ),
         "lift/coexist_cross_model": q(
             to_many_handling="broadcast",
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ),
         "lift/coexist_transform": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
                 QueryMetric(metric="cumsum(sum(orders.amount))", alias="c"),
@@ -146,32 +146,32 @@ def _cases() -> dict:
         ),
         "lift/dim_two_partition_sets": q(
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": "sum(amount, partition_by=city) - "
                                "sum(amount, partition_by=region)", "alias": "gap"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/dim_rank": q(
-            dimensions=["region", {"field": RANK_DIM, "alias": "rr"}],
+            dimensions=["orders.region", {"field": RANK_DIM, "alias": "rr"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/dim_first_last": q(
             dimensions=[
-                "region",
-                {"field": "last(amount, partition_by=region)", "alias": "la"},
+                "orders.region",
+                {"field": "last(orders.amount, partition_by=orders.region)", "alias": "la"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/dim_window": q(
-            dimensions=["region", {"field": WBAND, "alias": "wband"}],
+            dimensions=["orders.region", {"field": WBAND, "alias": "wband"}],
             time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "guard/dim_bare_aggregate": q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN sum(amount) > 50 THEN 1 ELSE 0 END",
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount) > 50 THEN 1 ELSE 0 END",
                  "alias": "b"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
@@ -179,15 +179,15 @@ def _cases() -> dict:
         "guard/dim_cross_model_source": q(
             to_many_handling="broadcast",
             dimensions=[
-                "region",
+                "orders.region",
                 {"field": "CASE WHEN sum(customers.spend, partition_by=region) "
                                "> 100 THEN 1 ELSE 0 END", "alias": "cband"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "guard/filter_no_common_scope": q(
-            dimensions=["region", "city"],
-            filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50 or orders.status == 'ok'"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/nested_attach": q(
@@ -197,7 +197,7 @@ def _cases() -> dict:
                 # over bigquery's 300-byte limit — the tier-1 identifier-fitting
                 # premise pinned in test_dev1891_internal_identifier_fit.py (D5's
                 # Column.filter desugar shortened the encoding).
-                {"field": "sum(amount, partition_by=[band, region, customer_id])",
+                {"field": "sum(orders.amount, partition_by=[band, orders.region, orders.customer_id])",
                  "alias": "b2"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],

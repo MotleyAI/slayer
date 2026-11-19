@@ -53,7 +53,7 @@ from tests._dev1859_fixtures import (
 
 _HEADLINE = ("weighted_avg(customers.spend, "
              "weight=sum(amount, partition_by=customers.regions.name))")
-_ORDINARY = "weighted_avg(amount, weight=sum(amount, partition_by=region))"
+_ORDINARY = "weighted_avg(sales.amount, weight=sum(sales.amount, partition_by=sales.region))"
 _MIXED_PARAM = ("weighted_avg(quantity * avg(unit_price, partition_by=product), "
                 "weight=sum(amount, partition_by=region))")
 _CROSS = ("weighted_avg("
@@ -103,7 +103,7 @@ class TestAssociateHeadline:
     async def test_region_weighted_average_by_status(self, orders_engine):
         """Scenario: Associate-mode attached parameter executes."""
         resp = await orders_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=_HEADLINE, alias="w")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}
@@ -115,7 +115,7 @@ class TestAssociateHeadline:
         region cell (its order + the orphan order) weights c4 in, distinct from
         dropping c4 entirely."""
         resp = await orders_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=_HEADLINE, alias="w")]))
         new = float(status_key(resp)[("new",)]["w"])
         assert new == pytest.approx(assoc_wavg_region_weight()["new"])
@@ -129,7 +129,7 @@ class TestDefaultAndErrorModeTwins:
         global weighted value identically to both status cells, with the broadcast
         warning."""
         resp = await orders_engine.execute(bcast_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=_HEADLINE, alias="w")]))
         by = status_key(resp)
         expected = broadcast_wavg_global()
@@ -141,7 +141,7 @@ class TestDefaultAndErrorModeTwins:
         """Control: a parameter reading only customers-side columns nests inside
         the customers-rooted producer and broadcasts to both cells."""
         resp = await orders_engine.execute(bcast_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=_TARGET_SIDE, alias="w")]))
         by = status_key(resp)
         expected = broadcast_wavg_target_side()
@@ -152,7 +152,7 @@ class TestDefaultAndErrorModeTwins:
     async def test_error_mode_refuses_the_dimension(self, orders_engine):
         """Scenario: Default-mode twin — error mode refuses the unattributable
         dimension, never a parameter/determination error."""
-        q = error_q(dimensions=["status"],
+        q = error_q(dimensions=["orders.status"],
                     metrics=[QueryMetric(metric=_HEADLINE, alias="w")])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
@@ -190,7 +190,7 @@ class TestMixedPlusParameter:
         """Scenario: Attached parameter beside a mixed source — the source
         constituent and the parameter both row-attach; no placeholder leak."""
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=_MIXED_PARAM, alias="w")]))
         _assert_region(_region_vals(resp, "w"), mixed_plus_param_by_region())
 
@@ -200,7 +200,7 @@ class TestUngrainedParameterThreeKernels:
         """Scenario: Ungrained parameter on a row-level source — wsum(amount,
         weight=sum(amount)); the weight types at [region] (region total²)."""
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="wsum(sales.amount, weight=sum(sales.amount))",
                                    alias="w")]))
         _assert_region(_region_vals(resp, "w"), ungrained_wsum_row_by_region())
@@ -209,7 +209,7 @@ class TestUngrainedParameterThreeKernels:
         """Scenario: Ungrained parameter under association — the weight types at
         [status], broadcast onto each distinct customer."""
         resp = await orders_wsum_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="wsum(customers.spend, weight=sum(orders.amount))", alias="w")]))
         by = status_key(resp)
@@ -220,7 +220,7 @@ class TestUngrainedParameterThreeKernels:
         """Scenario: Ungrained parameter on a re-aggregation — the ungrained
         count(id) types at [region] and is carried onto each city cell."""
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=("wsum(sum(amount, partition_by=[city, region]), "
                          "weight=count(id))"),
@@ -235,7 +235,7 @@ class TestLiteralSource:
         wsum(1, weight=…) = row count × region total, never a re-aggregation
         over an empty grain."""
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric="wsum(1, weight=sum(sales.amount, partition_by=sales.region))",
                 alias="w")]))
@@ -248,7 +248,7 @@ class TestCrossModelParameterOnLocalRoot:
         """Scenario: Cross-model attached parameter on a local root — each order
         weighted by its customer's region SPEND total, attached per order row."""
         resp = await orders_engine.execute(orders_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=_CROSS, alias="w")]))
         by = status_key(resp)
         for status, expected in cross_dataset_param_by_status().items():
@@ -260,7 +260,7 @@ class TestCrossModelParameterOnLocalRoot:
         typed input-safety error, never the deleted attached-parameter remedy
         and never wrong values."""
         q = orders_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric=("weighted_avg(amount, weight="
                          "sum(customers.spend, partition_by=customers.plans.level))"),
@@ -279,7 +279,7 @@ class TestUndeterminedParameterRejected:
         does not determine) fails with the typed determination error, never wrong
         values. Distinct from the cross-model input-safety residue above."""
         q = assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric=("weighted_avg(customers.spend, "
                          "weight=sum(amount, partition_by=status))"),
@@ -292,16 +292,16 @@ class TestUndeterminedParameterRejected:
 
 
 class TestFilterAndOrderPositions:
-    _FILT = "wsum(amount, weight=sum(amount))"
+    _FILT = "wsum(sales.amount, weight=sum(sales.amount))"
 
     async def test_filter_only_prunes_with_values_unchanged(self, sales_engine):
         """Scenario: Attached parameter in filter and order positions — the
         filter types as a measure, pruning rows with survivors unchanged."""
         full = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         pruned = await sales_engine.execute(sales_q(
-            dimensions=["region"], filter=[f"{self._FILT} > 10000"],
+            dimensions=["sales.region"], filter=[f"{self._FILT} > 10000"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         kept = {k[0] for k in region_key(pruned)}
         assert kept == {"South", "East"}  # 19600, 32400 > 10000
@@ -312,7 +312,7 @@ class TestFilterAndOrderPositions:
     async def test_order_by_projected_measure_name(self, sales_engine):
         """Scenario: ordered by the name of its projected measure."""
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=_ORDINARY, alias="w")],
             order=[{"field": "w", "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data if r["w"] is not None]
@@ -322,7 +322,7 @@ class TestFilterAndOrderPositions:
     async def test_order_by_raw_formula(self, sales_engine):
         """Scenario: appears only as a raw ORDER BY formula (no projection)."""
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")],
             order=[{"field": _ORDINARY, "direction": "desc"}]))
         by_val = ordinary_wavg_by_region()
@@ -339,20 +339,20 @@ _DEDUP = ("weighted_avg(quantity * sum(amount, partition_by=region), "
 class TestSqlHygiene:
     @pytest.mark.parametrize("formula", [
         _ORDINARY, _MIXED_PARAM, _DEDUP,
-        "wsum(1, weight=sum(amount, partition_by=region))"])
+        "wsum(1, weight=sum(sales.amount, partition_by=sales.region))"])
     async def test_no_placeholder_leak_and_scope_closed(self, sales_engine, formula):
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=formula, alias="w")]), dry_run=True)
         assert "__regroup__" not in resp.sql, resp.sql
         assert_scope_closed(resp.sql)
 
     async def test_adding_parameter_measure_is_cardinality_neutral(self, sales_engine):
         base = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         withp = await sales_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       QueryMetric(metric=_ORDINARY, alias="w")]))
         assert len(withp.data) == len(base.data)

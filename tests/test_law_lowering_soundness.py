@@ -53,7 +53,7 @@ def _keyed_engine(resp, *, with_month: bool) -> dict:
 class TestAssocInline:
     async def _assert_matches_oracle(self, law_backend, *, with_month: bool):
         dialect, engine, db_path = law_backend
-        kwargs: dict = {"dimensions": ["region"]}
+        kwargs: dict = {"dimensions": ["orders.region"]}
         if with_month:
             kwargs["time_dimensions"] = month_td()
         resp = await engine.execute(q(
@@ -94,7 +94,7 @@ class TestFusionParity:
             population=models[0], referenced_datasets=list(models[1:]),
         )
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         return plan_query(query=query, bundle=bundle), bundle

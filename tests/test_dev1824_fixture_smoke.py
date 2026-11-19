@@ -40,7 +40,7 @@ def test_oracles_are_mutually_consistent() -> None:
 class TestSeededDataset:
     async def test_city_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -50,7 +50,7 @@ class TestSeededDataset:
 
     async def test_region_month_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         got = {

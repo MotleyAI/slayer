@@ -103,27 +103,27 @@ class TestTransformPlusHiddenAggregate:
             _approx_or_none(got[m]["c"], expected)
 
     async def test_change_plus_local_sum(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="sum(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="sum(orders.amount)")
 
     async def test_change_plus_star_count(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="count(*)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="count(orders.*)")
 
     async def test_change_plus_amount_max(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="max(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="max(orders.amount)")
 
     async def test_time_shift_plus_sum(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"time_shift({CM}, -1)", operand="sum(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"time_shift({CM}, -1)", operand="sum(orders.amount)")
 
     async def test_cumsum_plus_sum(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"cumsum({CM})", operand="sum(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"cumsum({CM})", operand="sum(orders.amount)")
 
     async def test_change_of_wscaled_plus_sum(self, dev1750_engine) -> None:
         """The inner crosses a join fragment (``wscaled_sum(amount)``)."""
-        await self._assert_sum_invariant(dev1750_engine, transform="change(wscaled_sum(amount))", operand="sum(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform="change(wscaled_sum(orders.amount))", operand="sum(orders.amount)")
 
     async def test_transform_plus_transform(self, dev1750_engine) -> None:
         """Both operands are transforms (renders today; pinned by invariance)."""
-        await self._assert_sum_invariant(dev1750_engine, transform="change(sum(amount))", operand=f"change({CM})")
+        await self._assert_sum_invariant(dev1750_engine, transform="change(sum(orders.amount))", operand=f"change({CM})")
 
     async def test_transform_plus_literal(self, dev1750_engine) -> None:
         comps = _by_month(await _orders(dev1750_engine, metrics=[
@@ -146,11 +146,11 @@ class TestTransformPlusHiddenAggregate:
                 for r in resp.data
             }
 
-        comps = by_status_month(await _orders(dev1750_engine, dimensions=["status"], metrics=[
+        comps = by_status_month(await _orders(dev1750_engine, dimensions=["orders.status"], metrics=[
             QueryMetric(metric=f"change({CM})", alias="t"),
             QueryMetric(metric="sum(orders.amount)", alias="o"),
         ]))
-        got = by_status_month(await _orders(dev1750_engine, dimensions=["status"], metrics=[
+        got = by_status_month(await _orders(dev1750_engine, dimensions=["orders.status"], metrics=[
             QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c"),
         ]))
         assert set(got) == set(comps)
@@ -321,7 +321,7 @@ class TestTermAloneExecutionParity:
     composite projected (staging is a function of the term alone). The projected
     variant is the dev1859 stall shape and raises before the change."""
 
-    _FILTER = "last(change(sum(amount))) < 0"
+    _FILTER = "last(change(sum(orders.amount))) < 0"
 
     @staticmethod
     def _month_orders_td():

@@ -227,7 +227,7 @@ def two_stage_banding() -> list:
     )
     stage2 = SlayerQuery(
         population="per_city",
-        dimensions=[QueryDimension(field="orders.region"),
+        dimensions=[QueryDimension(field="per_city.region"),
                     QueryDimension(field="CASE WHEN city_total > 5000 THEN 1 ELSE 0 END", alias="band")],
         metrics=[QueryMetric(metric="sum(city_total)", alias="band_total")],
     )

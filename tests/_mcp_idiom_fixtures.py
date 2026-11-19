@@ -347,7 +347,7 @@ def rows_by(resp: SlayerResponse, *, key: str) -> dict[Any, dict[str, Any]]:
 
 
 def value(row: dict[str, Any], suffix: str) -> Any:
-    """The one value in ``row`` whose column name ends with ``suffix``."""
-    hits = [v for k, v in row.items() if k.endswith(suffix)]
+    """The one value in ``row`` whose column name ends with ``suffix`` (a bare alias key matches ``.alias``)."""
+    hits = [v for k, v in row.items() if k.endswith(suffix) or k == suffix.lstrip(".")]
     assert len(hits) == 1, (suffix, list(row))
     return hits[0]

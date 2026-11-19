@@ -88,7 +88,7 @@ class TestReverseHopPushdown:
         """Scenario: unsafe filter no longer fans out the producer."""
         dialect, engine = exec_backend
         query = q(dimensions=["customers.tier"], metrics=[M, CM],
-                  filter=["channel = 'app'"])
+                  filter=["orders.channel = 'app'"])
         resp = await engine.execute(query)
         by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("silver",)}
@@ -101,7 +101,7 @@ class TestReverseHopPushdown:
         # The metric's presence leaves the spine untouched.
         control = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[M],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         ))
         control_by = rows_by(control, "customers.tier")
         assert set(control_by) == set(by)
@@ -115,7 +115,7 @@ class TestReverseHopPushdown:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[M, CM],
-            filter=["channel = 'web'"],
+            filter=["orders.channel = 'web'"],
         ))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("silver",), ("bronze",), (None,)}
@@ -130,8 +130,8 @@ class TestReverseHopPushdown:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, CM],
-            filter=["channel = 'app'"],
+            dimensions=["orders.status"], metrics=[M, CM],
+            filter=["orders.channel = 'app'"],
         ))
         by = rows_by(resp, "orders.status")
         assert set(by) == {("ok",), ("new",)}
@@ -144,7 +144,7 @@ class TestReverseHopPushdown:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["NOT (channel = 'app')"],
+            filter=["NOT (orders.channel = 'app')"],
         ))
         by = rows_by(resp, "customers.tier")
         # NOT app ≡ web on this dataset — the population matches the web pin.
@@ -159,7 +159,7 @@ class TestSameRowGrouping:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[M, CM],
-            filter=["status = 'ok'", "channel = 'app'"],
+            filter=["orders.status = 'ok'", "orders.channel = 'app'"],
         ))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("silver",)}
@@ -173,8 +173,8 @@ class TestSameRowGrouping:
         """One store qualifies only through a single order that is both app
         AND by a gold customer — across the composite hop plus one more."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"], metrics=[M, RM],
-                  filter=["channel = 'app'", "customers.tier = 'gold'"],
+        query = q(dimensions=["orders.status"], metrics=[M, RM],
+                  filter=["orders.channel = 'app'", "customers.tier = 'gold'"],
                   to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status")
@@ -194,8 +194,8 @@ class TestCompositeCorrelation:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, RM],
-            filter=["channel = 'app'"],
+            dimensions=["orders.status"], metrics=[M, RM],
+            filter=["orders.channel = 'app'"],
         ))
         for row in resp.data:
             assert float(row["rm"]) == pytest.approx(RENT_APP)
@@ -227,7 +227,7 @@ class TestInlineEquivalence:
         _, engine = exec_backend_rev
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         ))
         by = rows_by(resp, "customers.tier")
         for tier, spend in SPEND_APP_BY_TIER.items():
@@ -239,7 +239,7 @@ class TestBranchIndependence:
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[M, CM],
-            filter=["channel = 'web'", "customers.plans.level = 'basic'"],
+            filter=["orders.channel = 'web'", "customers.plans.level = 'basic'"],
         ))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",)}
@@ -258,7 +258,7 @@ class TestCorrelatedOuterReference:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[M, CM],
-            filter=["customers.spend > amount"],
+            filter=["customers.spend > orders.amount"],
         ))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("silver",)}
@@ -278,8 +278,8 @@ class TestExpandedDependencies:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, CM],
-            filter=["cust_tier = 'gold'"],
+            dimensions=["orders.status"], metrics=[M, CM],
+            filter=["orders.cust_tier = 'gold'"],
         ))
         by = rows_by(resp, "orders.status")
         assert set(by) == {("ok",), ("new",)}
@@ -320,7 +320,7 @@ class TestProducerKinds:
                 QueryMetric(metric="last(customers.spend, customers.signup_at)",
                              alias="l"),
             ],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "customers.tier")
@@ -342,7 +342,7 @@ class TestProducerKinds:
             time_dimensions=signup_month_td(),
             metrics=[QueryMetric(metric="sum(customers.spend, window='1y')",
                                    alias="w")],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         ))
         got = {month_key(r["customers.signup_at"]): r["w"]
                for r in resp.data}
@@ -360,7 +360,7 @@ class TestProducerKinds:
             time_dimensions=signup_month_td(),
             metrics=[QueryMetric(metric="sum(customers.spend, window='1y')",
                                    alias="w")],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         ), dry_run=True)
         tree = sqlglot.parse_one(sql=dry.sql, read=dialect)
         src = next(s for s in tree.find_all(exp.Subquery) if s.alias == "_src")
@@ -382,7 +382,7 @@ class TestProducerKinds:
             time_dimensions=signup_month_td(),
             metrics=[QueryMetric(metric="sum(customers.spend, window='1y')",
                                    alias="w")],
-            filter=["status = 'new'"],
+            filter=["orders.status = 'new'"],
         ))
         got = {month_key(r["customers.signup_at"]): r["w"]
                for r in resp.data}
@@ -397,7 +397,7 @@ class TestProducerKinds:
         query = q(
             dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
             metrics=[M],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "sband")

@@ -30,13 +30,13 @@ from tests._dev2177_fixtures import (
 from tests._mcp_idiom_fixtures import idiom_datasets, make_idiom_engine
 
 TS = "TIMESTAMP '2025-01-01 00:00:00'"
-MIXED = "coalesce(status, amount)"
+MIXED = "coalesce(orders.status, orders.amount)"
 
 #: Conditional → (template over branches ``a`` / ``b``, accepted spellings of its name in the error).
 FUNCTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "iif": ("iif(amount > 15, {a}, {b})", ("iif", "case")),
-    "case": ("CASE WHEN amount > 15 THEN {a} ELSE {b} END", ("case", "iif")),
-    "simple-case": ("CASE status WHEN 'paid' THEN {a} ELSE {b} END", ("case", "iif")),
+    "iif": ("iif(orders.amount > 15, {a}, {b})", ("iif", "case")),
+    "case": ("CASE WHEN orders.amount > 15 THEN {a} ELSE {b} END", ("case", "iif")),
+    "simple-case": ("CASE orders.status WHEN 'paid' THEN {a} ELSE {b} END", ("case", "iif")),
     "coalesce": ("coalesce({a}, {b})", ("coalesce",)),
     "ifnull": ("ifnull({a}, {b})", ("ifnull", "coalesce")),
     "greatest": ("greatest({a}, {b})", ("greatest",)),
@@ -47,7 +47,7 @@ COMPATIBLE: dict[str, tuple[str, str, DataType]] = {
     "null-absorbed": ("amount", "NULL", DataType.INTEGER),
     "int-double": ("amount", "0.5", DataType.FLOAT),
     "date-timestamp": ("order_date", TS, DataType.DATETIME),
-    "boolean-number": ("status = 'paid'", "amount", DataType.INTEGER),
+    "boolean-number": ("orders.status = 'paid'", "amount", DataType.INTEGER),
 }
 #: ``greatest`` / ``least`` read a TEXT operand beside a number as a number; the others reject the mix.
 TEXT_AS_NUMBER = {"greatest", "least"}
@@ -146,34 +146,34 @@ class TestScenarios:
 
     async def test_joined_column_branch(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(
-            engine, dimension_query("CASE WHEN amount > 1 THEN customers.name ELSE amount END"), "String", "Integer",
+            engine, dimension_query("CASE WHEN orders.amount > 1 THEN customers.name ELSE orders.amount END"), "String", "Integer",
         )
 
     async def test_arithmetic_branch(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(
-            engine, dimension_query("CASE WHEN amount > 1 THEN status ELSE amount + 1 END"), "String", "Integer",
+            engine, dimension_query("CASE WHEN orders.amount > 1 THEN orders.status ELSE orders.amount + 1 END"), "String", "Integer",
         )
 
     async def test_conditional_inside_an_aggregation(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(
-            engine, q(metrics=[m("max(CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END)")]), "String", "Integer",
+            engine, q(metrics=[m("max(CASE WHEN orders.amount > 1 THEN 'a' || 'b' ELSE orders.amount END)")]), "String", "Integer",
         )
 
     @pytest.mark.parametrize(("expression", "types", "call"), [
         (MIXED, ("String", "Integer"), ("coalesce",)),
-        ("ifnull(status, amount)", ("String", "Integer"), ("ifnull", "coalesce")),
-        ("greatest(order_date, amount)", ("Date", "Integer"), ("greatest",)),
+        ("ifnull(orders.status, orders.amount)", ("String", "Integer"), ("ifnull", "coalesce")),
+        ("greatest(orders.order_date, orders.amount)", ("Date", "Integer"), ("greatest",)),
     ])
     async def test_null_handling_and_scalar_min_max(self, engine: SlayerQueryEngine, expression: str,
                                                     types: tuple[str, ...], call: tuple[str, ...]) -> None:
         await assert_branch_mismatch(engine, dimension_query(expression), *types, call=call)
 
     @pytest.mark.parametrize(("expression", "joined"), [
-        ("CASE WHEN amount > 1 THEN amount ELSE 0.5 END", DataType.FLOAT),
+        ("CASE WHEN orders.amount > 1 THEN orders.amount ELSE 0.5 END", DataType.FLOAT),
         (f"coalesce(order_date, {TS})", DataType.DATETIME),
-        ("iif(amount > 15, status = 'paid', 2)", DataType.INTEGER),
-        ("CASE WHEN amount > 1 THEN status END", DataType.STRING),
-        ("greatest(status, amount)", DataType.FLOAT),
+        ("iif(orders.amount > 15, orders.status = 'paid', 2)", DataType.INTEGER),
+        ("CASE WHEN orders.amount > 1 THEN orders.status END", DataType.STRING),
+        ("greatest(orders.status, orders.amount)", DataType.FLOAT),
     ])
     async def test_compatible_mixes_execute_typed(self, engine: SlayerQueryEngine, dialect: str,
                                                   expression: str, joined: DataType) -> None:
@@ -183,7 +183,7 @@ class TestScenarios:
         assert stage_type(as_dimension(expression), dialect=dialect) is joined
 
     async def test_unknown_column_is_not_a_mismatch(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(dimension_query("CASE WHEN amount > 1 THEN opaque ELSE amount END"))
+        resp = await engine.execute(dimension_query("CASE WHEN orders.amount > 1 THEN orders.opaque ELSE orders.amount END"))
         assert sorted(int(r["x"]) for r in resp.data) == [10, 20, 40, 50, 60, 90, 100, 120, 140, 150, 200]
 
     async def test_inside_a_stage(self, engine: SlayerQueryEngine) -> None:
@@ -198,16 +198,16 @@ class TestEveryPosition:
     @pytest.mark.parametrize(("query", "types"), [
         pytest.param(dimension_query(MIXED), ("String", "Integer"), id="dimension"),
         pytest.param(q(metrics=[m(f"max({MIXED})")]), ("String", "Integer"), id="aggregate-input"),
-        pytest.param(q(metrics=[m("coalesce(sum(amount), max(status))")]), ("String", "Integer"), id="over-aggregates"),
+        pytest.param(q(metrics=[m("coalesce(sum(orders.amount), max(orders.status))")]), ("String", "Integer"), id="over-aggregates"),
         pytest.param(q(time_dimensions=MONTH, metrics=[m(f"time_shift(max({MIXED}), -1)")]), ("String", "Integer"),
                      id="transform"),
         pytest.param(q(metrics=[m(f"count(*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("String", "Integer"),
                      id="filter-clause"),
-        pytest.param(q(metrics=["count(*)"], filter=[f"{MIXED} IS NOT NULL"]), ("String", "Integer"), id="row-filter"),
-        pytest.param(q(dimensions=["status"], metrics=["count(*)"],
-                       filter=["coalesce(max(status), sum(amount)) IS NOT NULL"]), ("String", "Integer"),
+        pytest.param(q(metrics=["count(orders.*)"], filter=[f"{MIXED} IS NOT NULL"]), ("String", "Integer"), id="row-filter"),
+        pytest.param(q(dimensions=["orders.status"], metrics=["count(orders.*)"],
+                       filter=["coalesce(max(orders.status), sum(orders.amount)) IS NOT NULL"]), ("String", "Integer"),
                      id="post-aggregation-filter"),
-        pytest.param(q(dimensions=["id"], distinct_dimension_values=False, order=[{"field": MIXED}]),
+        pytest.param(q(dimensions=["orders.id"], distinct_dimension_values=False, order=[{"field": MIXED}]),
                      ("String", "Integer"), id="order"),
     ])
     async def test_rejected_at_plan_time(self, engine: SlayerQueryEngine, query: SlayerQuery,
@@ -216,8 +216,8 @@ class TestEveryPosition:
 
     async def test_time_dimension_rejected_as_a_date_operand(self, engine: SlayerQueryEngine) -> None:
         # The date-operand check runs first; its error still names both branch types and a cast.
-        query = q(time_dimensions=[{"field": "greatest(order_date, amount)", "granularity": "month"}],
-                  metrics=["count(*)"])
+        query = q(time_dimensions=[{"field": "greatest(orders.order_date, orders.amount)", "granularity": "month"}],
+                  metrics=["count(orders.*)"])
         with pytest.raises(DateOperandTypeError) as info:
             await engine.execute(query)
         message = str(info.value)
@@ -228,7 +228,7 @@ class TestEveryPosition:
 class TestInferredTypes:
     @pytest.mark.parametrize("dialect_name", ["duckdb", "sqlite", "postgres"])
     def test_coerced_measure_type(self, dialect_name: str) -> None:
-        item = {"metrics": [{"metric": "max(greatest(status, amount))", "alias": "x"}]}
+        item = {"metrics": [{"metric": "max(greatest(orders.status, orders.amount))", "alias": "x"}]}
         assert inferred_type(item, dialect=dialect_name) is DataType.FLOAT
         assert stage_type(item, dialect=dialect_name) is DataType.FLOAT
 
@@ -242,11 +242,11 @@ class TestValueType:
         return value_type(key, field_type=scope_field_type(scope=scope, bundle=bundle))
 
     @pytest.mark.parametrize(("expression", "joined"), [
-        ("coalesce(amount, 0.5)", DataType.FLOAT),
-        ("ifnull(amount, NULL)", DataType.INTEGER),
+        ("coalesce(orders.amount, 0.5)", DataType.FLOAT),
+        ("ifnull(orders.amount, NULL)", DataType.INTEGER),
         (f"greatest(order_date, {TS})", DataType.DATETIME),
-        ("least(status = 'paid', amount)", DataType.INTEGER),
-        ("iif(amount > 1, amount, 0.5)", DataType.FLOAT),
+        ("least(orders.status = 'paid', orders.amount)", DataType.INTEGER),
+        ("iif(orders.amount > 1, orders.amount, 0.5)", DataType.FLOAT),
         ("coalesce(opaque, amount)", DataType.INTEGER),
         ("coalesce(status, order_date)", None),
     ])

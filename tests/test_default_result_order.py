@@ -20,7 +20,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._arrow_types import ArrowTable
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
 
-REVENUE = "sum(order_total)"
+REVENUE = "sum(orders.order_total)"
 STORE_MONTH: dict[str, Any] = {
     "population": "orders", "metrics": [REVENUE], "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"],
 }
@@ -205,7 +205,7 @@ class TestEmission:
         }
         explicit = {**query, "order": [
             {"field": "orders.status", "direction": "asc"},
-            {"field": "region", "direction": "asc"},
+            {"field": "orders.region", "direction": "asc"},
             {"field": "date_trunc('month', orders.ordered_at)", "direction": "asc"},
         ]}
         assert await _sql(query, dialect=dialect) == await _sql(explicit, dialect=dialect)
@@ -386,7 +386,7 @@ class TestCombinations:
         assert keys == sorted(keys, key=lambda k: (_null_last_key(k[0]), k[1]))
         assert len(keys) == 6
         explicit = {**SPINE, "order": [
-            {"field": "region", "direction": "asc"},
+            {"field": "orders.region", "direction": "asc"},
             {"field": "date_trunc('month', time_spine.timestamp)", "direction": "asc"},
         ]}
         sql = (await engine.execute(SPINE, dry_run=True)).sql

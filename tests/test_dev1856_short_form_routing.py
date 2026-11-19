@@ -9,7 +9,7 @@ import sqlglot
 
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType
 from slayer.core.errors import (
-    AmbiguousRelationshipPathError,
+    DistinctDimensionValuesError,
     UnknownReferenceError,
     UnrelatedDatasetError,
     UnresolvableDimensionRelationshipError,
@@ -147,7 +147,7 @@ async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
 def _q(source_dataset: str = "Invoice", **kw) -> SlayerQuery:
     base: dict = dict(
         population=source_dataset,
-        metrics=[{"metric": "sum(amount)", "alias": "amt"}],
+        metrics=[{"metric": "sum(Invoice.amount)", "alias": "amt"}],
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -159,12 +159,19 @@ async def _cols_sql(engine: SlayerQueryEngine, query: SlayerQuery):
     return resp.columns, _norm(resp.sql)
 
 
+def _reads(cols: list[str], sql: str) -> str:
+    """``sql`` with each result key replaced by its position, so two spellings compare by what they read."""
+    for i, col in enumerate(cols):
+        sql = sql.replace(f'"{col}"', f'"_col{i}"')
+    return sql
+
+
 async def _assert_equiv(engine, short: SlayerQuery, full: SlayerQuery) -> None:
-    """The routed short form must yield the SAME result keys AND SQL as the full path."""
+    """The routed short form reads the same SQL as the full path; each keeps its own key."""
     short_cols, short_sql = await _cols_sql(engine, short)
     full_cols, full_sql = await _cols_sql(engine, full)
-    assert short_cols == full_cols
-    assert short_sql == full_sql
+    assert len(short_cols) == len(full_cols)
+    assert _reads(short_cols, short_sql) == _reads(full_cols, full_sql)
 
 
 # Topology 2: N parallel branches Root → M{i} → Tag; the first `safe` are to-one
@@ -202,7 +209,7 @@ async def _multi_engine(tmp_path, *, branches: int, safe: int) -> SlayerQueryEng
 
 def _root_q(**kw) -> SlayerQuery:
     base: dict = dict(
-        population="Root", metrics=[{"metric": "sum(amount)", "alias": "amt"}]
+        population="Root", metrics=[{"metric": "sum(Root.amount)", "alias": "amt"}]
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -212,8 +219,7 @@ def _root_q(**kw) -> SlayerQuery:
 
 class TestUniqueRoute:
     async def test_short_form_one_route_resolves_to_full_path(self, tmp_path) -> None:
-        """``Consumer.name`` (one route) ≡ ``Subscription.Customer.Consumer.name``;
-        result key is the full routed path."""
+        """``Consumer.name`` (one route) reads what ``Subscription.Customer.Consumer.name`` reads."""
         engine = await _chain_engine(tmp_path)
         await _assert_equiv(
             engine,
@@ -221,11 +227,11 @@ class TestUniqueRoute:
             _q(dimensions=["Subscription.Customer.Consumer.name"]),
         )
 
-    async def test_routed_key_is_full_path_not_short_form(self, tmp_path) -> None:
+    async def test_routed_key_is_the_reference_as_written(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         cols, _ = await _cols_sql(engine, _q(dimensions=["Consumer.name"]))
-        assert "Invoice.Subscription.Customer.Consumer.name" in cols
-        assert "Consumer.name" not in cols
+        assert "Consumer.name" in cols
+        assert "Invoice.Subscription.Customer.Consumer.name" not in cols
 
     async def test_unique_route_that_fans_out_still_resolves(self, tmp_path) -> None:
         """The sole route crosses a one-to-many hop — the fan-out tie-break applies
@@ -244,10 +250,9 @@ class TestUniqueRoute:
         full = await engine.execute(
             query=_q(dimensions=["Subscription.Customer.Consumer.name"]),
             dry_run=False)
-        key = "Invoice.Subscription.Customer.Consumer.name"
-        got = {r[key]: r["amt"] for r in short.data}
+        got = {r["Consumer.name"]: r["amt"] for r in short.data}
         assert got == {"Ann": 30.0, "Bob": 30.0}
-        assert {r[key]: r["amt"] for r in full.data} == got
+        assert {r["Subscription.Customer.Consumer.name"]: r["amt"] for r in full.data} == got
 
 
 # Requirement: Fan-out-free tie-break among ambiguous routes
@@ -376,7 +381,7 @@ class TestBidirectionalAndParallelEdges:
             _root_q(dimensions=["Mid.by_id.x"]),
         )
         cols, _ = await _cols_sql(engine, _root_q(dimensions=["Leaf.x"]))
-        assert "Root.Mid.by_id.x" in cols
+        assert "Leaf.x" in cols
 
     async def test_unnamed_parallel_pair_is_unroutable(self, tmp_path) -> None:
         """Two UNNAMED Mid↔Leaf edges: every route crosses an inexecutable hop —
@@ -392,9 +397,8 @@ class TestBidirectionalAndParallelEdges:
         assert ei.value.suggested_path is None
 
     async def test_adjacent_parallel_edges_stay_ambiguous_hop(self, tmp_path) -> None:
-        """Root itself has two named edges to Leaf: the bare ``Leaf.x`` hop fails
-        closed as the ambiguous join hop — routing never applies. Boundary
-        guard; passes pre-implementation."""
+        """Root itself has two named to-one edges to Leaf: the ``Leaf.x`` anchor is refused as ambiguous,
+        naming each explicit path."""
         leaf = SlayerDataset(
             name="Leaf", sql_table="Leaf", data_source="test",
             fields=[_pk(), _t("x")],
@@ -409,18 +413,17 @@ class TestBidirectionalAndParallelEdges:
         await _save(storage, [leaf, root])
         engine = SlayerQueryEngine(storage=storage)
         q = _root_q(dimensions=["Leaf.x"])
-        with pytest.raises(AmbiguousRelationshipPathError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
-        assert ei.value.source_dataset == "Root"
-        assert ei.value.target_dataset == "Leaf"
-        assert {c.name for c in ei.value.candidates} == {"a_leaf", "b_leaf"}
+        assert ei.value.root_dataset == "Root"
+        assert "Root.a_leaf.x" in str(ei.value) and "Root.b_leaf.x" in str(ei.value)
 
 
-# Requirement: an adjacent (direct) parallel pair is a fail-closed hop, never routed
+# Requirement: an anchor is reached by its only to-one path, even over an adjacent parallel pair
 
 class TestAdjacentParallelParity:
-    """A parallel pair DIRECTLY off the root is the fail-closed ambiguous hop, not a
-    short-form route — identically across dimensions, saved measures, and schema-drift."""
+    """A to-one plus a fanning parallel edge DIRECTLY off the root: the anchor takes the to-one edge, identically
+    across dimensions, saved metrics, and raw-rows filter / order."""
 
     def _datasets(self) -> list[SlayerDataset]:
         target = SlayerDataset(
@@ -443,39 +446,34 @@ class TestAdjacentParallelParity:
         await _save(storage, self._datasets())
         return SlayerQueryEngine(storage=storage)
 
-    async def test_dimension_stays_ambiguous_hop(self, tmp_path) -> None:
-        """Control: the dimension path already fails closed (resolve_hop)."""
+    async def test_dimension_takes_the_to_one_edge(self, tmp_path) -> None:
         engine = await self._engine(tmp_path)
-        q = _root_q(dimensions=["Target.label"])
-        with pytest.raises(AmbiguousRelationshipPathError):
-            await _cols_sql(engine, q)
+        _, sql = await _cols_sql(engine, _root_q(dimensions=["Target.label"]))
+        assert "Root.tgt_id = by_id.id" in sql
 
-    async def test_saved_measure_stays_ambiguous_hop(self, tmp_path) -> None:
-        """Parity: a short-form saved measure fails closed too, not routed via the safe edge."""
+    async def test_saved_measure_takes_the_to_one_edge(self, tmp_path) -> None:
         engine = await self._engine(tmp_path)
-        q = _root_q(metrics=[{"metric": "Target.aov"}])
-        with pytest.raises(AmbiguousRelationshipPathError):
-            await _cols_sql(engine, q)
+        cols, _ = await _cols_sql(engine, _root_q(metrics=[{"metric": "Target.aov"}]))
+        assert cols == ["Target.aov"]
 
-    async def test_raw_rows_filter_saved_measure_stays_ambiguous(self, tmp_path) -> None:
-        """Raw-rows validation resolves saved-measure refs BEFORE binding, so the
-        resolver must not route an adjacent parallel `Target.aov` in a filter."""
+    async def test_raw_rows_filter_saved_measure_is_a_metric_reference(self, tmp_path) -> None:
+        """Raw-rows validation resolves `Target.aov` through the anchor resolver: a metric reference, refused."""
         engine = await self._engine(tmp_path)
         q = SlayerQuery(
             population="Root", dimensions=["Root.tgt_grp"],
             filter=["Target.aov > 0"], distinct_dimension_values=False,
         )
-        with pytest.raises(AmbiguousRelationshipPathError):
+        with pytest.raises(DistinctDimensionValuesError):
             await _cols_sql(engine, q)
 
-    async def test_raw_rows_order_saved_measure_stays_ambiguous(self, tmp_path) -> None:
-        """Same for an adjacent parallel `Target.aov` in raw-rows ORDER BY."""
+    async def test_raw_rows_order_saved_measure_is_a_metric_reference(self, tmp_path) -> None:
+        """Same for `Target.aov` in raw-rows ORDER BY."""
         engine = await self._engine(tmp_path)
         q = SlayerQuery(
             population="Root", dimensions=["Root.tgt_grp"],
             order=[{"Target.aov": "asc"}], distinct_dimension_values=False,
         )
-        with pytest.raises(AmbiguousRelationshipPathError):
+        with pytest.raises(DistinctDimensionValuesError):
             await _cols_sql(engine, q)
 
 
@@ -487,7 +485,7 @@ class TestRejectionTaxonomy:
         q = _q(dimensions=["Consumer.name"])
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
-        assert ei.value.suggested_path == "Customer.Consumer.name"
+        assert ei.value.suggested_path == "Invoice.Customer.Consumer.name"
         assert ei.value.reference == "Consumer.name"
         assert ei.value.root_dataset == "Invoice"
         assert "Consumer.name" in str(ei.value)
@@ -543,12 +541,12 @@ class TestUniformSurfaces:
     async def test_cross_model_and_star_aggregation(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         short = _q(
-            dimensions=["status"],
+            dimensions=["Invoice.status"],
             metrics=[{"metric": "sum(Consumer.amount)", "alias": "s"},
                       {"metric": "count(Consumer.*)", "alias": "c"}],
         )
         full = _q(
-            dimensions=["status"],
+            dimensions=["Invoice.status"],
             metrics=[{"metric": "sum(Subscription.Customer.Consumer.amount)", "alias": "s"},
                       {"metric": "count(Subscription.Customer.Consumer.*)", "alias": "c"}],
         )
@@ -562,8 +560,8 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         await _assert_equiv(
             engine,
-            _q(dimensions=["status"], filter=["Consumer.email = 'a@b.com'"]),
-            _q(dimensions=["status"],
+            _q(dimensions=["Invoice.status"], filter=["Consumer.email = 'a@b.com'"]),
+            _q(dimensions=["Invoice.status"],
                filter=["Subscription.Customer.Consumer.email = 'a@b.com'"]),
         )
 
@@ -590,12 +588,12 @@ class TestUniformSurfaces:
     async def test_short_form_main_time_dimension(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         short = _q(
-            metrics=[{"metric": "cumsum(sum(amount))", "alias": "c"}],
+            metrics=[{"metric": "cumsum(sum(Invoice.amount))", "alias": "c"}],
             time_dimensions=[{"field": "Consumer.signup_at", "granularity": "month"}],
             main_time_dimension="Consumer.signup_at",
         )
         full = _q(
-            metrics=[{"metric": "cumsum(sum(amount))", "alias": "c"}],
+            metrics=[{"metric": "cumsum(sum(Invoice.amount))", "alias": "c"}],
             time_dimensions=[{
                 "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
@@ -645,17 +643,14 @@ class TestTypeAndOpaque:
 
 class TestSavedMeasureRouting:
     async def test_routed_saved_measure_keeps_type_and_full_name(self, tmp_path) -> None:
-        """Unnamed ``Consumer.aov`` ≡ its full-path form (same key, same type); surfaced key is the full routed path."""
+        """Unnamed ``Consumer.aov`` reads what its full-path form reads; its key is the reference as written."""
         engine = await _chain_engine(tmp_path)
-        short = _q(dimensions=["status"], metrics=[{"metric": "Consumer.aov"}])
-        full = _q(dimensions=["status"],
+        short = _q(dimensions=["Invoice.status"], metrics=[{"metric": "Consumer.aov"}])
+        full = _q(dimensions=["Invoice.status"],
                   metrics=[{"metric": "Subscription.Customer.Consumer.aov"}])
         await _assert_equiv(engine, short, full)
         cols, _ = await _cols_sql(engine, short)
-        assert any(
-            "Subscription.Customer.Consumer" in k and k.endswith("aov")
-            for k in cols
-        ), cols
+        assert "Consumer.aov" in cols, cols
 
     async def test_routed_unnamed_saved_measure_type_via_saved_model(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
@@ -756,28 +751,7 @@ class TestScoping:
             fields=[_pk(), _t("name")],
         ))
         engine = SlayerQueryEngine(storage=storage)
-        q = _q(dimensions=["Ghost.name"])
-        with pytest.raises(UnknownReferenceError):
-            await _cols_sql(engine, q)
-
-
-# Requirement: Non-routing resolution is unchanged (regression guards)
-
-class TestNonRoutingUnchanged:
-    async def test_full_and_self_prefixed_paths_unchanged(self, tmp_path) -> None:
-        engine = await _chain_engine(tmp_path)
-        a, _ = await _cols_sql(engine, _q(dimensions=["Subscription.Customer.Consumer.name"]))
-        b, _ = await _cols_sql(engine, _q(dimensions=["Invoice.Subscription.Customer.Consumer.name"]))
-        assert a == b
-        bare, _ = await _cols_sql(engine, _q(dimensions=["status"]))
-        prefixed, _ = await _cols_sql(engine, _q(dimensions=["Invoice.status"]))
-        assert bare == prefixed  # self-prefix normalizes to the local column, byte-identical key
-
-    async def test_valid_path_missing_leaf_stays_unknown_ref(self, tmp_path) -> None:
-        """A fully valid path whose terminal column is absent keeps failing as an
-        unknown reference, not as a routing failure."""
-        engine = await _chain_engine(tmp_path, direct_customer=True)
-        q = _q(dimensions=["Customer.Consumer.does_not_exist"])
+        q = _q(dimensions=["Invoice.Ghost.name"])
         with pytest.raises(UnknownReferenceError):
             await _cols_sql(engine, q)
 
@@ -854,7 +828,7 @@ class TestSchemaDriftRouting:
         )
         return [consumer, invoice]
 
-    def test_adjacent_parallel_short_form_attributes_to_nothing(self) -> None:
-        """An adjacent parallel pair is a fail-closed hop, not a route: drift attributes nothing."""
+    def test_adjacent_parallel_anchor_attributes_through_its_to_one_edge(self) -> None:
+        """A to-one plus a fanning edge directly off the root: the anchor takes the to-one edge, so drift cascades."""
         models = [*self._adjacent_parallel_chain(), self._qb()]
-        assert self._entry_for("qb", self._drops(models)) is None
+        assert isinstance(self._entry_for("qb", self._drops(models)), WholeDatasetDelete)

@@ -133,7 +133,7 @@ class TestComputedDimensionSource:
     def _dim_query(self, expr: str):
         return q(
             dimensions=[{"field": expr, "alias": "band"}],
-            metrics=[{"metric": "sum(amount)", "alias": "a"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
         )
 
     async def test_computed_dimension_sql_equals_hand(self) -> None:

@@ -70,7 +70,7 @@ class TestSemiJoinPushdown:
         the stored forward edge is inverted, oriented root→orders."""
         att = _attach(_plan(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]
@@ -83,7 +83,7 @@ class TestSemiJoinPushdown:
         forward declaration — which model stores it is storage trivia
         (mirror parity)."""
         query = q(dimensions=["customers.tier"], metrics=[CM],
-                  filter=["channel = 'app'"])
+                  filter=["orders.channel = 'app'"])
         att = _attach(_plan(
             query, datasets=dev1840_datasets(declare_reverse=True),
         ), "customers")
@@ -110,7 +110,7 @@ class TestSemiJoinPushdown:
         """One branch, no root-local refs: the whole OR moves into the EXISTS."""
         att = _attach(_plan(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["status = 'ok' OR channel = 'app'"],
+            filter=["orders.status = 'ok' OR orders.channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert len(sj.conjuncts) == 1
@@ -118,7 +118,7 @@ class TestSemiJoinPushdown:
     def test_pure_cross_path_negation_pushes(self):
         att = _attach(_plan(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["NOT (channel = 'app')"],
+            filter=["NOT (orders.channel = 'app')"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]
@@ -128,7 +128,7 @@ class TestSemiJoinPushdown:
         reference) with cross-path refs."""
         att = _attach(_plan(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.spend > amount"],
+            filter=["customers.spend > orders.amount"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]
@@ -140,8 +140,8 @@ class TestExpandedDependencies:
         raw ref is host-local, its SQL reads customers across the unsafe hop;
         it must not inline."""
         att = _attach(_plan(q(
-            dimensions=["status"], metrics=[CM],
-            filter=["cust_tier = 'gold'"], to_many_handling="broadcast",
+            dimensions=["orders.status"], metrics=[CM],
+            filter=["orders.cust_tier = 'gold'"], to_many_handling="broadcast",
         )), "customers")
         sjs = list(att.producer_plan.semi_join_filters)
         assert len(sjs) == 1
@@ -168,7 +168,7 @@ class TestBooleanTotalPushdown:
     def test_mixed_disjunction_pushes(self):
         att = _attach(_plan(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.tier = 'gold' OR channel = 'app'"],
+            filter=["customers.tier = 'gold' OR orders.channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert any("channel" in (t or "") for t in sj.filter_texts)
@@ -176,14 +176,14 @@ class TestBooleanTotalPushdown:
     def test_mixed_negation_pushes(self):
         att = _attach(_plan(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["NOT (customers.tier = 'gold' AND channel = 'app')"],
+            filter=["NOT (customers.tier = 'gold' AND orders.channel = 'app')"],
         )), "customers")
         assert att.producer_plan.semi_join_filters
 
     def test_cross_branch_disjunction_pushes(self):
         att = _attach(_plan(
             q(dimensions=["customers.tier"], metrics=[CM],
-              filter=["channel = 'app' OR customers.plans.level = 'basic'"]),
+              filter=["orders.channel = 'app' OR customers.plans.level = 'basic'"]),
             datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         assert att.producer_plan.semi_join_filters
@@ -192,7 +192,7 @@ class TestBooleanTotalPushdown:
         """Cross-path refs spanning two join branches in ONE conjunct -> product."""
         att = _attach(_plan(
             q(dimensions=["customers.tier"], metrics=[CM],
-              filter=["channel = customers.plans.level"]),
+              filter=["orders.channel = customers.plans.level"]),
             datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         assert att.producer_plan.semi_join_filters
@@ -203,7 +203,7 @@ class TestExcludedConjuncts:
         """Scenario: ambiguous hops fail closed — two unnamed edges
         tickets→agents make the measure's hop an error, retiring the silent
         first-match. Divergence class (d)."""
-        query = tq(metrics=[SM], filter=["effort > 2"])
+        query = tq(metrics=[SM], filter=["tickets.effort > 2"])
         models = ambiguity_datasets()
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             _plan(query, datasets=models)

@@ -54,7 +54,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
     def test_local_partitioned_measure_yields_combined_attach(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[QueryMetric(
                     metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
@@ -69,7 +69,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
     def test_producer_is_host_rooted_single_select(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[QueryMetric(
                     metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
@@ -90,7 +90,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
     def test_measure_slot_maps_to_placeholder_column_key(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[QueryMetric(
                     metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
@@ -116,7 +116,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
     def test_grand_total_producer_has_empty_join_pairs(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[QueryMetric(
                     metric="sum(orders.amount, partition_by=[])", alias="g",
                 )],
@@ -133,7 +133,7 @@ class TestSamePartitionSetInterning:
     def test_two_distinct_aggregates_share_one_producer(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[
                     QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rsum"),
                     QueryMetric(metric="avg(orders.amount, partition_by=orders.region)", alias="ravg"),
@@ -150,7 +150,7 @@ class TestSamePartitionSetInterning:
 
     async def test_two_distinct_aggregates_emit_one_cte(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rsum"),
                 QueryMetric(metric="avg(orders.amount, partition_by=orders.region)", alias="ravg"),
@@ -161,7 +161,7 @@ class TestSamePartitionSetInterning:
     def test_same_aggregate_two_names_shares_one_output(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[
                     QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="a"),
                     QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="b"),
@@ -177,7 +177,7 @@ class TestSamePartitionSetInterning:
 
     async def test_same_aggregate_two_names_projects_both(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="a"),
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="b"),
@@ -192,7 +192,7 @@ class TestSamePartitionSetInterning:
         # into one producer (a global-intern bug would pass the same-set tests).
         planned = plan_query(
             query=_q(
-                dimensions=["region", "channel", "city"],
+                dimensions=["orders.region", "orders.channel", "orders.city"],
                 metrics=[
                     QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rr"),
                     QueryMetric(
@@ -219,7 +219,7 @@ class TestCoexistenceWithIsolatedFamilies:
         # Combined regroup attach (local partition) + a genuine cross-model
         # measure (its own _cm_ CTE) — both are combined-SELECT join-backs.
         q = _q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
@@ -238,7 +238,7 @@ class TestCoexistenceWithIsolatedFamilies:
 
     async def test_combined_attach_plus_windowed_measure(self) -> None:
         q = _q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
                 QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
@@ -257,7 +257,7 @@ class TestCoexistenceWithIsolatedFamilies:
 
     async def test_combined_attach_plus_ranked_measure(self) -> None:
         q = _q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
                 QueryMetric(metric="last(orders.amount)", alias="lst"),
@@ -276,7 +276,7 @@ class TestCoexistenceWithIsolatedFamilies:
 
     async def test_combined_attach_plus_transform_measure(self) -> None:
         q = _q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
                 QueryMetric(metric="cumsum(sum(orders.amount))", alias="cs"),
@@ -294,7 +294,7 @@ class TestCoexistenceWithIsolatedFamilies:
         # the combined SELECT. (Executed values: test_dev1824_partitioned_execution.)
         q = _q(
             dimensions=[
-                "region", "city",
+                "orders.region", "orders.city",
                 {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],

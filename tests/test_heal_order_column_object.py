@@ -15,8 +15,8 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._query_heal_fixtures import BACKENDS, assert_equivalent, heal_engine, table
 from tests._saved_query_refinement_fixtures import refine_engine
 
-SUM_DESC_OBJECT = {"column": {"name": "sum(amount)"}, "direction": "desc"}
-SUM_DESC_STRING = {"field": "sum(amount)", "direction": "desc"}
+SUM_DESC_OBJECT = {"column": {"name": "sum(orders.amount)"}, "direction": "desc"}
+SUM_DESC_STRING = {"field": "sum(orders.amount)", "direction": "desc"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -30,7 +30,7 @@ def by_region(order: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class TestOrderItemCoercion:
-    @pytest.mark.parametrize("expr", ["sum(amount)", "sum(amount) / count(*)", "rank(sum(amount), direction='desc')"])
+    @pytest.mark.parametrize("expr", ["sum(orders.amount)", "sum(amount) / count(*)", "rank(sum(amount), direction='desc')"])
     def test_object_equals_string_form(self, expr: str) -> None:
         healed = SlayerQuery.model_validate(by_region([{"column": {"name": expr}}]))
         canonical = SlayerQuery.model_validate(by_region([{"field": expr}]))
@@ -42,7 +42,7 @@ class TestOrderItemCoercion:
         assert healed.model_dump() == canonical.model_dump()
 
     @pytest.mark.parametrize("column", [
-        {"name": "sum(amount)", "dataset": "orders"}, {"name": "sum(amount)", "label": "Total"}, {"name": "bad name"},
+        {"name": "sum(orders.amount)", "dataset": "orders"}, {"name": "sum(orders.amount)", "label": "Total"}, {"name": "bad name"},
     ])
     def test_object_with_other_keys_or_no_expression_keeps_error(self, column: dict[str, Any]) -> None:
         query = by_region([{"column": column}])
@@ -90,5 +90,5 @@ class TestAdvertisedSchema:
         assert "raw_expression" not in order_item_schema["properties"]
 
     def test_raw_formula_still_accepted_on_input(self) -> None:
-        query = SlayerQuery.model_validate(by_region([{"field": "sum(amount)", "raw_expression": "sum(amount)"}]))
+        query = SlayerQuery.model_validate(by_region([{"field": "sum(orders.amount)", "raw_expression": "sum(orders.amount)"}]))
         assert (query.order or [])[0].raw_expression == "sum(amount)"

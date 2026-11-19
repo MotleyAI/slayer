@@ -95,7 +95,7 @@ def _home_path(expression: str) -> tuple:
 class TestDefaultEqualsTwin:
     async def test_one_query_both_spellings(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            metrics=["wsum(amount)", "wsum(amount, weight=store_no)"]))
+            metrics=["wsum(orders.amount)", "wsum(orders.amount, weight=orders.store_no)"]))
         row = resp.data[0]
         assert float(row["orders.amount_wsum"]) == pytest.approx(WSUM)
         assert float(row["orders.amount_wsum_weight_store_no"]) == pytest.approx(WSUM)
@@ -144,7 +144,7 @@ class TestDefaultInFilterAndOrder:
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_filter_position(self, engine, agg: str) -> None:
         threshold = (WCS_BY_STATUS["ok"] + WCS_BY_STATUS["new"]) / 2
-        query = orders_q(dimensions=["status"], metrics=[{"metric": "sum(amount)", "alias": "s"}],
+        query = orders_q(dimensions=["orders.status"], metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
                          filter=[f"{agg}(amount) > {threshold}"])
         resp = await engine.execute(query)
         assert {r["orders.status"]: float(r["s"]) for r in resp.data} \
@@ -155,7 +155,7 @@ class TestDefaultInFilterAndOrder:
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_order_key(self, engine, agg: str) -> None:
-        query = orders_q(dimensions=["status"], metrics=[{"metric": "sum(amount)", "alias": "s"}],
+        query = orders_q(dimensions=["orders.status"], metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
                          order=[{"field": f"{agg}(amount)", "direction": "asc"}])
         resp = await engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == sorted(
@@ -225,7 +225,7 @@ class TestFanningDefaultHomesLikeItsTwin:
 class TestFailClosed:
     async def test_local_kwarg_on_a_fanning_path_stays_refused(self) -> None:
         with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
-            await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_dataset="regions")
+            await _gen("wsum_cust_spend(regions.pop, weight=region_events.value)", source_dataset="regions")
         assert "region_events" in str(ei.value)
 
 

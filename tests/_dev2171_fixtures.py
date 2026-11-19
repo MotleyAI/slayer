@@ -215,18 +215,18 @@ async def value(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, ex
     if variables is not None:
         payload["variables"] = variables
     (row,) = await rows(datasets=datasets, db=db, payload=payload)
-    return row[f"{dataset}.v"]
+    return row["v"]
 
 
 async def counts_by(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, dimension: str,
                     variables: dict[str, Any] | None = None) -> dict[Any, int]:
     """Row counts of ``model`` grouped by ``dimension``."""
-    payload: dict[str, Any] = {"population": dataset, "dimensions": [dimension],
-                               "metrics": [{"metric": "count(*)", "alias": "n"}]}
+    payload: dict[str, Any] = {"population": dataset, "dimensions": [f"{dataset}.{dimension}"],
+                               "metrics": [{"metric": f"count({dataset}.*)", "alias": "n"}]}
     if variables is not None:
         payload["variables"] = variables
     out = await rows(datasets=datasets, db=db, payload=payload)
-    return {r[f"{dataset}.{dimension}"]: r[f"{dataset}.n"] for r in out}
+    return {r[f"{dataset}.{dimension}"]: r["n"] for r in out}
 
 
 async def by_id(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, dimension: str) -> list[Any]:

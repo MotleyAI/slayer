@@ -33,8 +33,8 @@ from tests._dev1847_fixtures import _seed_sqlite, rows_by, sales_dataset
 from tests._rank_direction_fixtures import RANK_DESC
 
 DESC = ", direction='desc'"
-BARE = "rank(sum(amount))"
-FILLED = "rank(sum(amount), direction='desc')"
+BARE = "rank(sum(sales.amount))"
+FILLED = "rank(sum(sales.amount), direction='desc')"
 
 
 def _model_dict(*, measures: list[dict], version: Any = 12, **extra) -> dict:
@@ -103,7 +103,7 @@ class TestRewrite:
         (BARE, FILLED),
         ("dense_rank(sum(amount), partition_by=region)",
          "dense_rank(sum(amount), partition_by=region, direction='desc')"),
-        ("rank(amount:sum)", "rank(sum(amount), direction='desc')"),
+        ("rank(amount:sum)", "rank(sum(sales.amount), direction='desc')"),
         ("rank(amount:sum(partition_by=region)) <= 3",
          "rank(sum(amount, partition_by=region), direction='desc') <= 3"),
         ("rank(rank(amount:sum)) + 1",

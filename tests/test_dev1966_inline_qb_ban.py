@@ -38,7 +38,7 @@ INLINE_QB: Dict[str, Any] = {
         "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
     }],
 }
-OUTER: Dict[str, Any] = {"dimensions": ["status"], "metrics": [{"metric": "sum(rev)", "alias": "t"}]}
+OUTER: Dict[str, Any] = {"dimensions": ["orders.status"], "metrics": [{"metric": "sum(rev)", "alias": "t"}]}
 
 
 def _assert_ban(exc: BaseException, name: str = "iqb") -> None:
@@ -117,9 +117,9 @@ class TestOtherInlineSourcesRejected:
                         {"name": "customer_id", "datatype": "Integer"},
                         {"name": "amount", "datatype": "Float"}],
         }
-        measures = [m("sum(amount)", "a")]
+        measures = [m("sum(orders.amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
-            query(population=inline, dimensions=["customer_id"], metrics=measures)
+            query(population=inline, dimensions=["orders.customer_id"], metrics=measures)
 
     def test_inline_sql_backed(self) -> None:
         inline = {
@@ -129,15 +129,15 @@ class TestOtherInlineSourcesRejected:
                         {"name": "customer_id", "datatype": "Integer"},
                         {"name": "amount", "datatype": "Float"}],
         }
-        measures = [m("sum(amount)", "a")]
+        measures = [m("sum(orders.amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
-            query(population=inline, dimensions=["customer_id"], metrics=measures)
+            query(population=inline, dimensions=["orders.customer_id"], metrics=measures)
 
 
 class TestExtensionsAccepted:
     async def test_extension_over_a_stored_query_backed_model(self, engine) -> None:
         ext = {"dataset": "cust_rev", "metrics": [ext_m("sum(rev * 2)", "r2")]}
         resp = await engine.execute(query(
-            population="cust_rev", extensions=[ext], dimensions=["customer_id"], metrics=["r2"]))
+            population="cust_rev", extensions=[ext], dimensions=["cust_rev.customer_id"], metrics=["cust_rev.r2"]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {
             c: 2 * v for c, v in CUST_REV.items()}

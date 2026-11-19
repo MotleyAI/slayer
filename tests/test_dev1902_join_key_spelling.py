@@ -100,7 +100,7 @@ class TestExecutedRenamedKeys:
 
     async def test_association_over_renamed_pk_root(self, all_renamed: SlayerQueryEngine):
         resp = await all_renamed.execute(_query(
-            population="orders", dimensions=["status"],
+            population="orders", dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(customers.credit)", alias="cr")],
             to_many_handling="associate"))
         assert cells(resp, dim_suffix="status", metric="cr") == ASSOC_CREDIT_BY_STATUS
@@ -214,7 +214,7 @@ class TestQueryBackedJoinKeys:
         await all_renamed.save_dataset(_customer_totals())
         resp = await all_renamed.execute(_query(
             population="customer_totals", dimensions=["customers.name"],
-            metrics=[{"metric": "sum(amt)", "alias": "total"}]))
+            metrics=[{"metric": "sum(customer_totals.amt)", "alias": "total"}]))
         assert cells(resp, dim_suffix="customers.name", metric="total") == AMOUNT_BY_CUSTOMER
 
     async def test_extension_join_over_query_backed_base_executes(self, all_renamed: SlayerQueryEngine):
@@ -226,7 +226,7 @@ class TestQueryBackedJoinKeys:
             extensions=[{"dataset": "customer_totals", "relationships": [
                 {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
             dimensions=["customers.name"],
-            metrics=[{"metric": "sum(amt)", "alias": "total"}]))
+            metrics=[{"metric": "sum(customer_totals.amt)", "alias": "total"}]))
         assert cells(resp, dim_suffix="customers.name", metric="total") == AMOUNT_BY_CUSTOMER
 
     async def test_join_on_undeclared_output_rejected_at_save(self, all_renamed: SlayerQueryEngine):

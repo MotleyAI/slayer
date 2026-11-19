@@ -328,9 +328,15 @@ def item_blockers(*, root: str, item: str, datasets_by_name: dict[str, SlayerDat
     """The unaddressable pairs that keep ``item``'s path from resolving from ``root``."""
     start = datasets_by_name.get(root)
     parts = item.split(".")
-    path, _verdict = (None, None) if start is None else _anchored_tokens(
-        start=start, parts=parts, datasets_by_name=datasets_by_name)
-    if start is None or not path:
+    if start is None:
+        return []
+    path, _verdict = _anchored_tokens(start=start, parts=parts, datasets_by_name=datasets_by_name)
+    if path is None:
+        anchor = find_anchor(parts[0], quoted=False, reader=start, datasets_by_name=datasets_by_name)
+        if anchor is None or anchor.name == start.name:
+            return []
+        return blocking_pairs(root=start, target=anchor.name, datasets_by_name=datasets_by_name)
+    if not path:
         return []
     try:
         if walk(root=start, path=path, datasets_by_name=datasets_by_name) is not None or len(path) > 1:
@@ -488,22 +494,16 @@ def _resolve_datasource(
 # --------------------------------------------------------------------------- #
 def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
     """``query``'s P factor: its spine time dimensions and spine filters removed (metrics too)."""
-    root = query.population_name
     return query.model_copy(update={
-        "dimensions": [
-            d for d in query.dimensions or []
-            if not reads_spine(d.field, root=root)
-        ] or None,
-        "time_dimensions": [
-            td for td in query.time_dimensions or [] if not reads_spine(td.field, root=root)
-        ] or None,
-        "filter": [f for f in query.filter_conditions if not _spine_only_filter(f, root=root)] or None,
+        "dimensions": [d for d in query.dimensions or [] if not reads_spine(d.field)] or None,
+        "time_dimensions": [td for td in query.time_dimensions or [] if not reads_spine(td.field)] or None,
+        "filter": [f for f in query.filter_conditions if not _spine_only_filter(f)] or None,
         "metrics": None,
     })
 
 
-def _spine_only_filter(filter_str: str, *, root: str | None) -> bool:
-    refs, ok = _all_filter_refs(filter_str, root=root)
+def _spine_only_filter(filter_str: str) -> bool:
+    refs, ok = _all_filter_refs(filter_str, root=None)
     return ok and bool(refs) and all(names_spine(r) for r in refs)
 
 

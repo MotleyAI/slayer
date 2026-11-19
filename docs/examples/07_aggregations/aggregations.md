@@ -65,11 +65,11 @@ COUNT(\*) doesn't aggregate a specific field — it counts rows. In SLayer, `*` 
 
 ```json
 {
-  "metrics": ["count(*)", "sum(revenue)"]
+  "metrics": ["count(orders.*)", "sum(orders.revenue)"]
 }
 ```
 
-`count(*)` produces `COUNT(*)`. Result column: `orders._count` (the underscore prefix distinguishes it from any dimension that might happen to be called `count`).
+`count(orders.*)` produces `COUNT(*)`. Result column: `orders._count` (the underscore prefix distinguishes it from any dimension that might happen to be called `count`).
 
 > **Note:** `*` can only be used with `count`. Combinations like `sum(*)` or `avg(*)` are invalid — use a named metric instead.
 
@@ -228,7 +228,7 @@ Don't confuse the `last` *aggregation* (`last(balance)`) with the `last()` *tran
 Arithmetic:
 
 ```json
-{"metric": "sum(revenue) / count(*)", "alias": "aov"}
+{"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"}
 ```
 
 Transforms:
@@ -281,11 +281,11 @@ The aggregation and field join with an underscore in result keys:
 
 | Expression | Result key |
 |---------|-----------|
-| `sum(revenue)` | `orders.revenue_sum` |
-| `count(*)` | `orders._count` |
-| `avg(revenue)` | `orders.revenue_avg` |
-| `count(customers.*)` | `orders.customers._count` |
-| `sum(revenue, partition_by=region)` | `orders.revenue_sum_partition_by_region` |
+| `sum(orders.revenue)` | `orders.revenue_sum` |
+| `count(orders.*)` | `orders._count` |
+| `avg(orders.revenue)` | `orders.revenue_avg` |
+| `count(customers.*)` | `customers._count` |
+| `sum(orders.revenue, partition_by=orders.region)` | `orders.revenue_sum_partition_by_region` |
 
 When a query is saved as a dataset (`create_dataset` with a `query` parameter), these canonical names become the new dataset's field names.
 

@@ -81,7 +81,7 @@ def _spend_minus_pop_by_tier() -> dict:
 
 
 def _tier_cells(resp, name: str) -> dict:
-    return {k[0]: v[f"orders.{name}"]
+    return {k[0]: v[name]
             for k, v in rows_by(resp, "customers.tier").items()}
 
 
@@ -104,13 +104,13 @@ async def exec_net(request):
 
 
 def _cells(resp, dim: str, name: str, root: str = "orders") -> dict:
-    return {k[0]: v[f"{root}.{name}"] for k, v in rows_by(resp, f"{root}.{dim}").items()}
+    return {k[0]: v[name] for k, v in rows_by(resp, f"{root}.{dim}").items()}
 
 
 async def _val(engine, expression: str, **q) -> dict:
     """{status cell: value} for a single measure grouped by status."""
     resp = await engine.execute(
-        orders_q(dimensions=["status"], metrics=[QueryMetric(metric=expression, alias="m")], **q))
+        orders_q(dimensions=["orders.status"], metrics=[QueryMetric(metric=expression, alias="m")], **q))
     return _cells(resp, "status", "m")
 
 
@@ -131,7 +131,7 @@ def _two_branch_by_status() -> dict:
 # --------------------------------------------------------------------------- #
 class TestSameModelExpressions:
     async def test_arithmetic_expression(self, exec_backend):
-        got = await _val(exec_backend, "sum(amount - cost)")
+        got = await _val(exec_backend, "sum(orders.amount - orders.cost)")
         twin = await _val(exec_backend, "sum(amount) - sum(cost)")
         assert got == pytest.approx(twin)
 
@@ -157,14 +157,14 @@ class TestSameModelExpressions:
 
     async def test_derived_sql_column_operand(self, exec_net):
         # net = amount - cost; sum(net * 2) == 2 * sum(amount - cost).
-        got = await _val(exec_net, "sum(net * 2)")
+        got = await _val(exec_net, "sum(orders.net * 2)")
         twin = await _val(exec_net, "sum((amount - cost) * 2)")
         assert got == pytest.approx(twin)
 
     async def test_post_aggregation_filter(self, exec_backend):
-        base = await _val(exec_backend, "sum(amount - cost)")
+        base = await _val(exec_backend, "sum(orders.amount - orders.cost)")
         resp = await exec_backend.execute(orders_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount - orders.cost)", alias="m")],
             filter=["sum(amount - cost) > 45"]))
         kept = _cells(resp, "status", "m")
@@ -217,9 +217,9 @@ class TestCrossModelExpressions:
         assert all(row["m"] is not None for row in withw.data)
 
     async def test_filter_position_prunes_only(self, exec_backend):
-        base = await _val(exec_backend, "sum(amount)")
+        base = await _val(exec_backend, "sum(orders.amount)")
         resp = await exec_backend.execute(orders_q(
-            dimensions=["status"], metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
+            dimensions=["orders.status"], metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             filter=["sum(amount - customers.discount) > 45"]))
         kept = _cells(resp, "status", "m")
         for cell, v in kept.items():
@@ -228,8 +228,8 @@ class TestCrossModelExpressions:
     async def test_order_position_sorts_by_the_expression(self, exec_backend):
         # host-discount sums are new=50 > ok=39, so desc order is [new, ok].
         resp = await exec_backend.execute(orders_q(
-            dimensions=["status"], metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
-            order=[{"field": "sum(amount - customers.discount)", "direction": "desc"}]))
+            dimensions=["orders.status"], metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
+            order=[{"field": "sum(orders.amount - customers.discount)", "direction": "desc"}]))
         assert [row["orders.status"] for row in resp.data] == ["new", "ok"]
 
     async def test_computed_dimension_position_bands(self, exec_backend):
@@ -237,7 +237,7 @@ class TestCrossModelExpressions:
         resp = await exec_backend.execute(orders_q(
             dimensions=[{"field": "CASE WHEN sum(amount - customers.discount, "
                          "partition_by=status) > 0 THEN 'hi' ELSE 'lo' END", "alias": "band"},
-                        "status"],
+                        "orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")]))
         assert {row["band"] for row in resp.data} == {"hi"}
 
@@ -271,20 +271,20 @@ class TestCrossModelExpressions:
 
     async def test_stage_scope_expression(self, exec_backend: SlayerQueryEngine):
         # Stage 2 aggregates an expression over stage 1's output column.
-        stage1 = orders_q(name="stage1", dimensions=["status"],
+        stage1 = orders_q(name="stage1", dimensions=["orders.status"],
                           metrics=[QueryMetric(metric="sum(orders.amount - orders.cost)",
                                                  alias="amount_cost_sum")])
         root = orders_q(population="stage1",
                         metrics=[QueryMetric(metric="sum(stage1.amount_cost_sum - 1)",
                                                alias="total")])
         resp = await exec_backend.execute([stage1, root])
-        col = next(c for c in resp.columns if c.endswith(".total"))
+        col = next(c for c in resp.columns if c == "total" or c.endswith(".total"))
         assert float(resp.data[0][col]) == pytest.approx(101.0)  # (51-1)+(52-1)
 
     async def test_dotted_leaf_derived_key(self, exec_backend: SlayerQueryEngine):
         # No rename → the dotted leaf's dots collapse into the auto-named key.
         resp = await exec_backend.execute(orders_q(
-            dimensions=["status"], metrics=["sum(amount - customers.discount)"]))
+            dimensions=["orders.status"], metrics=["sum(orders.amount - customers.discount)"]))
         assert "sum_orders_amount_customers_discount" in resp.columns
 
 
@@ -318,7 +318,7 @@ class TestExpressionSourceTyping:
     async def test_fully_attached_source_accepted(self, exec_backend):
         # Regression guard (DEV-1847): the expression gate must not reject it.
         resp = await exec_backend.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="avg(sum(sales.amount, partition_by=[sales.city, sales.region]))", alias="m")]))
         got = {k[0]: v["m"] for k, v in rows_by(resp, "sales.region").items()
                if v["m"] is not None}
@@ -327,7 +327,7 @@ class TestExpressionSourceTyping:
     async def test_mixed_row_and_attached_source_accepted(self, exec_backend):
         # Regression guard (DEV-1859).
         resp = await exec_backend.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.quantity * avg(sales.unit_price, partition_by=sales.product))", alias="m")]))
         got = {k[0]: v["m"] for k, v in rows_by(resp, "sales.region").items()
                if v["m"] is not None}
@@ -398,9 +398,9 @@ class TestCrossModelCardinality:
 
     async def test_adding_cross_model_measure_is_cardinality_neutral(self, exec_backend):
         base = await exec_backend.execute(orders_q(
-            dimensions=["status"], metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")]))
+            dimensions=["orders.status"], metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")]))
         withm = await exec_backend.execute(orders_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="a"),
                       QueryMetric(metric="sum(orders.amount - customers.discount)", alias="m")]))
         a = {k[0]: v["a"] for k, v in rows_by(base, "orders.status").items()}

@@ -729,7 +729,7 @@ class TestHttpBodyShape:
 # Saved-query refinement
 # --------------------------------------------------------------------------- #
 
-REFINE = {"dimensions": ["region"]}
+REFINE = {"dimensions": ["orders.region"]}
 ONLY_BY_NAME = "refine applies only to a saved query run by name"
 
 
@@ -936,7 +936,7 @@ class TestVariables:
         client = SlayerClient(url="http://testserver")
         monkeypatch.setattr(client, "_request_sync", via_app)
         resp = client.query_sync(
-            "revenue_by_status", refine={"metrics": ["count(*)"]}, variables={"status": "refunded"},
+            "revenue_by_status", refine={"metrics": ["count(orders.*)"]}, variables={"status": "refunded"},
         )
         assert resp.data == [{"orders.region": "US", "revenue": 40.0, "orders._count": 1}]
         single = {"population": "orders", "metrics": ["count(orders.*)"], "filter": ["orders.status = '{status}'"],

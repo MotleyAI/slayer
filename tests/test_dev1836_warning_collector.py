@@ -40,7 +40,7 @@ POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 #: Outside the conjunct pushdown scope for EVERY producer root here (the OR mixes
 #: root-local with cross-path refs / spans branches), yet spine-equivalent to
 #: ``channel = 'app'`` — no region is named ``__none__`` — so the value pins hold.
-_EXCLUDED_APP = "channel = 'app' OR customers.regions.name = '__none__'"
+_EXCLUDED_APP = "orders.channel = 'app' OR customers.regions.name = '__none__'"
 
 
 class TestPushedFilterEntryIdentity:
@@ -111,7 +111,7 @@ class TestBroadcastDedup:
         roles (measure, filter, order) and pop in one — two warnings total."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], metrics=[M, CM, POP],
+            dimensions=["orders.status"], metrics=[M, CM, POP],
             filter=["sum(customers.spend) > 0"],
             order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
             to_many_handling="broadcast",
@@ -127,7 +127,7 @@ class TestBroadcastDedup:
         computed dimension's producer chain must not shadow the outer one."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"field": SPEND_BAND, "alias": "sband"}, "status"],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}, "orders.status"],
             metrics=[M, CM],
             to_many_handling="broadcast",
         ))

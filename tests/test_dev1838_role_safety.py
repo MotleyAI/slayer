@@ -61,7 +61,7 @@ class TestCrossedPredicateFailsClosed:
     async def test_filter_over_unproven_second_hop_errors(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.alpha_amount)", alias="a")],
         )
         with pytest.raises(RAISES) as ei:
@@ -71,7 +71,7 @@ class TestCrossedPredicateFailsClosed:
     async def test_filter_over_unproven_to_many_hop_errors(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.rush_amount)", alias="r")],
         )
         with pytest.raises(RAISES) as ei:
@@ -81,7 +81,7 @@ class TestCrossedPredicateFailsClosed:
     async def test_ranked_kernel_with_unproven_filter_errors(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="last(orders.alpha_amount)", alias="al")],
         )
         with pytest.raises(RAISES) as ei:
@@ -91,7 +91,7 @@ class TestCrossedPredicateFailsClosed:
     async def test_windowed_kernel_with_unproven_filter_errors(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=["status"], time_dimensions=month_td(),
+            dimensions=["orders.status"], time_dimensions=month_td(),
             metrics=[QueryMetric(metric="sum(orders.rush_amount, window='90d')",
                                    alias="rw")],
         )
@@ -106,7 +106,7 @@ class TestCrossedArgumentFailsClosed:
     async def test_aggregation_param_over_unproven_hop_errors(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="tscaled_sum(orders.amount)", alias="t")],
         )
         with pytest.raises(RAISES) as ei:
@@ -116,7 +116,7 @@ class TestCrossedArgumentFailsClosed:
     async def test_ranking_arg_over_unproven_hop_errors(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="last(orders.amount, customers.segments.updated_at)",
                 alias="lu")],
@@ -133,7 +133,7 @@ class TestProvenHopsKeepExactValues:
     async def test_filtered_local_over_proven_hop(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[M, QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
         ))
         by = rows_by(resp, "orders.status")
@@ -148,7 +148,7 @@ class TestProvenHopsKeepExactValues:
         # older gold orders are not reached (a WHERE would belong in the query).
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="last(orders.gold_amount)", alias="gl")],
         ))
         by = rows_by(resp, "orders.status")
@@ -160,7 +160,7 @@ class TestProvenHopsKeepExactValues:
         # city's newest order is non-gold → NULL.
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["city"],
+            dimensions=["orders.city"],
             metrics=[QueryMetric(metric="last(orders.gold_amount)", alias="gl")],
         ))
         by = rows_by(resp, "orders.city")
@@ -171,7 +171,7 @@ class TestProvenHopsKeepExactValues:
     async def test_aggregation_param_over_proven_hops(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[M, QueryMetric(metric="wscaled_sum(orders.amount)", alias="w")],
         ))
         by = rows_by(resp, "orders.status")
@@ -181,7 +181,7 @@ class TestProvenHopsKeepExactValues:
     async def test_ranking_arg_over_proven_hop(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="last(orders.amount, customers.signup_at)",
                                    alias="ls")],
         ))
@@ -197,7 +197,7 @@ class TestHostGrainWrapStaysLegal:
 
     @staticmethod
     def _order_query(*, dataset: str, name: str, direction: str):
-        return q(dimensions=["status"], metrics=[M],
+        return q(dimensions=["orders.status"], metrics=[M],
                  order=[OrderItem(field=f"{dataset}.{name}",
                                   direction=direction)])
 

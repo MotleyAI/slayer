@@ -29,12 +29,12 @@ async def _raises(band: str) -> str:
 class TestTransformInDimensionResidue:
     async def test_transform_without_an_aggregate_input(self) -> None:
         message = await _raises(
-            "CASE WHEN cumsum(amount) > 50 THEN 1 ELSE 0 END")
+            "CASE WHEN cumsum(orders.amount) > 50 THEN 1 ELSE 0 END")
         assert re.search(r"(?i)aggregate", message)
 
     async def test_transform_over_an_ungrained_aggregate(self) -> None:
         message = await _raises(
-            "CASE WHEN cumsum(sum(amount)) > 50 THEN 1 ELSE 0 END")
+            "CASE WHEN cumsum(sum(orders.amount)) > 50 THEN 1 ELSE 0 END")
         assert "partition_by" in message  # the remedy
         assert re.search(r"(?i)dimension", message)  # the self-containment rationale
 
@@ -46,7 +46,7 @@ class TestTransformInDimensionResidue:
         assert "amount" in message  # names the ungrained aggregate
 
     async def test_the_two_violations_raise_distinct_errors(self) -> None:
-        no_agg = await _raises("CASE WHEN cumsum(amount) > 50 THEN 1 ELSE 0 END")
+        no_agg = await _raises("CASE WHEN cumsum(orders.amount) > 50 THEN 1 ELSE 0 END")
         ungrained = await _raises(
-            "CASE WHEN cumsum(sum(amount)) > 50 THEN 1 ELSE 0 END")
+            "CASE WHEN cumsum(sum(orders.amount)) > 50 THEN 1 ELSE 0 END")
         assert no_agg != ungrained

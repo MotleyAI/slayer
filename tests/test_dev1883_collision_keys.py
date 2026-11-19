@@ -22,7 +22,7 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             population="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         assert resp.columns == [
             "orders.created_at.month",
@@ -49,7 +49,7 @@ class TestGranularitySuffixedKeys:
             dimensions=[
                 "date_trunc('month', customers.created_at)", "date_trunc('year', customers.created_at)",
             ],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         assert resp.columns == [
             "customers.created_at.month",
@@ -71,10 +71,10 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
-                {"field": "created_at", "granularity": "year"},
+                {"field": "orders.created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "year"},
             ],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         assert resp.columns == [
             "orders.created_at.month",
@@ -85,9 +85,9 @@ class TestGranularitySuffixedKeys:
     async def test_mixed_functional_and_explicit_suffixed(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
             population="orders",
-            time_dimensions=[{"field": "created_at", "granularity": "year"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "year"}],
             dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         assert set(resp.columns) == {
             "orders.created_at.year",
@@ -99,7 +99,7 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             population="orders",
             dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
 
@@ -108,7 +108,7 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             population="orders",
             dimensions=["date_trunc('year', created_at)", "date_trunc('month', customers.created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         assert set(resp.columns) == {
             "orders.created_at",
@@ -121,9 +121,9 @@ class TestDuplicateTimeDimensions:
     def test_exact_duplicates_dedupe_across_forms(self) -> None:
         q = fx.q(
             population="orders",
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
             dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
         assert not q.dimensions, q.dimensions
         assert q.time_dimensions == [
@@ -134,7 +134,7 @@ class TestDuplicateTimeDimensions:
         q = fx.q(
             population="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('month', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
         assert q.time_dimensions == [
             fx.td(field="created_at", granularity="month")
@@ -144,10 +144,10 @@ class TestDuplicateTimeDimensions:
         q = fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
-                {"field": "created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},
             ],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
         assert q.time_dimensions == [
             fx.td(field="created_at", granularity="month")
@@ -161,16 +161,16 @@ class TestDuplicateTimeDimensions:
         q = fx.q(
             population="orders",
             time_dimensions=[dict(entry), dict(entry)],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
         assert q.time_dimensions == [TimeDimension.model_validate(entry)]
 
     async def test_deduped_query_executes_as_single(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
             population="orders",
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
             dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
         assert {
@@ -188,10 +188,10 @@ class TestDuplicateTimeDimensions:
             fx.q(
                 population="orders",
                 time_dimensions=[
-                    {"field": "created_at", "granularity": "month"},
-                    {"field": "created_at", "granularity": "month", **metadata},
+                    {"field": "orders.created_at", "granularity": "month"},
+                    {"field": "orders.created_at", "granularity": "month", **metadata},
                 ],
-                metrics=[{"metric": "sum(amount)"}],
+                metrics=[{"metric": "sum(orders.amount)"}],
             )
         msg = str(ei.value)
         assert "created_at" in msg
@@ -203,10 +203,10 @@ class TestDuplicateTimeDimensions:
         q = fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},
                 {"field": "orders.created_at", "granularity": "month"},
             ],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
         assert q.time_dimensions == [
             fx.td(field="created_at", granularity="month")
@@ -219,8 +219,8 @@ class TestDuplicateTimeDimensions:
             fx.q(
                 population="orders",
                 time_dimensions=[
-                    {"field": "created_at", "granularity": "month", "label": "A"},
+                    {"field": "orders.created_at", "granularity": "month", "label": "A"},
                     {"field": "orders.created_at", "granularity": "month", "label": "B"},
                 ],
-                metrics=[{"metric": "sum(amount)"}],
+                metrics=[{"metric": "sum(orders.amount)"}],
             )

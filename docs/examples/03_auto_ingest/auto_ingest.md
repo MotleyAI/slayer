@@ -58,7 +58,7 @@ Once ingested, datasets are queried like any other. Joined dimensions use dot sy
 }
 ```
 
-Result keys include the full path from the population: `items.orders.customers.name`, `items._count`.
+Result keys are the references as written: `orders.customers.name`, `items._count`.
 
 ---
 

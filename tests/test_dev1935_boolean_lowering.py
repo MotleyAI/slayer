@@ -273,7 +273,7 @@ class TestPartitionedOverOrMix:
         no dropped warning, error mode does not error."""
         _, engine = backend
         q = cust_q(
-            dimensions=["tier"], metrics=[PARTITIONED], filter=[OR_MIX_LOCAL],
+            dimensions=["customers.tier"], metrics=[PARTITIONED], filter=[OR_MIX_LOCAL],
             to_many_handling=mode)
         resp = await engine.execute(q)
         by = rows_by(resp, "customers.tier")
@@ -291,7 +291,7 @@ class TestRawRowMode:
         (6), never one per matching order (7)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filter=[OR_MIX_LOCAL],
+            dimensions=["customers.tier"], filter=[OR_MIX_LOCAL],
             distinct_dimension_values=False))
         assert len(resp.data) == OR_MIX_RAW_ROWS
 
@@ -323,7 +323,7 @@ class TestAssociationArmMixedOr:
         that status that is app or belongs to a gold customer (ok 270, new 250)."""
         _, engine = backend
         resp = await engine.execute(orders_q(
-            dimensions=["status"], metrics=[SPEND_X], filter=[ASSOC_OR],
+            dimensions=["orders.status"], metrics=[SPEND_X], filter=[ASSOC_OR],
             to_many_handling="associate"))
         by = rows_by(resp, "orders.status")
         for status, spend in ASSOC_OR_BY_STATUS.items():
@@ -336,7 +336,7 @@ class TestAssociationArmMixedOr:
         customers with an order of that status (ok 270, new 100)."""
         _, engine = unproven_backend
         resp = await engine.execute(orders_q(
-            dimensions=["status"], metrics=[SPEND_X], filter=[ASSOC_OR_ABSENT],
+            dimensions=["orders.status"], metrics=[SPEND_X], filter=[ASSOC_OR_ABSENT],
             to_many_handling="associate"))
         by = rows_by(resp, "orders.status")
         for status, spend in ASSOC_OR_ABSENT_BY_STATUS.items():
@@ -349,7 +349,7 @@ class TestTwoSpellingsOneNode:
         spellings) bind to one order: gold 60 / silver 80 (never 160 / 230)."""
         _, engine = two_spellings_backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], metrics=[SPEND],
+            dimensions=["customers.tier"], metrics=[SPEND],
             filter=list(TWO_SPELLINGS)))
         by = rows_by(resp, "customers.tier")
         for tier, spend in TWO_SPELLINGS_BY_TIER.items():
@@ -361,7 +361,7 @@ class TestTwoSpellingsOneNode:
         `FROM orders ... JOIN orders` duplicate cannot slip past a text count)."""
         dialect, engine = two_spellings_backend
         sql = await _dry(engine, cust_q(
-            dimensions=["tier"], metrics=[SPEND], filter=list(TWO_SPELLINGS)),
+            dimensions=["customers.tier"], metrics=[SPEND], filter=list(TWO_SPELLINGS)),
             dialect)
         (exists_node,) = list(sqlglot.parse_one(sql, dialect=dialect).find_all(exp.Exists))
         orders = [t for t in exists_node.find_all(exp.Table) if t.name == "orders"]
@@ -425,7 +425,7 @@ class TestGenuinelyUnreachableFilterRefused:
     @pytest.mark.parametrize("mode", MODES)
     async def test_unreachable_ref_is_refused(self, unreachable_backend, mode):
         _, engine = unreachable_backend
-        q = cust_q(dimensions=["tier"], metrics=[PARTITIONED],
+        q = cust_q(dimensions=["customers.tier"], metrics=[PARTITIONED],
                    filter=["promos.discount > 0"], to_many_handling=mode)
         with pytest.raises((SlayerError, ValueError)):
             await engine.execute(q)
@@ -544,7 +544,7 @@ _NULL_REJECTION_CASES = [
      False),                                               # AND of UNKNOWN -> UNKNOWN
     ("not (regions.region_events.value >= 50)", False),    # NOT UNKNOWN -> UNKNOWN
     ("abs(regions.region_events.value) >= 50", True),      # scalar call -> DEPENDS
-    ("tier = 'gold' or regions.region_events.value >= 50", True),  # OR w/ DEPENDS
+    ("customers.tier = 'gold' or regions.region_events.value >= 50", True),  # OR w/ DEPENDS
 ]
 
 #: (predicate over a derived event column or an IS operand, expected null_extended):
@@ -560,12 +560,12 @@ _FRAGMENT_AND_IS_CASES = [
     ("regions.region_events.col_in_list is not null", False),  # NULL IN (..) -> null-valued
     ("regions.region_events.lit_in_list is not null", True),   # 1 IN (NULL, 1) is TRUE
     ("regions.region_events.lit_between is not null", True),   # 1 BETWEEN NULL AND 0 is FALSE
-    ("regions.region_events.value is tier", True),         # IS <non-literal> -> DEPENDS
-    ("regions.region_events.value is not tier", True),
+    ("regions.region_events.value is customers.tier", True),         # IS <non-literal> -> DEPENDS
+    ("regions.region_events.value is not customers.tier", True),
     ("regions.region_events.value is True", False),        # NULL IS TRUE -> FALSE
     ("regions.region_events.value is not True", True),     # NULL IS NOT TRUE -> TRUE
     # a predicate as a value operand is NULL iff UNKNOWN: (UNKNOWN or DEPENDS) is DEPENDS
-    ("(regions.region_events.value >= 50 or tier = 'gold') is not null", True),
+    ("(regions.region_events.value >= 50 or customers.tier = 'gold') is not null", True),
     ("(regions.region_events.value >= 50) is not null", False),  # UNKNOWN -> NULL
 ]
 

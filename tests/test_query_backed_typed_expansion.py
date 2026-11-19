@@ -444,7 +444,7 @@ class TestVirtualModelColumns:
                     # Bare-ref + explicit ``name="rounded_total"`` keeps
                     # the column alias as the user-chosen name so the
                     # test can look it up unambiguously.
-                    "metrics": [{"metric": "rounded_total", "alias": "rounded_total"}],
+                    "metrics": [{"metric": "orders.rounded_total", "alias": "rounded_total"}],
                     "dimensions": ["orders.status"],
                 })],
             )

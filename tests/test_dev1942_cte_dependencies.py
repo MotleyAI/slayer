@@ -111,7 +111,7 @@ class TestForwardReferenceValidator:
 class TestDualPhaseEmissionOrder:
     def _dual_q(self):
         return monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
             time_dimensions=month_td())
@@ -132,7 +132,7 @@ class TestDualPhaseEmissionOrder:
         # four `_cm_` producers; EACH carrier is declared before its OWN consumer (two
         # distinct re-keyed edges, not one global position).
         sql = await gen(monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
                       QueryMetric(metric=REAGG_MAX_STANDALONE, alias="c"),
@@ -154,7 +154,7 @@ class TestDualPhaseEmissionOrder:
         # non-root stage carries the dual-phase re-aggregation.
         _, engine = exec_backend
         query = monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
                       QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],

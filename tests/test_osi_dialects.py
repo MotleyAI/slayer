@@ -153,10 +153,10 @@ def test_expression_with_neither_form_is_reported(db: Path) -> None:
 # ─────────────────────── rendering for the target ──────────────────────────
 
 _PORTABLE_CASES = [
-    pytest.param(f("pos", "IFF(amount > 6, amount, 0)"), "sum(pos)", 17, id="IFF"),
-    pytest.param(f("tip_or_zero", "ZEROIFNULL(tip)"), "count(tip_or_zero)", 3, id="ZEROIFNULL"),
-    pytest.param(f("full_name", "first_name || ' ' || last_name"), "count(full_name)", 2, id="concat-null"),
-    pytest.param(f("full_name", "first_name || ' ' || last_name"), "max(full_name)", "Cy Kim", id="concat"),
+    pytest.param(f("pos", "IFF(amount > 6, amount, 0)"), "sum(orders.pos)", 17, id="IFF"),
+    pytest.param(f("tip_or_zero", "ZEROIFNULL(tip)"), "count(orders.tip_or_zero)", 3, id="ZEROIFNULL"),
+    pytest.param(f("full_name", "first_name || ' ' || last_name"), "count(orders.full_name)", 2, id="concat-null"),
+    pytest.param(f("full_name", "first_name || ' ' || last_name"), "max(orders.full_name)", "Cy Kim", id="concat"),
 ]
 
 

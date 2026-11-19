@@ -58,8 +58,8 @@ def _cte_projection(sql: str, name: str, dialect: str = "postgres") -> list[str]
 @pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
 def test_transform_two_names_both_surface(dialect: str) -> None:
     sql = _generate([
-        {"metric": "cumsum(sum(amount))", "alias": "run_a"},
-        {"metric": "cumsum(sum(amount))", "alias": "run_b"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "run_a"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "run_b"},
     ], dialect=dialect)
     assert _outer_projection(sql, dialect) == [
         "orders.created_at", "run_a", "run_b",
@@ -71,8 +71,8 @@ def test_post_arithmetic_two_names_both_surface(dialect: str) -> None:
     # change(...) lowers to an ArithmeticKey materialised by the
     # unmaterialised-POST branch of the same step-CTE emission.
     sql = _generate([
-        {"metric": "change(sum(amount))", "alias": "ch_a"},
-        {"metric": "change(sum(amount))", "alias": "ch_b"},
+        {"metric": "change(sum(orders.amount))", "alias": "ch_a"},
+        {"metric": "change(sum(orders.amount))", "alias": "ch_b"},
     ], dialect=dialect)
     assert _outer_projection(sql, dialect) == [
         "orders.created_at", "ch_a", "ch_b",
@@ -83,9 +83,9 @@ def test_two_names_carried_through_later_step() -> None:
     # change(...) forces a step2, so both names must be carried through the
     # intermediate CTEs, not just materialised in their own step.
     sql = _generate([
-        {"metric": "cumsum(sum(amount))", "alias": "run_a"},
-        {"metric": "cumsum(sum(amount))", "alias": "run_b"},
-        {"metric": "change(sum(amount))", "alias": "ch"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "run_a"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "run_b"},
+        {"metric": "change(sum(orders.amount))", "alias": "ch"},
     ])
     step2 = _cte(sql, "step2")
     step2_names = [e.alias_or_name for e in step2.expressions]
@@ -107,8 +107,8 @@ def test_consecutive_periods_two_names_both_surface(dialect: str) -> None:
     # consecutive_periods has its own cp_reset/cp_value CTE path, distinct from
     # _emit_step_cte; it must surface both names too (Codex review of #311).
     sql = _generate([
-        {"metric": "consecutive_periods(sum(amount))", "alias": "streak_a"},
-        {"metric": "consecutive_periods(sum(amount))", "alias": "streak_b"},
+        {"metric": "consecutive_periods(sum(orders.amount))", "alias": "streak_a"},
+        {"metric": "consecutive_periods(sum(orders.amount))", "alias": "streak_b"},
     ], dialect=dialect)
     assert _outer_projection(sql, dialect) == [
         "orders.created_at", "streak_a", "streak_b",
@@ -126,7 +126,7 @@ def test_cross_model_transform_two_names_both_surface() -> None:
 
 
 def test_single_name_emission_unchanged() -> None:
-    sql = _generate([{"metric": "cumsum(sum(amount))", "alias": "cs"}])
+    sql = _generate([{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}])
     assert _outer_projection(sql) == ["orders.created_at", "cs"]
     assert _cte_projection(sql, "step1").count("cs") == 1
 
@@ -136,14 +136,14 @@ def test_same_name_same_formula_raises() -> None:
         ValueError, match="Stage field name collision on 'run_a'",
     ):
         _generate([
-            {"metric": "cumsum(sum(amount))", "alias": "run_a"},
-            {"metric": "cumsum(sum(amount))", "alias": "run_a"},
+            {"metric": "cumsum(sum(orders.amount))", "alias": "run_a"},
+            {"metric": "cumsum(sum(orders.amount))", "alias": "run_a"},
         ])
 
 
 def test_same_name_different_formula_raises() -> None:
     with pytest.raises(DuplicateMetricNameError):
         _generate([
-            {"metric": "cumsum(sum(amount))", "alias": "run_a"},
-            {"metric": "sum(amount)", "alias": "run_a"},
+            {"metric": "cumsum(sum(orders.amount))", "alias": "run_a"},
+            {"metric": "sum(orders.amount)", "alias": "run_a"},
         ])

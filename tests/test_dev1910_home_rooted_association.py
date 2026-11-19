@@ -102,7 +102,7 @@ class TestHostFilterHomeSideDimension:
         """channel='app' restricts to app customers pre-aggregation, by bad_pop: North 250, South 140; c7 out."""
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], metrics=[SPEND_SUM],
-            filter=["channel = 'app'"], to_many_handling="associate"))
+            filter=["orders.channel = 'app'"], to_many_handling="associate"))
         spend = bad_pop_vals(resp, "csp")
         for cell, expected in APP_SPEND_BY_BAD_POP.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
@@ -112,7 +112,7 @@ class TestMixedHomeAndPopulationRootDimensions:
     async def test_c7_only_reaches_a_cell_the_population_lacks(self, engine):
         """By (bad_pop, status): South shows only (230, ok) = c3+c5 = 140; c7 reaches only (230, NULL)."""
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP, "status"], metrics=[SPEND_SUM],
+            dimensions=[BAD_POP, "orders.status"], metrics=[SPEND_SUM],
             to_many_handling="associate"))
         cells = bad_pop_status_cells(resp, "csp")
         south = {k: v for k, v in cells.items() if k[0] == 230.0}
@@ -126,7 +126,7 @@ class TestBackHopNullCell:
     async def test_null_status_cell_holds_the_orderless_entity(self, null_engine):
         """Orders-rooted: NULL-status cell = c1 (owner) + c7 (no orders) = 155, as customers-rooted."""
         resp = await null_engine.execute(orders_q(
-            dimensions=["status"], metrics=[SPEND_SUM],
+            dimensions=["orders.status"], metrics=[SPEND_SUM],
             to_many_handling="associate"))
         spend = status_vals(resp, "csp")
         for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
@@ -193,7 +193,7 @@ class TestCompositeBackHop:
         distinct stores per status cell across the composite reverse hop:
         ok 1100, new 800."""
         resp = await engine.execute(orders_q(
-            dimensions=["status"], metrics=[STORE_RENT_SUM],
+            dimensions=["orders.status"], metrics=[STORE_RENT_SUM],
             to_many_handling="associate"))
         rent = status_vals(resp, "rent")
         for cell, expected in RENT_BY_STATUS.items():
@@ -241,7 +241,7 @@ class TestAssociationRestrictedConjunctEntry:
         producer's membership (measure='csp', dev-1910). Both are reported; the
         executed values are the restricted membership."""
         resp = await weak_engine.execute(assoc_status_q(
-            dimensions=["status"], metrics=[SPEND_SUM],
+            dimensions=["orders.status"], metrics=[SPEND_SUM],
             filter=["customers.plans.level = 'basic'"]))
         spend = status_vals(resp, "csp")
         for cell, expected in ASSOC_BASIC_SPEND_BY_STATUS.items():

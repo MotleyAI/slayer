@@ -660,17 +660,17 @@ class TestQueryTimeBackstop:
 
     async def test_as_dimension(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            dimensions=["revisit_spend"],
+            dimensions=["customers.revisit_spend"],
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")]))
 
     async def test_in_filter(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")],
-            filter=["revisit_spend > 0"]))
+            filter=["customers.revisit_spend > 0"]))
 
     async def test_raw_row_mode(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            dimensions=["revisit_spend"], distinct_dimension_values=False))
+            dimensions=["customers.revisit_spend"], distinct_dimension_values=False))
 
     async def test_through_a_derived_chain(self, qengine) -> None:
         exc = await _assert_circular(qengine, _cust_q(
@@ -707,7 +707,7 @@ class TestQueryTimeBackstop:
         assert not isinstance(exc, DerivedFieldCircularError)
 
     async def test_unresolved_model_refused_as_unresolvable(self, unresolved_engine) -> None:
-        query = _cust_q(dimensions=["ghost_spend"],
+        query = _cust_q(dimensions=["customers.ghost_spend"],
                         metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")])
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await unresolved_engine.execute(query)
@@ -771,7 +771,7 @@ class TestViaHostRerootUnchanged:
         # `sum(customers.spend, partition_by=status)` from orders exercises
         # reroot_from_root / attributable_from_root over a composed via-host path.
         resp = await reroot_engine.execute(_dev1900_orders_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="sum(customers.spend, partition_by=orders.status)", alias="w")],
             to_many_handling="associate"))

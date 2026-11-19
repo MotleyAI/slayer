@@ -58,7 +58,7 @@ async def engine():
 
 async def _dry(engine, **kw):
     kw.setdefault("population", "orders")
-    kw.setdefault("metrics", [{"metric": "count(*)", "alias": "n"}])
+    kw.setdefault("metrics", [{"metric": "count(orders.*)", "alias": "n"}])
     return await engine.execute(SlayerQuery.model_validate(kw), dry_run=True)
 
 
@@ -82,16 +82,16 @@ class TestTemporalType:
         ("status", None),
         ("raw_dt", None),
         ("amount", None),
-        ("max(created_at)", DataType.DATETIME),
+        ("max(orders.created_at)", DataType.DATETIME),
         ("min(order_date)", DataType.DATE),
-        ("first(created_at)", DataType.DATETIME),
+        ("first(orders.created_at)", DataType.DATETIME),
         ("last(order_date)", DataType.DATE),
         ("sum(amount)", None),
-        ("count(created_at)", None),
-        ("date_add(order_date, 1, 'month')", DataType.DATE),
+        ("count(orders.created_at)", None),
+        ("date_add(orders.order_date, 1, 'month')", DataType.DATE),
         ("date_add(order_date, sla_days, 'week')", DataType.DATE),
-        ("date_add(order_date, 2, 'hour')", DataType.DATETIME),
-        ("date_add(created_at, 1, 'day')", DataType.DATETIME),
+        ("date_add(orders.order_date, 2, 'hour')", DataType.DATETIME),
+        ("date_add(orders.created_at, 1, 'day')", DataType.DATETIME),
         ("date_add('2024-01-01', 1, 'day')", DataType.DATE),
         ("date_add('2024-01-01 10:00:00', 1, 'day')", DataType.DATETIME),
         ("now()", DataType.DATETIME),
@@ -110,9 +110,9 @@ class TestTemporalType:
         ("iif(amount > 10, shipped_at, created_at)", DataType.DATETIME),
         ("CASE WHEN amount > 10 THEN order_date ELSE NULL END", DataType.DATE),
         ("iif(amount > 10, order_date, 1)", None),
-        ("date_part('year', created_at)", None),
+        ("date_part('year', s1.created_at)", None),
         ("date_diff('day', order_date, created_at)", None),
-        ("created_at + 1", None),
+        ("orders.created_at + 1", None),
         ("'2024-01-01'", None),
     ])
     def test_bottom_up(self, text: str, expected) -> None:
@@ -129,9 +129,9 @@ class TestTypedDateLiterals:
         assert LiteralKey(value=date(2024, 1, 1)) != LiteralKey(value=datetime(2024, 1, 1))
 
     @pytest.mark.parametrize("text,value", [
-        ("date_diff('day', '2024-01-01', created_at)", date(2024, 1, 1)),
-        ("date_diff('day', '2024-01-01 10:30:00', created_at)", datetime(2024, 1, 1, 10, 30)),
-        ("date_diff('day', '2024-01-01T10:30:00', created_at)", datetime(2024, 1, 1, 10, 30)),
+        ("date_diff('day', '2024-01-01', orders.created_at)", date(2024, 1, 1)),
+        ("date_diff('day', '2024-01-01 10:30:00', orders.created_at)", datetime(2024, 1, 1, 10, 30)),
+        ("date_diff('day', '2024-01-01T10:30:00', orders.created_at)", datetime(2024, 1, 1, 10, 30)),
         ("date_part('year', coalesce(shipped_at, '2024-01-01'))", date(2024, 1, 1)),
         ("date_part('year', iif(amount > 1, shipped_at, '2024-01-01'))", date(2024, 1, 1)),
         ("date_add(greatest(order_date, '2024-02-29'), 1, 'day')", date(2024, 2, 29)),
@@ -153,18 +153,18 @@ class TestTypedDateLiterals:
 
 class TestOperandRejections:
     @pytest.mark.parametrize("filt,operand", [
-        ("date_part('month', status) = 1", "status"),
-        ("date_part('month', raw_dt) = 1", "raw_dt"),
-        ("date_part('month', id) = 1", "id"),
-        ("date_part('month', is_paid) = 1", "is_paid"),
-        ("date_diff('day', created_at, status) > 1", "status"),
-        ("date_add(status, 1, 'day') > created_at", "status"),
-        ("date_part('year', created_at + 1) = 2024", "created_at"),
+        ("date_part('month', orders.status) = 1", "status"),
+        ("date_part('month', orders.raw_dt) = 1", "raw_dt"),
+        ("date_part('month', orders.id) = 1", "id"),
+        ("date_part('month', orders.is_paid) = 1", "is_paid"),
+        ("date_diff('day', orders.created_at, orders.status) > 1", "status"),
+        ("date_add(orders.status, 1, 'day') > orders.created_at", "status"),
+        ("date_part('year', orders.created_at + 1) = 2024", "created_at"),
         ("date_part('year', 2024) = 2024", "2024"),
         ("date_part('year', 'yesterday') = 2024", "yesterday"),
-        ("date_part('year', coalesce(shipped_at, 5)) = 2024", "coalesce"),
-        ("date_part('year', nullif(shipped_at, 5)) = 2024", "nullif"),
-        ("date_part('year', date_part('year', created_at)) = 1", "date_part"),
+        ("date_part('year', coalesce(orders.shipped_at, 5)) = 2024", "coalesce"),
+        ("date_part('year', nullif(orders.shipped_at, 5)) = 2024", "nullif"),
+        ("date_part('year', date_part('year', orders.created_at)) = 1", "date_part"),
     ])
     async def test_non_temporal_operand(self, engine, filt: str, operand: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
@@ -173,16 +173,16 @@ class TestOperandRejections:
 
     async def test_numeric_measure_operand(self, engine) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, metrics=[{"metric": "max(date_part('year', amount))", "alias": "y"}])
+            await _dry(engine, metrics=[{"metric": "max(date_part('year', orders.amount))", "alias": "y"}])
         _assert_type_error(exc, "amount")
 
     @pytest.mark.parametrize("filt,literal", [
-        ("date_diff('day', '2024-02-30', created_at) > 0", "2024-02-30"),
-        ("date_diff('day', '2024-13-01', created_at) > 0", "2024-13-01"),
-        ("date_diff('day', '2024-01-01 25:00:00', created_at) > 0", "2024-01-01 25:00:00"),
-        ("date_diff('day', '01/02/2024', created_at) > 0", "01/02/2024"),
-        ("date_part('year', coalesce(shipped_at, 'soon')) > 0", "soon"),
-        ("date_part('year', nullif(shipped_at, 'soon')) > 0", "soon"),
+        ("date_diff('day', '2024-02-30', orders.created_at) > 0", "2024-02-30"),
+        ("date_diff('day', '2024-13-01', orders.created_at) > 0", "2024-13-01"),
+        ("date_diff('day', '2024-01-01 25:00:00', orders.created_at) > 0", "2024-01-01 25:00:00"),
+        ("date_diff('day', '01/02/2024', orders.created_at) > 0", "01/02/2024"),
+        ("date_part('year', coalesce(orders.shipped_at, 'soon')) > 0", "soon"),
+        ("date_part('year', nullif(orders.shipped_at, 'soon')) > 0", "soon"),
     ])
     async def test_invalid_literal(self, engine, filt: str, literal: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
@@ -226,7 +226,7 @@ class TestCountRules:
 
     async def test_non_numeric_aggregate_count(self, engine) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, metrics=[{"metric": "date_add(max(order_date), max(status), 'day')", "alias": "m"}])
+            await _dry(engine, metrics=[{"metric": "date_add(max(orders.order_date), max(orders.status), 'day')", "alias": "m"}])
         _assert_type_error(exc, "date_add")
 
     @pytest.mark.parametrize("count", ["3", "-3", "sla_days", "-sla_days", "sla_days * 2", "id"])
@@ -234,56 +234,56 @@ class TestCountRules:
         await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
 
     async def test_aggregate_count_accepted(self, engine) -> None:
-        await _dry(engine, metrics=[{"metric": "date_add(max(order_date), max(sla_days), 'month')", "alias": "m"}])
+        await _dry(engine, metrics=[{"metric": "date_add(max(orders.order_date), max(orders.sla_days), 'month')", "alias": "m"}])
 
 
 class TestAcceptedOperands:
     @pytest.mark.parametrize("filt", [
-        "date_part('day_of_week', order_date) = 1",
-        "date_diff('day', created_at, shipped_at) > 3",
-        "DATE_DIFF('day', created_at, shipped_at) > 3",
+        "date_part('day_of_week', orders.order_date) = 1",
+        "date_diff('day', orders.created_at, orders.shipped_at) > 3",
+        "DATE_DIFF('day', orders.created_at, orders.shipped_at) > 3",
         "date_part('year', customers.signup_date) = 2024",
-        "date_diff('day', customers.signup_date, order_date) > 0",
-        "date_part('month', date_add(order_date, 1, 'month')) = 1",
-        "date_diff('day', created_at, now()) > 0",
+        "date_diff('day', customers.signup_date, orders.order_date) > 0",
+        "date_part('month', date_add(orders.order_date, 1, 'month')) = 1",
+        "date_diff('day', orders.created_at, now()) > 0",
         "date_part('year', current_date()) > 2000",
-        "created_at <= now()",
-        "order_date <= current_date()",
-        "created_at >= date_add(current_date(), -30, 'day')",
-        "date_diff('day', created_at, coalesce(shipped_at, now())) > 0",
-        "date_diff('day', created_at, ifnull(shipped_at, created_at)) >= 0",
-        "date_diff('day', created_at, nullif(shipped_at, created_at)) >= 0",
-        "date_diff('day', least(order_date, created_at), greatest(shipped_at, created_at)) >= 0",
-        "date_part('year', iif(amount > 10, shipped_at, created_at)) = 2024",
-        "date_part('year', CASE WHEN amount > 10 THEN order_date ELSE NULL END) = 2024",
-        "date_diff('day', '2024-01-01', created_at) < 30",
-        "date_part('year', coalesce(shipped_at, '2024-01-01')) = 2024",
-        "created_at + interval(1, 'month') + interval(2, 'hour') < now()",
-        "interval(7, 'day') + order_date > current_date()",
+        "orders.created_at <= now()",
+        "orders.order_date <= current_date()",
+        "orders.created_at >= date_add(current_date(), -30, 'day')",
+        "date_diff('day', orders.created_at, coalesce(orders.shipped_at, now())) > 0",
+        "date_diff('day', orders.created_at, ifnull(orders.shipped_at, orders.created_at)) >= 0",
+        "date_diff('day', orders.created_at, nullif(orders.shipped_at, orders.created_at)) >= 0",
+        "date_diff('day', least(orders.order_date, orders.created_at), greatest(orders.shipped_at, orders.created_at)) >= 0",
+        "date_part('year', iif(orders.amount > 10, orders.shipped_at, orders.created_at)) = 2024",
+        "date_part('year', CASE WHEN orders.amount > 10 THEN orders.order_date ELSE NULL END) = 2024",
+        "date_diff('day', '2024-01-01', orders.created_at) < 30",
+        "date_part('year', coalesce(orders.shipped_at, '2024-01-01')) = 2024",
+        "orders.created_at + interval(1, 'month') + interval(2, 'hour') < now()",
+        "interval(7, 'day') + orders.order_date > current_date()",
     ])
     async def test_filter_binds(self, engine, filt: str) -> None:
         await _dry(engine, filter=[filt])
 
     @pytest.mark.parametrize("formula", [
-        "date_diff('day', min(created_at), max(created_at))",
-        "avg(date_diff('day', created_at, coalesce(shipped_at, now())))",
-        "min(date_part('year', coalesce(shipped_at, '2024-01-01')))",
-        "date_part('year', first(created_at))",
-        "date_part('year', last(order_date))",
-        "max(shipped_at - interval(2, 'day'))",
+        "date_diff('day', min(orders.created_at), max(orders.created_at))",
+        "avg(date_diff('day', orders.created_at, coalesce(orders.shipped_at, now())))",
+        "min(date_part('year', coalesce(orders.shipped_at, '2024-01-01')))",
+        "date_part('year', first(orders.created_at))",
+        "date_part('year', last(orders.order_date))",
+        "max(orders.shipped_at - interval(2, 'day'))",
     ])
     async def test_measure_binds(self, engine, formula: str) -> None:
         await _dry(engine, metrics=[{"metric": formula, "alias": "m"}])
 
     async def test_placeholder_in_date_position(self, engine) -> None:
         await _dry(
-            engine, filter=["date_diff('day', '{launch}', created_at) >= 0"], variables={"launch": "2024-05-01"},
+            engine, filter=["date_diff('day', '{launch}', orders.created_at) >= 0"], variables={"launch": "2024-05-01"},
         )
 
     async def test_placeholder_invalid_date_rejected(self, engine) -> None:
         with pytest.raises(QueryTypeError):
             await _dry(
-                engine, filter=["date_diff('day', '{launch}', created_at) >= 0"], variables={"launch": "someday"},
+                engine, filter=["date_diff('day', '{launch}', orders.created_at) >= 0"], variables={"launch": "someday"},
             )
 
     async def test_placeholder_unit(self, engine) -> None:
@@ -296,11 +296,11 @@ class TestAcceptedOperands:
 
 class TestArityEndToEnd:
     @pytest.mark.parametrize("filt,name", [
-        ("date_add(created_at, 3) > created_at", "date_add"),
+        ("date_add(orders.created_at, 3) > orders.created_at", "date_add"),
         ("date_part('year') = 1", "date_part"),
-        ("date_diff('day', created_at) > 1", "date_diff"),
-        ("created_at <= now(1)", "now"),
-        ("order_date <= current_date(1)", "current_date"),
+        ("date_diff('day', orders.created_at) > 1", "date_diff"),
+        ("orders.created_at <= now(1)", "now"),
+        ("orders.order_date <= current_date(1)", "current_date"),
     ])
     async def test_wrong_arity_rejected_naming_function(self, engine, filt: str, name: str) -> None:
         with pytest.raises(ValueError, match=rf"(?s){name}.*argument"):
@@ -351,11 +351,11 @@ class TestStageOperands:
 
 class TestResultTypes:
     @pytest.mark.parametrize("text,expected", [
-        ("date_part('month', created_at)", DataType.INTEGER),
+        ("date_part('month', orders.created_at)", DataType.INTEGER),
         ("date_diff('day', created_at, shipped_at)", DataType.INTEGER),
-        ("date_add(order_date, 1, 'month')", DataType.DATE),
-        ("date_add(order_date, 2, 'hour')", DataType.DATETIME),
-        ("date_add(created_at, 1, 'day')", DataType.DATETIME),
+        ("date_add(orders.order_date, 1, 'month')", DataType.DATE),
+        ("date_add(orders.order_date, 2, 'hour')", DataType.DATETIME),
+        ("date_add(orders.created_at, 1, 'day')", DataType.DATETIME),
         ("current_date()", DataType.DATE),
         ("now()", DataType.DATETIME),
         ("date_add(customers.signup_date, 1, 'year')", DataType.DATE),
@@ -365,13 +365,13 @@ class TestResultTypes:
         assert dim_type == expected
 
     @pytest.mark.parametrize("text,expected", [
-        ("date_diff('day', min(created_at), max(created_at))", DataType.INTEGER),
+        ("date_diff('day', min(orders.created_at), max(orders.created_at))", DataType.INTEGER),
         ("date_part('year', max(order_date))", DataType.INTEGER),
-        ("date_add(max(order_date), 1, 'month')", DataType.DATE),
-        ("date_add(max(created_at), 1, 'month')", DataType.DATETIME),
+        ("date_add(max(orders.order_date), 1, 'month')", DataType.DATE),
+        ("date_add(max(orders.created_at), 1, 'month')", DataType.DATETIME),
         ("current_date()", DataType.DATE),
         ("now()", DataType.DATETIME),
-        ("max(date_add(order_date, 1, 'day'))", DataType.DATE),
+        ("max(date_add(s1.order_date, 1, 'day'))", DataType.DATE),
         ("min(coalesce(shipped_at, created_at))", DataType.DATETIME),
     ])
     def test_measure_type(self, text: str, expected: DataType) -> None:

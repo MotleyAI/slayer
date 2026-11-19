@@ -116,12 +116,12 @@ async def _value(engine: SlayerQueryEngine, expression: str) -> float:
 
 class TestStringArgumentIsModeB:
     async def test_a_string_column_argument_equals_its_unquoted_spelling(self, engine: SlayerQueryEngine) -> None:
-        quoted = await _value(engine, "wsum(amount, w='customers.region_id')")
+        quoted = await _value(engine, "wsum(orders.amount, w='customers.region_id')")
         assert quoted == await _value(engine, "wsum(amount, w=customers.region_id)")
         assert quoted == pytest.approx(10 * 10 + 20 * 10 + 30 * 20 + 40 * 10)
 
     async def test_a_string_expression_argument_equals_its_unquoted_expression(self, engine: SlayerQueryEngine) -> None:
-        quoted = await _value(engine, "weighted_avg(amount, weight='id * 2')")
+        quoted = await _value(engine, "weighted_avg(orders.amount, weight='id * 2')")
         assert quoted == await _value(engine, "weighted_avg(amount, weight=id * 2)")
         assert quoted == pytest.approx(30.0)
 
@@ -146,7 +146,7 @@ class TestStringArgumentIsModeB:
 
     async def test_a_setting_is_unchanged(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_q(
-            "sum(amount, window='60d')", time_dimensions=[{"field": "created_at", "granularity": "month"}],
+            "sum(orders.amount, window='60d')", time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
         ))
         assert [float(r["m"]) for r in sorted(resp.data, key=lambda r: str(r["orders.created_at"]))] == [
             10.0, 30.0, 50.0, 70.0,
@@ -160,7 +160,7 @@ class TestDefaultStaysModeA:
 
     async def test_the_same_text_as_an_argument_is_refused(self) -> None:
         async with seeded_exec_engine(dialect="sqlite", seed=_seed, datasets=_datasets(_USUM)) as (engine, _db):
-            query = _q("usum(amount, w='unicode(status) - unicode(status) + quantity')")
+            query = _q("usum(orders.amount, w='unicode(status) - unicode(status) + quantity')")
             with pytest.raises(UnanalyzableAggregationParameterError):
                 await engine.execute(query)
 

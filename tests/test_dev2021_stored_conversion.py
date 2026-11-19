@@ -143,7 +143,7 @@ class TestDimension:
         model, _ = await _load(storage, "by_status")
         assert QueryDimension(field="upper(status)", alias="status_label") in (_stage_of(model).dimensions or [])
         resp = await run(storage, {"population": "by_status", "dimensions": ["status_label"],
-                                   "metrics": [{"metric": "sum(rev_by_tier.rev)", "alias": "t"}]})
+                                   "metrics": [{"metric": "sum(by_status.rev)", "alias": "t"}]})
         assert _rows(resp, "by_status.status_label", "by_status.t") == [("2024/01/01", 60.0), ("NEW", 70.0), ("OK", 80.0)]
 
 
@@ -151,7 +151,7 @@ class TestMeasure:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_measure_keeps_its_generated_name(self, tmp_path, shop_ds, backend: str) -> None:
         stage = _stage(extensions=[_ext("orders", {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"})],
-                       dimensions=["status"], measures=["sum(double_amount)"])
+                       dimensions=["cids.status"], measures=["sum(double_amount)"])
         storage = await _store(tmp_path, shop_ds, backend, _qb("dbl", stage))
         model, caught = await _load(storage, "dbl")
         loaded = _stage_of(model)
@@ -162,7 +162,7 @@ class TestMeasure:
 
     async def test_a_joined_measure_takes_the_flattened_name(self, tmp_path, shop_ds) -> None:
         stage = _stage(extensions=[_ext("customers", {"name": "cid", "sql": "id * 10", "type": "INT"})],
-                       dimensions=["status"], measures=["sum(customers.cid)"])
+                       dimensions=["cids.status"], measures=["sum(customers.cid)"])
         storage = await _store(tmp_path, shop_ds, "yaml", _qb("cids", stage))
         model, _ = await _load(storage, "cids")
         assert QueryMetric(metric="sum(CAST(customers.id * 10 AS INT))", alias="customers__cid_sum") in (
@@ -183,7 +183,7 @@ class TestQualification:
         assert QueryDimension(field="lower(buyer.region)", alias="buyer__region_label") in (
             _stage_of(model).dimensions or [])
         resp = await run(storage, {"population": "by_buyer", "dimensions": ["buyer__region_label"],
-                                   "metrics": [{"metric": "sum(rev_by_tier.rev)", "alias": "t"}]})
+                                   "metrics": [{"metric": "sum(by_buyer.rev)", "alias": "t"}]})
         assert _rows(resp, "by_buyer.buyer__region_label", "by_buyer.t") == [("north", 120.0), ("south", 90.0)]
 
     async def test_an_inferred_population_qualifies_the_expression(self, tmp_path, shop_ds) -> None:
@@ -208,7 +208,7 @@ class TestQualification:
         assert QueryDimension(field="lower(cust.region)", alias="cust__region_label") in (
             _stage_of(model).dimensions or [])
         resp = await run(storage, {"population": "by_alias", "dimensions": ["cust__region_label"],
-                                   "metrics": [{"metric": "sum(rev_by_tier.rev)", "alias": "t"}]})
+                                   "metrics": [{"metric": "sum(by_alias.rev)", "alias": "t"}]})
         assert _rows(resp, "by_alias.cust__region_label", "by_alias.t") == [("north", 120.0), ("south", 90.0)]
 
     async def test_an_owner_qualified_reference_reads_the_owners_column(self, tmp_path, shop_ds) -> None:
@@ -316,7 +316,7 @@ class TestEveryPosition:
         stage = _stage(
             extensions=[_ext("orders", _STAMP, _BUCKET,
                              metrics=[{"name": "big_total", "expression": "sum(iif(bucket = 'big', amount, 0))"}])],
-            dimensions=["status", "bucket"],
+            dimensions=["cids.status", "bucket"],
             measures=[{"formula": "sum(amount, partition_by=bucket)", "name": "per_bucket"},
                       {"formula": "last(amount, stamp)", "name": "latest"}, "big_total"],
         )
@@ -346,12 +346,12 @@ _UNCONVERTIBLE = {
     "not-mode-b": _stage(extensions=[_ext("orders", {"name": "yr", "sql": "strftime('%Y', ordered_at)"})],
                          dimensions=["yr"], measures=[_REV]),
     "array": _stage(extensions=[_ext("orders", {"name": "arr", "sql": "amount", "type": "ARRAY"})],
-                    dimensions=["status"], measures=[_REV]),
+                    dimensions=["cids.status"], measures=[_REV]),
     "hidden-sql-less": _stage(extensions=[_ext("orders", {"name": "nope"})], dimensions=["nope"], measures=[_REV]),
     "filtered-sql-less": _stage(extensions=[_ext("orders", {"name": "status", "filter": "amount > 25"})],
-                                dimensions=["status"], measures=[_REV]),
+                                dimensions=["cids.status"], measures=[_REV]),
     "shadowing": _stage(extensions=[_ext("orders", {"name": "status", "sql": "upper(status)"})],
-                        dimensions=["status"], measures=[_REV]),
+                        dimensions=["cids.status"], measures=[_REV]),
     "cycle": _stage(extensions=[_ext("orders", {"name": "a", "sql": "b + 1"}, {"name": "b", "sql": "a + 1"})],
                     dimensions=["a"], measures=[_REV]),
     "join-key-source": _stage(

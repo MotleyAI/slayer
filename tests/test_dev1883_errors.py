@@ -34,7 +34,7 @@ def _q(dimensions: list) -> SlayerQuery:
     return fx.q(
         population="orders",
         dimensions=dimensions,
-        metrics=[{"metric": "count(*)"}],
+        metrics=[{"metric": "count(orders.*)"}],
     )
 
 
@@ -58,7 +58,7 @@ class TestNonTemporalArgument:
 
 class TestUnknownSingleColumnCall:
     async def test_typo_names_granularities_and_partition_by_hedge(self, exec_engine) -> None:
-        query = _q(["mnth(created_at)"])  # accepted at construction; the callee resolves at binding
+        query = _q(["mnth(orders.created_at)"])  # accepted at construction; the callee resolves at binding
         with pytest.raises(errors.QueryTypeError) as ei:
             await exec_engine.execute(query, dry_run=True)
         msg = str(ei.value)
@@ -83,19 +83,19 @@ class TestUnknownSingleColumnCall:
 
 class TestNonRegression:
     async def test_scalar_computed_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
-        resp = await exec_engine.execute(_q(["upper(status)"]))
+        resp = await exec_engine.execute(_q(["upper(orders.status)"]))
         assert resp.columns == ["orders.upper_status", "orders._count"]
         assert {r["orders.upper_status"] for r in resp.data} == {"OPEN", "PAID"}
 
     async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(
-            _q(["status", "sum(amount, partition_by=status) > 20"])
+            _q(["status", "sum(orders.amount, partition_by=orders.status) > 20"])
         )
         assert "orders._count" in resp.columns
         assert len(resp.data) == 2
 
     async def test_bare_builtin_aggregate_keeps_binding_error(self, exec_engine) -> None:
-        query = _q(["sum(amount)"])
+        query = _q(["sum(orders.amount)"])
         with pytest.raises(ValueError, match="partition_by"):
             await exec_engine.execute(query)
 
@@ -108,8 +108,8 @@ class TestNonRegression:
     ) -> None:
         query = fx.q(
             population="orders",
-            dimensions=["status"],
-            metrics=[{"metric": "count(*)"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "count(orders.*)"}],
             filter=[f"date_trunc('month', created_at) >= '{bound}'"],
         )
         resp = await exec_engine.execute(query)
@@ -120,7 +120,7 @@ class TestNonRegression:
     ) -> None:
         """Position parity: a bare ``date_trunc`` measure gets the same treatment as another row-level temporal scalar."""
         async def outcome(formula: str):
-            query = fx.q(population="orders", dimensions=["status"], metrics=[{"metric": formula, "alias": "v"}])
+            query = fx.q(population="orders", dimensions=["orders.status"], metrics=[{"metric": formula, "alias": "v"}])
             try:
                 resp = await exec_engine.execute(query)
             except Exception as exc:  # noqa: BLE001 — the raised class is the compared outcome
