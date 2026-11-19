@@ -95,6 +95,9 @@ carve_outs:
   - {name: to_columns, file: slayer/core/relationship_edges.py, reason: "Ossie's own wire name"}
   - {name: column_pairs, file: slayer/core/relationship_walker.py, reason: "Ossie's own wire name"}
   - {name: join_type, file: slayer/core/relationship_walker.py, reason: "SQL JOIN as an operation"}
+  - {name: from_columns, file: slayer/core/scope.py, reason: "Ossie's own wire name"}
+  - {name: join_type, file: slayer/core/scope.py, reason: "SQL JOIN as an operation"}
+  - {name: to_columns, file: slayer/core/scope.py, reason: "Ossie's own wire name"}
   - {name: PRODUCT_JOIN_TYPE, file: slayer/core/time_spine.py, reason: "SQL JOIN as an operation"}
   - {name: model, file: slayer/core/vocabulary.py, reason: "a Pydantic model, not a dataset"}
   - {name: ExtensionColumnInlinedWarning, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
@@ -282,6 +285,7 @@ carve_outs:
   - {name: column, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
   - {name: expected_columns, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
   - {name: measures, file: slayer/engine/response_meta.py, reason: "deprecated twin until 3.0"}
+  - {name: from_columns, file: slayer/engine/stage_edges.py, reason: "Ossie's own wire name"}
   - {name: column_pairs, file: slayer/facade/catalog.py, reason: "Ossie's own wire name"}
   - {name: join_type, file: slayer/facade/catalog.py, reason: "SQL JOIN as an operation"}
   - {name: _build_is_columns, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}

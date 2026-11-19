@@ -21,11 +21,11 @@ from slayer.core.keys import AggregateKey, FieldKey, ValueKey
 from slayer.core.models import Aggregation, DatasetField, SlayerDataset
 from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import aggregated_type, metric_key_type, stage_metric_type
+from slayer.engine.key_metadata import aggregated_type, metric_key_type
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.core.syntax import parse_expr
 from slayer.facade.catalog import build_local_view
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 
 from tests._dev2046_fixtures import customers_dataset, orders_dataset
 
@@ -123,7 +123,9 @@ class TestStageMeasureType:
 
     def test_boolean_stage_column(self) -> None:
         types = {
-            agg: stage_metric_type(AggregateKey(source=FieldKey(leaf="fm"), agg=agg), schema=self.SCHEMA)
+            agg: metric_key_type(
+                dataset=dataset_from_stage_schema(name="s1", schema=self.SCHEMA, data_source="test"),
+                key=AggregateKey(source=FieldKey(leaf="fm"), agg=agg))
             for agg in ("sum", "avg", "max", "count")
         }
         assert types == {

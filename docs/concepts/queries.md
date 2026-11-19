@@ -888,7 +888,7 @@ You can also relate named queries to datasets:
 
 The main query's `extensions` entry adds a relationship from `orders` to the named sub-query. Queries can also be saved as permanent datasets — see [Query-backed datasets](datasets.md#query-backed-datasets). `population` names a stored dataset or stage; an inline dataset is rejected — write a query-backed dataset's queries as named stages of the list instead.
 
-Sibling stages can also reference each other — any non-final stage may use a *prior* named stage as `population` or as `relationships.to`, so a query list forms a DAG, not just a chain. For example, two parallel rollups feeding a single final stage:
+Sibling stages can also reference each other — any non-final stage may use a *prior* named stage as `population`, as `relationships.to`, or in a reference such as `max(z_ev.n)`, so a query list forms a DAG, not just a chain; only the siblings a stage names enter its relationship graph. For example, two parallel rollups feeding a single final stage:
 
 ```json
 [
@@ -914,9 +914,20 @@ Sibling stages can also reference each other — any non-final stage may use a *
 
 A grouped stage is unique on its dimensions, so a relationship onto a sibling stage that covers all of them (here `customer_scores` on `id`) is provably many-to-one and keeps exact per-dimension values. A joined stage's columns keep their flat names: a stage `s` with the dimension `customers.name` is read as `s.customers__name`, and the dotted `s.customers.name` is refused with that flat name as its suggestion.
 
-**Order doesn't matter for runtime lists.** Stages can be submitted in any order — the engine auto-sorts them topologically so every stage appears after the siblings it references. The **last entry** of the input list is always the entry point / DAG root (its result is what's returned); only the non-final entries are reordered. Cycles and self-references are rejected with a clear error naming the offending stages. A non-final stage may not reference the root (the root must be the dependency sink). Stages that aren't reachable from the root are accepted as utility sub-queries — they're silently dropped from the emitted SQL.
+**Stages inherit edges on pass-through keys.** A stage keeps every relationship of a dataset it reads, in either direction, whose key fields it outputs unchanged (a plain dimension, renamed by an alias or not; never a time bucket, a cast, a computed expression or a metric), so a later stage reaches the related dataset without declaring the relationship again:
 
-`SlayerDataset.source_queries` (stored, YAML-defined) keeps stricter top-to-bottom rules: any reference must point to a stage defined *earlier* in the list, so the file reads top-to-bottom as the execution order.
+```json
+[
+  {"name": "per_customer", "population": "orders", "dimensions": ["customer_id"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}]},
+  {"population": "per_customer", "dimensions": ["customers.region"], "metrics": [{"metric": "sum(revenue)", "alias": "total"}]}
+]
+```
+
+An inherited edge keeps its name, its target and (for a stored relationship) its join type; its stage side is "one" exactly when the stage's grain is covered by the key, and its target side keeps the source edge's arity, so `per_customer` above is one-to-one with `customers`. An aggregate over a dataset reached through a stage that filters, limits or reads a filtered population counts only the rows tied to a stage row, as through a filtered stored dataset. A relationship the consuming query declares on the stage wins over an inherited one: an identical one is applied once, a same-named one on other keys replaces it, and differently named edges on the same keys stay parallel.
+
+**Order doesn't matter for runtime lists.** Stages can be submitted in any order — the engine auto-sorts them topologically so every stage appears after the siblings it references (a reference whose first segment names a relationship of the stage's population reads that relationship, not a same-named sibling). The **last entry** of the input list is always the entry point / DAG root (its result is what's returned); only the non-final entries are reordered. Cycles and self-references are rejected with a clear error naming the offending stages. A non-final stage may not reference the root (the root must be the dependency sink). Stages that aren't reachable from the root are accepted as utility sub-queries — they're silently dropped from the emitted SQL.
+
+`SlayerDataset.source_queries` (stored, YAML-defined) follows the same rules: its stages are ordered by their references, so a stage may read one listed after it.
 
 **Surface coverage.** Query lists work via every surface:
 

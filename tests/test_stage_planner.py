@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalScopeReferenceError
+from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -189,8 +189,9 @@ class TestDownstreamStageFlatRefs:
             "dimensions": ["status"],
         })
         bundle = _bundle()
-        with pytest.raises(IllegalScopeReferenceError):
+        with pytest.raises(UnknownReferenceError) as ei:
             plan_stages(queries=[stage1, stage2], bundle=bundle)
+        assert "robot_details__modelseriesval" in (ei.value.suggestion or "")
 
 
 # ---------------------------------------------------------------------------

@@ -13,9 +13,8 @@ from slayer.core.relationship_walker import dataset_field_type
 from slayer.core.keys import FieldKey, ValueKey, boolean_valued, numeric_valued
 from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import stage_field_type
 from slayer.core.syntax import parse_expr
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 
 from tests._dev2046_fixtures import customers_dataset, orders_dataset
 
@@ -118,7 +117,8 @@ def test_stage_column() -> None:
         StageField(name="fm", sql_alias="fm", datatype=DataType.BOOLEAN),
         StageField(name="fs", sql_alias="fs", datatype=DataType.INTEGER),
     ])
-    column_type = stage_field_type(schema)
+    column_type = dataset_field_type(
+        dataset=dataset_from_stage_schema(name="s1", schema=schema, data_source="test"), datasets_by_name={})
     assert boolean_valued(FieldKey(leaf="fm"), field_type=column_type) is True
     assert boolean_valued(FieldKey(leaf="fs"), field_type=column_type) is False
 

@@ -165,7 +165,7 @@ async def test_time_shift_over_multi_hop_flat_time_dimension(backend: str) -> No
     assert prev == {"2025-01-01": None, "2025-02-01": 2, "2025-03-01": 1}
 
 
-# --- two stage time dimensions need main_time_dimension ---
+# --- two stage time dimensions: main_time_dimension, else the surviving default ---
 # NOTE: spec scenario names created_at month+year (one field); same-field
 # selection is deferred (DEV-1925), so this uses two distinct fields.
 # shipped_at is constant so ``change`` over the created_at axis is unambiguous
@@ -190,7 +190,8 @@ async def _two_td_engine(backend: str, tmp: str):
     )
 
 
-async def test_two_stage_time_dimensions_without_main_raise() -> None:
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_two_stage_time_dimensions_without_main_default_to_the_surviving_axis(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "population": "s1",
         "time_dimensions": [
@@ -200,9 +201,11 @@ async def test_two_stage_time_dimensions_without_main_raise() -> None:
         "metrics": [{"metric": "change(sum(rev))", "alias": "chg"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
-        engine = await _two_td_engine("sqlite", tmp)
-        with pytest.raises(ValueError, match="unambiguous time dimension"):
-            await engine.execute(query=[_TWO_TD_INNER, outer], dry_run=True)
+        engine = await _two_td_engine(backend, tmp)
+        resp = await engine.execute(query=[_TWO_TD_INNER, outer])
+    # orders' default created_at survives in s1, so it breaks the tie (time-spine spec).
+    chg = {date_str(r["s1.created_at"]): r["s1.chg"] for r in resp.data}
+    assert chg == {"2025-01-01": None, "2025-02-01": 150.0, "2025-03-01": 150.0}
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

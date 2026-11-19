@@ -317,7 +317,7 @@ def _resolve_qualifiers(
     except CircularRelationshipPathError as exc:
         raise CircularRelationshipPathError(
             reference=".".join((*qualifiers, leaf)),
-            root_dataset=source_dataset.name,
+            root_dataset=source_dataset.spelling,
             revisited=exc.revisited, hop=exc.hop, via=exc.via,
             field=field,
         ) from exc
@@ -368,7 +368,7 @@ def _raise_if_broken_join_walk(
         return
     raise UnresolvableDimensionRelationshipError(
         reference=".".join((*path, leaf)),
-        root_dataset=source_dataset.name,
+        root_dataset=source_dataset.spelling,
         reason={
             "no_edge": f"'{miss.token}' is not a joined dataset on the preceding hop.",
             "unloaded": f"joined dataset '{miss.token}' is not in the resolved bundle.",

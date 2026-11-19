@@ -482,7 +482,7 @@ Or use the saved result as a dataset in another query:
 
 A consumed query-backed dataset is spliced into the consuming query as stages whose names stay private to it, and one that references itself, directly or through other query-backed datasets, is rejected.
 
-Relationships declared on a saved query-backed dataset, keyed on its output columns, stay usable wherever the dataset is consumed; the relationships of the dataset its backing query reads are not inherited.
+Relationships declared on a saved query-backed dataset, keyed on its output fields, stay usable wherever the dataset is consumed. Its final stage also inherits, like any stage, every relationship whose key fields it outputs unchanged (see [Stages inherit edges on pass-through keys](queries.md#query-lists)); a declared relationship wins over an inherited one, and `inspect` lists inherited edges marked `inherited`.
 
 ### Variables in dataset SQL
 

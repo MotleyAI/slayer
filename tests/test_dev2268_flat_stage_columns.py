@@ -9,7 +9,6 @@ import pytest
 import slayer.core.scope as scope_module
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalScopeReferenceError,
     UnknownReferenceError,
     UnrelatedDatasetError,
     UnresolvableDimensionRelationshipError,
@@ -184,9 +183,8 @@ async def test_a_routing_short_form_is_not_pre_empted_by_a_flat_column() -> None
 
 
 async def test_a_downstream_stages_dotted_spelling_names_the_flat_column() -> None:
-    err = await _refused([q(**_S), q(population="s", dimensions=["s.customers.name"])],
-                         exc=IllegalScopeReferenceError)
-    assert "customers__name" in err.reason
+    err = await _refused([q(**_S), q(population="s", dimensions=["s.customers.name"])])
+    assert "customers__name" in _hint(err)
 
 
 async def test_a_downstream_dotted_spelling_shaped_like_a_list_element_names_the_flat_column() -> None:
@@ -194,8 +192,8 @@ async def test_a_downstream_dotted_spelling_shaped_like_a_list_element_names_the
         *customers().fields, DatasetField(name="value", sql="credit", datatype=DataType.FLOAT)]})
     stage = {**_S, "dimensions": ["customers.value"]}
     err = await _refused([q(**stage), q(population="s", dimensions=["s.customers.value"])],
-                         datasets=with_datasets(valued), exc=IllegalScopeReferenceError)
-    assert "customers__value" in err.reason
+                         datasets=with_datasets(valued))
+    assert "customers__value" in _hint(err)
 
 
 async def test_an_unrelated_short_form_suggests_the_populations_flat_column() -> None:

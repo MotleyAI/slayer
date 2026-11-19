@@ -25,15 +25,15 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalScopeReferenceError,
     MetricCycleError,
     MetricRecursionLimitError,
+    UnresolvableDimensionRelationshipError,
 )
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import StageField, StageSchema
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.core.syntax import parse_expr
 
 from tests._engine_helpers import _engine_generate
@@ -182,18 +182,19 @@ class TestTransformArgEligibilityDropped:
 
 
 class TestStageSchemaScope:
-    """A dotted saved-metric reference is illegal in a downstream ``StageSchema``
-    scope — the metric feature never leaks into stage scopes (task 1.5)."""
+    """A dotted saved-metric reference from a downstream stage fails as from a stored root."""
 
     def test_dotted_ref_in_stage_schema_is_rejected(self) -> None:
-        stage = StageSchema(
+        schema = StageSchema(
             relation_name="s",
             fields=[StageField(name="aov", sql_alias="aov", datatype=DataType.FLOAT)],
         )
+        stage = dataset_from_stage_schema(name="s", schema=schema, data_source="ds")
         parsed = parse_expr("customers.aov")
-        bundle = ResolvedSourceBundle(dialect="duckdb")
-        with pytest.raises(IllegalScopeReferenceError):
-            bind_expr(parsed, scope=stage, bundle=bundle)
+        bundle = ResolvedSourceBundle(dialect="duckdb", population=stage)
+        scope = DatasetScope(population=stage)
+        with pytest.raises(UnresolvableDimensionRelationshipError):
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
 
 class TestDeletedPassNotImported:

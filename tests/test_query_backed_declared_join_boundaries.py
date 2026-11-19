@@ -88,7 +88,7 @@ async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: Sl
 
 async def test_ordinary_stage_does_not_inherit_backing_source_joins(engine):
     stage = _query(
-        name="s", population="orders", dimensions=["customer_id"],
+        name="s", population="orders", dimensions=["status"],
         metrics=[{"metric": "sum(amount)", "alias": "amt"}],
     )
     consumer = _query(
