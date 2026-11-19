@@ -167,7 +167,7 @@ A model SHALL NOT store the rendered SQL of its backing query. On load, a stored
 
 ### Requirement: Stored Mode-B text is upgraded to the SQL string and identifier rules
 
-On load, every Mode-B surface of a stored model, saved query or memory written before this change — `ModelMeasure.formula`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and inline `ModelExtension.measures` — SHALL be rewritten so that it means under the current grammar what it meant when stored: a double-quoted string literal becomes the equivalent single-quoted literal, a string literal using backslash escapes is re-encoded with its decoded value, a `|` concatenation becomes `||`, two minus signs written with nothing between them are separated by a space, so a double negation never becomes a comment, and a Python `#` comment becomes a `--` comment. The rewrite SHALL be token-exact: text inside string literals is never otherwise touched, and stored text that cannot be tokenised is left unchanged. Stored text that the grammar of the time it claims to be from could not have held SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
+On load, every Mode-B surface of a stored model, saved query or memory written before this change — `DatasetMetric.expression`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL be rewritten so that it means under the current grammar what it meant when stored: a double-quoted string literal becomes the equivalent single-quoted literal, a string literal using backslash escapes is re-encoded with its decoded value, a `|` concatenation becomes `||`, two minus signs written with nothing between them are separated by a space, so a double negation never becomes a comment, and a Python `#` comment becomes a `--` comment. The rewrite SHALL be token-exact: text inside string literals is never otherwise touched, and stored text that cannot be tokenised is left unchanged. Stored text that the grammar of the time it claims to be from could not have held SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
 
 #### Scenario: Double-quoted strings in a stored query
 
@@ -191,7 +191,7 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 
 #### Scenario: Mode-A text untouched
 
-- **WHEN** a stored model has `Column.sql` `"Order Total" * 2` and a model filter `status = "x"`
+- **WHEN** a stored model has `DatasetField.sql` `"Order Total" * 2` and a model filter `status = "x"`
 - **THEN** both load byte-for-byte unchanged
 
 #### Scenario: Client queries are not rewritten
@@ -216,7 +216,7 @@ On load, every time dimension of a stored model's `source_queries`, a saved quer
 #### Scenario: Stored object form becomes text
 
 - **WHEN** a stored query-backed model's source query holds the time dimension `{"dimension": {"name": "created_at", "model": "customers"}, "granularity": "month"}`
-- **THEN** it loads with `dimension` = `customers.created_at`, dumps it as that string, and returns the same rows as before
+- **THEN** it loads with `field` = `customers.created_at`, dumps it as that string, and returns the same rows as before
 
 #### Scenario: Memory-bundled query
 
@@ -300,14 +300,14 @@ On load, a stored model, saved query or memory written before this change whose 
 - **WHEN** a stored measure is `count(DISTINCT customer_id)`
 - **THEN** it loads unchanged
 
-### Requirement: A store written by this release reads on the previous release
+### Requirement: A store written by this release omits unset fields
 
-Every persisted model, saved query, datasource and memory, in every storage backend, SHALL omit a field whose value is unset (`None`), so a document written with the fields added by this release left unset holds only fields the previous release (v1.4.1) declares. A backend's own document layout (a YAML memory's file name and body) SHALL be unchanged.
+Every persisted model, saved query, datasource and memory, in every storage backend, SHALL omit a field whose value is unset (`None`). A backend's own document layout (a YAML memory's file name and body) SHALL be unchanged. A store written by this release is not readable by SLayer 1.x: its documents use the Ossie vocabulary.
 
 #### Scenario: Memory with an ordered query
 
-- **WHEN** a memory whose query orders by a column without `nulls` is saved to YAML and to SQLite
-- **THEN** neither stored form contains a `nulls` key, and each stored document validates against the v1.4.1 field sets
+- **WHEN** a memory whose query orders by a field without `nulls` is saved to YAML and to SQLite
+- **THEN** neither stored form contains a `nulls` key
 
 #### Scenario: No unset field in any kind
 
@@ -316,7 +316,7 @@ Every persisted model, saved query, datasource and memory, in every storage back
 
 ### Requirement: Stored colon spellings are upgraded to the functional spelling
 
-On load, every Mode-B surface of a stored model, saved query or memory written before this change — `ModelMeasure.formula`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and inline `ModelExtension.measures` — SHALL have every colon span rewritten to its twin: `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written and colon spans inside the arguments rewritten too. Everything outside a colon span SHALL stay byte-identical, and a colon inside a string literal, a quoted identifier or a `::` cast SHALL be untouched. A stored order item whose expression is rewritten SHALL load exactly as the same order key written fresh in the functional spelling. The document SHALL return the rows and result keys it returned before; a persisted computed-dimension name SHALL be kept and keep its meaning. A datasource granularity rename SHALL apply before the rewrite. Stored text that cannot otherwise be parsed SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
+On load, every Mode-B surface of a stored model, saved query or memory written before this change — `DatasetMetric.expression`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL have every colon span rewritten to its twin: `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written and colon spans inside the arguments rewritten too. Everything outside a colon span SHALL stay byte-identical, and a colon inside a string literal, a quoted identifier or a `::` cast SHALL be untouched. A stored order item whose expression is rewritten SHALL load exactly as the same order key written fresh in the functional spelling. The document SHALL return the rows and result keys it returned before; a persisted computed-dimension name SHALL be kept and keep its meaning. A datasource granularity rename SHALL apply before the rewrite. Stored text that cannot otherwise be parsed SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
 
 #### Scenario: Aggregations, stars and parameters
 
@@ -336,12 +336,12 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 #### Scenario: Granularity spans
 
 - **WHEN** a stored query orders by `created_at:month` and a stored computed dimension buckets `created_at:fiscal_quarter` on a datasource defining `fiscal_quarter`
-- **THEN** they load as `date_trunc('month', created_at)` and `fiscal_quarter(created_at)` and return the rows they returned before
+- **THEN** they load as `date_trunc('month', created_at)` and `date_trunc('fiscal_quarter', created_at)` and return the rows they returned before
 
 #### Scenario: A granularity renamed on load
 
 - **WHEN** a stored datasource defines the granularity `left`, and a stored model's source query and a memory's query bucket by `created_at:left`
-- **THEN** after load they read `left_granularity(created_at)` and return the rows they returned before
+- **THEN** after load they read `date_trunc('left_granularity', created_at)` and return the rows they returned before
 
 #### Scenario: Result keys and computed-dimension names are kept
 
@@ -364,7 +364,7 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 - **THEN** it is not rewritten and fails with the colon-spelling error
 
 ### Requirement: Stored bucket calls are upgraded to date_trunc
-On load, a stored model, saved query or memory written before this change SHALL have every Mode-B call `<g>(x)` whose callee names a built-in granularity, or a custom granularity of the datasource it belongs to, rewritten to `date_trunc('<g>', x)` — in query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, in saved-measure formulas, and in every nested saved query, inline source model, model extension and query-backed model — with the rest of the text byte-identical. Mode-A text (`Column.sql`, `sql_table`, model `filters`, custom-aggregation formulas and parameter defaults), structured time dimensions, transform units and `Column.granularity` SHALL be untouched. A call whose callee is a custom aggregation of the owning model and not a granularity SHALL be untouched. Every upgraded query SHALL return the rows and result keys it returned before. The custom-granularity rewrite SHALL use the datasource's settled granularity names (after any library-collision rename) and SHALL complete on the next load when a load is interrupted.
+On load, a stored model, saved query or memory written before this change SHALL have every Mode-B call `<g>(x)` whose callee names a built-in granularity, or a custom granularity of the datasource it belongs to, rewritten to `date_trunc('<g>', x)` — in query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, in saved-measure formulas, and in every nested saved query, model extension and query-backed model — with the rest of the text byte-identical. Mode-A text (`DatasetField.sql`, `sql_table`, model `filters`, custom-aggregation formulas and parameter defaults), structured time dimensions, transform units and `DatasetField.granularity` SHALL be untouched. A call whose callee is a custom aggregation of the owning model and not a granularity SHALL be untouched. Every upgraded query SHALL return the rows and result keys it returned before. The custom-granularity rewrite SHALL use the datasource's settled granularity names (after any library-collision rename) and SHALL complete on the next load when a load is interrupted.
 
 #### Scenario: Saved query bucketing by month
 - **WHEN** a stored model's saved query has the dimension `month(created_at)`, the filter `year(created_at) >= '2024'` and the order key `month(created_at)`
@@ -406,15 +406,15 @@ On load, a stored model written before this change whose custom aggregation is n
 
 ### Requirement: Stored root extensions move to query extensions
 
-On load, every stored query written before this change whose `source_model` is an extension object SHALL become a query with `source_model` naming the extension's base model and that extension as its one `extensions` entry. This SHALL apply recursively through stored `source_queries`, saved queries and memories' queries, including a query nested in a document whose own version is current.
-- The upgrade SHALL emit no deprecation warning and SHALL lose no column, measure or join.
+On load, every stored query written before this change whose `source_model` is an extension object SHALL become a query with `population` naming the extension's base model and that extension as its one `extensions` entry. This SHALL apply recursively through stored `source_queries`, saved queries and memories' queries, including a query nested in a document whose own version is current.
+- The upgrade SHALL emit no deprecation warning and SHALL lose no measure or join; the extension's columns SHALL then be inlined as "Stored extension columns are inlined" specifies.
 - Repeated loads SHALL change nothing further.
 - The upgraded query SHALL return the rows it returned before.
 - A save SHALL write the upgraded form.
 
 #### Scenario: A stored query-backed model's stage
 - **WHEN** a stored query-backed model has a stage with `source_model` = `{"source_name": "orders", "joins": [...]}`
-- **THEN** it loads with `source_model` `orders` and one extension of `orders` carrying those joins, without a deprecation warning, and returns the rows recorded before the upgrade
+- **THEN** it loads with `population` `orders` and one extension of `orders` carrying those joins, without a deprecation warning, and returns the rows recorded before the upgrade
 
 #### Scenario: A memory's query in a current-version memory
 - **WHEN** a memory at the current memory version holds a query marked with a version before this change whose `source_model` is an extension object
@@ -427,3 +427,145 @@ On load, every stored query written before this change whose `source_model` is a
 #### Scenario: Upgrade is idempotent
 - **WHEN** an upgraded document is saved and loaded again
 - **THEN** it is unchanged
+
+### Requirement: Stored extension columns are inlined
+
+On load, every stored query written before this change — in a stored query-backed model's `source_queries`, a saved query or a memory's query, recursively through nested stages — whose extensions carry `columns` SHALL be converted so that no extension carries `columns`, with the result keys it returned before, except that a column reached through a join keeps its name as a stage output column while its top-level result key takes the flattened spelling. The conversion SHALL bind the query against the models of its datasource, as the engine resolves them, with the extension columns present, and SHALL replace every reference that resolves to an extension column by that column's expression, qualified by the canonical path the reference resolved through:
+- a dimension SHALL become a computed dimension named after the column, and a time dimension an expression time dimension named after it, the column's join path flattened with `__` when it is reached through a join (`customers__tier_label`);
+- a measure reading the column SHALL carry an explicit name equal to the name it was generated before, its join path flattened with `__`;
+- filters, order items, partition and ranking keys, `main_time_dimension`, extension measures and other extension columns SHALL take the expression in place, extension columns expanding in dependency order;
+- an expression is the column's `sql` read as Mode B, wrapped as `iif(<filter>, <sql>, NULL)` when the column has a `filter`, and as `CAST(<expression> AS <type>)` when it declares a type other than `TEXT` or `UNKNOWN`;
+- a column without `sql` SHALL become a reference to the extended model's column of its name;
+- a column's `label` and `format` SHALL carry over where the converted position holds them.
+
+Each converted column SHALL emit one structured warning naming the document and the column, stating that its text is now read as Mode B. The converted query SHALL return the rows it returned before, except where a construct's Mode-B meaning differs from the dialect's native one (`queries/string-matching`, `queries/regex`, `queries/mixed-type-coercion`).
+
+A stored query SHALL be unconvertible, and the document holding it SHALL fail to load with a typed error naming the document and the construct, through the stored-document load boundary, and stay unchanged in storage, when it holds:
+- an inline `source_model`;
+- an extension column whose text is not valid Mode B;
+- an extension column of type `ARRAY`;
+- an extension column without `sql` whose name is not a visible column of the extended model;
+- an extension column without `sql` that has a `filter`;
+- an extension column with `sql` named like a column of the extended model;
+- a dependency cycle among extension columns;
+- an extension join whose `join_pairs` names an extension column on either side;
+- a reference to an extension column in a position that holds no expression, or one the binder cannot attribute.
+
+A converted query-backed model or saved query SHALL be written back at the current version; a memory SHALL be converted on every load and SHALL NOT be written back.
+
+#### Scenario: A dimension keeps its result key
+- **WHEN** a stored query-backed model's stage rooted at `orders` extends `customers` with the column `tier_label` (`sql` `upper(tier)`) and selects the dimension `customers.tier_label` and `sum(amount)`
+- **THEN** it loads with the computed dimension `upper(customers.tier)` named `customers__tier_label`, no extension columns, one warning naming the model and `tier_label`, and returns the rows recorded before under the stage column `customers__tier_label`
+
+#### Scenario: A measure keeps its generated name
+- **WHEN** a stored stage extends `orders` with `double_amount` (`sql` `amount * 2`, type `DOUBLE`) and selects `sum(double_amount)`
+- **THEN** it loads as `sum(CAST(amount * 2 AS DOUBLE))` named `double_amount_sum` and returns the recorded value
+
+#### Scenario: A reference through a named edge is qualified by the edge
+- **WHEN** a stored stage rooted at `orders` extends `addresses` with `city_label` and selects `billing_address.city_label`
+- **THEN** the expression is qualified as `billing_address.<…>` and returns the recorded rows
+
+#### Scenario: Filtered, chained and sql-less columns
+- **WHEN** a stored stage's extension has `q_amount` (`sql` `amount`, `filter` `status = 'ok'`), `q_double` (`sql` `q_amount * 2`) and a sql-less `status`, each used in a filter, an order item and a measure
+- **THEN** each use takes `iif(status = 'ok', amount, NULL)`, `iif(status = 'ok', amount, NULL) * 2` and `status` respectively, and returns the recorded rows
+
+#### Scenario: Unconvertible documents fail to load and stay untouched
+- **WHEN** stored documents hold, in turn, an inline `source_model`, a column `sql` `strftime('%Y', created_at)`, a sql-less column naming a column the model does not declare, a join keyed on an extension column, and two columns referencing each other
+- **THEN** each fails to load with the typed error naming the document and the construct, every other document of the store loads, and the stored bytes are unchanged
+
+#### Scenario: A memory converts on every load
+- **WHEN** a stored memory's query carries an extension column and the memory is loaded twice
+- **THEN** both loads return the converted query with the warning, and the stored memory is unchanged
+
+#### Scenario: Released stores still open with their results
+- **WHEN** the committed 0.10.2 and 1.8.2 stores are opened
+- **THEN** every model and memory loads and every recorded query returns the rows recorded from its release
+
+### Requirement: Stored date-only comparisons keep their whole-day meaning
+
+On load, a stored model, saved query or memory written before this change — judged by each nested document's own stored version, so a current document holding an older nested query, extension or memory query is upgraded where it nests — SHALL have every Mode-B comparison of a temporal operand with a date-only literal `D` rewritten to the comparison it meant before: `x <= 'D'` → `x < '<D+1>'`; `x > 'D'` → `x >= '<D+1>'`; `x = 'D'` → `x in 'D'`; `x != 'D'` → `x not in 'D'`; `x BETWEEN 'A' AND 'B'` → `(x >= 'A' and x < '<B+1>')` and `x NOT BETWEEN 'A' AND 'B'` → `(x < 'A' or x >= '<B+1>')`, each with only date-only bounds rewritten; a literal on the left mirrored. On the last representable day `9999-12-31`, `< '<D+1>'` SHALL be `<= 'D 23:59:59.999999'` and `>= '<D+1>'` SHALL be `> 'D 23:59:59.999999'`. `x >= 'D'` and `x < 'D'` SHALL be untouched. This covers query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, saved-measure formulas, Mode-B column filters, and every nested saved query, model extension, query-backed model and memory query, with the rest of the text byte-identical and no warning on the response. Whether an operand is temporal SHALL be decided with the models of the document's datasource, the built-in time spine included, where a memory that names no datasource SHALL use the datasource of the stored model its source names, else the store's only datasource: an unquoted model name spelt `time_spine` in any case SHALL name the spine unless a stored model has exactly that spelling, and SHALL be untypable when it also reaches a stored model in another case; a path SHALL reach the spine from any model, a query or extension on the spine SHALL reach the datasource's models, and a path that continues past the spine SHALL be untypable. A comparison with a non-temporal operand, an operand whose type cannot be decided (an untyped column, a missing or unloadable model), a `BETWEEN` whose tested expression is the literal, and a comparison with a variable SHALL be left unchanged, each untypable one with a logged warning naming the document and the text. Mode-A text and `date_range` SHALL be untouched. The upgrade SHALL be idempotent and SHALL complete on the next load when a load is interrupted. Every upgraded query SHALL return the rows it returned before.
+
+#### Scenario: Saved query with an inclusive upper bound
+
+- **WHEN** a stored saved query on a TIMESTAMP `created_at` has the filter `created_at <= '2024-12-31'`
+- **THEN** after load it reads `created_at < '2025-01-01'` and returns the rows it returned before
+
+#### Scenario: Each operator in a memory query
+
+- **WHEN** a stored memory's query has the filters `created_at > '2024-04-10'`, `created_at = '2024-04-10'`, `created_at != '2024-04-10'`, `'2024-04-10' >= created_at` and `created_at BETWEEN '2024-03-05' AND '2024-04-10'`
+- **THEN** after load they read `created_at >= '2024-04-11'`, `created_at in '2024-04-10'`, `created_at not in '2024-04-10'`, `'2024-04-11' > created_at` and `(created_at >= '2024-03-05' and created_at < '2024-04-11')`, and the query returns its earlier rows
+
+#### Scenario: Saved measure and column filter
+
+- **WHEN** a stored model has the saved measure `count(*) FILTER (WHERE created_at <= '2024-04-10')` and a Mode-B column filter `created_at > '2024-04-10'`
+- **THEN** after load they read `count(*) FILTER (WHERE created_at < '2024-04-11')` and `created_at >= '2024-04-11'`, and return their earlier values
+
+#### Scenario: Unchanged comparisons
+
+- **WHEN** a stored query has the filters `created_at >= '2024-01-01'`, `created_at < '2025-01-01'`, `code <= '2024-12-31'` on a TEXT column, `created_at <= '2024-12-31 00:00:00'` and `created_at <= '{cutoff}'`
+- **THEN** each loads byte-identical
+
+#### Scenario: Untypable operand is left and logged
+
+- **WHEN** a stored query compares a column with no recorded type, or a column of a model that no longer exists, with `<= '2024-12-31'`
+- **THEN** it loads byte-identical and a warning naming the document and the comparison is logged
+
+#### Scenario: Current document with an older nested query
+
+- **WHEN** a model stored at the current version holds a source query stored at the previous query version with the filter `created_at <= '2024-12-31'`
+- **THEN** after load the nested filter reads `created_at < '2025-01-01'`
+
+#### Scenario: Upgrade is idempotent
+
+- **WHEN** an upgraded document is loaded again, and a document saved after this change holds `created_at <= '2024-12-31'`
+- **THEN** neither is rewritten
+
+#### Scenario: Spine operand in a query on a stored model
+
+- **WHEN** a stored saved query on `orders` uses `time_spine.timestamp` as a time dimension and has the filters `orders.ordered_at <= '2024-01-31'` and `time_spine.timestamp <= '2024-01-31'`
+- **THEN** after load they read `orders.ordered_at < '2024-02-01'` and `time_spine.timestamp < '2024-02-01'`, and the query returns Jan 31's bucket as before
+
+#### Scenario: Spine spelt in another case
+
+- **WHEN** a stored query on `orders` has the filters `TIME_SPINE.timestamp <= '2024-01-31'` and `Time_Spine.TIMESTAMP > '2024-01-31'`, and no stored model has either spelling
+- **THEN** after load they read `TIME_SPINE.timestamp < '2024-02-01'` and `Time_Spine.TIMESTAMP >= '2024-02-01'`, every other byte unchanged
+
+#### Scenario: Spine reached from a joined model, with or without a time axis of its own
+
+- **WHEN** a stored query on `orders` has the filter `customers.time_spine.timestamp <= '2024-01-31'`, once with `customers` having a time column and once with none
+- **THEN** after load it reads `customers.time_spine.timestamp < '2024-02-01'` both times
+
+#### Scenario: Query rooted at the spine
+
+- **WHEN** a stored query whose source model is `time_spine` (and another spelt `TIME_SPINE`) has the filters `timestamp <= '2024-01-31'`, `time_spine.timestamp <= '2024-01-31'` and `orders.ordered_at <= '2024-01-31'`
+- **THEN** after load each reads `< '2024-02-01'` with its operand spelt as stored
+
+#### Scenario: Spine operands in every stored document
+
+- **WHEN** `time_spine.timestamp <= '2024-01-31'` appears in a stored model's saved-measure formula and Mode-B column filter, in a stored model's nested source query, in a stored memory's query naming its datasource and in one naming none, and in a query extension's column filter, including an extension whose source is `TIME_SPINE` filtering `timestamp <= '2024-01-31'`
+- **THEN** after load each reads `< '2024-02-01'`
+
+#### Scenario: Memory on the spine in a store with one datasource
+
+- **WHEN** a store holds one datasource and a stored memory that names no datasource, rooted at `time_spine`, has the filter `orders.ordered_at <= '2024-01-31'`
+- **THEN** after load it reads `orders.ordered_at < '2024-02-01'`; with a second datasource in the store it loads byte-identical, with a warning naming the memory and the comparison logged
+
+#### Scenario: Spine reached through an extension's join
+
+- **WHEN** a stored query on `orders` has an extension adding a join from `orders` to `customers` and the filter `customers.time_spine.timestamp <= '2024-01-31'`
+- **THEN** after load it reads `customers.time_spine.timestamp < '2024-02-01'`
+
+#### Scenario: Spine spelling that is untypable
+
+- **WHEN** a datasource stores a model named `Time_Spine` (saved before the spine's name was reserved) and a stored query has the filter `TIME_SPINE.timestamp <= '2024-01-31'`; and a stored query has the filter `orders.time_spine.customers.created_at <= '2024-01-31'`
+- **THEN** both load byte-identical, each with a warning naming the document and the comparison logged
+
+#### Scenario: Stored names shadow the spine
+
+- **WHEN** a stored query on `orders` filters `time_spine.code <= '2024-01-31'` where `orders` has a stored join named `time_spine` to a model whose `code` is TEXT; a stored model's source query on `orders` filters `time_spine.timestamp <= '2024-01-31'` while a sibling source query is named `time_spine`; and a datasource stores a model named exactly `time_spine` whose `timestamp` column is TEXT, read by a stored query filtering `time_spine.timestamp <= '2024-01-31'`
+- **THEN** the first and third load byte-identical without a warning, and the second loads byte-identical with a warning naming the document and the comparison
+
+#### Scenario: Legacy time literal on the spine
+
+- **WHEN** a stored query written before legacy time literals were repaired, rooted at `time_spine`, compares `timestamp` with a legacy date literal for `2024-01-31` using `<=`
+- **THEN** after load the literal is repaired and the comparison reads `timestamp < '2024-02-01'`

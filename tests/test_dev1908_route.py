@@ -12,10 +12,10 @@ are green pins.
 
 from __future__ import annotations
 
-from slayer.core.enums import JoinCardinality
-from slayer.core.keys import ColumnKey
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.cardinality.join_safety import (
+from slayer.core.enums import RelationshipCardinality
+from slayer.core.keys import FieldKey
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.engine.cardinality.relationship_safety import (
     attributable_from_root,
     broadcast_reason,
     reroot_from_root,
@@ -23,27 +23,27 @@ from slayer.engine.cardinality.join_safety import (
 
 
 def _m(name, cols, joins=None):
-    return SlayerModel(name=name, data_source="ds", sql_table=name,
-                       columns=[Column(name=c) for c in cols], joins=joins or [])
+    return SlayerDataset(name=name, data_source="ds", sql_table=name,
+                       fields=[DatasetField(name=c) for c in cols], relationships=joins or [])
 
 
-def _graph(*, named_event: bool = False) -> dict[str, SlayerModel]:
+def _graph(*, named_event: bool = False) -> dict[str, SlayerDataset]:
     """orders → customers → regions; regions → region_events (1:N, reverse to-one)
     and regions → countries (m:1, reverse fans); orders → stores (sibling)."""
     orders = _m("orders", ["id", "customer_id", "store_id"], [
-        ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE),
-        ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE)])
+        DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE),
+        DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = _m("customers", ["id", "region_id"], [
-        ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE)])
+        DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE)])
     regions = _m("regions", ["id", "pop", "country_id"], [
-        ModelJoin(target_model="region_events", join_pairs=[["id", "region_id"]],
-                  cardinality=JoinCardinality.ONE_TO_MANY,
+        DatasetRelationship(to="region_events", from_columns=["id"], to_columns=["region_id"],
+                  cardinality=RelationshipCardinality.ONE_TO_MANY,
                   name="evt" if named_event else None),
-        ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE)])
+        DatasetRelationship(to="countries", from_columns=["country_id"], to_columns=["id"],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE)])
     return {m.name: m for m in (orders, customers, regions,
                                 _m("region_events", ["id", "region_id", "value"]),
                                 _m("countries", ["id", "gdp"]),
@@ -56,30 +56,30 @@ class TestToOneReverseSuffix:
         assert attributable_from_root(
             host_path=("customers", "regions"),
             target_path=("customers", "regions", "region_events"),
-            root_model=M["region_events"], models_by_name=M, host_name="orders") is True
+            root_dataset=M["region_events"], datasets_by_name=M, host_name="orders") is True
 
     def test_key_reroots_to_the_reverse_suffix(self):
         M = _graph()
         rerooted = reroot_from_root(
-            ColumnKey(path=("customers", "regions"), leaf="pop"),
+            FieldKey(path=("customers", "regions"), leaf="pop"),
             target_path=("customers", "regions", "region_events"),
-            root_model=M["region_events"], models_by_name=M, host_name="orders")
-        assert rerooted == ColumnKey(path=("regions",), leaf="pop")
+            root_dataset=M["region_events"], datasets_by_name=M, host_name="orders")
+        assert rerooted == FieldKey(path=("regions",), leaf="pop")
 
     def test_attributable_through_a_named_edge_in_the_suffix(self):
         M = _graph(named_event=True)
         assert attributable_from_root(
             host_path=("customers", "regions"),
             target_path=("customers", "regions", "evt"),
-            root_model=M["region_events"], models_by_name=M, host_name="orders") is True
+            root_dataset=M["region_events"], datasets_by_name=M, host_name="orders") is True
 
     def test_named_edge_reroots_to_the_edge_token_not_the_model_name(self):
         M = _graph(named_event=True)
         rerooted = reroot_from_root(
-            ColumnKey(path=("customers", "regions"), leaf="pop"),
+            FieldKey(path=("customers", "regions"), leaf="pop"),
             target_path=("customers", "regions", "evt"),
-            root_model=M["region_events"], models_by_name=M, host_name="orders")
-        assert rerooted == ColumnKey(path=("evt",), leaf="pop")
+            root_dataset=M["region_events"], datasets_by_name=M, host_name="orders")
+        assert rerooted == FieldKey(path=("evt",), leaf="pop")
 
 
 class TestFanningReverseSuffix:
@@ -88,14 +88,14 @@ class TestFanningReverseSuffix:
         assert attributable_from_root(
             host_path=("customers", "regions"),
             target_path=("customers", "regions", "countries"),
-            root_model=M["countries"], models_by_name=M, host_name="orders") is False
+            root_dataset=M["countries"], datasets_by_name=M, host_name="orders") is False
 
     def test_reason_names_the_fanning_hop_not_unreachable(self):
         M = _graph()
         reason = broadcast_reason(
             host_path=("customers", "regions"),
             target_path=("customers", "regions", "countries"),
-            root_model=M["countries"], models_by_name=M, host_name="orders")
+            root_dataset=M["countries"], datasets_by_name=M, host_name="orders")
         assert "regions" in reason
         assert "fanning" in reason or "unproven" in reason
         assert "unreachable" not in reason
@@ -107,14 +107,14 @@ class TestFanningReverseSuffix:
         assert attributable_from_root(
             host_path=("customers",),
             target_path=("customers", "regions", "countries"),
-            root_model=M["countries"], models_by_name=M, host_name="orders") is False
+            root_dataset=M["countries"], datasets_by_name=M, host_name="orders") is False
 
     def test_two_hop_prefix_side_reason_names_the_fanning_hop(self):
         M = _graph()
         reason = broadcast_reason(
             host_path=("customers",),
             target_path=("customers", "regions", "countries"),
-            root_model=M["countries"], models_by_name=M, host_name="orders")
+            root_dataset=M["countries"], datasets_by_name=M, host_name="orders")
         assert "regions" in reason
         assert "fanning" in reason or "unproven" in reason
         assert "unreachable" not in reason
@@ -127,13 +127,13 @@ class TestNonSharingPairsUnchanged:
         M = _graph()
         assert attributable_from_root(
             host_path=("stores",), target_path=("customers",),
-            root_model=M["customers"], models_by_name=M, host_name="orders") is False
+            root_dataset=M["customers"], datasets_by_name=M, host_name="orders") is False
 
     def test_sibling_reason_is_unchanged(self):
         M = _graph()
         reason = broadcast_reason(
             host_path=("stores",), target_path=("customers",),
-            root_model=M["customers"], models_by_name=M, host_name="orders")
+            root_dataset=M["customers"], datasets_by_name=M, host_name="orders")
         # The reverse customers → orders hop fans: the classification is the
         # fanning hop (naming orders), never "unreachable".
         assert "fanning" in reason or "unproven" in reason

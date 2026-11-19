@@ -1,0 +1,86 @@
+{
+ "source": "tests/test_dev2015_time_spine.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "time_spine"
+   },
+   "new": {
+    "population": "time_spine"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "time_spine"
+   },
+   "new": {
+    "population": "time_spine"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "time_spine"
+   },
+   "new": {
+    "population": "time_spine"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 225,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 347,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 513,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 532,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 640,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,57 @@
+{
+ "source": "tests/test_search_compact.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount_paid)"
+   },
+   "new": {
+    "metric": "sum(amount_paid)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount_paid)"
+   },
+   "new": {
+    "metric": "sum(amount_paid)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 295,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 339,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 342,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 343,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 603,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 606,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 607,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -34,8 +34,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql import generator as generator_mod
 from slayer.sql.naming import assert_unique_cte_names
 from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain, cte_entry
@@ -46,51 +45,51 @@ from tests._dev1746_fixtures import cte_names_in_order
 DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 
 
-def _cross_model_query() -> SlayerQuery:
+def _cross_dataset_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+        population="orders_x",
+        dimensions=[QueryDimension(field="customers_v2.status")],
+        metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
     )
 
 
-def _two_cross_model_measures_query() -> SlayerQuery:
+def _two_cross_dataset_metrics_query() -> SlayerQuery:
     """Two independent ``_cm_`` CTEs — neither depends on the other, so their
     relative order is decided purely by the declaration-order tiebreak."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[
-            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="ltv"),
-            ModelMeasure(formula="avg(customers_v2.lifetime_value)", name="ltv_avg"),
+        population="orders_x",
+        dimensions=[QueryDimension(field="customers_v2.status")],
+        metrics=[
+            QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="ltv"),
+            QueryMetric(metric="avg(customers_v2.lifetime_value)", alias="ltv_avg"),
         ],
     )
 
 
 def _windowed_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
+        population="orders_x",
+        dimensions=[QueryDimension(field="status")],
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
+        metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="rev_w")],
     )
 
 
 def _mixed_query() -> SlayerQuery:
     """Cross-model AND windowed in one query — the mix §5.6 names."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
+        population="orders_x",
+        dimensions=[QueryDimension(field="status")],
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(amount, window='90d')", name="rev_w"),
-            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="ltv"),
+        metrics=[
+            QueryMetric(metric="sum(amount, window='90d')", alias="rev_w"),
+            QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="ltv"),
         ],
     )
 
@@ -241,7 +240,7 @@ class TestWithChainAssembler:
 class TestAssembledChainForRealQueries:
 
     async def test_base_precedes_the_cross_model_cte(self) -> None:
-        sql = await _gen(_cross_model_query(), dialect="postgres")
+        sql = await _gen(_cross_dataset_query(), dialect="postgres")
         names = cte_names_in_order(sql)
         assert "_base" in names, names
         cm = [n for n in names if n.startswith("_cm_")]
@@ -277,7 +276,7 @@ class TestAssembledChainForRealQueries:
     ) -> None:
         """The tiebreak, end to end: two ``_cm_`` CTEs that do not depend on
         each other appear in measure-declaration order."""
-        sql = await _gen(_two_cross_model_measures_query(), dialect="postgres")
+        sql = await _gen(_two_cross_dataset_metrics_query(), dialect="postgres")
         names = [n for n in cte_names_in_order(sql) if n.startswith("_cm_")]
         assert len(names) == 2, f"expected two _cm_ CTEs, got {names}"
         assert "sum" in names[0], (
@@ -306,7 +305,7 @@ class TestAssembledChainForRealQueries:
         ``WITH``: an indented or inline nested WITH would slip past the textual
         check entirely.
         """
-        sql = await _gen(_cross_model_query(), dialect=dialect)
+        sql = await _gen(_cross_dataset_query(), dialect=dialect)
         tree = sqlglot.parse_one(sql, dialect=dialect)
         with_nodes = list(tree.find_all(exp.With))
         assert len(with_nodes) <= 1, (

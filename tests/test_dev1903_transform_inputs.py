@@ -8,41 +8,41 @@ import re
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.keys import ColumnKey, Grain, TimeTruncKey, TransformKey
-from slayer.core.models import ModelMeasure
-from slayer.core.scope import ModelScope
+from slayer.core.keys import FieldKey, Grain, TimeTruncKey, TransformKey
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.elaborate_env import check_transform_inputs
 from slayer.engine.plan import plan_query
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.core.query import QueryMetric
 
-from tests._dev1846_fixtures import SlayerQuery, dev1846_models, month_td
+from tests._dev1846_fixtures import SlayerQuery, dev1846_datasets, month_td
 from tests._dev1871_raise_ledger import ROWS
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1846_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    models = dev1846_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
-def _key(formula: str):
+def _key(expression: str):
     bundle = _bundle()
-    assert bundle.source_model is not None
+    assert bundle.population is not None
     return bind_expr(
-        parse_expr(formula), scope=ModelScope(source_model=bundle.source_model),
-        bundle=bundle, allow_measures=True,
+        parse_expr(expression), scope=DatasetScope(population=bundle.population),
+        bundle=bundle, allow_metrics=True,
     ).value_key
 
 
-def _check(formula: str, *, projected=frozenset()) -> None:
-    check_transform_inputs(roots=[_key(formula)], projected_grain_keys=projected)
+def _check(expression: str, *, projected=frozenset()) -> None:
+    check_transform_inputs(roots=[_key(expression)], projected_grain_keys=projected)
 
 
 def _plan(**kw) -> None:
-    kw.setdefault("measures", [])
+    kw.setdefault("metrics", [])
     plan_query(
-        query=SlayerQuery(source_model="sales", time_dimensions=month_td(), **kw),
+        query=SlayerQuery(population="sales", time_dimensions=month_td(), **kw),
         bundle=_bundle(),
     )
 
@@ -90,9 +90,9 @@ class TestMessagesMatchTheLedger:
         _check(formula)
 
     def test_planner_raises_the_same_message(self):
-        measures = [ModelMeasure(formula="cumsum(weight)", name="m")]
+        measures = [QueryMetric(metric="cumsum(weight)", alias="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=measures)
+            _plan(metrics=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
 
@@ -102,15 +102,15 @@ class TestInnermostTransformNamed:
         "time_shift(cumsum(weight), -1)", "change(cumsum(weight))",
     ])
     def test_consuming_transform_is_named(self, formula):
-        measures = [ModelMeasure(formula=formula, name="m")]
+        measures = [QueryMetric(metric=formula, alias="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=measures)
+            _plan(metrics=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_first_over_row_leaf_transform_is_not_the_expression_error(self):
-        measures = [ModelMeasure(formula="first(cumsum(weight))", name="m")]
+        measures = [QueryMetric(metric="first(cumsum(weight))", alias="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=measures)
+            _plan(metrics=measures)
         assert "not supported over an expression" not in str(ei.value)
 
 
@@ -131,21 +131,21 @@ class TestTraversal:
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_filter_position(self):
-        measures = [ModelMeasure(formula="sum(revenue)", name="r")]
+        measures = [QueryMetric(metric="sum(revenue)", alias="r")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=measures, filters=["cumsum(weight) > 0"])
+            _plan(metrics=measures, filter=["cumsum(weight) > 0"])
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_projected_leaf_exempt(self):
-        _check("cumsum(weight)", projected=frozenset({ColumnKey(path=(), leaf="weight")}))
+        _check("cumsum(weight)", projected=frozenset({FieldKey(path=(), leaf="weight")}))
 
     def test_partition_and_time_keys_are_not_leaves(self):
         key = _key("cumsum(sum(revenue))")
         assert isinstance(key, TransformKey)
         keyed = key.model_copy(update={
-            "partition_keys": Grain.of([ColumnKey(path=(), leaf="store")]),
+            "partition_keys": Grain.of([FieldKey(path=(), leaf="store")]),
             "time_key": TimeTruncKey(
-                source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH),
+                source=FieldKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH),
         })
         check_transform_inputs(roots=[keyed], projected_grain_keys=frozenset())
 

@@ -1,0 +1,91 @@
+{
+ "source": "tests/test_dev1829_guards.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount, window='90d', partition_by=region)"
+   },
+   "new": {
+    "metric": "sum(amount, window='90d', partition_by=region)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "cumsum(sum(amount, partition_by=region))"
+   },
+   "new": {
+    "metric": "cumsum(sum(amount, partition_by=region))"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_total"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_total"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount, partition_by=city)"
+   },
+   "new": {
+    "metric": "sum(amount, partition_by=city)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=region)"
+   },
+   "new": {
+    "metric": "sum(customers.spend, partition_by=region)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  }
+ ]
+}

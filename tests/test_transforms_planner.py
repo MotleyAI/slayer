@@ -39,14 +39,14 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
+    FieldKey,
     TimeTruncKey,
     TransformKey,
 )
 from slayer.core.keys import Grain
-from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery, TimeDimension
-from slayer.core.scope import ModelScope
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.projection import _iter_slot_deps
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -59,17 +59,17 @@ from slayer.core.syntax import parse_expr
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -77,13 +77,13 @@ def _orders_model() -> SlayerModel:
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders_model(),
-        referenced_models=[],
+        population=_orders_dataset(),
+        referenced_datasets=[],
     )
 
 
-def _scope() -> ModelScope:
-    return ModelScope(source_model=_orders_model())
+def _scope() -> DatasetScope:
+    return DatasetScope(population=_orders_dataset())
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ class TestBindTransformValidation:
         )
         assert isinstance(bound.value_key, TransformKey)
         assert bound.value_key.op == "rank"
-        assert ColumnKey(path=(), leaf="region") in bound.value_key.partition_keys
+        assert FieldKey(path=(), leaf="region") in bound.value_key.partition_keys
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +301,8 @@ class TestIterSlotDepsTransformAux:
     def test_iter_slot_deps_partition_keys(self) -> None:
         # rank(amount:sum, partition_by=region) — the region ColumnKey must
         # surface as a slot dep so the planner materialises it as a hidden slot.
-        inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
-        region = ColumnKey(path=(), leaf="region")
+        inner = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
+        region = FieldKey(path=(), leaf="region")
         tk = TransformKey(
             op="rank",
             input=inner,
@@ -317,8 +317,8 @@ class TestIterSlotDepsTransformAux:
 
     def test_iter_slot_deps_time_key(self) -> None:
         # cumsum-like transform with an explicit time_key column.
-        inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
-        ts = ColumnKey(path=(), leaf="created_at")
+        inner = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
+        ts = FieldKey(path=(), leaf="created_at")
         tk = TransformKey(op="cumsum", input=inner, time_key=ts)
         deps = list(_iter_slot_deps(tk))
         assert tk in deps
@@ -327,9 +327,9 @@ class TestIterSlotDepsTransformAux:
 
     def test_iter_slot_deps_time_truncated_time_key(self) -> None:
         # time_key can be a TimeTruncKey too — same dep yield rule.
-        inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
+        inner = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
         tt = TimeTruncKey(
-            source=ColumnKey(path=(), leaf="created_at"),
+            source=FieldKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         tk = TransformKey(op="cumsum", input=inner, time_key=tt)
@@ -339,9 +339,9 @@ class TestIterSlotDepsTransformAux:
 
     def test_iter_slot_deps_multiple_partition_keys(self) -> None:
         # partition_keys is a frozenset; all keys must surface as slot deps.
-        inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
-        region = ColumnKey(path=(), leaf="region")
-        customer = ColumnKey(path=(), leaf="customer_id")
+        inner = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
+        region = FieldKey(path=(), leaf="region")
+        customer = FieldKey(path=(), leaf="customer_id")
         tk = TransformKey(
             op="rank",
             input=inner,
@@ -355,13 +355,13 @@ class TestIterSlotDepsTransformAux:
         # Explicit partition_by on a time-ordered transform is
         # rejected at bind time (a coarse ROWS-frame partition is nondeterministic).
         q = SlayerQuery(
-            source_model="orders",
-            measures=[
-                {"formula": "cumsum(sum(amount), partition_by=region)"},
+            population="orders",
+            metrics=[
+                {"metric": "cumsum(sum(amount), partition_by=region)"},
             ],
             time_dimensions=[
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -379,11 +379,11 @@ class TestIterSlotDepsTransformAux:
 class TestTransformLayersPopulation:
     def test_cumsum_emits_transform_layer(self) -> None:
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "cumsum(sum(amount))"}],
+            "population": "orders",
+            "metrics": [{"metric": "cumsum(sum(amount))"}],
             "time_dimensions": [
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -396,8 +396,8 @@ class TestTransformLayersPopulation:
 
     def test_rank_emits_transform_layer(self) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="rank(sum(amount), direction='desc')")],
+            population="orders",
+            metrics=[QueryMetric(metric="rank(sum(amount), direction='desc')")],
         )
         planned = plan_query(query=q, bundle=_bundle())
         assert any(
@@ -406,11 +406,11 @@ class TestTransformLayersPopulation:
 
     def test_time_shift_emits_transform_layer(self) -> None:
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "time_shift(sum(amount), periods=-1)"}],
+            "population": "orders",
+            "metrics": [{"metric": "time_shift(sum(amount), periods=-1)"}],
             "time_dimensions": [
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -425,11 +425,11 @@ class TestTransformLayersPopulation:
         # plan contains a time_shift TransformKey (not a change one);
         # transform_layers should show the materialised op only.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "change(sum(amount))"}],
+            "population": "orders",
+            "metrics": [{"metric": "change(sum(amount))"}],
             "time_dimensions": [
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -444,11 +444,11 @@ class TestTransformLayersPopulation:
         # TransformKey, which the outer cumsum then wraps. The inner
         # time_shift layer must appear before the outer cumsum layer.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "cumsum(change(sum(amount)))"}],
+            "population": "orders",
+            "metrics": [{"metric": "cumsum(change(sum(amount)))"}],
             "time_dimensions": [
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -466,14 +466,14 @@ class TestTransformLayersPopulation:
         # Two distinct transform slots (rank + cumsum) → two layers,
         # one per slot. No op-grouping collapse.
         q = SlayerQuery(
-            source_model="orders",
-            measures=[
-                {"formula": "rank(sum(amount), direction='desc')"},
-                {"formula": "cumsum(sum(amount))"},
+            population="orders",
+            metrics=[
+                {"metric": "rank(sum(amount), direction='desc')"},
+                {"metric": "cumsum(sum(amount))"},
             ],
             time_dimensions=[
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -487,7 +487,7 @@ class TestTransformLayersPopulation:
             assert len(layer.slot_ids) == 1
 
     def test_no_transform_no_layers(self) -> None:
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         assert planned.transform_layers == []
 
@@ -503,11 +503,11 @@ class TestTransformInnerIdentity:
         # change(amount:sum) lowers to ``amount - time_shift(amount)``;
         # both occurrences of amount:sum must intern to the SAME slot.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "change(sum(amount))"}],
+            "population": "orders",
+            "metrics": [{"metric": "change(sum(amount))"}],
             "time_dimensions": [
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -527,14 +527,14 @@ class TestTransformInnerIdentity:
         # change(amount:sum) + amount:sum as a separate measure must
         # still intern the amount aggregate exactly once.
         q = SlayerQuery(
-            source_model="orders",
-            measures=[
-                {"formula": "sum(amount)"},
-                {"formula": "change(sum(amount))"},
+            population="orders",
+            metrics=[
+                {"metric": "sum(amount)"},
+                {"metric": "change(sum(amount))"},
             ],
             time_dimensions=[
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],

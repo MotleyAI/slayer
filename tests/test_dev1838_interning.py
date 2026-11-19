@@ -17,14 +17,15 @@ import pytest
 
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1838_fixtures import (
     BAND,
     BAND_WM,
-    ModelMeasure,
     SPEND_BAND,
     cte_aliases,
-    dev1838_models,
+    dev1838_datasets,
     make_exec_engine,
     month_key,
     month_td,
@@ -33,7 +34,7 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = ModelMeasure(formula="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -51,12 +52,12 @@ def _cm_count(sql: str, dialect: str) -> int:
 
 def _band_wm_query(*windows: str, filters=None):
     measures = [M] + [
-        ModelMeasure(formula=f"sum(amount, window='{w}')", name=f"w{w[:-1]}")
+        QueryMetric(metric=f"sum(amount, window='{w}')", alias=f"w{w[:-1]}")
         for w in windows
     ]
-    kw = {"filters": filters} if filters else {}
+    kw = {"filter": filters} if filters else {}
     return q(dimensions=["region", BAND], time_dimensions=month_td(),
-             measures=measures, **kw)
+             metrics=measures, **kw)
 
 
 class TestSharedAcrossScopes:
@@ -140,11 +141,11 @@ class TestSharedAcrossScopes:
         must keep it that way with both roles' values correct."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier", {"expression": SPEND_BAND,
-                                           "name": "sband"}],
-            measures=[M, ModelMeasure(
-                formula="sum(customers.spend, partition_by=customers.tier)",
-                name="rt")],
+            dimensions=["customers.tier", {"field": SPEND_BAND,
+                                           "alias": "sband"}],
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.tier)",
+                alias="rt")],
         )
         resp = await engine.execute(query)
         got = {
@@ -180,9 +181,9 @@ class TestProducersThatMustStaySeparate:
         """Default ``ordered_at`` vs an explicit joined ranking column: two
         producers, distinct values (green pin)."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"], measures=[
-            ModelMeasure(formula="last(amount)", name="lb"),
-            ModelMeasure(formula="last(amount, customers.signup_at)", name="ls"),
+        query = q(dimensions=["status"], metrics=[
+            QueryMetric(metric="last(amount)", alias="lb"),
+            QueryMetric(metric="last(amount, customers.signup_at)", alias="ls"),
         ])
         resp = await engine.execute(query)
         by = {r["orders.status"]: r for r in resp.data}
@@ -199,9 +200,9 @@ class TestProducersThatMustStaySeparate:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
-                ModelMeasure(formula="sum(ok_amount, window='90d')", name="wok"),
+            metrics=[
+                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(ok_amount, window='90d')", alias="wok"),
             ],
         )
         resp = await engine.execute(query)
@@ -231,18 +232,18 @@ class TestProducersThatMustStaySeparate:
             "DEV-1838 D3: planned.regroup_producer_identity is not "
             "implemented yet"
         )
-        models = dev1838_models()
+        models = dev1838_datasets()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=models[0], referenced_models=models[1:],
+            population=models[0], referenced_datasets=models[1:],
         )
         base = plan.plan_query(query=q(
             dimensions=["region", BAND],
-            measures=[M],
+            metrics=[M],
         ), bundle=bundle)
         filtered = plan.plan_query(query=q(
             dimensions=["region", BAND],
-            measures=[M], filters=["status = 'ok'"],
+            metrics=[M], filter=["status = 'ok'"],
         ), bundle=bundle)
         (attach_a,) = base.regroup_attach_plans
         (attach_b,) = filtered.regroup_attach_plans
@@ -264,12 +265,12 @@ class TestWarningsUnchangedBySharing:
         filter: one entry per measure; ``cm`` counts the CityA customer only."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, ModelMeasure(formula="sum(customers.spend)", name="cm")],
-            filters=["city = 'CityA' OR customers.tier = '__none__'"],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
+            metrics=[M, QueryMetric(metric="sum(customers.spend)", alias="cm")],
+            filter=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
-        assert len({w.measure for w in pushed}) == 2, pushed
+        assert len({w.metric for w in pushed}) == 2, pushed
         assert all("city" in w.filter_text for w in pushed)
         (row,) = resp.data
         assert row["orders.sband"] == "lo"
@@ -283,15 +284,15 @@ class TestWarningsUnchangedBySharing:
         the host filter: exactly one entry — never one per consumer."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["customers.tier", {"expression": SPEND_BAND,
-                                           "name": "sband"}],
-            measures=[M, ModelMeasure(
-                formula="sum(customers.spend, partition_by=customers.tier)",
-                name="rt")],
-            filters=["city = 'CityA' OR customers.tier = '__none__'"],
+            dimensions=["customers.tier", {"field": SPEND_BAND,
+                                           "alias": "sband"}],
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.tier)",
+                alias="rt")],
+            filter=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
-        assert len(pushed) == 1, [w.measure for w in pushed]
+        assert len(pushed) == 1, [w.metric for w in pushed]
         (row,) = resp.data
         assert (row["orders.customers.tier"], row["orders.sband"]) == (
             "gold", "lo",

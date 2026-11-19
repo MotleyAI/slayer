@@ -4,6 +4,7 @@ import pytest
 
 from slayer.core.query import TimeDimension
 from tests import _dev1883_fixtures as fx
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture
@@ -17,11 +18,11 @@ async def exec_engine(tmp_path):
 
 
 class TestGranularitySuffixedKeys:
-    async def test_two_granularities_functional_execution(self, exec_engine) -> None:
+    async def test_two_granularities_functional_execution(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         ))
         assert resp.columns == [
             "orders.created_at.month",
@@ -40,15 +41,15 @@ class TestGranularitySuffixedKeys:
             "2025-03-01": ("2025-01-01", 5.0),
         }
 
-    async def test_two_granularities_dotted_column_execution(self, exec_engine) -> None:
+    async def test_two_granularities_dotted_column_execution(self, exec_engine: SlayerQueryEngine) -> None:
         """Joined (dotted) same-column collisions suffix both the SQL alias and the
         result key, so rows carry distinct month/year values (not one collapsed bucket)."""
         resp = await exec_engine.execute(fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=[
                 "date_trunc('month', customers.created_at)", "date_trunc('year', customers.created_at)",
             ],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         ))
         assert resp.columns == [
             "orders.customers.created_at.month",
@@ -66,14 +67,14 @@ class TestGranularitySuffixedKeys:
             "2024-07-01": ("2024-01-01", 25.0),
         }
 
-    async def test_explicit_form_gets_the_same_keys(self, exec_engine) -> None:
+    async def test_explicit_form_gets_the_same_keys(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                {"dimension": "created_at", "granularity": "month"},
-                {"dimension": "created_at", "granularity": "year"},
+                {"field": "created_at", "granularity": "month"},
+                {"field": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         ))
         assert resp.columns == [
             "orders.created_at.month",
@@ -81,12 +82,12 @@ class TestGranularitySuffixedKeys:
             "orders.amount_sum",
         ]
 
-    async def test_mixed_functional_and_explicit_suffixed(self, exec_engine) -> None:
+    async def test_mixed_functional_and_explicit_suffixed(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
-            source_model="orders",
-            time_dimensions=[{"dimension": "created_at", "granularity": "year"}],
+            population="orders",
+            time_dimensions=[{"field": "created_at", "granularity": "year"}],
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         ))
         assert set(resp.columns) == {
             "orders.created_at.year",
@@ -94,20 +95,20 @@ class TestGranularitySuffixedKeys:
             "orders.amount_sum",
         }
 
-    async def test_single_time_dimension_keeps_unsuffixed_key(self, exec_engine) -> None:
+    async def test_single_time_dimension_keeps_unsuffixed_key(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
 
-    async def test_distinct_columns_keep_unsuffixed_keys(self, exec_engine) -> None:
+    async def test_distinct_columns_keep_unsuffixed_keys(self, exec_engine: SlayerQueryEngine) -> None:
         """Two TDs on different columns don't collide, so neither key is suffixed."""
         resp = await exec_engine.execute(fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["date_trunc('year', created_at)", "date_trunc('month', customers.created_at)"],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         ))
         assert set(resp.columns) == {
             "orders.created_at",
@@ -119,57 +120,57 @@ class TestGranularitySuffixedKeys:
 class TestDuplicateTimeDimensions:
     def test_exact_duplicates_dedupe_across_forms(self) -> None:
         q = fx.q(
-            source_model="orders",
-            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            population="orders",
+            time_dimensions=[{"field": "created_at", "granularity": "month"}],
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         )
         assert not q.dimensions, q.dimensions
         assert q.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="created_at", granularity="month")
         ]
 
     def test_exact_duplicates_dedupe_within_dimensions(self) -> None:
         q = fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('month', created_at)"],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         )
         assert q.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="created_at", granularity="month")
         ]
 
     def test_exact_explicit_duplicates_dedupe(self) -> None:
         q = fx.q(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                {"dimension": "created_at", "granularity": "month"},
-                {"dimension": "created_at", "granularity": "month"},
+                {"field": "created_at", "granularity": "month"},
+                {"field": "created_at", "granularity": "month"},
             ],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         )
         assert q.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="created_at", granularity="month")
         ]
 
     def test_duplicates_with_identical_metadata_dedupe(self) -> None:
         entry = {
-            "dimension": "created_at", "granularity": "month",
+            "field": "created_at", "granularity": "month",
             "date_range": ["2024-01-01", "2024-12-31"], "label": "Created",
         }
         q = fx.q(
-            source_model="orders",
+            population="orders",
             time_dimensions=[dict(entry), dict(entry)],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         )
         assert q.time_dimensions == [TimeDimension.model_validate(entry)]
 
-    async def test_deduped_query_executes_as_single(self, exec_engine) -> None:
+    async def test_deduped_query_executes_as_single(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
-            source_model="orders",
-            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            population="orders",
+            time_dimensions=[{"field": "created_at", "granularity": "month"}],
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
         assert {
@@ -185,12 +186,12 @@ class TestDuplicateTimeDimensions:
     ) -> None:
         with pytest.raises(pydantic.ValidationError) as ei:
             fx.q(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
-                    {"dimension": "created_at", "granularity": "month"},
-                    {"dimension": "created_at", "granularity": "month", **metadata},
+                    {"field": "created_at", "granularity": "month"},
+                    {"field": "created_at", "granularity": "month", **metadata},
                 ],
-                measures=[{"formula": "sum(amount)"}],
+                metrics=[{"metric": "sum(amount)"}],
             )
         msg = str(ei.value)
         assert "created_at" in msg
@@ -200,15 +201,15 @@ class TestDuplicateTimeDimensions:
         """``created_at`` and ``orders.created_at`` are the same column (source-model
         prefix), so an identical pair dedupes rather than colliding downstream."""
         q = fx.q(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                {"dimension": "created_at", "granularity": "month"},
-                {"dimension": "orders.created_at", "granularity": "month"},
+                {"field": "created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},
             ],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
         )
         assert q.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="created_at", granularity="month")
         ]
 
     def test_diff_spelling_conflicting_metadata_rejected(self) -> None:
@@ -216,10 +217,10 @@ class TestDuplicateTimeDimensions:
         rejected at construction with the clean conflict message."""
         with pytest.raises(pydantic.ValidationError, match="Conflicting"):
             fx.q(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
-                    {"dimension": "created_at", "granularity": "month", "label": "A"},
-                    {"dimension": "orders.created_at", "granularity": "month", "label": "B"},
+                    {"field": "created_at", "granularity": "month", "label": "A"},
+                    {"field": "orders.created_at", "granularity": "month", "label": "B"},
                 ],
-                measures=[{"formula": "sum(amount)"}],
+                metrics=[{"metric": "sum(amount)"}],
             )

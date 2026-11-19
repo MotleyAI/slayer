@@ -13,12 +13,12 @@ from slayer.core.keys import (
     SCALAR_SPECS,
     ScalarSpec,
 )
-from slayer.core.models import Aggregation, SlayerModel
+from slayer.core.models import Aggregation, SlayerDataset
 from slayer.importers import aggregates as osi_expression
 from slayer.importers.aggregates import convert_expression
 from slayer.core.enums import DataType
-from slayer.core.models import Column
-from slayer.core.scope import ModelScope
+from slayer.core.models import DatasetField
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import ScalarCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -73,12 +73,12 @@ class TestFormulaParser:
         assert top.name.lower() in DATE_NAMES, parsed
 
     def test_unknown_call_lists_date_functions(self) -> None:
-        model = SlayerModel(name="orders", sql_table="orders", data_source="t",
-                            columns=[Column(name="revenue", type=DataType.DOUBLE)])
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
-        parsed, scope = parse_expr("bogus_fn(sum(revenue))"), ModelScope(source_model=model)
+        model = SlayerDataset(name="orders", sql_table="orders", data_source="t",
+                            fields=[DatasetField(name="revenue", datatype=DataType.FLOAT)])
+        bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
+        parsed, scope = parse_expr("bogus_fn(sum(revenue))"), DatasetScope(population=model)
         with pytest.raises(ValueError, match="date_diff"):
-            bind_expr(parsed, scope=scope, bundle=bundle, allow_measures=True)
+            bind_expr(parsed, scope=scope, bundle=bundle, allow_metrics=True)
 
 
 class TestOsiDoesNotCarryDateFunctions:
@@ -93,7 +93,7 @@ class TestOsiDoesNotCarryDateFunctions:
         result = convert_expression(
             expr, entity_name="m", owner_of=lambda q, c: "orders", ref_of=lambda m, c: c,
         )
-        assert not result.ok, result.formula
+        assert not result.ok, result.expression
 
 
 class TestReservedAggregationNames:
@@ -102,12 +102,12 @@ class TestReservedAggregationNames:
         "current_date", "now", "NOW",
     ])
     def test_accepted(self, name: str) -> None:
-        assert Aggregation(name=name, formula="SUM({value})").name == name
+        assert Aggregation(name=name, expression="SUM({value})").name == name
 
     def test_model_with_shadowing_aggregation_accepted(self) -> None:
-        model = SlayerModel.model_validate({
+        model = SlayerDataset.model_validate({
             "name": "orders", "sql_table": "orders", "data_source": "test",
-            "columns": [{"name": "amount", "type": "DOUBLE"}],
-            "aggregations": [{"name": "date_diff", "formula": "SUM({value})"}],
+            "fields": [{"name": "amount", "datatype": "Float"}],
+            "aggregations": [{"name": "date_diff", "expression": "SUM({value})"}],
         })
         assert [a.name for a in model.aggregations] == ["date_diff"]

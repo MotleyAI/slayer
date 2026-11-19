@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_search_lenient_validation.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  }
+ ]
+}

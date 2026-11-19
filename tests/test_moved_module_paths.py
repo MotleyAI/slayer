@@ -32,8 +32,11 @@ MOVED_MODULES: dict[str, str] = {
     "slayer.engine.home": "slayer.engine.population.home",
     "slayer.engine.dimension_routing": "slayer.engine.population.dimension_routing",
     "slayer.engine.filter_reachability": "slayer.engine.population.filter_reachability",
-    "slayer.engine.join_safety": "slayer.engine.cardinality.join_safety",
+    "slayer.engine.join_safety": "slayer.engine.cardinality.relationship_safety",
     "slayer.engine.unrelated": "slayer.engine.cardinality.unrelated",
+    "slayer.engine.syntax": "slayer.core.syntax",
+    "slayer.core.formula": "slayer.core.syntax",
+    "slayer.osi.expression": "slayer.importers.aggregates",
 }
 
 #: Old module paths that are now packages: (package, the moved module's new path, its public names).

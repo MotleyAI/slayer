@@ -1,0 +1,185 @@
+{
+ "source": "tests/test_dev1883_collision_keys.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 74,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 75,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 88,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 124,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 147,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 148,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 157,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 171,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 191,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 206,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 207,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 222,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 223,
+   "reason": "unclassifiable"
+  }
+ ]
+}

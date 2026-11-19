@@ -24,10 +24,10 @@ from tests._doc_examples import (
     reference_failure,
 )
 
-COUNT = {"source_model": "orders", "measures": ["count(*)"]}
+COUNT = {"population": "orders", "metrics": ["count(*)"]}
 MARKER = '!!! note "Illustrative schema"'
 NOT_A_QUERY = "<!-- doc-check: not-a-query -->"
-HYPOTHETICAL = '{"source_model": "orders", "measures": ["sum(website_visits)"]}'
+HYPOTHETICAL = '{"population": "orders", "metrics": ["sum(website_visits)"]}'
 
 
 def _md(*lines: str) -> str:
@@ -40,32 +40,32 @@ def _found(markdown: str) -> list[tuple[int, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Extraction: every wrapper yields its query, with the line of its source_model
+# Extraction: every wrapper yields its query, with the line of its population
 # ---------------------------------------------------------------------------
 
 
 class TestExtraction:
     def test_json_block(self) -> None:
-        md = _md("# T", "", "```json", "{", '  "source_model": "orders",', '  "measures": ["count(*)"]', "}", "```")
+        md = _md("# T", "", "```json", "{", '  "population": "orders",', '  "metrics": ["count(*)"]', "}", "```")
         assert _found(md) == [(5, COUNT)]
 
     def test_json_stage_list(self) -> None:
         md = _md(
             "```json",
             "[",
-            '  {"name": "s", "source_model": "orders", "measures": ["count(*)"], "dimensions": ["store_id"]},',
-            '  {"source_model": "s", "measures": ["max(_count)"]}',
+            '  {"name": "s", "population": "orders", "metrics": ["count(*)"], "dimensions": ["store_id"]},',
+            '  {"population": "s", "metrics": ["max(_count)"]}',
             "]",
             "```",
         )
         assert _found(md) == [(3, [
-            {"name": "s", "source_model": "orders", "measures": ["count(*)"], "dimensions": ["store_id"]},
-            {"source_model": "s", "measures": ["max(_count)"]},
+            {"name": "s", "population": "orders", "metrics": ["count(*)"], "dimensions": ["store_id"]},
+            {"population": "s", "metrics": ["max(_count)"]},
         ])]
 
     def test_multiline_slayer_query(self) -> None:
-        md = _md("```bash", "# Count orders", "slayer query '{", '  "source_model": "orders",',
-                 '  "measures": ["count(*)"]', "}'", "```")
+        md = _md("```bash", "# Count orders", "slayer query '{", '  "population": "orders",',
+                 '  "metrics": ["count(*)"]', "}'", "```")
         assert _found(md) == [(4, COUNT)]
 
     def test_multiline_curl_with_escaped_quotes(self) -> None:
@@ -74,20 +74,20 @@ class TestExtraction:
             "curl -X POST http://localhost:5143/query \\",
             '  -H "Content-Type: application/json" \\',
             "  -d '{",
-            '    "source_model": "orders",',
-            '    "measures": ["count(*)"],',
-            """    "filters": ["status = '\\''completed'\\''"]""",
+            '    "population": "orders",',
+            '    "metrics": ["count(*)"],',
+            """    "filter": ["status = '\\''completed'\\''"]""",
             "  }'",
             "```",
         )
-        assert _found(md) == [(5, {**COUNT, "filters": ["status = 'completed'"]})]
+        assert _found(md) == [(5, {**COUNT, "filter": ["status = 'completed'"]})]
 
     def test_slayer_query_call(self) -> None:
         md = _md(
             "```python",
             "result = engine.execute_sync(query=SlayerQuery(",
-            '    source_model="orders",',
-            '    measures=["count(*)"],',
+            '    population="orders",',
+            '    metrics=["count(*)"],',
             "))",
             "```",
         )
@@ -97,25 +97,25 @@ class TestExtraction:
         md = _md(
             "```python",
             "query = {",
-            '    "source_model": "orders",',
-            '    "measures": ["count(*)"],',
+            '    "population": "orders",',
+            '    "metrics": ["count(*)"],',
             "}",
             "client.query_sync([",
-            '    {"name": "s", "source_model": "orders", "measures": ["count(*)"]},',
-            '    {"source_model": "s", "measures": ["max(_count)"]},',
+            '    {"name": "s", "population": "orders", "metrics": ["count(*)"]},',
+            '    {"population": "s", "metrics": ["max(_count)"]},',
             "])",
             "```",
         )
         assert _found(md) == [
             (3, COUNT),
-            (7, [{"name": "s", **COUNT}, {"source_model": "s", "measures": ["max(_count)"]}]),
+            (7, [{"name": "s", **COUNT}, {"population": "s", "metrics": ["max(_count)"]}]),
         ]
 
     def test_mcp_query_call(self) -> None:
         md = _md(
             "```",
             "1. list_datasources()",
-            '2. query(query={"source_model": "orders", "measures": ["count(*)"], "limit": 10})',
+            '2. query(query={"population": "orders", "metrics": ["count(*)"], "limit": 10})',
             "```",
         )
         assert _found(md) == [(3, {**COUNT, "limit": 10})]
@@ -127,8 +127,8 @@ class TestExtraction:
             '  method: "POST",',
             '  headers: {"Content-Type": "application/json"},',
             "  body: JSON.stringify({",
-            '    "source_model": "orders",',
-            '    "measures": ["count(*)"],',
+            '    "population": "orders",',
+            '    "metrics": ["count(*)"],',
             "  }),",
             "});",
             "```",
@@ -138,24 +138,24 @@ class TestExtraction:
     def test_several_queries_in_one_block(self) -> None:
         md = _md(
             "```bash",
-            """slayer query '{"source_model": "orders", "measures": ["count(*)"]}'""",
+            """slayer query '{"population": "orders", "metrics": ["count(*)"]}'""",
             "",
-            """slayer query '{"source_model": "stores", "measures": ["count(*)"]}' --format json""",
+            """slayer query '{"population": "stores", "metrics": ["count(*)"]}' --format json""",
             "```",
         )
-        assert _found(md) == [(2, COUNT), (4, {"source_model": "stores", "measures": ["count(*)"]})]
+        assert _found(md) == [(2, COUNT), (4, {"population": "stores", "metrics": ["count(*)"]})]
 
     def test_placeholders_inside_strings(self) -> None:
         query = {
-            "source_model": {"name": "m", "data_source": "jaffle_shop", "sql": "SELECT 1 WHERE {? x IN ({stores}) ?}"},
-            "measures": ["count(*)"],
-            "filters": ["order_total >= {floor}"],
+            "population": {"name": "m", "data_source": "jaffle_shop", "sql": "SELECT 1 WHERE {? x IN ({stores}) ?}"},
+            "metrics": ["count(*)"],
+            "filter": ["order_total >= {floor}"],
         }
         md = _md("```text", f"query = {json.dumps(query)}", "```")
         assert _found(md) == [(2, query)]
 
     def test_python_literal_in_json_block_is_not_extracted(self) -> None:
-        md = _md("```json", "{'source_model': 'orders', 'measures': ['count(*)']}", "```")
+        md = _md("```json", "{'population': 'orders', 'metrics': ['count(*)']}", "```")
         assert _found(md) == []
 
     def test_run_by_name_and_file_forms_yield_nothing(self) -> None:
@@ -227,12 +227,12 @@ class TestMarkersAndGuard:
         assert [f.split(": ")[0] for f in failures] == ["page.md:7"]
 
     def test_query_returning_no_rows_fails(self, doc_demo_storage: YAMLStorage) -> None:
-        query = '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["store_id"], "filters": ["order_total < 0"]}'
+        query = '{"population": "orders", "metrics": ["count(*)"], "dimensions": ["store_id"], "filter": ["order_total < 0"]}'
         failures = _failures(doc_demo_storage, "```json", query, "```")
         assert failures == ["page.md:2: returned no rows"]
 
     def test_unextractable_source_model_block_fails_unless_marked(self, doc_demo_storage: YAMLStorage) -> None:
-        block = ["```javascript", "JSON.stringify({source_model: 'orders', measures: ['count(*)']})", "```"]
+        block = ["```javascript", "JSON.stringify({population: 'orders', metrics: ['count(*)']})", "```"]
         failures = _failures(doc_demo_storage, *block)
         assert len(failures) == 1
         assert failures[0].startswith("page.md:1: ")
@@ -242,21 +242,21 @@ class TestMarkersAndGuard:
         failures = _failures(
             doc_demo_storage,
             "```javascript",
-            'JSON.stringify({"source_model": "orders", "measures": ["count(*)"]})',
-            "JSON.stringify({source_model: 'orders', measures: ['count(*)']})",
+            'JSON.stringify({"population": "orders", "metrics": ["count(*)"]})',
+            "JSON.stringify({population: 'orders', metrics: ['count(*)']})",
             "```",
         )
-        assert failures == ["page.md:1: code block mentions source_model outside any extracted query"]
+        assert failures == ["page.md:1: code block mentions population outside any extracted query"]
 
     def test_not_a_query_comment_exempts_block_from_guard(self, doc_demo_storage: YAMLStorage) -> None:
-        block = ["```", "SlayerQuery (source_model, measures, dimensions, filters)", "```"]
+        block = ["```", "SlayerQuery (population, metrics, dimensions, filter)", "```"]
         assert len(_failures(doc_demo_storage, *block)) == 1
         assert _failures(doc_demo_storage, NOT_A_QUERY, "", *block) == []
 
     def test_not_a_query_comment_with_indented_content_between_does_not_apply(
         self, doc_demo_storage: YAMLStorage,
     ) -> None:
-        block = ["```", "SlayerQuery (source_model, measures, dimensions, filters)", "```"]
+        block = ["```", "SlayerQuery (population, metrics, dimensions, filter)", "```"]
         failures = _failures(doc_demo_storage, NOT_A_QUERY, "    Indented prose.", "", *block)
         assert [f.split(": ")[0] for f in failures] == ["page.md:4"]
 
@@ -265,7 +265,7 @@ class TestMarkersAndGuard:
         assert [f.split(": ")[0] for f in failures] == ["page.md:3"]
 
     def test_datasource_word_does_not_trip_the_guard(self, doc_demo_storage: YAMLStorage) -> None:
-        assert _failures(doc_demo_storage, "```", "ingest_datasource_models(datasource_name='mydb')", "```") == []
+        assert _failures(doc_demo_storage, "```", "ingest_datasource(datasource_name='mydb')", "```") == []
 
     def test_query_check_closes_its_engine(
         self, doc_demo_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
@@ -296,7 +296,7 @@ class TestMarkersAndGuard:
 # ---------------------------------------------------------------------------
 
 COUNT_JSON = json.dumps(COUNT)
-STORES_COUNT = {"source_model": "stores", "measures": ["count(*)"]}
+STORES_COUNT = {"population": "stores", "metrics": ["count(*)"]}
 
 
 def _checked(markdown: str) -> list[tuple[int, Any]]:
@@ -315,19 +315,19 @@ class TestAltTextExtraction:
         assert _checked(md) == [(1, COUNT)]
 
     def test_shortcut_reference_image(self, doc_demo_storage: YAMLStorage) -> None:
-        md = _md('![Chart of {"source_model": "orders"}]', "", '[chart of {"source_model":  "orders"}]: x.png')
-        assert _checked(md) == [(1, {"source_model": "orders"})]
-        lines = ("![Each query names a source_model]", "", "  [EACH query names a source_model]: x.png")
+        md = _md('![Chart of {"population": "orders"}]', "", '[chart of {"population":  "orders"}]: x.png')
+        assert _checked(md) == [(1, {"population": "orders"})]
+        lines = ("![Each query names a population]", "", "  [EACH query names a population]: x.png")
         assert len(_failures(doc_demo_storage, *lines)) == 1
 
     def test_bracketed_text_without_a_definition_is_not_an_image(self, doc_demo_storage: YAMLStorage) -> None:
-        assert _failures(doc_demo_storage, "![Each query names a source_model]", "", "[other]: x.png") == []
+        assert _failures(doc_demo_storage, "![Each query names a population]", "", "[other]: x.png") == []
 
     def test_nested_brackets_in_alt_text(self) -> None:
         assert _checked(_md(f"![A [boxed] chart of {COUNT_JSON}](images/x.png)")) == [(1, COUNT)]
 
     def test_multiline_alt_text_names_the_source_model_line(self) -> None:
-        md = _md("![Before the query", '{"source_model": "orders",', ' "measures": ["count(*)"]}', "after](x.png)")
+        md = _md("![Before the query", '{"population": "orders",', ' "metrics": ["count(*)"]}', "after](x.png)")
         assert _checked(md) == [(2, COUNT)]
 
     def test_escaped_bracket_does_not_end_alt_text(self) -> None:
@@ -345,7 +345,7 @@ class TestAltTextExtraction:
         assert _checked(_md("![The SLayer architecture diagram](images/arch.png)")) == []
 
     def test_ordinary_link_is_not_scanned(self, doc_demo_storage: YAMLStorage) -> None:
-        lines = (f"See [the query {HYPOTHETICAL}](page.md) and [source_model docs](ref.md).",)
+        lines = (f"See [the query {HYPOTHETICAL}](page.md) and [population docs](ref.md).",)
         assert _checked(_md(*lines)) == []
         assert _failures(doc_demo_storage, *lines) == []
 
@@ -358,10 +358,10 @@ class TestAltTextExtraction:
         "lines",
         [
             pytest.param((f"Write `![Chart of {HYPOTHETICAL}](x.png)` for an image.",), id="inline-code"),
-            pytest.param(("Write ``![a `source_model` chart](x.png)`` for an image.",), id="double-backtick-code"),
+            pytest.param(("Write ``![a `population` chart](x.png)`` for an image.",), id="double-backtick-code"),
             pytest.param(("Write `![Before", f"{HYPOTHETICAL}](x.png)` for an image.",), id="multiline-inline-code"),
             pytest.param((f"<!-- ![Chart of {HYPOTHETICAL}](x.png) -->",), id="html-comment"),
-            pytest.param(("<!--", "![Each query names a source_model](x.png)", "-->"), id="multiline-html-comment"),
+            pytest.param(("<!--", "![Each query names a population](x.png)", "-->"), id="multiline-html-comment"),
         ],
     )
     def test_image_syntax_in_inline_code_or_comment_is_not_scanned(
@@ -384,7 +384,7 @@ class TestAltTextExtraction:
         assert _checked(_md(f"![Chart of `{COUNT_JSON}`](x.png)")) == [(1, COUNT)]
 
     def test_inline_code_before_image_keeps_it_not_standalone(self, doc_demo_storage: YAMLStorage) -> None:
-        assert _failures(doc_demo_storage, NOT_A_QUERY, "`x` ![Each query names a source_model](x.png)") != []
+        assert _failures(doc_demo_storage, NOT_A_QUERY, "`x` ![Each query names a population](x.png)") != []
 
     def test_image_after_inline_code_keeps_its_line(self) -> None:
         md = _md("Use `code` here.", "", f"![Chart of {COUNT_JSON}](x.png) and `![not]({HYPOTHETICAL})`")
@@ -400,12 +400,12 @@ class TestAltTextChecks:
         assert failures[0].startswith("page.md:4: ")
 
     def test_alt_text_mentioning_source_model_without_query_fails(self, doc_demo_storage: YAMLStorage) -> None:
-        failures = _failures(doc_demo_storage, "Text.", "", "![Each query names a source_model](x.png)")
+        failures = _failures(doc_demo_storage, "Text.", "", "![Each query names a population](x.png)")
         assert len(failures) == 1
         assert failures[0].startswith("page.md:3: ")
 
     def test_not_a_query_comment_exempts_image_from_guard(self, doc_demo_storage: YAMLStorage) -> None:
-        assert _failures(doc_demo_storage, NOT_A_QUERY, "![Each query names a source_model](x.png)") == []
+        assert _failures(doc_demo_storage, NOT_A_QUERY, "![Each query names a population](x.png)") == []
 
     def test_marked_image_is_exempt_and_next_image_is_checked(self, doc_demo_storage: YAMLStorage) -> None:
         failures = _failures(
@@ -420,13 +420,13 @@ class TestAltTextChecks:
         assert [f.split(": ")[0] for f in failures] == ["page.md:6"]
 
     def test_marked_image_without_query_passes_the_guard(self, doc_demo_storage: YAMLStorage) -> None:
-        assert _failures(doc_demo_storage, MARKER, "", "![Each query names a source_model](x.png)") == []
+        assert _failures(doc_demo_storage, MARKER, "", "![Each query names a population](x.png)") == []
 
 
 def test_readme_yields_its_headline_alt_text_query() -> None:
     headline = {
-        "source_model": "orders",
-        "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
+        "population": "orders",
+        "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
         "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
     }
     assert headline in [q.query for q in load_page("README.md").checked_queries()]

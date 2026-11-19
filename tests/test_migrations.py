@@ -13,8 +13,8 @@ import yaml
 from pydantic import ValidationError
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -58,7 +58,7 @@ def test_migrate_forward_version_passes_through() -> None:
     assert out["future"] is True
 
 
-def test_migrate_missing_handler_raises(monkeypatch) -> None:
+def test_migrate_missing_handler_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """If CURRENT_VERSIONS jumps ahead but no migration is registered, fail loudly."""
     # Bump past the highest registered migration to force a gap.
     target = max(mig.CURRENT_VERSIONS.values()) + 5
@@ -67,7 +67,7 @@ def test_migrate_missing_handler_raises(monkeypatch) -> None:
         mig.migrate("SlayerModel", {"version": target - 1, "name": "foo", "data_source": "ds"})
 
 
-def test_migrate_chain_runs_in_order(monkeypatch) -> None:
+def test_migrate_chain_runs_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two synthetic steps registered above the real ones run in order and stamp the version."""
     base = mig.CURRENT_VERSIONS["SlayerModel"]
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", base + 2)
@@ -90,7 +90,7 @@ def test_migrate_chain_runs_in_order(monkeypatch) -> None:
     assert out["step2"] is True
 
 
-def test_register_migration_rejects_duplicates(monkeypatch) -> None:
+def test_register_migration_rejects_duplicates(monkeypatch: pytest.MonkeyPatch) -> None:
     # A fake entity: a ("SlayerModel", N) slot breaks the moment N becomes a real step.
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
 
@@ -109,18 +109,18 @@ def test_register_migration_rejects_duplicates(monkeypatch) -> None:
 
 
 def test_slayer_model_validates_v1_dict() -> None:
-    m = SlayerModel.model_validate({"name": "orders", "sql_table": "orders", "data_source": "ds"})
+    m = SlayerDataset.model_validate({"name": "orders", "sql_table": "orders", "data_source": "ds"})
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert m.name == "orders"
 
 
 def test_slayer_model_dump_includes_version() -> None:
-    m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
+    m = SlayerDataset(name="orders", sql_table="orders", data_source="ds")
     dumped = m.model_dump(mode="json", exclude_none=True)
     assert dumped["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
-def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch) -> None:
+def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch: pytest.MonkeyPatch) -> None:
     """The before-validator walks the chain (synthetic step registered above the real ones)."""
     base = mig.CURRENT_VERSIONS["SlayerModel"]
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", base + 1)
@@ -133,7 +133,7 @@ def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch) -> Non
         data.setdefault("meta", {})["migrated"] = True
         return data
 
-    m = SlayerModel.model_validate(
+    m = SlayerDataset.model_validate(
         {"version": base, "name": "orders", "sql_table": "orders", "data_source": "ds"}
     )
     assert m.version == base + 1
@@ -211,19 +211,19 @@ def test_datasource_config_v2_dict_preserves_snowflake_fields() -> None:
 
 
 def test_slayer_query_validates_v1_dict() -> None:
-    q = SlayerQuery.model_validate({"source_model": "orders"})
+    q = SlayerQuery.model_validate({"population": "orders"})
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
 
 
 def test_slayer_query_dump_includes_version() -> None:
-    q = SlayerQuery(source_model="orders")
+    q = SlayerQuery(population="orders")
     assert q.model_dump(mode="json", exclude_none=True)["version"] == mig.CURRENT_VERSIONS["SlayerQuery"]
 
 
 # --- End-to-end: any backend should benefit from migrations ---------------
 
 
-async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
+async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch: pytest.MonkeyPatch) -> None:
     """A hand-written YAML at a synthetic intermediate version is upgraded on load."""
     next_version = mig.CURRENT_VERSIONS["SlayerModel"] + 1
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", next_version)
@@ -247,13 +247,13 @@ async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
 
         storage = YAMLStorage(base_dir=tmpdir)
 
-        loaded = await storage.get_model("orders")
+        loaded = await storage.get_dataset("orders")
         assert loaded is not None
         assert loaded.version == next_version
         assert loaded.meta == {"upgraded": True}
 
 
-async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
+async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch: pytest.MonkeyPatch) -> None:
     """Same end-to-end path, but via SQLiteStorage — proves the hook is at the
     Pydantic layer and not tied to YAML I/O."""
     next_version = mig.CURRENT_VERSIONS["SlayerModel"] + 1
@@ -279,7 +279,7 @@ async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None
                 ("ds", "orders", legacy_blob),
             )
 
-        loaded = await storage.get_model("orders")
+        loaded = await storage.get_dataset("orders")
         assert loaded is not None
         assert loaded.version == next_version
         assert loaded.meta == {"upgraded": True}
@@ -288,8 +288,8 @@ async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None
 async def test_yaml_round_trip_preserves_version() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_model(SlayerModel(name="orders", sql_table="orders", data_source="ds"))
-        loaded = await storage.get_model("orders")
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="orders", data_source="ds"))
+        loaded = await storage.get_dataset("orders")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
@@ -305,7 +305,7 @@ async def test_yaml_round_trip_preserves_version() -> None:
 
 def test_model_v1_to_v2_dimensions_only() -> None:
     """A v1 model with only dimensions migrates to v2 columns; measures empty."""
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "data_source": "ds",
         "version": 1,
         "name": "orders",
@@ -316,15 +316,15 @@ def test_model_v1_to_v2_dimensions_only() -> None:
         ],
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
-    assert [c.name for c in m.columns] == ["status", "id"]
-    assert m.columns[0].type.value == "TEXT"
-    assert m.columns[1].primary_key is True
-    assert m.measures == []
+    assert [c.name for c in m.fields] == ["status", "id"]
+    assert m.fields[0].datatype.value == "String"
+    assert m.fields[1].primary_key is True
+    assert m.metrics == []
 
 
 def test_model_v1_to_v2_measures_only() -> None:
     """A v1 model with only measures migrates to v2 columns with NUMBER default."""
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "data_source": "ds",
         "version": 1,
         "name": "orders",
@@ -336,17 +336,17 @@ def test_model_v1_to_v2_measures_only() -> None:
         ],
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
-    assert [c.name for c in m.columns] == ["revenue", "high_value"]
-    assert all(c.type.value == "DOUBLE" for c in m.columns)
-    assert all(c.primary_key is False for c in m.columns)
-    assert m.columns[1].filter == "amount > 100"
-    assert m.columns[1].allowed_aggregations == ["sum"]
-    assert m.measures == []
+    assert [c.name for c in m.fields] == ["revenue", "high_value"]
+    assert all(c.datatype.value == "Float" for c in m.fields)
+    assert all(c.primary_key is False for c in m.fields)
+    assert m.fields[1].filter == "amount > 100"
+    assert m.fields[1].allowed_aggregations == ["sum"]
+    assert m.metrics == []
 
 
 def test_model_v1_to_v2_dim_and_measure() -> None:
     """Both lists merge into columns; order preserved (dimensions first)."""
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "data_source": "ds",
         "version": 1,
         "name": "orders",
@@ -354,14 +354,14 @@ def test_model_v1_to_v2_dim_and_measure() -> None:
         "dimensions": [{"name": "status"}],
         "measures": [{"name": "revenue", "sql": "amount"}],
     })
-    assert [c.name for c in m.columns] == ["status", "revenue"]
-    assert m.measures == []
+    assert [c.name for c in m.fields] == ["status", "revenue"]
+    assert m.metrics == []
 
 
 def test_model_v1_to_v2_collision_raises() -> None:
     """A v1 model with a name in both dimensions and measures raises a clear error."""
     with pytest.raises(ValueError, match="name collision"):
-        SlayerModel.model_validate({
+        SlayerDataset.model_validate({
             "data_source": "ds",
             "version": 1,
             "name": "orders",
@@ -372,22 +372,22 @@ def test_model_v1_to_v2_collision_raises() -> None:
 
 def test_model_v1_to_v2_legacy_type_alias() -> None:
     """Old `type: sum` on a Measure becomes allowed_aggregations=['sum']."""
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "data_source": "ds",
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
         "measures": [{"name": "revenue", "sql": "amount", "type": "sum"}],
     })
-    col = m.columns[0]
+    col = m.fields[0]
     assert col.name == "revenue"
-    assert col.type.value == "DOUBLE"  # default after stripping legacy `type: sum`
+    assert col.datatype.value == "Float"  # default after stripping legacy `type: sum`
     assert col.allowed_aggregations == ["sum"]
 
 
 def test_model_v1_to_v2_legacy_type_alias_respects_explicit_whitelist() -> None:
     """If user already set allowed_aggregations, the legacy type doesn't overwrite it."""
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "data_source": "ds",
         "version": 1,
         "name": "orders",
@@ -399,14 +399,14 @@ def test_model_v1_to_v2_legacy_type_alias_respects_explicit_whitelist() -> None:
             "allowed_aggregations": ["sum", "avg"],
         }],
     })
-    assert m.columns[0].allowed_aggregations == ["sum", "avg"]
+    assert m.fields[0].allowed_aggregations == ["sum", "avg"]
 
 
 def test_model_v1_detector_handles_non_list_measures() -> None:
     """Malformed `measures` (e.g. a dict) must not crash the v1 detector — it
     should fall through so Pydantic raises the regular validation error."""
     with pytest.raises(Exception) as exc_info:
-        SlayerModel.model_validate({
+        SlayerDataset.model_validate({
             "data_source": "ds",
             "version": 1,
             "name": "orders",
@@ -419,7 +419,7 @@ def test_model_v1_detector_handles_non_list_measures() -> None:
 
 def test_model_v2_input_is_noop() -> None:
     """A v2 dict passes through migrate() unchanged at the version walker."""
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "data_source": "ds",
         "version": 2,
         "name": "orders",
@@ -428,12 +428,12 @@ def test_model_v2_input_is_noop() -> None:
         "measures": [],
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
-    assert [c.name for c in m.columns] == ["status"]
+    assert [c.name for c in m.fields] == ["status"]
 
 
 def test_model_forward_version_passes_through() -> None:
     """A v3 dict (future) passes through; Pydantic ignores extras."""
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "data_source": "ds",
         "version": 99,
         "name": "orders",
@@ -453,9 +453,9 @@ def test_query_v1_to_v2_fields_renamed() -> None:
         "fields": [{"formula": "revenue:sum", "name": "rev"}],
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
-    assert q.measures is not None
-    assert q.measures[0].formula == "sum(revenue)"
-    assert q.measures[0].name == "rev"
+    assert q.metrics is not None
+    assert q.metrics[0].metric == "sum(revenue)"
+    assert q.metrics[0].alias == "rev"
 
 
 def test_query_v1_to_v2_both_fields_and_measures_raises() -> None:
@@ -471,7 +471,7 @@ def test_query_v1_to_v2_both_fields_and_measures_raises() -> None:
 
 def test_query_v1_to_v2_inline_model_extension() -> None:
     """ModelExtension nested in source_model gets its dim/measures merged."""
-    q = SlayerQuery.model_validate({
+    q = mig.migrate("SlayerQuery", {
         "version": 1,
         "source_model": {
             "source_name": "orders",
@@ -480,19 +480,17 @@ def test_query_v1_to_v2_inline_model_extension() -> None:
         },
         "fields": [{"formula": "revenue:sum"}],
     })
-    assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
-    assert q.source_model == "orders"
-    (sm,) = q.extensions or []
-    assert isinstance(sm, ModelExtension)
-    assert sm.source_name == "orders"
-    assert [c.name for c in sm.columns or []] == ["region", "revenue"]
-    assert sm.measures == []
+    assert q["version"] == mig.CURRENT_VERSIONS["SlayerQuery"]
+    assert q["population"] == "orders"
+    (sm,) = q["extensions"]
+    assert sm["dataset"] == "orders"
+    assert [c["name"] for c in sm["columns"]] == ["region", "revenue"]
+    assert sm["metrics"] == []
 
 
-def test_query_v1_to_v2_inline_slayer_model_dict_migrates_during_query_validation() -> None:
-    """A v1 inline SlayerModel dict is migrated by the model's own before-validator
-    when the query's typed ``source_model`` validates it."""
-    q = SlayerQuery.model_validate({
+def test_query_v1_to_v2_inline_slayer_model_dict_migrates() -> None:
+    """A v1 query holding a v1 inline SlayerModel dict: the query and the model each migrate."""
+    q = mig.migrate("SlayerQuery", {
         "version": 1,
         "source_model": {
             "version": 1,
@@ -504,18 +502,17 @@ def test_query_v1_to_v2_inline_slayer_model_dict_migrates_during_query_validatio
         },
         "fields": [{"formula": "revenue:sum"}],
     })
-    assert q.measures is not None  # `fields` rename worked
-    m = q.source_model
-    assert isinstance(m, SlayerModel)
-    assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
-    assert [c.name for c in m.columns] == ["status", "revenue"]
+    assert q["metrics"]  # `fields` rename worked
+    m = mig.migrate("SlayerModel", q["population"])
+    assert m["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
+    assert [c["name"] for c in m["fields"]] == ["status", "revenue"]
 
 
 def test_model_v1_to_v2_source_queries_nested_rename() -> None:
     """``source_queries`` entries are migrated in place at model-load time
     so re-saving the model doesn't persist the v1 ``fields`` key.
     """
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "version": 1,
         "name": "saved",
         "data_source": "demo",
@@ -534,9 +531,9 @@ def test_model_v1_to_v2_source_queries_nested_rename() -> None:
     # (per SlayerModel.source_queries' BeforeValidator); 'fields' has been
     # renamed to 'measures' and version bumped to current.
     assert isinstance(inner, SlayerQuery)
-    assert inner.measures is not None
-    assert inner.measures[0].formula == "sum(revenue)"
-    assert inner.measures[0].name == "rev"
+    assert inner.metrics is not None
+    assert inner.metrics[0].metric == "sum(revenue)"
+    assert inner.metrics[0].alias == "rev"
     assert inner.version == mig.CURRENT_VERSIONS["SlayerQuery"]
 
 
@@ -544,7 +541,7 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
     """A nested SlayerQuery whose source_model is an inline ModelExtension
     also gets recursively migrated (extension dimensions+measures merged).
     """
-    m = SlayerModel.model_validate({
+    m = mig.migrate("SlayerModel", {
         "version": 1,
         "name": "saved",
         "data_source": "demo",
@@ -558,18 +555,17 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
             "fields": [{"formula": "revenue:sum"}],
         }],
     })
-    inner = m.source_queries[0]
-    assert isinstance(inner, SlayerQuery)
-    assert inner.source_model == "orders"
-    (src,) = inner.extensions or []
-    assert isinstance(src, ModelExtension)
+    (inner,) = m["source_queries"]
+    assert inner["version"] == mig.CURRENT_VERSIONS["SlayerQuery"]
+    assert inner["population"] == "orders"
+    (src,) = inner["extensions"]
     # Merged into columns (status from dimensions + revenue from measures)
-    assert sorted(c.name for c in src.columns or []) == ["revenue", "status"]
+    assert sorted(c["name"] for c in src["columns"]) == ["revenue", "status"]
 
 
 def test_model_v2_input_with_source_queries_preserved() -> None:
     """v2 input with already-v2 source_queries entries is left alone."""
-    m = SlayerModel.model_validate({
+    m = SlayerDataset.model_validate({
         "version": 2,
         "name": "saved",
         "data_source": "demo",
@@ -583,9 +579,9 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
     })
     inner = m.source_queries[0]
     assert isinstance(inner, SlayerQuery)
-    assert inner.measures is not None
-    assert inner.measures[0].formula == "sum(revenue)"
-    assert inner.measures[0].name == "rev"
+    assert inner.metrics is not None
+    assert inner.metrics[0].metric == "sum(revenue)"
+    assert inner.metrics[0].alias == "rev"
 
 
 async def test_v1_yaml_round_trip_to_v2() -> None:
@@ -624,21 +620,21 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
         storage = engine.storage
 
         try:
-            loaded = await storage.get_model("orders")
+            loaded = await storage.get_dataset("orders")
         finally:
             await engine.aclose()
             engine.close()
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert [c.name for c in loaded.columns] == ["status", "revenue"]
-        assert loaded.measures == []
+        assert [c.name for c in loaded.fields] == ["status", "revenue"]
+        assert loaded.metrics == []
 
         # Re-save and confirm current version on disk at the v4 path.
-        await storage.save_model(loaded)
+        await storage.save_dataset(loaded)
         new_path = Path(models_dir) / "demo" / "orders.yaml"
         on_disk = yaml.safe_load(await asyncio.to_thread(new_path.read_text))
         assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert "columns" in on_disk
+        assert "fields" in on_disk
         assert "dimensions" not in on_disk
 
 
@@ -693,13 +689,13 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
         # schema migrator runs the v3 → v4 PK rebuild on real legacy rows.
         engine = SlayerQueryEngine(storage=SQLiteStorage(db_path=db_path))
         try:
-            loaded = await engine.storage.get_model("orders")
+            loaded = await engine.storage.get_dataset("orders")
         finally:
             await engine.aclose()
             engine.close()
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert [c.name for c in loaded.columns] == ["status", "revenue"]
+        assert [c.name for c in loaded.fields] == ["status", "revenue"]
 
 
 # --- v2 → v3 SlayerQuery migration (drops dry_run / explain) -----------------
@@ -739,14 +735,22 @@ def test_query_v2_to_v3_drops_legacy_execution_flags(
 def test_query_v2_to_v3_names_an_inline_model_without_its_contents(caplog) -> None:
     secret = "alice@example.com"
     inline = {"name": "inline_orders", "sql_table": "orders", "data_source": "ds",
-              "columns": [{"name": "email", "type": "string"}],
-              "measures": [{"name": "m", "sql": f"COUNT(CASE WHEN email = '{secret}' THEN 1 END)"}]}
+              "fields": [{"name": "email", "datatype": "string"}],
+              "metrics": [{"name": "m", "sql": f"COUNT(CASE WHEN email = '{secret}' THEN 1 END)"}]}
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
     with pytest.warns(DeprecationWarning) as caught:
-        SlayerQuery.model_validate({"version": 2, "source_model": inline, "dry_run": True})
+        mig.migrate("SlayerQuery", {"version": 2, "source_model": inline, "dry_run": True})
     texts = [r.getMessage() for r in caplog.records] + [str(w.message) for w in caught]
     assert any("inline_orders" in t for t in texts), texts
     assert not [t for t in texts if secret in t], texts
+
+
+def test_query_v2_to_v3_logs_the_query_name_as_an_argument(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
+    with pytest.warns(DeprecationWarning):
+        mig.migrate("SlayerQuery", {"version": 2, "name": "private_query", "source_model": "orders", "dry_run": True})
+    (record,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert ("private_query" in str(record.msg), "private_query" in record.getMessage()) == (False, True)
 
 
 def test_query_v2_to_v3_no_op_when_neither_present(caplog) -> None:
@@ -783,13 +787,13 @@ def test_query_v2_to_v3_uses_name_as_identifier_when_present(caplog) -> None:
 def test_slayer_query_v3_extra_forbid_rejects_typo_field() -> None:
     """extra='forbid': a typo raises (``dry_run``/``explain`` are dropped by the v2→v3 migration instead)."""
     with pytest.raises(ValidationError, match="dryrun|extra"):
-        SlayerQuery(source_model="orders", dryrun=True)  # type: ignore[call-arg]
+        SlayerQuery(population="orders", dryrun=True)  # type: ignore[call-arg]
 
 
 def test_slayer_query_v3_direct_construct_with_dry_run_still_warns() -> None:
     """``SlayerQuery(dry_run=True)`` warns and drops the field rather than raising."""
     with pytest.warns(DeprecationWarning, match="v2.+v3 migration"):
-        q = SlayerQuery(source_model="orders", dry_run=True)  # type: ignore[call-arg]
+        q = SlayerQuery(population="orders", dry_run=True)  # type: ignore[call-arg]
     assert not hasattr(q, "dry_run")
 
 
@@ -803,13 +807,13 @@ async def _build_engine_with_orders(tmpdir: str):
         name="ds", type="postgres", host="localhost", port=5432,
         database="db", username="u", password="p",  # NOSONAR(S2068) — test datasource never actually connects (dry_run only)
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     ))
     return SlayerQueryEngine(storage=storage)
@@ -818,7 +822,7 @@ async def _build_engine_with_orders(tmpdir: str):
 async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
         result = await engine.execute(query=q, dry_run=True)
         assert result.data == []
         assert "COUNT(*)" in result.sql
@@ -828,7 +832,7 @@ async def test_engine_dry_run_kwarg_dict_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
-            query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
             dry_run=True,
         )
         assert result.data == []
@@ -841,7 +845,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
             query=[
-                {"source_model": "orders", "measures": [{"formula": "count(*)"}]},
+                {"population": "orders", "metrics": [{"metric": "count(*)"}]},
             ],
             dry_run=True,
         )
@@ -881,7 +885,7 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
 
         # Loading the model triggers nested SlayerQuery validation, which
         # fires the v2→v3 migration and drops dry_run with a warning.
-        loaded = await storage.get_model("stale")
+        loaded = await storage.get_dataset("stale")
         assert loaded is not None
         assert loaded.source_queries is not None
         # source_queries entries are parsed into SlayerQuery instances by
@@ -926,7 +930,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "amount", "sql": "amount", "type": "number"}],
         })
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
 
     def test_integer_renames_to_int(self) -> None:
         # v4 never shipped INTEGER but we accept lenient input on the path.
@@ -935,7 +939,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "qty", "sql": "qty", "type": "integer"}],
         })
-        assert d["columns"][0]["type"] == "INT"
+        assert d["fields"][0]["datatype"] == "Integer"
 
     def test_time_renames_to_timestamp(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -943,7 +947,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "ts", "sql": "ts", "type": "time"}],
         })
-        assert d["columns"][0]["type"] == "TIMESTAMP"
+        assert d["fields"][0]["datatype"] == "DateTime"
 
     def test_date_renames_to_date(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -951,7 +955,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "d", "sql": "d", "type": "date"}],
         })
-        assert d["columns"][0]["type"] == "DATE"
+        assert d["fields"][0]["datatype"] == "Date"
 
     def test_boolean_renames_to_boolean(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -959,7 +963,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "flag", "sql": "flag", "type": "boolean"}],
         })
-        assert d["columns"][0]["type"] == "BOOLEAN"
+        assert d["fields"][0]["datatype"] == "Boolean"
 
     @pytest.mark.parametrize("pseudo", ["count", "count_distinct", "sum", "avg", "min", "max", "last"])
     def test_pseudo_types_stripped(self, pseudo: str) -> None:
@@ -969,7 +973,7 @@ class TestV4ToV5DictMigration:
             "columns": [{"name": "weird", "sql": "weird", "type": pseudo}],
         })
         # Field is removed (not present), so Pydantic falls through to default.
-        assert "type" not in d["columns"][0]
+        assert "datatype" not in d["fields"][0]
 
     def test_recurses_into_source_queries_inline_models(self) -> None:
         """Inline ``source_model`` dicts inside ``source_queries`` get the same
@@ -995,7 +999,7 @@ class TestV4ToV5DictMigration:
 
     def test_pydantic_load_round_trips(self) -> None:
         """A v4 dict walks the whole chain; only the v4→v5 type renames are pinned here."""
-        m = SlayerModel.model_validate({
+        m = SlayerDataset.model_validate({
             "version": 4,
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [
@@ -1004,9 +1008,9 @@ class TestV4ToV5DictMigration:
                 {"name": "ts", "sql": "ts", "type": "time"},
             ],
         })
-        assert m.columns[0].type.name == "TEXT"
-        assert m.columns[1].type.name == "DOUBLE"
-        assert m.columns[2].type.name == "TIMESTAMP"
+        assert m.fields[0].datatype.name == "STRING"
+        assert m.fields[1].datatype.name == "FLOAT"
+        assert m.fields[2].datatype.name == "DATETIME"
 
     def test_v5_dict_passes_through_v4_to_v5_step_unchanged(self) -> None:
         """The v4→v5 step is a no-op for v5 input (called directly; the orchestrator never would)."""

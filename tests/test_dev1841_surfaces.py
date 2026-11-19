@@ -1,9 +1,7 @@
-"""DEV-1841 task 1.3 — the REST query request and the MCP query tool swap
-``strict`` for ``to_many_handling``: the mode reaches the engine and governs
-resolution, and ``strict`` is rejected on both surfaces.
+"""The REST query request and the MCP query tool swap ``strict`` for ``to_many_handling``: the mode reaches the
+engine and governs resolution, and ``strict`` converts with a deprecation on both surfaces.
 
-Spec: openspec …/specs/queries/attribution-modes — "Surfaces accept the mode
-parameter", "Strict input is rejected with the remedy".
+Spec: queries/attribution-modes — "Surfaces accept the mode parameter", "Strict input converts with a deprecation".
 """
 
 from __future__ import annotations
@@ -14,18 +12,20 @@ from typing import AsyncIterator
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
 
 from slayer.api.server import QueryRequest, create_app
 from slayer.mcp.server import create_mcp_server
 
-from tests._dev1840_fixtures import _seed_sqlite, dev1840_models
+from tests._deprecated_input_helpers import deprecated_in, mcp_payload, recorded
+from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
+_STRICT_BODY = {"population": "orders", "metrics": [{"metric": "count(*)"}], "strict": True}
+
 _ASSOCIATE_BODY = {
-    "source_model": "orders",
+    "population": "orders",
     "dimensions": ["status"],
-    "measures": [{"formula": "sum(customers.spend)", "name": "cm"}],
+    "metrics": [{"metric": "sum(customers.spend)", "alias": "cm"}],
     "to_many_handling": "associate",
 }
 
@@ -36,7 +36,7 @@ async def storage() -> AsyncIterator[object]:
         db_path = os.path.join(d, "data.sqlite")
         _seed_sqlite(db_path)
         engine = await build_exec_engine(
-            db_path, dialect="sqlite", models=dev1840_models())
+            db_path, dialect="sqlite", datasets=dev1840_datasets())
         yield engine.storage
 
 
@@ -56,22 +56,38 @@ class TestRestSurface:
         assert by["ok"] == pytest.approx(420.0)
         assert by["new"] == pytest.approx(290.0)
 
-    async def test_strict_rejected(self, storage) -> None:
-        """Scenario: strict input is rejected on the REST surface."""
+    async def test_strict_converts(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
-        body = {"source_model": "orders", "measures": [{"formula": "count(*)"}],
-                "strict": True}
-        resp = client.post("/query", json=body)
-        assert resp.status_code != 200
-        assert "to_many_handling" in resp.text
+        with recorded():
+            resp = client.post("/query", json=_STRICT_BODY)
+        assert resp.status_code == 200, resp.text
+        [w] = deprecated_in(resp.json()["warnings"])
+        assert "to_many_handling" in w["new"]
+
+    @pytest.mark.parametrize(("version", "warned"), [(3.9, 1), (3, 0)], ids=["malformed_is_fresh", "stored_v3"])
+    async def test_versioned_strict_follows_the_python_rule(self, storage, version: object, warned: int) -> None:
+        client = TestClient(create_app(storage=storage))
+        with recorded():
+            resp = client.post("/query", json={**_STRICT_BODY, "version": version})
+        assert resp.status_code == 200, resp.text
+        assert len(deprecated_in(resp.json()["warnings"])) == warned
+
+    async def test_fresh_strict_keeps_the_rest_of_a_versioned_payload_migrated(self, storage) -> None:
+        body = {"source_model": {"source_name": "orders", "joins": []}, "measures": [{"formula": "count(*)"}],
+                "strict": True, "version": 3.9}
+        client = TestClient(create_app(storage=storage))
+        with recorded():
+            resp = client.post("/query", json=body)
+        assert resp.status_code == 200, resp.text
+        assert len(deprecated_in(resp.json()["warnings"])) == 1
 
     async def test_association_slayer_error_maps_to_400(self, storage) -> None:
         """An association-eligibility ``SlayerError`` (a status-grained attached
         parameter the customer entity does not determine) is a client error
         (400), not a 500."""
         client = TestClient(create_app(storage=storage))
-        body = {"source_model": "orders", "dimensions": ["status"],
-                "measures": [{"formula": "weighted_avg(customers.spend, "
+        body = {"population": "orders", "dimensions": ["status"],
+                "metrics": [{"metric": "weighted_avg(customers.spend, "
                               "weight=sum(amount, partition_by=status))"}],
                 "to_many_handling": "associate"}
         resp = client.post("/query", json=body)
@@ -90,10 +106,9 @@ class TestMcpSurface:
         assert "290" in text
         assert "460" not in text  # not the broadcast total
 
-    async def test_strict_rejected(self, storage) -> None:
+    async def test_strict_converts(self, storage) -> None:
         server = create_mcp_server(storage=storage)
-        with pytest.raises((ToolError, ValueError)):
-            await server.call_tool(name="query", arguments={"query": {
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
-                "strict": True}})
+        with recorded():
+            blocks, _ = await server.call_tool(name="query", arguments={"query": _STRICT_BODY, "format": "json"})
+        [w] = deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))
+        assert "to_many_handling" in w["new"]

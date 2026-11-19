@@ -1,0 +1,63 @@
+{
+ "source": "tests/test_money_exact_numeric.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ledger",
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "ledger",
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ledger",
+    "dimensions": [
+     "id",
+     "doubled"
+    ]
+   },
+   "new": {
+    "population": "ledger",
+    "dimensions": [
+     "id",
+     "doubled"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  }
+ ]
+}

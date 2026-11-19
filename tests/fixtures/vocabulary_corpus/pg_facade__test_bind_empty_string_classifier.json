@@ -1,0 +1,58 @@
+{
+ "source": "tests/pg_facade/test_bind_empty_string_classifier.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 549,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 554,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 555,
+   "reason": "not fully literal"
+  }
+ ]
+}

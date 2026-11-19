@@ -14,9 +14,9 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Aggregation, AggregationParam, Column, DatasourceConfig, ModelMeasure, SlayerModel,
+    Aggregation, AggregationParam, DatasetField, DatasourceConfig, SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.sql_template import (
     SqlTemplateError, aggregation_reads, check_aggregation_definition, placeholder_names, sql_template,
@@ -35,34 +35,34 @@ _SUM_N_CAST = "SUM({value}) * CAST('{n}' AS DOUBLE)"
 _LABEL = "MAX(CASE WHEN {value} > 0 THEN '{n}' END)"
 
 
-def _agg(formula: str, *, name: str = "agg", **defaults: str) -> Aggregation:
+def _agg(expression: str, *, name: str = "agg", **defaults: str) -> Aggregation:
     return Aggregation(
-        name=name, formula=formula,
+        name=name, expression=expression,
         params=[AggregationParam(name=k, sql=v) for k, v in defaults.items()],
     )
 
 
-def _orders(*aggs: Aggregation) -> SlayerModel:
-    return SlayerModel(
+def _orders(*aggs: Aggregation) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         aggregations=list(aggs),
     )
 
 
-def _q(formula: str) -> SlayerQuery:
-    return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula, name="m")])
+def _q(expression: str) -> SlayerQuery:
+    return SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression, alias="m")])
 
 
 def _mode_b_string(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-async def _dry(formula: str, *, agg: Aggregation, dialect: str = "postgres", validate: bool = False) -> str:
-    return await _engine_generate(query=_q(formula), model=_orders(agg), dialect=dialect, validate=validate)
+async def _dry(expression: str, *, agg: Aggregation, dialect: str = "postgres", validate: bool = False) -> str:
+    return await _engine_generate(query=_q(expression), dataset=_orders(agg), dialect=dialect, validate=validate)
 
 
 def _then_literal(sql: str, *, dialect: str) -> Expression:
@@ -86,26 +86,26 @@ def _seed(db_path: str) -> None:
         conn.executemany("INSERT INTO orders VALUES (?, ?)", rows)
 
 
-async def _save(model: SlayerModel, *, dialect: str = "sqlite") -> None:
+async def _save(dataset: SlayerDataset, *, dialect: str = "sqlite") -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = YAMLStorage(base_dir=tmp)
         await storage.save_datasource(DatasourceConfig(
             name="test", type=dialect, database=os.path.join(tmp, "x.db")))
-        await storage.save_model(model)
-        await storage.save_model(model)
+        await storage.save_dataset(dataset)
+        await storage.save_dataset(dataset)
 
 
-def _names_placeholder(*, err: BaseException, name: str, formula: str) -> None:
+def _names_placeholder(*, err: BaseException, name: str, expression: str) -> None:
     msg = str(err)
-    assert formula in msg, msg
-    assert re.search(rf"[{{'\"]{name}[}}'\"]", msg.replace(formula, "")), msg
+    assert expression in msg, msg
+    assert re.search(rf"[{{'\"]{name}[}}'\"]", msg.replace(expression, "")), msg
 
 
 class TestQuotedDefaultExecutes:
     @pytest.mark.parametrize(("dialect", "formula"), [("sqlite", _SUM_N), ("duckdb", _SUM_N_CAST)])
     async def test_numeric_default_substitutes(self, dialect: str, formula: str) -> None:
         async with seeded_exec_engine(
-            dialect=dialect, seed=_seed, models=[_orders(_agg(formula, name="sum_n", n="2"))],
+            dialect=dialect, seed=_seed, datasets=[_orders(_agg(formula, name="sum_n", n="2"))],
         ) as (engine, _db):
             resp = await engine.execute(_q("sum_n(amount)"))
         assert float(resp.data[0]["orders.m"]) == pytest.approx(TWICE_SUM)
@@ -113,7 +113,7 @@ class TestQuotedDefaultExecutes:
     @pytest.mark.parametrize(("dialect", "formula"), [("sqlite", _SUM_N), ("duckdb", _SUM_N_CAST)])
     async def test_numeric_kwarg_substitutes(self, dialect: str, formula: str) -> None:
         async with seeded_exec_engine(
-            dialect=dialect, seed=_seed, models=[_orders(_agg(formula, name="sum_n", n="2"))],
+            dialect=dialect, seed=_seed, datasets=[_orders(_agg(formula, name="sum_n", n="2"))],
         ) as (engine, _db):
             resp = await engine.execute(_q("sum_n(amount, n=3)"))
         assert float(resp.data[0]["orders.m"]) == pytest.approx(3 * sum(_AMOUNTS))
@@ -184,14 +184,14 @@ class TestNonOrdinaryLiteralRejected:
         agg = _agg(formula, n="2")
         with pytest.raises(SqlTemplateError) as ei:
             check_aggregation_definition(where="w", agg=agg, dialect=dialect)
-        _names_placeholder(err=ei.value, name="n", formula=formula)
+        _names_placeholder(err=ei.value, name="n", expression=formula)
 
     @pytest.mark.parametrize(("dialect", "formula"), _NON_ORDINARY)
     async def test_rejected_at_render(self, dialect: str, formula: str) -> None:
         agg = _agg(formula, name="lit", n="2")
         with pytest.raises(SqlTemplateError) as ei:
             await _dry("lit(amount)", agg=agg, dialect=dialect)
-        _names_placeholder(err=ei.value, name="n", formula=formula)
+        _names_placeholder(err=ei.value, name="n", expression=formula)
 
 
 _TRICKY = "a'b\\c"
@@ -206,8 +206,8 @@ _TRICKY_SQL = {
 class TestQuotedBindingValue:
     @pytest.mark.parametrize("dialect", list(_TRICKY_SQL))
     async def test_string_kwarg_stays_inside_the_literal(self, dialect: str) -> None:
-        # The kwarg is the dialect's own spelling of a string literal valued a'b\c.
-        kwarg = exp.Literal.string(_TRICKY).sql(dialect=dialect)
+        # The kwarg is the Mode-B spelling of a string literal valued a'b\c.
+        kwarg = _mode_b_string(_TRICKY)
         sql = await _dry(f"lbl(amount, n={_mode_b_string(kwarg)})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
         assert isinstance(lit, exp.Literal)
@@ -255,7 +255,7 @@ class TestTypedLiteral:
 
     async def test_typed_literal_placeholder_executes(self) -> None:
         agg = _agg("SUM({value}) * EXTRACT(DAY FROM DATE '{d}')", name="dated", d="'2024-01-02'")
-        async with seeded_exec_engine(dialect="duckdb", seed=_seed, models=[_orders(agg)]) as (engine, _db):
+        async with seeded_exec_engine(dialect="duckdb", seed=_seed, datasets=[_orders(agg)]) as (engine, _db):
             resp = await engine.execute(_q("dated(amount)"))
         assert float(resp.data[0]["orders.m"]) == pytest.approx(TWICE_SUM)
 
@@ -270,12 +270,12 @@ class TestTypedLiteral:
     @pytest.mark.parametrize("value", ["a'b", "a\\b"])
     @pytest.mark.parametrize("dialect", ["postgres", "snowflake", "duckdb"])
     async def test_interval_value_cannot_hold_a_quote_or_backslash(self, dialect: str, value: str, formula: str) -> None:
-        kwarg = exp.Literal.string(value).sql(dialect=dialect)
+        kwarg = _mode_b_string(value)
         agg = _agg(formula, name="days", n="2")
         formula_text = f"days(amount, n={_mode_b_string(kwarg)})"
         with pytest.raises(SqlTemplateError) as ei:
             await _dry(formula_text, agg=agg, dialect=dialect)
-        _names_placeholder(err=ei.value, name="n", formula=formula)
+        _names_placeholder(err=ei.value, name="n", expression=formula)
 
 
 class TestNonLiteralBindingRejected:
@@ -288,7 +288,7 @@ class TestNonLiteralBindingRejected:
         model = _orders(_agg(formula, **defaults))
         with pytest.raises(SqlTemplateError) as ei:
             await _save(model)
-        _names_placeholder(err=ei.value, name=name, formula=formula)
+        _names_placeholder(err=ei.value, name=name, expression=formula)
 
     async def test_column_kwarg_rejected_at_binding(self, monkeypatch: pytest.MonkeyPatch) -> None:
         executed: list[str] = []
@@ -299,7 +299,7 @@ class TestNonLiteralBindingRejected:
 
         monkeypatch.setattr(SlayerSQLClient, "execute", _spy)
         async with seeded_exec_engine(
-            dialect="sqlite", seed=_seed, models=[_orders(_agg(_SUM_N, name="sum_n", n="2"))],
+            dialect="sqlite", seed=_seed, datasets=[_orders(_agg(_SUM_N, name="sum_n", n="2"))],
         ) as (engine, _db):
             query = _q("sum_n(amount, n=id)")
             with pytest.raises(SqlTemplateError) as ei:

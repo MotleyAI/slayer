@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev2074_cypher_timeout.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  }
+ ]
+}

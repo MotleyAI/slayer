@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.keys import SCALAR_SPECS
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.database.client import SlayerSQLClient
@@ -66,40 +66,43 @@ LIB = TableSpec(
         ("x", "DOUBLE"), ("y", "DOUBLE"), ("a", "INT"), ("b", "INT"), ("c", "INT"), ("cp", "INT"),
         ("code", "TEXT"), ("word", "TEXT"), ("tag", "TEXT"), ("notes", "TEXT"), ("prefix", "TEXT"),
         ("payload", "TEXT"), ("num_txt", "TEXT"), ("qty", "INT"), ("ts", "TIMESTAMP"), ("doc", "TEXT"),
-        ("big", "TEXT"),
+        ("big", "TEXT"), ("k", "INT"), ("d", "DECIMAL"), ("e", "DECIMAL"),
     ],
     rows=[
         (1, "ABCDE", "CD", 2, 7, 2, 0.5, 1.0, None, 2, 1, 65, "ab123", "paid", "+1 (555) 01",
-         "paid\nlate", "ab1", P1, "120.5", 3, "2025-03-05 10:00:00", '{"v": null}', "12345678901234567"),
+         "paid\nlate", "ab1", P1, "120.5", 3, "2025-03-05 10:00:00", '{"v": null}', "12345678901234567", 5, 2.5, 0.125),
         (2, "€é", "é", -2, -7, -2, 2.0, -1.0, 3, None, 1, 8364, "ab12", "PAID", "5 USD",
-         "line1\nline2", "zz", '{"a": {}, "qty": "3"}', "99", 0, "2025-03-31 23:59:59", '{}', None),
+         "line1\nline2", "zz", '{"a": {}, "qty": "3"}', "99", 0, "2025-03-31 23:59:59", '{}', None, -5, -2.5, -0.125),
         (3, "a/b/c", "/", 0, 7, 0, -1.0, 0.5, 1, 2, None, 128512, "a_1", "ada", "a@x.org",
-         "nothing", "a_", '{"a": {"b": null}, "qty": "x"}', "abc", 1, "2025-04-01 00:00:00", '{"v": {"k": 1}}', None),
+         "nothing", "a_", '{"a": {"b": null}, "qty": "x"}', "abc", 1, "2025-04-01 00:00:00", '{"v": {"k": 1}}', None, 4, None, None),
         (4, "", "x", 9, -7, 3, 1.0, 1.0, None, None, None, 55296, "abc1", "Ada", "nobody",
-         "paid late", "a_", '{"a": {"b": [1]}}', None, 2, "2024-12-31 12:00:00", '{"v": [1]}', None),
+         "paid late", "a_", '{"a": {"b": [1]}}', None, 2, "2024-12-31 12:00:00", '{"v": [1]}', None, None, None, None),
         (5, None, "a", None, 7, None, None, 1.0, 5, 5, 5, None, None, None, None,
-         None, None, "not json", "3.0", 3, None, '{"v": "x"}', None),
+         None, None, "not json", "3.0", 3, None, '{"v": "x"}', None, None, None, None),
         (6, "Ada Lovelace", "Love", 3, 7, -3, -8.0, None, -1, 0, 1, 1114112, "[ab]1", "123", "15%",
-         "Paid Later", "[a", None, "10", 1, "2025-02-10 08:00:00", '{"v": 0}', None),
+         "Paid Later", "[a", None, "10", 1, "2025-02-10 08:00:00", '{"v": 0}', None, None, None, None),
         (7, "x\U0001F600y", "\U0001F600", -9, -7, 7, -1.5, 2.0, 2, None, None, 57343, "a1", "١٢٣", "150",
-         "x", "%", P7, "1.5", 2, "2025-03-15 00:00:00", '{"v": false}', None),
+         "x", "%", P7, "1.5", 2, "2025-03-15 00:00:00", '{"v": false}', None, None, None, None),
         (8, "ab", "", 1, 0, 1, 0.0, 1.0, None, None, 4, 1114111, "a*?1", "admin", "x",
-         "late paid", "a*", "{}", "1", 1, "2025-01-01 00:00:00", '{"v": "2024-02-29"}', None),
+         "late paid", "a*", "{}", "1", 1, "2025-01-01 00:00:00", '{"v": "2024-02-29"}', None, None, None, None),
         (9, "abc", "z", -1, None, -1, 27.0, -3.0, 0, -3, None, 233, "ab\n", "Adele", "USD USD",
-         "a\nb", None, P9, "02", 2, "2025-06-30 18:30:00", '{"v": "2024-02-29 10:00:00"}', None),
+         "a\nb", None, P9, "02", 2, "2025-06-30 18:30:00", '{"v": "2024-02-29 10:00:00"}', None, None, None, None),
         (10, "Ünïcode", None, 5, 8, 4, 0.25, 0.5, 7, 1, 3, 97, "1_2", "c:\\x1", "",
-         "", "1\\_", P10, "x", None, "2025-03-01 00:00:00", '{"v": 12}', None),
+         "", "1\\_", P10, "x", None, "2025-03-01 00:00:00", '{"v": 12}', None, None, None, None),
     ],
 )
+LIB_DECIMAL = "DECIMAL(10,3)"
 _NAMES = [c for c, _ in LIB.columns]
 ROWS: dict[int, dict[str, Any]] = {r[0]: dict(zip(_NAMES, r)) for r in LIB.rows}
 
 
-def lib_model(*, data_source: str = "test") -> SlayerModel:
-    types = {"INT": DataType.INT, "DOUBLE": DataType.DOUBLE, "TEXT": DataType.TEXT, "TIMESTAMP": DataType.TIMESTAMP}
-    return SlayerModel(
+def lib_dataset(*, data_source: str = "test") -> SlayerDataset:
+    types = {"INT": DataType.INTEGER, "DOUBLE": DataType.FLOAT, "TEXT": DataType.STRING, "TIMESTAMP": DataType.DATETIME,
+             "DECIMAL": DataType.FLOAT}
+    return SlayerDataset(
         name="lib", sql_table="lib", data_source=data_source, default_time_dimension="ts",
-        columns=[Column(name=c, type=types[k], primary_key=c == "id") for c, k in LIB.columns],
+        fields=[DatasetField(name=c, datatype=types[k], primary_key=c == "id", db_type=LIB_DECIMAL if k == "DECIMAL" else None)
+                 for c, k in LIB.columns],
     )
 
 
@@ -245,14 +248,14 @@ class Case(BaseModel):
     values: Optional[dict[int, Any]] = None
     keeps: Optional[frozenset[int]] = None
     variables: Optional[dict[str, Any]] = None
-    model: str = "lib"
+    dataset: str = "lib"
 
     def query(self) -> SlayerQuery:
-        body: dict[str, Any] = {"source_model": self.model, "distinct_dimension_values": False}
+        body: dict[str, Any] = {"population": self.dataset, "distinct_dimension_values": False}
         if self.keeps is not None:
-            body |= {"dimensions": ["id"], "filters": [self.expr]}
+            body |= {"dimensions": ["id"], "filter": [self.expr]}
         else:
-            body |= {"dimensions": ["id", {"expression": self.expr, "name": "v"}]}
+            body |= {"dimensions": ["id", {"field": self.expr, "alias": "v"}]}
         if self.variables:
             body["variables"] = self.variables
         return SlayerQuery.model_validate(body)
@@ -609,9 +612,18 @@ def _coercion_cases() -> list[Case]:
     ]
 
 
+def _numeric_semantics_cases() -> list[Case]:
+    """True division of INT operands; two-argument ``round`` ties on DECIMAL away from zero."""
+    return [
+        _v("divide|int-operands", ["/"], "k / 2", only({1: 2.5, 2: -2.5, 3: 2.0})),
+        _v("round|decimal-tie-scale-0", ["round"], "round(d, 0)", only({1: 3, 2: -3})),
+        _v("round|decimal-tie-scale-2", ["round"], "round(e, 2)", only({1: 0.13, 2: -0.13})),
+    ]
+
+
 def library_cases() -> list[Case]:
     return [*_string_cases(), *_math_cases(), *_date_cases(), *_like_cases(), *_regex_cases(),
-            *_json_cases(), *_returning_cases(), *_coercion_cases()]
+            *_json_cases(), *_returning_cases(), *_coercion_cases(), *_numeric_semantics_cases()]
 
 
 def required_names() -> frozenset[str]:
@@ -651,11 +663,11 @@ def assert_cell(actual: Any, expected: Any, *, where: str) -> None:
 
 def assert_case(data: list[dict[str, Any]], case: Case) -> None:
     if case.keeps is not None:
-        got = {int(r[f"{case.model}.id"]) for r in data}
+        got = {int(r[f"{case.dataset}.id"]) for r in data}
         assert got == set(case.keeps), f"{case.case_id}: kept {sorted(got)}, expected {sorted(case.keeps)}"
         return
     assert case.values is not None
-    got = {int(r[f"{case.model}.id"]): r[f"{case.model}.v"] for r in data}
+    got = {int(r[f"{case.dataset}.id"]): r[f"{case.dataset}.v"] for r in data}
     assert set(got) == set(case.values), f"{case.case_id}: row ids {sorted(got)}"
     for rid, expected in case.values.items():
         assert_cell(got[rid], expected, where=f"{case.case_id} id={rid}")
@@ -663,14 +675,14 @@ def assert_case(data: list[dict[str, Any]], case: Case) -> None:
 
 def lib_query(*dims: Any, **kw: Any) -> SlayerQuery:
     """A row-level ``lib`` query: ``id`` plus ``dims`` (an expression string becomes the ``v`` dimension)."""
-    dimensions: list[Any] = ["id"] + [{"expression": d, "name": "v"} if isinstance(d, str) else d for d in dims]
-    return SlayerQuery.model_validate({"source_model": "lib", "distinct_dimension_values": False,
+    dimensions: list[Any] = ["id"] + [{"field": d, "alias": "v"} if isinstance(d, str) else d for d in dims]
+    return SlayerQuery.model_validate({"population": "lib", "distinct_dimension_values": False,
                                        "dimensions": dimensions, **kw})
 
 
-async def emit_lib(query: SlayerQuery, *, dialect: str, models: Optional[list[SlayerModel]] = None) -> str:
+async def emit_lib(query: SlayerQuery, *, dialect: str, datasets: Optional[list[SlayerDataset]] = None) -> str:
     """Dry-run SQL for a ``lib`` query on ``dialect`` (asserts it parses there)."""
-    return await emit(query, dialect=dialect, models=models or [lib_model()])
+    return await emit(query, dialect=dialect, datasets=datasets or [lib_dataset()])
 
 
 def lib_values(resp: SlayerResponse, name: str = "v") -> dict[int, Any]:
@@ -707,19 +719,26 @@ async def run_case(engine: SlayerQueryEngine, case: Case) -> None:
 # Seeding
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
-async def lib_engine(backend: str, *, models: Optional[list[SlayerModel]] = None) -> AsyncGenerator[SlayerQueryEngine]:
+async def lib_engine(backend: str, *, datasets: Optional[list[SlayerDataset]] = None) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, [LIB]), models=models or [lib_model()],
+        dialect=backend, seed=lambda p: seed_backend(backend, p, [LIB]), datasets=datasets or [lib_dataset()],
     ) as (engine, _db):
         yield engine
 
 
+_SERVER_DECIMAL = {
+    "postgres": "NUMERIC(10,3)", "mysql": "DECIMAL(10,3)", "clickhouse": "Nullable(Decimal(10,3))",
+    "tsql": "DECIMAL(10,3)", "trino": "DECIMAL(10,3)", "snowflake": "NUMBER(10,3)", "bigquery": "NUMERIC",
+}
 SERVER_LIB_TYPES: dict[str, dict[str, str]] = {
-    **SERVER_TYPES,
-    "postgres": {**SERVER_TYPES["postgres"], "TIMESTAMP": "TIMESTAMP"},
-    "mysql": {**SERVER_TYPES["mysql"], "TIMESTAMP": "DATETIME"},
-    "snowflake": {"INT": "NUMBER(38,0)", "DOUBLE": "FLOAT", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP_NTZ"},
-    "bigquery": {"INT": "INT64", "DOUBLE": "FLOAT64", "TEXT": "STRING", "TIMESTAMP": "DATETIME"},
+    dialect: {**types, "DECIMAL": _SERVER_DECIMAL[dialect]}
+    for dialect, types in {
+        **SERVER_TYPES,
+        "postgres": {**SERVER_TYPES["postgres"], "TIMESTAMP": "TIMESTAMP"},
+        "mysql": {**SERVER_TYPES["mysql"], "TIMESTAMP": "DATETIME"},
+        "snowflake": {"INT": "NUMBER(38,0)", "DOUBLE": "FLOAT", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP_NTZ"},
+        "bigquery": {"INT": "INT64", "DOUBLE": "FLOAT64", "TEXT": "STRING", "TIMESTAMP": "DATETIME"},
+    }.items()
 }
 _TEMPORAL_PREFIX = {"trino": "TIMESTAMP", "bigquery": "DATETIME"}
 _SUFFIX = {"clickhouse": " ENGINE = MergeTree ORDER BY tuple()"}
@@ -767,7 +786,7 @@ DOCS_S = {1: "x", 2: None, 3: None, 4: None, 5: None}
 DOCS_A_INT = {1: 1, 2: 2, 3: None, 4: None, 5: None}
 
 
-async def check_native_json(engine: SlayerQueryEngine, *, model: str = "docs", column: str = "payload") -> None:
+async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs", column: str = "payload") -> None:
     """``json_value`` over an ingested native-JSON column: TEXT and ``RETURNING INT`` reads."""
     for expr, expected in (
         (f"json_value({column}, '$.s')", DOCS_S),
@@ -775,10 +794,10 @@ async def check_native_json(engine: SlayerQueryEngine, *, model: str = "docs", c
         (f"{column} ->> 's'", DOCS_S),
     ):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": model, "distinct_dimension_values": False,
-            "dimensions": ["id", {"expression": expr, "name": "v"}],
+            "population": dataset, "distinct_dimension_values": False,
+            "dimensions": ["id", {"field": expr, "alias": "v"}],
         }))
-        got = {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+        got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in resp.data}
         assert set(got) == set(expected), (expr, resp.sql)
         for rid, value in expected.items():
             assert_cell(got[rid], value, where=f"{expr} id={rid}")
@@ -869,14 +888,14 @@ def stored_contractors(storage: ListStorage = ListStorage()) -> list[dict[str, A
     return [{k: store(v) if k in LIST_COLUMNS else v for k, v in row.items()} for row in CONTRACTORS]
 
 
-def contractors_model(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerModel:
-    scalars = {"INT": DataType.INT, "TEXT": DataType.TEXT}
+def contractors_dataset(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerDataset:
+    scalars = {"INT": DataType.INTEGER, "TEXT": DataType.STRING}
     columns = [
-        Column(name=c, type=DataType.ARRAY, element_type=scalars[k[:-2]]) if k.endswith("[]")
-        else Column(name=c, type=scalars[k], primary_key=keyed and c == "id")
+        DatasetField(name=c, datatype=DataType.ARRAY, element_type=scalars[k[:-2]]) if k.endswith("[]")
+        else DatasetField(name=c, datatype=scalars[k], primary_key=keyed and c == "id")
         for c, k in CONTRACTOR_COLUMNS
     ]
-    return SlayerModel(name="contractors", sql_table=sql_table, data_source=data_source, columns=columns)
+    return SlayerDataset(name="contractors", sql_table=sql_table, data_source=data_source, fields=columns)
 
 
 # The list functions' meaning: a list's elements are its non-NULL elements.
@@ -918,11 +937,11 @@ def list_cases(storage: ListStorage = ListStorage()) -> list[Case]:
     rows = {r["id"]: r for r in stored_contractors(storage)}
 
     def v(case_id: str, covers: Iterable[str], expr: str, fn: Callable[[dict[str, Any]], Any], **kw: Any) -> Case:
-        return Case(model="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
+        return Case(dataset="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
                     values={rid: fn(r) for rid, r in rows.items()}, **kw)
 
     def f(case_id: str, covers: Iterable[str], expr: str, fn: Callable[[dict[str, Any]], Any], **kw: Any) -> Case:
-        return Case(model="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
+        return Case(dataset="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
                     keeps=frozenset(rid for rid, r in rows.items() if fn(r) is True), **kw)
 
     def length_plus_one(r: dict[str, Any]) -> Optional[int]:
@@ -1007,18 +1026,18 @@ def seed_contractors(backend: str, db_path: str, *, extra: Iterable[str] = ()) -
 
 
 @contextlib.asynccontextmanager
-async def contractors_engine(backend: str = "duckdb", *, models: Optional[list[SlayerModel]] = None,
+async def contractors_engine(backend: str = "duckdb", *, datasets: Optional[list[SlayerDataset]] = None,
                              extra: Iterable[str] = ()) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_contractors(backend, p, extra=extra),
-        models=models or [contractors_model()],
+        datasets=datasets or [contractors_dataset()],
     ) as (engine, _db):
         yield engine
 
 
-async def emit_contractors(query: SlayerQuery, *, dialect: str, models: Optional[list[SlayerModel]] = None) -> str:
+async def emit_contractors(query: SlayerQuery, *, dialect: str, datasets: Optional[list[SlayerDataset]] = None) -> str:
     """Dry-run SQL for a ``contractors`` query on ``dialect`` (asserts it parses there)."""
-    return await emit(query, dialect=dialect, models=models or [contractors_model()])
+    return await emit(query, dialect=dialect, datasets=datasets or [contractors_dataset()])
 
 
 _SERVER_LIST_TYPES: dict[str, dict[str, str]] = {

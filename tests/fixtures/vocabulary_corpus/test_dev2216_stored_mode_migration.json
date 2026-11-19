@@ -1,0 +1,17 @@
+{
+ "source": "tests/test_dev2216_stored_mode_migration.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "to_many_handling": "broadcast"
+   },
+   "new": {
+    "population": "orders",
+    "to_many_handling": "broadcast"
+   }
+  }
+ ],
+ "skipped": []
+}

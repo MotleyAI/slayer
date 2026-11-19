@@ -58,18 +58,18 @@ The verify script runs identity-style checks (sum-of-grouped == ungrouped
 total, min ≤ avg ≤ max, etc.) rather than hardcoded row counts — the public
 dataset isn't strictly frozen.
 
-## Models
+## Datasets
 
-Four hand-authored models map the thelook tables:
+Four hand-authored datasets map the thelook tables:
 
-| Model         | Backing table                                          |
+| Dataset       | Backing table                                          |
 |---------------|--------------------------------------------------------|
 | `orders`      | `bigquery-public-data.thelook_ecommerce.orders`        |
 | `order_items` | `bigquery-public-data.thelook_ecommerce.order_items`   |
 | `products`    | `bigquery-public-data.thelook_ecommerce.products`      |
 | `users`       | `bigquery-public-data.thelook_ecommerce.users`         |
 
-Joins are declared explicitly (BigQuery has no FK metadata, so `slayer ingest`
+Relationships are declared explicitly (BigQuery has no FK metadata, so `slayer ingest`
 auto-resolution cannot derive them).
 
 ## Why not `slayer ingest`?
@@ -85,10 +85,10 @@ billing project, `slayer ingest` works fine; see [docs/concepts/ingestion.md].
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
-        "source_model": "order_items",
-        "measures": ["count(*)", "sum(sale_price)"],
+        "population": "order_items",
+        "metrics": ["count(*)", "sum(sale_price)"],
         "dimensions": ["products.category"],
-        "order": [{"column": "count", "direction": "desc"}],
+        "order": [{"field": "count", "direction": "desc"}],
         "limit": 5
       }'
 ```

@@ -1,0 +1,38 @@
+{
+ "source": "tests/test_dev2101_grammar_parse.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  }
+ ]
+}

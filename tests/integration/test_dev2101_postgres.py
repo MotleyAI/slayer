@@ -11,7 +11,7 @@ from tests._dev2101_fixtures import (
     check_null_ordering,
     check_server_forms,
     check_try_cast,
-    dev2101_models,
+    dev2101_datasets,
     m,
     q,
     seed_server,
@@ -35,7 +35,7 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, int
     version_num = int(cur.fetchone()[0])
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path),
-                               models=dev2101_models(data_source="pg")) as engine:
+                               datasets=dev2101_datasets(data_source="pg")) as engine:
         yield engine, version_num
 
 
@@ -62,20 +62,20 @@ async def test_try_cast_follows_the_server_version(pg) -> None:
 
 @pytest.mark.integration
 async def test_plain_cast_raises_on_invalid_input(pg) -> None:
-    query = q(dimensions=["id", {"expression": "CAST(code AS INT)", "name": "x"}])
+    query = q(dimensions=["id", {"field": "CAST(code AS INT)", "alias": "x"}])
     with pytest.raises(Exception, match="(?i)invalid input syntax"):  # noqa: B017 — Postgres's own error
         await pg[0].execute(query)
 
 
 @pytest.mark.integration
 async def test_parameterised_cast_is_postgres_numeric(pg) -> None:
-    resp = await pg[0].execute(q(measures=[m("sum(CAST(amount AS DECIMAL(10,2)))")]))
+    resp = await pg[0].execute(q(metrics=[m("sum(CAST(amount AS DECIMAL(10,2)))")]))
     assert "DECIMAL(10, 2)" in (resp.sql or "")
     assert single(resp) == 100
 
 
 @pytest.mark.integration
 async def test_cast_to_json_executes(pg) -> None:
-    resp = await pg[0].execute(q(dimensions=["id", {"expression": "CAST(payload AS JSON)", "name": "x"}],
-                                 filters=["id = 1"], distinct_dimension_values=False))
+    resp = await pg[0].execute(q(dimensions=["id", {"field": "CAST(payload AS JSON)", "alias": "x"}],
+                                 filter=["id = 1"], distinct_dimension_values=False))
     assert by_key(resp, "id", "x")[1] in ({"a": 1}, '{"a": 1}')

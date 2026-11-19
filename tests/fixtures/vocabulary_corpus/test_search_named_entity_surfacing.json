@@ -1,0 +1,153 @@
+{
+ "source": "tests/test_search_named_entity_surfacing.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(amount) / count(*)",
+    "description": "Average order value."
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(amount) / count(*)",
+    "description": "Average order value."
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "paid_only_sum",
+    "formula": "SUM(CASE WHEN status='paid' THEN {col} END)",
+    "description": "Sum gated by paid status."
+   },
+   "new": {
+    "name": "paid_only_sum",
+    "expression": "SUM(CASE WHEN status='paid' THEN {col} END)",
+    "description": "Sum gated by paid status."
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 442,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 687,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 693,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 694,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 705,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 735,
+   "reason": "not fully literal"
+  }
+ ]
+}

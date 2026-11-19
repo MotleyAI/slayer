@@ -1,0 +1,224 @@
+{
+ "source": "tests/test_dev2102_extension_variables.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "region_count",
+    "formula": "count(regions.id)"
+   },
+   "new": {
+    "name": "region_count",
+    "expression": "count(regions.id)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "countries",
+    "join_pairs": [
+     [
+      "country_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "countries",
+    "from_columns": [
+     "country_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "countries_n",
+    "formula": "count_distinct(regions.countries.name)"
+   },
+   "new": {
+    "name": "countries_n",
+    "expression": "count_distinct(regions.countries.name)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "n",
+    "formula": "count(customers.regions.id)"
+   },
+   "new": {
+    "name": "n",
+    "expression": "count(customers.regions.id)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(countries.id)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(countries.id)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 16,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 36,
+   "reason": "unclassifiable"
+  }
+ ]
+}

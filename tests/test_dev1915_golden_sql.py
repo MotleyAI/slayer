@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from slayer.core.query import SlayerQuery
-from tests._dev1915_fixtures import ModelMeasure, dev1915_models, month_td
+from slayer.core.query import QueryMetric, SlayerQuery
+from tests._dev1915_fixtures import dev1915_datasets, month_td
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise, render_value
 
@@ -27,53 +27,53 @@ AGG_UNSUPPORTED = {f"{c}::{d}" for c in ("median", "percentile_p09")
 FIRST_LAST = {"first", "last", "last_explicit_time", "cross_model_last"}
 
 
-def _cm(formula, name):
-    return [ModelMeasure(formula=formula, name=name)]
+def _cm(expression, name):
+    return [QueryMetric(metric=expression, alias=name)]
 
 
 def _cases() -> dict:
     m = month_td()
     sm = month_td("customers.signup_at")
     return {
-        "count": {"kw": {"time_dimensions": m, "measures": _cm("count(amount, window='90d')", "w")}},
-        "min": {"kw": {"time_dimensions": m, "measures": _cm("min(amount, window='90d')", "w")}},
-        "max": {"kw": {"time_dimensions": m, "measures": _cm("max(amount, window='90d')", "w")}},
-        "count_distinct": {"kw": {"time_dimensions": m, "measures": _cm("count_distinct(amount, window='90d')", "w")}},
-        "count_distinct_approx": {"kw": {"time_dimensions": m, "measures": _cm("count_distinct_approx(amount, window='90d')", "w")}},
-        "star_count": {"kw": {"time_dimensions": m, "measures": _cm("count(*, window='90d')", "w")}},
-        "median": {"kw": {"time_dimensions": m, "measures": _cm("median(amount, window='90d')", "w")}},
-        "percentile_p09": {"kw": {"time_dimensions": m, "measures": _cm("percentile(amount, p=0.9, window='90d')", "w")}},
-        "stddev_samp": {"kw": {"time_dimensions": m, "measures": _cm("stddev_samp(amount, window='90d')", "w")}},
-        "var_pop": {"kw": {"time_dimensions": m, "measures": _cm("var_pop(amount, window='90d')", "w")}},
-        "corr": {"kw": {"time_dimensions": m, "measures": _cm("corr(amount, other=qty, window='90d')", "w")}},
-        "covar_samp": {"kw": {"time_dimensions": m, "measures": _cm("covar_samp(amount, other=qty, window='90d')", "w")}},
-        "stddev_pop": {"kw": {"time_dimensions": m, "measures": _cm("stddev_pop(amount, window='90d')", "w")}},
-        "var_samp": {"kw": {"time_dimensions": m, "measures": _cm("var_samp(amount, window='90d')", "w")}},
-        "covar_pop": {"kw": {"time_dimensions": m, "measures": _cm("covar_pop(amount, other=qty, window='90d')", "w")}},
-        "weighted_avg": {"kw": {"time_dimensions": m, "measures": _cm("weighted_avg(amount, weight=qty, window='90d')", "w")}},
-        "weighted_avg_attached_weight": {"kw": {"time_dimensions": m, "measures": _cm("weighted_avg(amount, weight=sum(qty, partition_by=region), window='90d')", "w")}},
-        "custom_trimmed_mean": {"kw": {"time_dimensions": m, "measures": _cm("trimmed_mean(amount, lo=150, hi=350, window='90d')", "w")}},
-        "custom_default_literal_p": {"kw": {"time_dimensions": m, "measures": _cm("trimmed_mean(amount, window='90d')", "w")}},
-        "custom_joined_default_column": {"kw": {"time_dimensions": sm, "measures": _cm("disc_spend(customers.spend, window='1y')", "w")}},
-        "first": {"kw": {"time_dimensions": m, "measures": _cm("first(amount, window='90d')", "w")}},
-        "last": {"kw": {"time_dimensions": m, "measures": _cm("last(amount, window='90d')", "w")}},
-        "last_explicit_time": {"kw": {"time_dimensions": m, "measures": _cm("last(amount, updated_at, window='90d')", "w")}},
-        "partitioned_count": {"kw": {"dimensions": ["region"], "time_dimensions": m, "measures": _cm("count(amount, window='90d', partition_by=region)", "w")}},
-        "cross_model_last": {"kw": {"time_dimensions": sm, "measures": _cm("last(customers.spend, customers.signup_at, window='1y')", "w")}},
-        "expression_source_count_distinct": {"kw": {"time_dimensions": m, "measures": _cm("count_distinct(amount - qty, window='90d')", "w")}},
-        "order_only_max": {"kw": {"time_dimensions": m, "measures": _cm("sum(amount)", "s"),
-                                  "order": [{"column": "max(amount, window='90d')", "direction": "desc"}]}},
-        "filter_only_count": {"kw": {"time_dimensions": m, "measures": _cm("sum(amount)", "s"),
-                                     "filters": ["count(amount, window='90d') >= 3"]}},
+        "count": {"kw": {"time_dimensions": m, "metrics": _cm("count(amount, window='90d')", "w")}},
+        "min": {"kw": {"time_dimensions": m, "metrics": _cm("min(amount, window='90d')", "w")}},
+        "max": {"kw": {"time_dimensions": m, "metrics": _cm("max(amount, window='90d')", "w")}},
+        "count_distinct": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct(amount, window='90d')", "w")}},
+        "count_distinct_approx": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct_approx(amount, window='90d')", "w")}},
+        "star_count": {"kw": {"time_dimensions": m, "metrics": _cm("count(*, window='90d')", "w")}},
+        "median": {"kw": {"time_dimensions": m, "metrics": _cm("median(amount, window='90d')", "w")}},
+        "percentile_p09": {"kw": {"time_dimensions": m, "metrics": _cm("percentile(amount, p=0.9, window='90d')", "w")}},
+        "stddev_samp": {"kw": {"time_dimensions": m, "metrics": _cm("stddev_samp(amount, window='90d')", "w")}},
+        "var_pop": {"kw": {"time_dimensions": m, "metrics": _cm("var_pop(amount, window='90d')", "w")}},
+        "corr": {"kw": {"time_dimensions": m, "metrics": _cm("corr(amount, other=qty, window='90d')", "w")}},
+        "covar_samp": {"kw": {"time_dimensions": m, "metrics": _cm("covar_samp(amount, other=qty, window='90d')", "w")}},
+        "stddev_pop": {"kw": {"time_dimensions": m, "metrics": _cm("stddev_pop(amount, window='90d')", "w")}},
+        "var_samp": {"kw": {"time_dimensions": m, "metrics": _cm("var_samp(amount, window='90d')", "w")}},
+        "covar_pop": {"kw": {"time_dimensions": m, "metrics": _cm("covar_pop(amount, other=qty, window='90d')", "w")}},
+        "weighted_avg": {"kw": {"time_dimensions": m, "metrics": _cm("weighted_avg(amount, weight=qty, window='90d')", "w")}},
+        "weighted_avg_attached_weight": {"kw": {"time_dimensions": m, "metrics": _cm("weighted_avg(amount, weight=sum(qty, partition_by=region), window='90d')", "w")}},
+        "custom_trimmed_mean": {"kw": {"time_dimensions": m, "metrics": _cm("trimmed_mean(amount, lo=150, hi=350, window='90d')", "w")}},
+        "custom_default_literal_p": {"kw": {"time_dimensions": m, "metrics": _cm("trimmed_mean(amount, window='90d')", "w")}},
+        "custom_joined_default_column": {"kw": {"time_dimensions": sm, "metrics": _cm("disc_spend(customers.spend, window='1y')", "w")}},
+        "first": {"kw": {"time_dimensions": m, "metrics": _cm("first(amount, window='90d')", "w")}},
+        "last": {"kw": {"time_dimensions": m, "metrics": _cm("last(amount, window='90d')", "w")}},
+        "last_explicit_time": {"kw": {"time_dimensions": m, "metrics": _cm("last(amount, updated_at, window='90d')", "w")}},
+        "partitioned_count": {"kw": {"dimensions": ["region"], "time_dimensions": m, "metrics": _cm("count(amount, window='90d', partition_by=region)", "w")}},
+        "cross_model_last": {"kw": {"time_dimensions": sm, "metrics": _cm("last(customers.spend, customers.signup_at, window='1y')", "w")}},
+        "expression_source_count_distinct": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct(amount - qty, window='90d')", "w")}},
+        "order_only_max": {"kw": {"time_dimensions": m, "metrics": _cm("sum(amount)", "s"),
+                                  "order": [{"field": "max(amount, window='90d')", "direction": "desc"}]}},
+        "filter_only_count": {"kw": {"time_dimensions": m, "metrics": _cm("sum(amount)", "s"),
+                                     "filter": ["count(amount, window='90d') >= 3"]}},
     }
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1915_models()
+    models = dev1915_datasets()
     try:
-        query = SlayerQuery(source_model="orders", **case["kw"])
+        query = SlayerQuery(population="orders", **case["kw"])
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

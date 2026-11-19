@@ -11,16 +11,16 @@ from xdist.remote import serialize_warning_message
 from xdist.workermanage import unserialize_warning_message
 
 from slayer.core.errors import BroadcastGrainWarning
-from slayer.core.query import QueryRefinement, SlayerQuery, refine_query
+from slayer.core.query import QueryMetric, QueryRefinement, SlayerQuery, refine_query
 from slayer.core.warnings import DICE_SLICE_HINT, BroadcastDimension, BroadcastGrainWarningPayload
 from slayer.usage_reporting.features import query_features
-from tests._dev1841_fixtures import ModelMeasure, make_exec_engine
+from tests._dev1841_fixtures import make_exec_engine
 
-LAST = ModelMeasure(formula="last(customers.spend, customers.signup_at)", name="ls")
+LAST = QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="ls")
 
 
 def _saved(**kw) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", "measures": ["sum(amount)"], **kw})
+    return SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(amount)"], **kw})
 
 
 def _refined(base: SlayerQuery, **refinement) -> SlayerQuery:
@@ -49,7 +49,7 @@ class TestRefinement:
     @pytest.mark.parametrize("saved", [None, "broadcast", "associate", "error"])
     def test_unset_and_null_inherit(self, saved: str | None) -> None:
         base = _saved(to_many_handling=saved)
-        assert _refined(base, filters=["amount > 1"]).to_many_handling == saved
+        assert _refined(base, filter=["amount > 1"]).to_many_handling == saved
         assert _refined(base, to_many_handling=None).to_many_handling == saved
 
     @pytest.mark.parametrize("saved", [None, "associate"])
@@ -60,7 +60,7 @@ class TestRefinement:
 class TestFallbackPayload:
     def _payload(self, **kw) -> BroadcastGrainWarningPayload:
         return BroadcastGrainWarningPayload(
-            measure="ls", location="query",
+            metric="ls", location="query",
             dimensions=[BroadcastDimension(dimension="status", reason="crosses a fanning hop")], **kw)
 
     def test_reason_defaults_to_none(self) -> None:
@@ -86,7 +86,7 @@ async def engine(request):
 
 class TestFallbackPythonWarning:
     async def test_names_the_reason_and_survives_transport(self, engine) -> None:
-        query = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["status"], "measures": [LAST]})
+        query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["status"], "metrics": [LAST]})
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resp = await engine.execute(query)

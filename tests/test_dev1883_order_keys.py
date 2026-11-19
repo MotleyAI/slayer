@@ -12,10 +12,10 @@ async def exec_engine(tmp_path):
 
 def _month_query(order_column: str, direction: str = "desc") -> SlayerQuery:
     return fx.q(
-        source_model="orders",
-        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-        measures=[{"formula": "sum(amount)"}],
-        order=[{"column": order_column, "direction": direction}],
+        population="orders",
+        time_dimensions=[{"field": "created_at", "granularity": "month"}],
+        metrics=[{"metric": "sum(amount)"}],
+        order=[{"field": order_column, "direction": direction}],
     )
 
 
@@ -30,10 +30,10 @@ class TestOrderByProjectedBucket:
 
     async def test_functional_order_over_functional_projection(self, exec_engine) -> None:
         resp = await exec_engine.execute(fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "sum(amount)"}],
-            order=[{"column": "date_trunc('month', created_at)", "direction": "asc"}],
+            metrics=[{"metric": "sum(amount)"}],
+            order=[{"field": "date_trunc('month', created_at)", "direction": "asc"}],
         ))
         assert [r["orders.created_at"] for r in resp.data] == [
             "2024-01-01", "2024-02-01", "2025-03-01",
@@ -45,10 +45,10 @@ class TestOrderWithoutMatchingTimeDimension:
         self, exec_engine,
     ) -> None:
         query = fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["status"],
-            measures=[{"formula": "sum(amount)"}],
-            order=[{"column": "date_trunc('month', created_at)", "direction": "desc"}],
+            metrics=[{"metric": "sum(amount)"}],
+            order=[{"field": "date_trunc('month', created_at)", "direction": "desc"}],
         )
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)

@@ -85,7 +85,7 @@ _MONTH = {"dimension": "ordered_at", "granularity": "month"}
 
 def _stage_model(*, name: str, stage: dict) -> dict:
     """A one-stage query-backed model over ``orders``."""
-    return {"name": name, "data_source": SHOP, "source_queries": [{"source_model": "orders", **stage}]}
+    return {"name": name, "data_source": SHOP, "source_queries": [{"population": "orders", **stage}]}
 
 
 def _date_range_model(*, name: str, date_range: list) -> dict:
@@ -133,7 +133,7 @@ MEMORIES = [
 
 
 def _over(model: str, *, dims: list, measures: list, **extra) -> dict:
-    return {"source_model": model, "dimensions": dims, "measures": measures, **extra}
+    return {"population": model, "dimensions": dims, "metrics": measures, **extra}
 
 
 QUERIES = {

@@ -1,0 +1,61 @@
+{
+ "source": "tests/test_dev1854_null_test_predicates.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(hi_rev) is not None)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(hi_rev) is not None)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(hi_rev) is None)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(hi_rev) is None)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(store is not None)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(store is not None)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods((sum(hi_rev) is None) + 1)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods((sum(hi_rev) is None) + 1)",
+    "name": "streak"
+   }
+  }
+ ],
+ "skipped": []
+}

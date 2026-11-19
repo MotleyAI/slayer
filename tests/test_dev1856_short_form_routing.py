@@ -7,32 +7,34 @@ import os
 import pytest
 import sqlglot
 
-from slayer.core.enums import DataType, JoinCardinality, JoinType
+from slayer.core.enums import DataType, RelationshipCardinality, JoinType
 from slayer.core.errors import (
-    AmbiguousJoinPathError,
+    AmbiguousRelationshipPathError,
     UnknownReferenceError,
     UnrelatedDatasetError,
-    UnresolvableDimensionJoinError,
+    UnresolvableDimensionRelationshipError,
 )
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
-    EditModelDelete,
+    EditDatasetDelete,
     RemoveSpec,
-    WholeModelDelete,
+    ToDeleteEntry,
+    WholeDatasetDelete,
     compute_datasource_drops,
 )
 from slayer.storage.base import resolve_storage
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
+from slayer.storage.base import StorageBackend
 
 
 # Column / model helpers
@@ -41,79 +43,79 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
-def _pk() -> Column:
-    return Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)
+def _pk() -> DatasetField:
+    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
 
 
-def _d(name: str) -> Column:
-    return Column(name=name, sql=name, type=DataType.DOUBLE)
+def _d(name: str) -> DatasetField:
+    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
 
 
-def _t(name: str) -> Column:
-    return Column(name=name, sql=name, type=DataType.TEXT)
+def _t(name: str) -> DatasetField:
+    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
 
 
-def _ts(name: str) -> Column:
-    return Column(name=name, sql=name, type=DataType.TIMESTAMP)
+def _ts(name: str) -> DatasetField:
+    return DatasetField(name=name, sql=name, datatype=DataType.DATETIME)
 
 
-def _join(target: str, pairs: list[list[str]], **kw) -> ModelJoin:
-    return ModelJoin(target_model=target, join_pairs=pairs, **kw)
+def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
+    return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], **kw)
 
 
 # Topology 1: linear chain Invoice → Subscription → Customer → Consumer
 
-def _chain_models(
+def _chain_datasets(
     *, direct_customer: bool = False, drop_customer_consumer: bool = False
-) -> list[SlayerModel]:
+) -> list[SlayerDataset]:
     """Invoice → Subscription → Customer → Consumer (every hop onto the target PK).
     ``direct_customer`` adds Invoice → Customer (two routes); ``drop_customer_consumer`` makes Consumer unreachable."""
-    consumer = SlayerModel(
+    consumer = SlayerDataset(
         name="Consumer", sql_table="Consumer", data_source="test",
-        columns=[
+        fields=[
             _pk(), _t("name"), _t("email"), _ts("signup_at"), _d("amount"),
-            Column(name="geo", sql="geo", type=DataType.UNKNOWN),
+            DatasetField(name="geo", sql="geo", datatype=DataType.OPAQUE),
         ],
-        measures=[ModelMeasure(
-            name="aov", formula="sum(amount) / count(*)", type=DataType.DOUBLE
+        metrics=[DatasetMetric(
+            name="aov", expression="sum(amount) / count(*)", datatype=DataType.FLOAT
         )],
     )
     customer_joins = (
         [] if drop_customer_consumer
         else [_join("Consumer", [["consumerId", "id"]])]
     )
-    customer = SlayerModel(
+    customer = SlayerDataset(
         name="Customer", sql_table="Customer", data_source="test",
-        columns=[_pk(), _d("consumerId")], joins=customer_joins,
+        fields=[_pk(), _d("consumerId")], relationships=customer_joins,
     )
-    subscription = SlayerModel(
+    subscription = SlayerDataset(
         name="Subscription", sql_table="Subscription", data_source="test",
-        columns=[_pk(), _d("customerId")],
-        joins=[_join("Customer", [["customerId", "id"]])],
+        fields=[_pk(), _d("customerId")],
+        relationships=[_join("Customer", [["customerId", "id"]])],
     )
     invoice_joins = [_join("Subscription", [["subscriptionId", "id"]])]
     if direct_customer:
         invoice_joins.append(_join("Customer", [["customerId", "id"]]))
-    invoice = SlayerModel(
+    invoice = SlayerDataset(
         name="Invoice", sql_table="Invoice", data_source="test",
-        columns=[_pk(), _d("subscriptionId"), _d("customerId"), _d("amount"),
+        fields=[_pk(), _d("subscriptionId"), _d("customerId"), _d("amount"),
                  _t("status"), _ts("issued_at")],
-        joins=invoice_joins,
+        relationships=invoice_joins,
     )
     return [consumer, customer, subscription, invoice]
 
 
-async def _save(storage, models: list[SlayerModel]) -> None:
+async def _save(storage: StorageBackend, datasets: list[SlayerDataset]) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
     )
-    for m in models:
-        await storage.save_model(m)
+    for m in datasets:
+        await storage.save_dataset(m)
 
 
 async def _chain_engine(tmp_path, **knobs) -> SlayerQueryEngine:
     storage = resolve_storage(str(tmp_path))
-    await _save(storage, _chain_models(**knobs))
+    await _save(storage, _chain_datasets(**knobs))
     return SlayerQueryEngine(storage=storage)
 
 
@@ -139,13 +141,13 @@ async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
                          (2, 1, 1, 20.0, "ok", None),
                          (3, 2, 2, 30.0, "ok", None)])
     return await make_seeded_sqlite_engine(
-        base_dir=str(tmp_path), db_path=db_path, models=_chain_models())
+        base_dir=str(tmp_path), db_path=db_path, datasets=_chain_datasets())
 
 
-def _q(source_model: str = "Invoice", **kw) -> SlayerQuery:
+def _q(source_dataset: str = "Invoice", **kw) -> SlayerQuery:
     base: dict = dict(
-        source_model=source_model,
-        measures=[{"formula": "sum(amount)", "name": "amt"}],
+        population=source_dataset,
+        metrics=[{"metric": "sum(amount)", "alias": "amt"}],
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -167,40 +169,40 @@ async def _assert_equiv(engine, short: SlayerQuery, full: SlayerQuery) -> None:
 
 # Topology 2: N parallel branches Root → M{i} → Tag; the first `safe` are to-one
 
-def _multi_models(*, branches: int, safe: int) -> list[SlayerModel]:
-    tag = SlayerModel(
+def _multi_datasets(*, branches: int, safe: int) -> list[SlayerDataset]:
+    tag = SlayerDataset(
         name="Tag", sql_table="Tag", data_source="test",
-        columns=[_pk(), _t("grp"), _t("name"), _d("amount")],
+        fields=[_pk(), _t("grp"), _t("name"), _d("amount")],
     )
-    mids: list[SlayerModel] = []
+    mids: list[SlayerDataset] = []
     root_cols = [_pk(), _d("amount")]
     root_joins = []
     for i in range(branches):
         is_safe = i < safe
         cols = [_pk(), _d("t_id")] if is_safe else [_pk(), _t("t_grp")]
         pairs = [["t_id", "id"]] if is_safe else [["t_grp", "grp"]]
-        mids.append(SlayerModel(
+        mids.append(SlayerDataset(
             name=f"M{i}", sql_table=f"M{i}", data_source="test",
-            columns=cols, joins=[_join("Tag", pairs)],
+            fields=cols, relationships=[_join("Tag", pairs)],
         ))
         root_cols.append(_d(f"m{i}_id"))
         root_joins.append(_join(f"M{i}", [[f"m{i}_id", "id"]]))
-    root = SlayerModel(
+    root = SlayerDataset(
         name="Root", sql_table="Root", data_source="test",
-        columns=root_cols, joins=root_joins,
+        fields=root_cols, relationships=root_joins,
     )
     return [tag, *mids, root]
 
 
 async def _multi_engine(tmp_path, *, branches: int, safe: int) -> SlayerQueryEngine:
     storage = resolve_storage(str(tmp_path))
-    await _save(storage, _multi_models(branches=branches, safe=safe))
+    await _save(storage, _multi_datasets(branches=branches, safe=safe))
     return SlayerQueryEngine(storage=storage)
 
 
 def _root_q(**kw) -> SlayerQuery:
     base: dict = dict(
-        source_model="Root", measures=[{"formula": "sum(amount)", "name": "amt"}]
+        population="Root", metrics=[{"metric": "sum(amount)", "alias": "amt"}]
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -268,36 +270,36 @@ class TestFanoutTieBreak:
     async def test_three_routes_two_safe_rejects(self, tmp_path) -> None:
         engine = await _multi_engine(tmp_path, branches=3, safe=2)
         q = _root_q(dimensions=["Tag.name"])
-        with pytest.raises(UnresolvableDimensionJoinError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await _cols_sql(engine, q)
 
     async def test_two_fanout_free_routes_stay_ambiguous(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path, direct_customer=True)
         q = _q(dimensions=["Consumer.name"])
-        with pytest.raises(UnresolvableDimensionJoinError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await _cols_sql(engine, q)
 
     async def test_reverse_orientation_arity_is_respected(self, tmp_path) -> None:
         """Reverse orientation of a to-one edge fans out, not safe; only the forward route via Spoke resolves."""
-        hub = SlayerModel(
+        hub = SlayerDataset(
             name="Hub", sql_table="Hub", data_source="test",
-            columns=[_pk(), _t("name"), _d("other_id")],
-            joins=[_join(
+            fields=[_pk(), _t("name"), _d("other_id")],
+            relationships=[_join(
                 "Other", [["other_id", "id"]],
-                join_type=JoinType.INNER, cardinality=JoinCardinality.MANY_TO_ONE,
+                join_type=JoinType.INNER, cardinality=RelationshipCardinality.MANY_TO_ONE,
             )],
         )
-        other = SlayerModel(
-            name="Other", sql_table="Other", data_source="test", columns=[_pk()],
+        other = SlayerDataset(
+            name="Other", sql_table="Other", data_source="test", fields=[_pk()],
         )
-        spoke = SlayerModel(
+        spoke = SlayerDataset(
             name="Spoke", sql_table="Spoke", data_source="test",
-            columns=[_pk(), _d("hub_id")], joins=[_join("Hub", [["hub_id", "id"]])],
+            fields=[_pk(), _d("hub_id")], relationships=[_join("Hub", [["hub_id", "id"]])],
         )
-        root = SlayerModel(
+        root = SlayerDataset(
             name="Root", sql_table="Root", data_source="test",
-            columns=[_pk(), _d("spoke_id"), _d("other_id"), _d("amount")],
-            joins=[_join("Spoke", [["spoke_id", "id"]]),
+            fields=[_pk(), _d("spoke_id"), _d("other_id"), _d("amount")],
+            relationships=[_join("Spoke", [["spoke_id", "id"]]),
                    _join("Other", [["other_id", "id"]])],
         )
         storage = resolve_storage(str(tmp_path))
@@ -315,19 +317,19 @@ class TestBidirectionalAndParallelEdges:
     async def test_unique_route_through_reverse_hop_resolves(self, tmp_path) -> None:
         """Only stored edges: Payment→Invoice, Payment→Method. ``Method.kind`` from
         Invoice routes through the reverse Payment hop ≡ explicit ``Payment.Method.kind``."""
-        method = SlayerModel(
+        method = SlayerDataset(
             name="Method", sql_table="Method", data_source="test",
-            columns=[_pk(), _t("kind")],
+            fields=[_pk(), _t("kind")],
         )
-        payment = SlayerModel(
+        payment = SlayerDataset(
             name="Payment", sql_table="Payment", data_source="test",
-            columns=[_pk(), _d("invoiceId"), _d("methodId")],
-            joins=[_join("Invoice", [["invoiceId", "id"]]),
+            fields=[_pk(), _d("invoiceId"), _d("methodId")],
+            relationships=[_join("Invoice", [["invoiceId", "id"]]),
                    _join("Method", [["methodId", "id"]])],
         )
-        invoice = SlayerModel(
+        invoice = SlayerDataset(
             name="Invoice", sql_table="Invoice", data_source="test",
-            columns=[_pk(), _d("amount"), _t("status")],
+            fields=[_pk(), _d("amount"), _t("status")],
         )
         storage = resolve_storage(str(tmp_path))
         await _save(storage, [method, payment, invoice])
@@ -337,35 +339,35 @@ class TestBidirectionalAndParallelEdges:
             _q(dimensions=["Payment.Method.kind"]),
         )
 
-    def _parallel_leaf_models(
+    def _parallel_leaf_datasets(
         self, *, second_pair: list[list[str]], names: tuple = ("by_id", "by_grp")
-    ) -> list[SlayerModel]:
+    ) -> list[SlayerDataset]:
         """Root → Mid, then TWO parallel Mid↔Leaf edges (optionally named)."""
-        leaf = SlayerModel(
+        leaf = SlayerDataset(
             name="Leaf", sql_table="Leaf", data_source="test",
-            columns=[_pk(), _t("grp"), _t("x")],
+            fields=[_pk(), _t("grp"), _t("x")],
         )
-        mid = SlayerModel(
+        mid = SlayerDataset(
             name="Mid", sql_table="Mid", data_source="test",
-            columns=[_pk(), _d("leaf_id"), _t("leaf_grp")],
-            joins=[
+            fields=[_pk(), _d("leaf_id"), _t("leaf_grp")],
+            relationships=[
                 _join("Leaf", [["leaf_id", "id"]],
                       **({"name": names[0]} if names[0] else {})),
                 _join("Leaf", second_pair,
                       **({"name": names[1]} if names[1] else {})),
             ],
         )
-        root = SlayerModel(
+        root = SlayerDataset(
             name="Root", sql_table="Root", data_source="test",
-            columns=[_pk(), _d("mid_id"), _d("amount")],
-            joins=[_join("Mid", [["mid_id", "id"]])],
+            fields=[_pk(), _d("mid_id"), _d("amount")],
+            relationships=[_join("Mid", [["mid_id", "id"]])],
         )
         return [leaf, mid, root]
 
     async def test_named_parallel_tiebreak_uses_edge_token(self, tmp_path) -> None:
         """Two named Mid↔Leaf edges; ``Leaf.x`` routes through the safe ``by_id``, carrying its edge-name token."""
         storage = resolve_storage(str(tmp_path))
-        await _save(storage, self._parallel_leaf_models(
+        await _save(storage, self._parallel_leaf_datasets(
             second_pair=[["leaf_grp", "grp"]],
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -380,12 +382,12 @@ class TestBidirectionalAndParallelEdges:
         """Two UNNAMED Mid↔Leaf edges: every route crosses an inexecutable hop —
         rejected with no suggestion."""
         storage = resolve_storage(str(tmp_path))
-        await _save(storage, self._parallel_leaf_models(
+        await _save(storage, self._parallel_leaf_datasets(
             second_pair=[["leaf_grp", "grp"]], names=(None, None),
         ))
         engine = SlayerQueryEngine(storage=storage)
         q = _root_q(dimensions=["Leaf.x"])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
         assert ei.value.suggested_path is None
 
@@ -393,24 +395,24 @@ class TestBidirectionalAndParallelEdges:
         """Root itself has two named edges to Leaf: the bare ``Leaf.x`` hop fails
         closed as the ambiguous join hop — routing never applies. Boundary
         guard; passes pre-implementation."""
-        leaf = SlayerModel(
+        leaf = SlayerDataset(
             name="Leaf", sql_table="Leaf", data_source="test",
-            columns=[_pk(), _t("x")],
+            fields=[_pk(), _t("x")],
         )
-        root = SlayerModel(
+        root = SlayerDataset(
             name="Root", sql_table="Root", data_source="test",
-            columns=[_pk(), _d("a_id"), _d("b_id"), _d("amount")],
-            joins=[_join("Leaf", [["a_id", "id"]], name="a_leaf"),
+            fields=[_pk(), _d("a_id"), _d("b_id"), _d("amount")],
+            relationships=[_join("Leaf", [["a_id", "id"]], name="a_leaf"),
                    _join("Leaf", [["b_id", "id"]], name="b_leaf")],
         )
         storage = resolve_storage(str(tmp_path))
         await _save(storage, [leaf, root])
         engine = SlayerQueryEngine(storage=storage)
         q = _root_q(dimensions=["Leaf.x"])
-        with pytest.raises(AmbiguousJoinPathError) as ei:
+        with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await _cols_sql(engine, q)
-        assert ei.value.source_model == "Root"
-        assert ei.value.target_model == "Leaf"
+        assert ei.value.source_dataset == "Root"
+        assert ei.value.target_dataset == "Leaf"
         assert {c.name for c in ei.value.candidates} == {"a_leaf", "b_leaf"}
 
 
@@ -420,16 +422,16 @@ class TestAdjacentParallelParity:
     """A parallel pair DIRECTLY off the root is the fail-closed ambiguous hop, not a
     short-form route — identically across dimensions, saved measures, and schema-drift."""
 
-    def _models(self) -> list[SlayerModel]:
-        target = SlayerModel(
+    def _datasets(self) -> list[SlayerDataset]:
+        target = SlayerDataset(
             name="Target", sql_table="Target", data_source="test",
-            columns=[_pk(), _t("grp"), _t("label"), _d("amount")],
-            measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)", type=DataType.DOUBLE)],
+            fields=[_pk(), _t("grp"), _t("label"), _d("amount")],
+            metrics=[DatasetMetric(name="aov", expression="sum(amount) / count(*)", datatype=DataType.FLOAT)],
         )
-        root = SlayerModel(
+        root = SlayerDataset(
             name="Root", sql_table="Root", data_source="test",
-            columns=[_pk(), _d("tgt_id"), _t("tgt_grp"), _d("amount")],
-            joins=[
+            fields=[_pk(), _d("tgt_id"), _t("tgt_grp"), _d("amount")],
+            relationships=[
                 _join("Target", [["tgt_id", "id"]], name="by_id"),     # safe (onto PK)
                 _join("Target", [["tgt_grp", "grp"]], name="by_grp"),  # fan-out (non-unique)
             ],
@@ -438,21 +440,21 @@ class TestAdjacentParallelParity:
 
     async def _engine(self, tmp_path) -> SlayerQueryEngine:
         storage = resolve_storage(str(tmp_path))
-        await _save(storage, self._models())
+        await _save(storage, self._datasets())
         return SlayerQueryEngine(storage=storage)
 
     async def test_dimension_stays_ambiguous_hop(self, tmp_path) -> None:
         """Control: the dimension path already fails closed (resolve_hop)."""
         engine = await self._engine(tmp_path)
         q = _root_q(dimensions=["Target.label"])
-        with pytest.raises(AmbiguousJoinPathError):
+        with pytest.raises(AmbiguousRelationshipPathError):
             await _cols_sql(engine, q)
 
     async def test_saved_measure_stays_ambiguous_hop(self, tmp_path) -> None:
         """Parity: a short-form saved measure fails closed too, not routed via the safe edge."""
         engine = await self._engine(tmp_path)
-        q = _root_q(measures=[{"formula": "Target.aov"}])
-        with pytest.raises(AmbiguousJoinPathError):
+        q = _root_q(metrics=[{"metric": "Target.aov"}])
+        with pytest.raises(AmbiguousRelationshipPathError):
             await _cols_sql(engine, q)
 
     async def test_raw_rows_filter_saved_measure_stays_ambiguous(self, tmp_path) -> None:
@@ -460,20 +462,20 @@ class TestAdjacentParallelParity:
         resolver must not route an adjacent parallel `Target.aov` in a filter."""
         engine = await self._engine(tmp_path)
         q = SlayerQuery(
-            source_model="Root", dimensions=["tgt_grp"],
-            filters=["Target.aov > 0"], distinct_dimension_values=False,
+            population="Root", dimensions=["tgt_grp"],
+            filter=["Target.aov > 0"], distinct_dimension_values=False,
         )
-        with pytest.raises(AmbiguousJoinPathError):
+        with pytest.raises(AmbiguousRelationshipPathError):
             await _cols_sql(engine, q)
 
     async def test_raw_rows_order_saved_measure_stays_ambiguous(self, tmp_path) -> None:
         """Same for an adjacent parallel `Target.aov` in raw-rows ORDER BY."""
         engine = await self._engine(tmp_path)
         q = SlayerQuery(
-            source_model="Root", dimensions=["tgt_grp"],
+            population="Root", dimensions=["tgt_grp"],
             order=[{"Target.aov": "asc"}], distinct_dimension_values=False,
         )
-        with pytest.raises(AmbiguousJoinPathError):
+        with pytest.raises(AmbiguousRelationshipPathError):
             await _cols_sql(engine, q)
 
 
@@ -483,11 +485,11 @@ class TestRejectionTaxonomy:
     async def test_ambiguous_target_suggests_a_full_path(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path, direct_customer=True)
         q = _q(dimensions=["Consumer.name"])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
         assert ei.value.suggested_path == "Customer.Consumer.name"
         assert ei.value.reference == "Consumer.name"
-        assert ei.value.root_model == "Invoice"
+        assert ei.value.root_dataset == "Invoice"
         assert "Consumer.name" in str(ei.value)
 
     async def test_unreachable_target_has_no_suggestion(self, tmp_path) -> None:
@@ -507,7 +509,7 @@ class TestBrokenChains:
         rejected, suggests the routable short form."""
         engine = await _chain_engine(tmp_path)
         q = _q(dimensions=["Customer.Consumer.name"])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
         assert ei.value.suggested_path == "Consumer.name"
 
@@ -516,21 +518,21 @@ class TestBrokenChains:
         still a broken chain, suggests the routable short form."""
         engine = await _chain_engine(tmp_path)
         q = _q(dimensions=["Subscription.Consumer.name"])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
         assert ei.value.suggested_path == "Consumer.name"
 
     async def test_broken_chain_unreachable_target_no_suggestion(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path, drop_customer_consumer=True)
         q = _q(dimensions=["Customer.Consumer.name"])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
         assert ei.value.suggested_path is None
 
     async def test_broken_later_hop_unreachable_target_no_suggestion(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path, drop_customer_consumer=True)
         q = _q(dimensions=["Subscription.Consumer.name"])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _cols_sql(engine, q)
         assert ei.value.suggested_path is None
 
@@ -542,13 +544,13 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         short = _q(
             dimensions=["status"],
-            measures=[{"formula": "sum(Consumer.amount)", "name": "s"},
-                      {"formula": "count(Consumer.*)", "name": "c"}],
+            metrics=[{"metric": "sum(Consumer.amount)", "alias": "s"},
+                      {"metric": "count(Consumer.*)", "alias": "c"}],
         )
         full = _q(
             dimensions=["status"],
-            measures=[{"formula": "sum(Subscription.Customer.Consumer.amount)", "name": "s"},
-                      {"formula": "count(Subscription.Customer.Consumer.*)", "name": "c"}],
+            metrics=[{"metric": "sum(Subscription.Customer.Consumer.amount)", "alias": "s"},
+                      {"metric": "count(Subscription.Customer.Consumer.*)", "alias": "c"}],
         )
         await _assert_equiv(engine, short, full)
         # Both aggregates bind to the routed terminal, not the root — the SUM reads
@@ -560,9 +562,9 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         await _assert_equiv(
             engine,
-            _q(dimensions=["status"], filters=["Consumer.email = 'a@b.com'"]),
+            _q(dimensions=["status"], filter=["Consumer.email = 'a@b.com'"]),
             _q(dimensions=["status"],
-               filters=["Subscription.Customer.Consumer.email = 'a@b.com'"]),
+               filter=["Subscription.Customer.Consumer.email = 'a@b.com'"]),
         )
 
     async def test_short_form_order_by_matches_routed_dimension(self, tmp_path) -> None:
@@ -578,9 +580,9 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         await _assert_equiv(
             engine,
-            _q(time_dimensions=[{"dimension": "Consumer.signup_at", "granularity": "month"}]),
+            _q(time_dimensions=[{"field": "Consumer.signup_at", "granularity": "month"}]),
             _q(time_dimensions=[{
-                "dimension": "Subscription.Customer.Consumer.signup_at",
+                "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
             }]),
         )
@@ -588,14 +590,14 @@ class TestUniformSurfaces:
     async def test_short_form_main_time_dimension(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         short = _q(
-            measures=[{"formula": "cumsum(sum(amount))", "name": "c"}],
-            time_dimensions=[{"dimension": "Consumer.signup_at", "granularity": "month"}],
+            metrics=[{"metric": "cumsum(sum(amount))", "alias": "c"}],
+            time_dimensions=[{"field": "Consumer.signup_at", "granularity": "month"}],
             main_time_dimension="Consumer.signup_at",
         )
         full = _q(
-            measures=[{"formula": "cumsum(sum(amount))", "name": "c"}],
+            metrics=[{"metric": "cumsum(sum(amount))", "alias": "c"}],
             time_dimensions=[{
-                "dimension": "Subscription.Customer.Consumer.signup_at",
+                "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
             main_time_dimension="Subscription.Customer.Consumer.signup_at",
@@ -606,32 +608,32 @@ class TestUniformSurfaces:
 # Requirement: type preserved / opaque rejected
 
 class TestTypeAndOpaque:
-    async def _virtual_columns(self, engine, stage: SlayerQuery):
-        qb = SlayerModel(
+    async def _virtual_columns(self, engine: SlayerQueryEngine, stage: SlayerQuery):
+        qb = SlayerDataset(
             name="qb", data_source="test", source_queries=[stage],
         )
-        saved = await engine.save_model(qb)
-        return {c.name: c.type for c in saved.columns}
+        saved = await engine.save_dataset(qb)
+        return {c.name: c.datatype for c in saved.fields}
 
     async def test_routed_dimension_type_preserved(self, tmp_path) -> None:
         """A routed dimension's virtual column matches the full-path column, name
         and type alike (email is TEXT)."""
         engine = await _chain_engine(tmp_path)
         short = await self._virtual_columns(engine, SlayerQuery.model_validate({
-            "source_model": "Invoice",
+            "population": "Invoice",
             "dimensions": ["Consumer.email"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         }))
         full = await self._virtual_columns(engine, SlayerQuery.model_validate({
-            "source_model": "Invoice",
+            "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.email"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         }))
         assert short == full
-        assert DataType.TEXT in short.values()
+        assert DataType.STRING in short.values()
 
     async def test_opaque_routed_dimension_rejected(self, tmp_path) -> None:
-        """A routed dimension onto an opaque (UNKNOWN) column is rejected for
+        """A routed dimension onto an opaque (Opaque) column is rejected for
         GROUP BY, exactly as the full path would be."""
         engine = await _chain_engine(tmp_path)
         q = _q(dimensions=["Consumer.geo"])
@@ -645,9 +647,9 @@ class TestSavedMeasureRouting:
     async def test_routed_saved_measure_keeps_type_and_full_name(self, tmp_path) -> None:
         """Unnamed ``Consumer.aov`` ≡ its full-path form (same key, same type); surfaced key is the full routed path."""
         engine = await _chain_engine(tmp_path)
-        short = _q(dimensions=["status"], measures=[{"formula": "Consumer.aov"}])
+        short = _q(dimensions=["status"], metrics=[{"metric": "Consumer.aov"}])
         full = _q(dimensions=["status"],
-                  measures=[{"formula": "Subscription.Customer.Consumer.aov"}])
+                  metrics=[{"metric": "Subscription.Customer.Consumer.aov"}])
         await _assert_equiv(engine, short, full)
         cols, _ = await _cols_sql(engine, short)
         assert any(
@@ -657,25 +659,25 @@ class TestSavedMeasureRouting:
 
     async def test_routed_unnamed_saved_measure_type_via_saved_model(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
-        qb = SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery(
-            source_model="Invoice", dimensions=["status"],
-            measures=[{"formula": "Consumer.aov"}],
-        )])
-        saved = await engine.save_model(qb)
-        measure_cols = [c for c in saved.columns if c.name != "status"]
+        qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
+            "population": "Invoice", "dimensions": ["status"],
+            "metrics": [{"metric": "Consumer.aov"}],
+        })])
+        saved = await engine.save_dataset(qb)
+        measure_cols = [c for c in saved.fields if c.name != "status"]
         assert len(measure_cols) == 1
-        assert measure_cols[0].type == DataType.DOUBLE
+        assert measure_cols[0].datatype == DataType.FLOAT
 
     async def test_routed_short_form_round_trips_through_storage(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
-        qb = SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
-            "source_model": "Invoice",
+        qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
+            "population": "Invoice",
             "dimensions": ["Consumer.name"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })])
-        await engine.save_model(qb)
+        await engine.save_dataset(qb)
         resp = await engine.execute(
-            query=SlayerQuery.model_validate({"source_model": "qb", "measures": [{"formula": "count(*)"}]}),
+            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"metric": "count(*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -685,13 +687,13 @@ class TestSavedMeasureRouting:
         """A re-rooted short-form saved measure (``Consumer.aov`` is itself a nested
         ``sum(amount) / count(*)`` formula) persists and re-resolves on reload."""
         engine = await _chain_engine(tmp_path)
-        qb = SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery(
-            source_model="Invoice", dimensions=["status"],
-            measures=[{"formula": "Consumer.aov", "name": "a"}],
-        )])
-        await engine.save_model(qb)
+        qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
+            "population": "Invoice", "dimensions": ["status"],
+            "metrics": [{"metric": "Consumer.aov", "alias": "a"}],
+        })])
+        await engine.save_dataset(qb)
         resp = await engine.execute(
-            query=SlayerQuery.model_validate({"source_model": "qb", "measures": [{"formula": "count(*)"}]}),
+            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"metric": "count(*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -705,13 +707,13 @@ class TestScoping:
         """A same-named ``Consumer`` in another datasource is never a route candidate;
         the in-datasource Consumer, unreachable, is read only through aggregates."""
         storage = resolve_storage(str(tmp_path))
-        await _save(storage, _chain_models(drop_customer_consumer=True))
+        await _save(storage, _chain_datasets(drop_customer_consumer=True))
         await storage.save_datasource(
             DatasourceConfig(name="other", type="sqlite", database=":memory:")
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="Consumer", sql_table="Consumer", data_source="other",
-            columns=[_pk(), _t("name")],
+            fields=[_pk(), _t("name")],
         ))
         engine = SlayerQueryEngine(storage=storage)
         q = _q(dimensions=["Consumer.name"])
@@ -726,14 +728,14 @@ class TestScoping:
         engine = await _chain_engine(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
-            "source_model": "Invoice",
+            "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.name"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
+            "population": "s1",
             "dimensions": ["Consumer.email"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -741,17 +743,17 @@ class TestScoping:
     async def test_declared_join_absent_target_stays_unknown_ref(self, tmp_path) -> None:
         """A dotted ref whose first hop IS a declared join but whose target is absent
         from the datasource bundle stays ``UnknownReferenceError`` — never routed."""
-        models = _chain_models()
+        models = _chain_datasets()
         invoice = next(m for m in models if m.name == "Invoice")
-        invoice.joins.append(_join("Ghost", [["customerId", "id"]]))
+        invoice.relationships.append(_join("Ghost", [["customerId", "id"]]))
         storage = resolve_storage(str(tmp_path))
         await _save(storage, models)
         await storage.save_datasource(
             DatasourceConfig(name="other", type="sqlite", database=":memory:")
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="Ghost", sql_table="Ghost", data_source="other",
-            columns=[_pk(), _t("name")],
+            fields=[_pk(), _t("name")],
         ))
         engine = SlayerQueryEngine(storage=storage)
         q = _q(dimensions=["Ghost.name"])
@@ -783,69 +785,69 @@ class TestNonRoutingUnchanged:
 # Requirement: Schema-drift tracks routed references
 
 class TestSchemaDriftRouting:
-    def _qb(self) -> SlayerModel:
-        return SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
-            "source_model": "Invoice",
+    def _qb(self) -> SlayerDataset:
+        return SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
+            "population": "Invoice",
             "dimensions": ["Consumer.email"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })])
 
-    def _drops(self, models: list[SlayerModel]):
-        edit = EditModelDelete(
-            model_name="Consumer", data_source="test",
-            remove=RemoveSpec(columns=["email"]),
+    def _drops(self, datasets: list[SlayerDataset]):
+        edit = EditDatasetDelete(
+            dataset_name="Consumer", data_source="test",
+            remove=RemoveSpec(fields=["email"]),
         )
         return compute_datasource_drops(
-            models=models,
+            datasets=datasets,
             sql_table_diffs={"Consumer": (edit, {"email"})},
             sql_diffs={},
         )
 
-    def _drop_intervening_join(self, models: list[SlayerModel]):
+    def _drop_intervening_join(self, datasets: list[SlayerDataset]):
         """Drop the intervening ``Customer → Consumer`` join — the routed short
         form ``Consumer.email`` traverses it, so its removal must cascade."""
-        edit = EditModelDelete(
-            model_name="Customer", data_source="test",
-            remove=RemoveSpec(joins=["Consumer"]),
+        edit = EditDatasetDelete(
+            dataset_name="Customer", data_source="test",
+            remove=RemoveSpec(relationships=["Consumer"]),
         )
         return compute_datasource_drops(
-            models=models,
+            datasets=datasets,
             sql_table_diffs={"Customer": (edit, set())},
             sql_diffs={},
         )
 
     @staticmethod
-    def _entry_for(name: str, entries):
-        return next((e for e in entries if e.model_name == name), None)
+    def _entry_for(name: str, entries: list[ToDeleteEntry]) -> ToDeleteEntry | None:
+        return next((e for e in entries if e.dataset_name == name), None)
 
     def test_dropping_routed_column_cascades(self) -> None:
-        models = [*_chain_models(), self._qb()]
+        models = [*_chain_datasets(), self._qb()]
         entry = self._entry_for("qb", self._drops(models))
-        assert isinstance(entry, WholeModelDelete)
+        assert isinstance(entry, WholeDatasetDelete)
 
     def test_dropping_intervening_join_cascades(self) -> None:
-        models = [*_chain_models(), self._qb()]
+        models = [*_chain_datasets(), self._qb()]
         entry = self._entry_for("qb", self._drop_intervening_join(models))
-        assert isinstance(entry, WholeModelDelete)
+        assert isinstance(entry, WholeDatasetDelete)
 
     def test_ambiguous_short_form_attributes_to_nothing(self) -> None:
-        models = [*_chain_models(direct_customer=True), self._qb()]
+        models = [*_chain_datasets(direct_customer=True), self._qb()]
         assert self._entry_for("qb", self._drops(models)) is None
 
     def test_unreachable_short_form_attributes_to_nothing(self) -> None:
-        models = [*_chain_models(drop_customer_consumer=True), self._qb()]
+        models = [*_chain_datasets(drop_customer_consumer=True), self._qb()]
         assert self._entry_for("qb", self._drops(models)) is None
 
-    def _adjacent_parallel_chain(self) -> list[SlayerModel]:
+    def _adjacent_parallel_chain(self) -> list[SlayerDataset]:
         """Invoice has TWO named edges DIRECTLY to Consumer: one safe (PK), one fan-out."""
-        consumer = SlayerModel(
+        consumer = SlayerDataset(
             name="Consumer", sql_table="Consumer", data_source="test",
-            columns=[_pk(), _t("email"), _t("grp")],
+            fields=[_pk(), _t("email"), _t("grp")],
         )
-        invoice = SlayerModel(
+        invoice = SlayerDataset(
             name="Invoice", sql_table="Invoice", data_source="test",
-            columns=[_pk(), _d("consumerId"), _t("consumerGrp")],
-            joins=[
+            fields=[_pk(), _d("consumerId"), _t("consumerGrp")],
+            relationships=[
                 _join("Consumer", [["consumerId", "id"]], name="by_id"),
                 _join("Consumer", [["consumerGrp", "grp"]], name="by_grp"),
             ],

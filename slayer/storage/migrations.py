@@ -11,18 +11,22 @@ Per-entity versions evolve independently. ``CURRENT_VERSIONS[entity]`` is the
 version that ``.save_*()`` will write today.
 """
 
-from collections.abc import Callable, Iterator
+import json
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, TypeGuard
+
+from slayer.core.strict_flag import without_strict
+from slayer.core.vocabulary import extension_dataset, is_extension_object
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 21,
-    "SlayerQuery": 13,
+    "SlayerModel": 26,
+    "SlayerQuery": 16,
     "DatasourceConfig": 3,
-    "Memory": 9,
-    "Embedding": 1,
+    "Memory": 12,
+    "Embedding": 2,
 }
 
 _document: ContextVar[str | None] = ContextVar("slayer_migrated_document", default=None)
@@ -30,7 +34,7 @@ _stored: ContextVar[bool] = ContextVar("slayer_stored_document", default=False)
 
 
 @contextmanager
-def migrating_document(label: str | None, *, stored: bool) -> Iterator[None]:
+def migrating_document(label: str | None, *, stored: bool) -> Generator[None, None, None]:
     """Name the document whose nested documents migrate inside the block; ``stored`` when it carries a version."""
     token = _document.set(label or _document.get())
     stored_token = _stored.set(stored or _stored.get())
@@ -103,16 +107,22 @@ def migrate_nested(entity: str, data: Any) -> Any:
 
 
 @register_migration("SlayerModel", 9)
-def _model_v9_to_v10(data: dict) -> dict:
+def _dataset_v9_to_v10(data: dict) -> dict:
     """v10: per-doc no-op; the cross-document exact-inverse join dedup runs in
     the storage load path (``_migrate_and_refine_on_load``)."""
     return data
 
 
 @register_migration("SlayerModel", 10)
-def _model_v10_to_v11(data: dict) -> dict:
+def _dataset_v10_to_v11(data: dict) -> dict:
     """v11: per-doc no-op; join-key canonicalisation needs the peer, so it runs
     in the storage load path (``_migrate_and_refine_on_load``)."""
+    return data
+
+
+@register_migration(entity="SlayerModel", source_version=24, stored_only=True)
+def _dataset_v24_to_v25(data: dict) -> dict:
+    """v25: per-doc no-op; join targets are respelled against their peers in the storage load path."""
     return data
 
 
@@ -128,7 +138,7 @@ def _blank(v: Any) -> bool:
 
 
 @register_migration(entity="SlayerModel", source_version=11)
-def _model_v11_to_v12(data: dict) -> dict:
+def _dataset_v11_to_v12(data: dict) -> dict:
     """v12: drop blank formulas / param defaults ("absent") and params named `value` (now reserved)."""
     aggs = data.get("aggregations")
     if isinstance(aggs, list):
@@ -137,7 +147,7 @@ def _model_v11_to_v12(data: dict) -> dict:
 
 
 @register_migration(entity="SlayerModel", source_version=14)
-def _model_v14_to_v15(data: dict) -> dict:
+def _dataset_v14_to_v15(data: dict) -> dict:
     """v15: drop the cached ``backing_query_sql`` (a ``dry_run`` query renders it); ``access_tags`` defaults to public."""
     data.pop("backing_query_sql", None)
     return data
@@ -155,56 +165,81 @@ def _drop_blank_agg_fields(agg: dict) -> dict:
     return out
 
 
-# Legacy quoted ``strict`` tokens; blank/whitespace counts as false. Anything
-# outside both sets fails closed rather than silently reading as broadcast.
-_STRICT_TRUE_TOKENS = frozenset({"1", "true", "t", "yes", "y", "on"})
-_STRICT_FALSE_TOKENS = frozenset({"0", "false", "f", "no", "n", "off", ""})
-
-
-@register_migration(entity="SlayerQuery", source_version=3)
+@register_migration(entity="SlayerQuery", source_version=3, stored_only=True)
 def _query_v3_to_v4(data: dict) -> dict:
     """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
-    ``false``/absent leaves the mode omitted (the default)."""
-    if "strict" not in data:
-        return data
-    strict = data.pop("strict")
-    if isinstance(strict, str):
-        token = strict.strip().lower()
-        if token in _STRICT_TRUE_TOKENS:
-            strict = True
-        elif token in _STRICT_FALSE_TOKENS:
-            strict = False
-        else:
-            raise ValueError(
-                f"Unrecognized legacy strict value {strict!r}; use to_many_handling instead"
-            )
-    if strict:
-        data.setdefault("to_many_handling", "error")
-    return data
+    ``false``/absent leaves the mode omitted (the default). Fresh ``strict`` converts with a deprecation instead."""
+    return without_strict(data) if "strict" in data else data
 
 
-def is_legacy_root_extension(source: Any) -> bool:
-    """Whether a raw ``source_model`` is the legacy extension object."""
-    return isinstance(source, dict) and "source_name" in source
+def is_legacy_root_extension(source: Any) -> TypeGuard[dict[str, Any]]:
+    """Whether a raw population (``source_model`` before 2.0) is the legacy extension object (its target spelled
+    ``source_name``, or already ``dataset``)."""
+    return is_extension_object(source)
 
 
-def hoist_root_extension(data: dict) -> dict:
-    """A query whose ``source_model`` is an extension object, as ``source_model: <base>`` plus that extension."""
-    source = data.get("source_model")
+def hoist_root_extension(data: dict, *, key: str = "source_model") -> dict:
+    """A query whose ``key`` (its population) is an extension object, as ``key: <base>`` plus that extension."""
+    source = data.get(key)
     if not isinstance(source, dict) or not is_legacy_root_extension(source):
         return data
-    return with_root_extension(data, extension=source, base=source["source_name"])
+    return with_root_extension(data, extension=source, base=extension_dataset(source), key=key)
 
 
-def with_root_extension(data: dict, *, extension: Any, base: Any) -> dict:
-    """``data`` sourced from ``base`` with ``extension`` first in its extensions; a non-list ``extensions`` is left to validation."""
+def with_root_extension(data: dict, *, extension: Any, base: Any, key: str = "source_model") -> dict:
+    """``data`` sourced from ``base`` (under ``key``) with ``extension`` first in its extensions; a non-list
+    ``extensions`` is left to validation."""
     extensions = data.get("extensions")
     if extensions is not None and not isinstance(extensions, list):
         return data
-    return {**data, "source_model": base, "extensions": [extension, *(extensions or [])]}
+    return {**data, key: base, "extensions": [extension, *(extensions or [])]}
 
 
 register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(hoist_root_extension)
+
+
+_OSI_OLD, _OSI_NEW = "osi_custom_extensions", "osi_nonportable_extensions"
+_OSI_SEMANTIC = "osi_semantic_model"
+
+
+def _decoded_extension(entry: Any) -> Any:
+    """``entry`` with string ``data`` that decodes to a JSON object decoded; anything else unchanged."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("data"), str):
+        return entry
+    try:
+        decoded = json.loads(entry["data"])
+    except (ValueError, RecursionError):
+        return entry
+    return {**entry, "data": decoded} if isinstance(decoded, dict) else entry
+
+
+def _moved_extensions(meta: dict, *, old: str, new: str) -> dict:
+    entries, current = meta.get(old), meta.get(new)
+    if not isinstance(entries, list) or not isinstance(current, (list, type(None))):
+        return meta
+    out = {k: v for k, v in meta.items() if k != old}
+    out[new] = [*(current or []), *(_decoded_extension(e) for e in entries)]
+    return out
+
+
+def _owner_extensions(owner: Any) -> Any:
+    if not isinstance(owner, dict) or not isinstance(owner.get("meta"), dict):
+        return owner
+    meta = _moved_extensions(owner["meta"], old=_OSI_OLD, new=_OSI_NEW)
+    if isinstance(meta.get(_OSI_SEMANTIC), dict):
+        meta = {**meta, _OSI_SEMANTIC: _moved_extensions(meta[_OSI_SEMANTIC], old="custom_extensions",
+                                                         new="nonportable_extensions")}
+    return {**owner, "meta": meta}
+
+
+@register_migration(entity="SlayerModel", source_version=22, stored_only=True)
+def _dataset_v22_to_v23(data: dict) -> dict:
+    """v23: stored Ossie foreign extensions move to ``nonportable_extensions`` with object data."""
+    data = _owner_extensions(data)
+    for key in ("columns", "measures", "joins"):
+        if isinstance(data.get(key), list):
+            data[key] = [_owner_extensions(x) for x in data[key]]
+    return data
 
 
 def migrate(entity: str, data: Any) -> Any:
@@ -260,3 +295,6 @@ from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLO
 from slayer.storage import colon_spelling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import extension_columns_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import date_only_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import ossie_vocabulary_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

@@ -1,0 +1,61 @@
+{
+ "source": "tests/test_ingestion_cardinality_reingest.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "a__b",
+    "join_pairs": [
+     [
+      "x",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "a__b",
+    "from_columns": [
+     "x"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "a___b",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "a___b",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 215,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 218,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 219,
+   "reason": "not fully literal"
+  }
+ ]
+}

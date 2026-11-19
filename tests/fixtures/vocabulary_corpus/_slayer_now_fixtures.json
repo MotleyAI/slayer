@@ -1,0 +1,22 @@
+{
+ "source": "tests/_slayer_now_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  }
+ ]
+}

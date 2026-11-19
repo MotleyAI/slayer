@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_cardinality_helpers.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  }
+ ]
+}

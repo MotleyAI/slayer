@@ -1,0 +1,45 @@
+{
+ "source": "tests/test_embedding_retriever.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_agg",
+    "formula": "SUM({x})"
+   },
+   "new": {
+    "name": "my_agg",
+    "expression": "SUM({x})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  }
+ ]
+}

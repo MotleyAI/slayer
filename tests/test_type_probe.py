@@ -17,7 +17,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import NotReadOnlyQueryError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
@@ -28,7 +28,7 @@ from slayer.database.client import (
     UnparseableTypeProbeError,
     get_result_column_types_sync,
     render_type_probe,
-    sql_model_trial_query,
+    sql_dataset_trial_query,
 )
 from slayer.sql.dialects import (
     _ALL_DIALECTS, DuckdbDialect, OracleDialect, PostgresDialect, SqlDialect, SqliteDialect, TsqlDialect,
@@ -136,7 +136,7 @@ def test_door_executes_the_probe_verbatim(sqlite_engine: sa.Engine) -> None:
     assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect())]
 
 
-_TYPED = {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
+_TYPED = {"a": ResultColumnType(type=DataType.INTEGER), "b": ResultColumnType(type=DataType.STRING)}
 
 
 def _probe_db_client(tmp_path: Path) -> SlayerSQLClient:
@@ -191,7 +191,7 @@ async def test_client_door_refuses_a_modifying_statement(sqlite_engine: sa.Engin
 # ── trial query ───────────────────────────────────────────────────────────
 
 def _trial(sql: str) -> exp.Select:
-    return sql_model_trial_query(sql, dialect=PostgresDialect())
+    return sql_dataset_trial_query(sql, dialect=PostgresDialect())
 
 
 @pytest.mark.parametrize("sql", ["SELECT a FROM t", "SELECT a FROM t;", "SELECT a FROM t ;  \n",
@@ -248,10 +248,10 @@ def test_parse_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
 
 # ── engine model typing ───────────────────────────────────────────────────
 
-def _orders(sql_table: str = "orders") -> SlayerModel:
-    return SlayerModel(name="orders", sql_table=sql_table, data_source="test", columns=[
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+def _orders(sql_table: str = "orders") -> SlayerDataset:
+    return SlayerDataset(name="orders", sql_table=sql_table, data_source="test", fields=[
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
     ])
 
 
@@ -264,7 +264,7 @@ async def _captured_engine_probe(ds_type: str) -> str:
         seen.append(probe)
         return {}
 
-    with patch.object(storage, "get_model", new_callable=AsyncMock, return_value=_orders()):
+    with patch.object(storage, "get_dataset", new_callable=AsyncMock, return_value=_orders()):
         engine = SlayerQueryEngine(storage=storage)
         ds = MagicMock()
         ds.get_connection_string.return_value = "sqlite://"
@@ -301,7 +301,7 @@ async def test_engine_probe_applies_the_session_policy(tmp_path: Path) -> None:
                            "INSERT INTO orders VALUES (1, 2.5, 'secret-org');")
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db))
-    await storage.save_model(_orders())
+    await storage.save_dataset(_orders())
     engine = SlayerQueryEngine(storage=storage, policy=SessionPolicy(
         ruleset=ColumnFilterRuleset(column="org", value="secret-org")))
     seen: list[str] = []
@@ -316,7 +316,7 @@ async def test_engine_probe_applies_the_session_policy(tmp_path: Path) -> None:
             types = await engine.get_result_column_types("orders")
     finally:
         engine.close()
-    assert types["revenue"].type == DataType.DOUBLE
+    assert types["revenue"].type == DataType.FLOAT
     (sql,) = seen
     assert "secret-org" in sql
     assert sql.endswith(") AS _types LIMIT 1")

@@ -24,16 +24,17 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1837_fixtures import (
     BAND35,
-    ModelMeasure,
     dev1837_models,
     gen,
     month_td,
     q,
 )
 
-BAND = {"expression": BAND35, "name": "band"}
+BAND = {"field": BAND35, "alias": "band"}
 
 #: The lifted windowed/ranked arm — kept only as the no-residue scan needle
 #: (tests/test_dev1835_guards.py imports it).
@@ -89,7 +90,7 @@ def _bundle() -> ResolvedSourceBundle:
     models = dev1837_models()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
@@ -101,9 +102,9 @@ class TestLiftedDirection:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula=formula, name="x"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric=formula, alias="x"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -114,10 +115,10 @@ class TestLiftedDirection:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -133,9 +134,9 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -144,9 +145,9 @@ class TestRemainingArmsExactMessages:
         """Lifted direction: the former ranked-arm shape renders."""
         sql = await gen(q(
             dimensions=["region", BAND],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="last(amount)", name="l"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="last(amount)", alias="l"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -157,9 +158,9 @@ class TestRemainingArmsExactMessages:
         is gone from the sources."""
         sql = await gen(q(
             dimensions=["region", BAND],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(customers.spend)", name="cm"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -191,7 +192,7 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
@@ -199,8 +200,8 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            metrics=[
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
             ],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
@@ -228,8 +229,8 @@ class TestStalePlannerRefsRepointed:
             "THEN 1 ELSE 0 END"
         )
         query = q(
-            dimensions=["region", {"expression": cband, "name": "cband"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            dimensions=["region", {"field": cband, "alias": "cband"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:

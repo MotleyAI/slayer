@@ -13,14 +13,14 @@ import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, finer_datatype
 from slayer.core.errors import ForcedFilterError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import WholeModelDelete
+from slayer.live_schema.schema_drift import WholeDatasetDelete
 from slayer.database import engine_factory
 from slayer.database.client import (
     AuthenticationRefused,
@@ -40,15 +40,15 @@ from tests._gateway_harness import (
     GatewayFactory,
     RecordingClient,
     backend_of,
-    customers_model,
-    orders_model,
-    paid_sql_model,
+    customers_dataset,
+    orders_dataset,
+    paid_sql_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
 )
 
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
 
 
 class Shop(BaseModel):
@@ -65,7 +65,7 @@ async def shop(tmp_path: Path) -> Shop:
     seed_shop(db)
     ds = shop_datasource(db)
     storage = await shop_storage(
-        str(tmp_path / "store"), datasource=ds, models=[orders_model(), customers_model(), paid_sql_model()],
+        str(tmp_path / "store"), datasource=ds, datasets=[orders_dataset(), customers_dataset(), paid_sql_dataset()],
     )
     return Shop(db=db, datasource=ds, storage=storage)
 
@@ -118,14 +118,14 @@ class TestTypedFailures:
     async def test_an_unreachable_client_refuses_validation(self, shop: Shop) -> None:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=_wrapping(_Unavailable))
         with pytest.raises(Exception) as excinfo:  # NOSONAR(S5958) — the cause chain is the contract
-            await engine.validate_models(DS_NAME)
+            await engine.validate_datasets(DS_NAME)
         assert any(isinstance(e, DatabaseUnavailable) for e in _chain(excinfo.value))
 
     async def test_a_table_missing_from_the_listing_is_drift(self, shop: Shop) -> None:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=_wrapping(_HidesTable))
-        entries = await engine.validate_models(DS_NAME)
-        whole = [e for e in entries if isinstance(e, WholeModelDelete)]
-        assert [e.model_name for e in whole] == ["customers"]
+        entries = await engine.validate_datasets(DS_NAME)
+        whole = [e for e in entries if isinstance(e, WholeDatasetDelete)]
+        assert [e.dataset_name for e in whole] == ["customers"]
 
     @pytest.mark.parametrize("error", [
         ObjectNotFound("customers vanished"),
@@ -134,8 +134,8 @@ class TestTypedFailures:
     ], ids=["not_found", "permission", "unsupported"])
     async def test_a_listed_but_unreadable_table_yields_no_verdict(self, shop: Shop, error: Exception) -> None:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=_wrapping(_unreadable_customers(error)))
-        entries = await engine.validate_models(DS_NAME)
-        assert [e for e in entries if e.model_name == "customers"] == []
+        entries = await engine.validate_datasets(DS_NAME)
+        assert [e for e in entries if e.dataset_name == "customers"] == []
 
     async def test_an_unconfirmable_policy_column_refuses_the_query(self, shop: Shop) -> None:
         class _ColumnsDown(DelegatingSqlClient):
@@ -215,26 +215,26 @@ class TestTypedFailures:
 _INT = NumberFormat(type=NumberFormatType.INTEGER)
 _FLOAT = NumberFormat(type=NumberFormatType.FLOAT)
 _DUCKDB_KINDS = {
-    "id": (DataType.INT, _INT, None),
-    "qty": (DataType.INT, _INT, None),
-    "price": (DataType.DOUBLE, _FLOAT, "DECIMAL(12,2)"),
-    "ratio": (DataType.DOUBLE, _FLOAT, None),
-    "label": (DataType.TEXT, None, None),
-    "created_at": (DataType.TIMESTAMP, None, None),
+    "id": (DataType.INTEGER, _INT, None),
+    "qty": (DataType.INTEGER, _INT, None),
+    "price": (DataType.FLOAT, _FLOAT, "DECIMAL(12,2)"),
+    "ratio": (DataType.FLOAT, _FLOAT, None),
+    "label": (DataType.STRING, None, None),
+    "created_at": (DataType.DATETIME, None, None),
     "flag": (DataType.BOOLEAN, None, None),
-    "uid": (DataType.TEXT, None, None),
-    "doc": (DataType.TEXT, None, "JSON"),
+    "uid": (DataType.STRING, None, None),
+    "doc": (DataType.STRING, None, "JSON"),
 }
 _SQLITE_KINDS = {
-    "id": (DataType.INT, _INT, None),
-    "qty": (DataType.INT, _INT, None),
-    "price": (DataType.DOUBLE, _FLOAT, "NUMERIC(12, 2)"),
-    "ratio": (DataType.DOUBLE, _FLOAT, None),
-    "label": (DataType.TEXT, None, None),
-    "created_at": (DataType.TIMESTAMP, None, None),
+    "id": (DataType.INTEGER, _INT, None),
+    "qty": (DataType.INTEGER, _INT, None),
+    "price": (DataType.FLOAT, _FLOAT, "NUMERIC(12, 2)"),
+    "ratio": (DataType.FLOAT, _FLOAT, None),
+    "label": (DataType.STRING, None, None),
+    "created_at": (DataType.DATETIME, None, None),
     "flag": (DataType.BOOLEAN, None, None),
-    "uid": (DataType.DOUBLE, _FLOAT, "NUMERIC"),
-    "payload": (DataType.TEXT, None, None),
+    "uid": (DataType.FLOAT, _FLOAT, "NUMERIC"),
+    "payload": (DataType.STRING, None, None),
 }
 
 
@@ -281,8 +281,10 @@ class TestReflectedMetadataUsesSlayerTypes:
             await engine.aclose()
             engine.close()
             engine_factory.invalidate_engine(ds)
-        (model,) = report.models
-        assert {c.name: (c.type, c.format, c.db_type) for c in model.columns} == expected
+        (model,) = report.datasets
+        # Ingestion narrows an exact numeric or zoned timestamp by its db_type; raw reflection keeps the coarse type.
+        assert {c.name: (c.datatype, c.format, c.db_type) for c in model.fields} == {
+            name: (finer_datatype(t, d), f, d) for name, (t, f, d) in expected.items()}
         assert all(isinstance(c.type, DataType) for c in reflected)
         assert {c.name: c.type for c in reflected} == {name: t for name, (t, _f, _d) in expected.items()}
 
@@ -308,7 +310,7 @@ class TestDelegatingClient:
 
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         response = await engine.execute(COUNT_ORDERS)
-        await engine.validate_models(DS_NAME)
+        await engine.validate_datasets(DS_NAME)
         engine.close()
         engine_factory.invalidate_engine(backend)
         assert response.sql in overridden

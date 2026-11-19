@@ -412,7 +412,7 @@ class TestBestEffortLimitations:
 class TestBigQueryParseCarveOutRemoved:
     @pytest.mark.parametrize("dialect", ["bigquery", "tsql", "postgres"])
     def test_typeerror_propagates_for_every_dialect(
-        self, monkeypatch, dialect: str,
+        self, monkeypatch: pytest.MonkeyPatch, dialect: str,
     ) -> None:
         def _boom(*_args, **_kwargs):
             raise TypeError("sqlglot quirk")
@@ -429,21 +429,21 @@ class TestBigQueryParseCarveOutRemoved:
 class TestEnvGatedRuntimeHook:
     LEAKY = "WITH c AS (SELECT t1.x AS x FROM t1 AS t1) SELECT t1.y FROM c"
 
-    def test_disabled_when_env_unset(self, monkeypatch) -> None:
+    def test_disabled_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLAYER_VALIDATE_SCOPES", raising=False)
         maybe_validate_scopes(self.LEAKY)  # no-op, must not raise
 
-    def test_enabled_when_env_truthy(self, monkeypatch) -> None:
+    def test_enabled_when_env_truthy(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
         with pytest.raises(ScopeLeakError):
             maybe_validate_scopes(self.LEAKY)
 
     @pytest.mark.parametrize("falsy", ["0", "", "false", "no"])
-    def test_disabled_for_falsy_values(self, monkeypatch, falsy: str) -> None:
+    def test_disabled_for_falsy_values(self, monkeypatch: pytest.MonkeyPatch, falsy: str) -> None:
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", falsy)
         maybe_validate_scopes(self.LEAKY)  # no-op
 
-    def test_read_at_call_time_not_import_time(self, monkeypatch) -> None:
+    def test_read_at_call_time_not_import_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Toggling after import must take effect immediately.
         monkeypatch.delenv("SLAYER_VALIDATE_SCOPES", raising=False)
         maybe_validate_scopes(self.LEAKY)  # off
@@ -451,7 +451,7 @@ class TestEnvGatedRuntimeHook:
         with pytest.raises(ScopeLeakError):
             maybe_validate_scopes(self.LEAKY)  # on
 
-    def test_closed_sql_passes_when_enabled(self, monkeypatch) -> None:
+    def test_closed_sql_passes_when_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
         maybe_validate_scopes(SQL_CROSS_MODEL_CM)  # closed ⇒ no raise
 

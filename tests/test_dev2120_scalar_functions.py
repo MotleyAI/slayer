@@ -7,7 +7,7 @@ from sqlglot import exp, parse_one
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnknownFunctionError, UnsupportedServerFunctionError
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import ServerProfile
@@ -16,7 +16,7 @@ from tests._dev2120_fixtures import (
     TIER1,
     emit_lib,
     lib_engine,
-    lib_model,
+    lib_dataset,
     lib_ids,
     lib_query,
     lib_values,
@@ -31,7 +31,7 @@ async def engine(request):
 
 
 async def _value(engine: SlayerQueryEngine, expr: str, *, row: int = 1):
-    return lib_values(await engine.execute(lib_query(expr, filters=[f"id = {row}"])))[row]
+    return lib_values(await engine.execute(lib_query(expr, filter=[f"id = {row}"])))[row]
 
 
 async def _rejected(engine: SlayerQueryEngine, expr: str, *needles: str) -> str:
@@ -49,9 +49,9 @@ class TestPostgresMeaning:
         assert await _value(engine, "left(s, -2)") == "ABC"
 
     async def test_non_ascii_characters(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(lib_query({"expression": "reverse(s)", "name": "v1"},
-                                              {"expression": "ascii(s)", "name": "v2"},
-                                              {"expression": "left(s, 1)", "name": "v3"}, filters=["id = 2"]))
+        resp = await engine.execute(lib_query({"field": "reverse(s)", "alias": "v1"},
+                                              {"field": "ascii(s)", "alias": "v2"},
+                                              {"field": "left(s, 1)", "alias": "v3"}, filter=["id = 2"]))
         row = resp.data[0]
         assert (row["lib.v1"], int(row["lib.v2"]), row["lib.v3"]) == ("é€", 8364, "€")
 
@@ -59,22 +59,22 @@ class TestPostgresMeaning:
         assert await _value(engine, "chr(128512)") == "\U0001F600"
 
     async def test_split_part_index(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(lib_query({"expression": "split_part(s, '/', 2)", "name": "v1"},
-                                              {"expression": "split_part(s, '/', -1)", "name": "v2"},
-                                              {"expression": "split_part(s, '/', 9)", "name": "v3"},
-                                              filters=["id = 3"]))
+        resp = await engine.execute(lib_query({"field": "split_part(s, '/', 2)", "alias": "v1"},
+                                              {"field": "split_part(s, '/', -1)", "alias": "v2"},
+                                              {"field": "split_part(s, '/', 9)", "alias": "v3"},
+                                              filter=["id = 3"]))
         row = resp.data[0]
         assert (row["lib.v1"], row["lib.v2"], row["lib.v3"]) == ("b", "c", "")
 
     async def test_lpad_truncates(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("lpad(s, 3, '0')", filters=["id IN (1, 8)"])))
+        values = lib_values(await engine.execute(lib_query("lpad(s, 3, '0')", filter=["id IN (1, 8)"])))
         assert values == {1: "ABC", 8: "0ab"}
 
     async def test_concat_ws_skips_nulls(self, engine: SlayerQueryEngine) -> None:
         assert await _value(engine, "concat_ws('-', 'x', p, 'z')", row=10) == "x-z"
 
     async def test_plain_text_containment(self, engine: SlayerQueryEngine) -> None:
-        assert lib_ids(await engine.execute(lib_query(filters=["contains(tag, '5%')"]))) == {6}
+        assert lib_ids(await engine.execute(lib_query(filter=["contains(tag, '5%')"]))) == {6}
 
     @pytest.mark.parametrize(("expr", "expected"), [
         ("div(7, 2)", 3), ("div(-7, 2)", -3), ("div(7, -2)", -3), ("div(-7, -2)", 3),
@@ -92,12 +92,12 @@ class TestPostgresMeaning:
         assert await _value(engine, "div(i, m)", row=3) is None
 
     async def test_asin_column_out_of_domain(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("asin(x)", filters=["id IN (1, 2)"])))
+        values = lib_values(await engine.execute(lib_query("asin(x)", filter=["id IN (1, 2)"])))
         assert values[2] is None
         assert float(values[1]) == pytest.approx(0.5235987755982989)
 
     async def test_greatest_ignores_nulls_in_any_position(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("greatest(a, b, c)", filters=["id IN (1, 2, 3, 4)"])))
+        values = lib_values(await engine.execute(lib_query("greatest(a, b, c)", filter=["id IN (1, 2, 3, 4)"])))
         assert {k: (None if v is None else int(v)) for k, v in values.items()} == {1: 2, 2: 3, 3: 2, 4: None}
 
 
@@ -172,7 +172,7 @@ class TestVersionGating:
         assert get_dialect("tsql").parse_server_profile(base_row=None) == ServerProfile()
 
     @pytest.mark.parametrize("function", ["greatest", "least"])
-    async def test_old_sql_server_fails_closed(self, monkeypatch, function: str) -> None:
+    async def test_old_sql_server_fails_closed(self, monkeypatch: pytest.MonkeyPatch, function: str) -> None:
         patch_profile(monkeypatch, version=(15, 0))
         query = lib_query(f"{function}(a, b)")
         with pytest.raises(SlayerError) as info:
@@ -182,16 +182,16 @@ class TestVersionGating:
         assert "2022" in msg, msg
 
     @pytest.mark.parametrize("version", [(16, 0), (17, 0), None])
-    async def test_supported_or_unknown_version_emits(self, monkeypatch, version) -> None:
+    async def test_supported_or_unknown_version_emits(self, monkeypatch: pytest.MonkeyPatch, version) -> None:
         patch_profile(monkeypatch, version=version)
         sql = await emit_lib(lib_query("greatest(a, b)"), dialect="tsql")
         assert "GREATEST(" in sql.upper(), sql
 
-    async def test_failed_probe_emits(self, monkeypatch) -> None:
+    async def test_failed_probe_emits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         patch_profile(monkeypatch, fail=True)
         await emit_lib(lib_query("least(a, b)"), dialect="tsql")
 
-    async def test_profile_probed_only_when_rendering_reads_it(self, monkeypatch) -> None:
+    async def test_profile_probed_only_when_rendering_reads_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = patch_profile(monkeypatch, version=(16, 0))
         await emit_lib(lib_query("abs(a)"), dialect="tsql")
         assert calls == []
@@ -274,7 +274,7 @@ class TestFloorDivisionHint:
         query = lib_query("i // m")
         with pytest.raises(ValueError, match=r"div\(a, b\)"):
             await engine.execute(query)
-        values = lib_values(await engine.execute(lib_query("div(i, m)", filters=["id = 1"])))
+        values = lib_values(await engine.execute(lib_query("div(i, m)", filter=["id = 1"])))
         assert int(values[1]) == 3
 
 
@@ -309,10 +309,10 @@ class TestSQLServerCodePoints:
         assert any(isinstance(n, exp.Neg) and isinstance(n.this, exp.Column) for n in lengths), sql
 
     async def test_author_sql_is_not_rewritten(self) -> None:
-        base = lib_model()
-        model = base.model_copy(update={"columns": [*base.columns, Column(
-            name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", type=DataType.TEXT)]})
-        sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", models=[model])).split())
+        base = lib_dataset()
+        model = base.model_copy(update={"fields": [*base.fields, DatasetField(
+            name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", datatype=DataType.STRING)]})
+        sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", datasets=[model])).split())
         assert "SUBSTRING(lib.s, 1, 2)" in sql, sql
         assert "POWER(lib.a, 2)" in sql, sql
         assert "COLLATE" not in sql, sql

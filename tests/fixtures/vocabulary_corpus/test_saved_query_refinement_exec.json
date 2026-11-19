@@ -1,0 +1,106 @@
+{
+ "source": "tests/test_saved_query_refinement_exec.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "revenue"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "revenue"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 124,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 135,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 152,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 201,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 238,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 273,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 278,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 284,
+   "reason": "unclassifiable"
+  }
+ ]
+}

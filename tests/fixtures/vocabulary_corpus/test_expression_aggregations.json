@@ -1,0 +1,207 @@
+{
+ "source": "tests/test_expression_aggregations.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_agg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "my_agg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount - cost)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount - cost)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount - cost)"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount - cost)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(amount_cost_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(amount_cost_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount - cost)",
+    "name": "profit"
+   },
+   "new": {
+    "expression": "sum(amount - cost)",
+    "name": "profit"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  }
+ ]
+}

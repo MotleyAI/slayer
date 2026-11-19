@@ -37,29 +37,6 @@ mode and is not an error-mode concern.
   every metric is computable at the full query grain
 - **THEN** the query succeeds with values identical to the run omitting the mode
 
-### Requirement: The strict flag is retired
-`SlayerQuery` SHALL NOT accept a `strict` field. Query input containing `strict` fails
-with a clear typed error naming `to_many_handling: "error"` as the replacement. Stored
-queries are migrated on load: `strict: true` becomes `to_many_handling: "error"`;
-`strict: false` or absent maps to the default. Every surface that exposed `strict`
-(REST query request, MCP query tool) SHALL expose `to_many_handling` instead.
-
-#### Scenario: Strict input is rejected with the remedy
-- **WHEN** a query is submitted with `strict: true` on any surface
-- **THEN** it fails with a clear error naming `to_many_handling: "error"` as the
-  replacement
-
-#### Scenario: Stored strict queries migrate
-- **WHEN** a stored query saved with `strict: true` (and another with `strict: false`)
-  is loaded after the migration
-- **THEN** the first loads with `to_many_handling: "error"`, the second with the
-  default, and both execute with the semantics those modes define
-
-#### Scenario: Surfaces accept the mode parameter
-- **WHEN** a query sets `to_many_handling` through the REST API or the MCP query tool
-- **THEN** the mode reaches the engine and governs resolution exactly as a direct
-  `SlayerQuery` field does
-
 ### Requirement: Partition key fanning from its host fails closed in every mode
 
 An explicit `partition_by=` key whose dependency closure — its own join path plus every
@@ -73,7 +50,7 @@ the fanning hop and the remedy (declare join cardinality or a covering unique ke
 target). The rule applies uniformly wherever the key appears — a partitioned measure,
 filter, ORDER BY target, computed-dimension aggregate, transform partition set,
 re-aggregation inner, or windowed aggregate — and to both the path-less spelling
-(`partition_by=<derived host column>`) and the path-bearing spelling
+(`partition_by=<derived host field>`) and the path-bearing spelling
 (`partition_by=<dotted reference across the hop>`). A partition key that is safe from the
 host but unattributable only from a further (cross-model) root is unaffected: it keeps
 its mode-aware resolution.
@@ -116,8 +93,8 @@ its mode-aware resolution.
 When an aggregate with at least one unattributable grain dimension associates (the mode
 omitted, or `to_many_handling: "associate"`), it SHALL return, for each result cell, the
 aggregate over the distinct home entities associated with that cell — each entity counted
-exactly once per cell, deduplicated by the home model's unique key, else by its per-query
-row identity. Association is defined by the join path from the aggregate's home dataset
+exactly once per cell, deduplicated by the home model's primary key, else by its per-query
+row identity (per "Per-query row identity for keyless homes"). Association is defined by the join path from the aggregate's home dataset
 to the dimension (Axiom 3, Association): an entity belongs to a cell iff its own path
 reaches the cell's dimension values, so a home entity with no population row still counts
 in every cell its path reaches, and the origin of the population's rows never restricts
@@ -298,7 +275,7 @@ row-valued parameter the entity grain does not determine. An ineligible aggregat
 needs association SHALL fail under `to_many_handling: "associate"` with a clear typed
 error naming the combination and the remedy, and SHALL broadcast with the reason when
 the mode is omitted (per "Broadcast fallback for association-ineligible aggregates").
-A home declaring no primary or unique key SHALL be associated through a per-query row
+A home declaring no primary key SHALL be associated through a per-query row
 identity (per "Per-query row identity for keyless homes"), never refused.
 
 #### Scenario: Percentile attributes over the association
@@ -405,13 +382,16 @@ partition key fanning from its host, fails in every mode, the default included.
   every explicit mode
 
 ### Requirement: Per-query row identity for keyless homes
-A home dataset declaring no primary or unique key that needs association SHALL be
-deduplicated by a per-query row identity: each of its rows — after its model-level
+A home dataset whose model declares no primary key that needs association SHALL be
+deduplicated by a per-query row identity, including when the model declares a standalone
+unique column that may allow NULLs: each of its rows — after its model-level
 filters, before any join — is told apart from every other, so each physical row counts
 exactly once per cell. Two identical physical rows count as two rows; the copies a join
 fan-out makes of one row count once. The identity is query-local, determines every
 column of its own row, and never appears in results. It applies in every mode that
-associates; an association over list children only keeps its key-free evaluation.
+associates. A home whose model declares a primary key SHALL be deduplicated by that key,
+whatever unique columns it also declares. An association over list children only keeps
+its key-free evaluation.
 
 #### Scenario: Duplicate physical rows count separately, fan-out copies once
 - **WHEN** a keyless `customers` model holds one customer's row twice, another customer
@@ -426,10 +406,35 @@ associates; an association over list children only keeps its key-free evaluation
   the fanning hop
 - **THEN** that home row counts once per cell it reaches, by executed values
 
+#### Scenario: Model-level filters apply before numbering
+- **WHEN** a keyless home model carries a model-level filter and the query associates an
+  aggregate of that home across a fanning hop
+- **THEN** only the rows passing the filter contribute, each once per cell it reaches,
+  by executed values
+
 #### Scenario: The row identity renders on every dialect
 - **WHEN** a keyless-home association query is rendered for every supported dialect
 - **THEN** each statement numbers the home rows with the dialect's accepted window
   syntax, executed on the in-process and locally runnable engines
+
+#### Scenario: A nullable unique column preserves each associated row
+- **WHEN** an aggregate associates over a fanning dimension, the home model has no primary
+  key, and two real home rows have NULL in a standalone unique column
+- **THEN** both home rows contribute once per cell they reach, even when a home row
+  matches multiple joined rows in the cell, on SQLite and DuckDB
+
+#### Scenario: A numbered home determines row-valued parameters
+- **WHEN** the same home supplies both the value and weight for an associated weighted
+  average
+- **THEN** each cell's average uses the distinct home rows that reach it and their own
+  weights, in default and explicit association modes
+
+#### Scenario: A home with a primary key associates by it
+- **WHEN** an aggregate associates over a home declaring a primary key and a standalone
+  unique column holding NULLs
+- **THEN** the home rows are deduplicated by the primary key without numbering, and
+  every row with a NULL unique value still contributes, by executed values on SQLite and
+  DuckDB
 
 ### Requirement: Stored broadcast defaults migrate
 A stored query saved with `to_many_handling: "broadcast"` — standalone, or a stage nested
@@ -471,3 +476,39 @@ association-ineligible aggregates".
 - **WHEN** the query selects `sum(last(customers.spend, customers.signup_at))` by `status`
 - **THEN** omitting the mode broadcasts it with the first/last reason, and `"associate"`
   fails with the typed unsupported-combination error
+
+### Requirement: The strict flag is a deprecated alias
+
+`SlayerQuery` SHALL NOT have a `strict` field. Fresh query input carrying `strict` — no `version`, a version of 4 or later, or a version that is not an integer — SHALL be converted with a deprecation scheduled for removal in 3.0, once per query object: `strict: true` or a legacy true token becomes `to_many_handling: "error"`, and `strict: false` or a legacy false token is dropped; an explicit `to_many_handling` on the same object wins. An unrecognized `strict` token SHALL fail with a typed error naming `to_many_handling`. Stored queries saved before version 4 SHALL migrate silently by the same rules. The conversion SHALL apply to Python query objects, the REST query request, the MCP `query` tool, refinements of a saved query, and the queries of model and memory saves; a run-by-name REST request with a top-level `strict` SHALL stay rejected. Every surface SHALL expose `to_many_handling`, and none SHALL document `strict` outside the migration guide.
+
+#### Scenario: Strict input converts with a deprecation
+- **WHEN** a fresh query is submitted with `strict: true` through Python, REST and the MCP `query` tool
+- **THEN** each runs under `to_many_handling: "error"` and reports one `deprecated_input` warning naming `to_many_handling`
+
+#### Scenario: Strict false is dropped with a deprecation
+- **WHEN** a fresh query carries `strict: false`, or the legacy token `"off"`
+- **THEN** it runs under the default mode and reports one `deprecated_input` warning
+
+#### Scenario: An explicit mode wins over strict
+- **WHEN** a fresh query carries `strict: true` and `to_many_handling: "associate"`
+- **THEN** it runs under `associate` and reports one `deprecated_input` warning
+
+#### Scenario: An unrecognized strict token fails
+- **WHEN** a fresh query, or a stored pre-version-4 query, carries `strict: "maybe"`
+- **THEN** it fails with a typed error naming `to_many_handling`
+
+#### Scenario: A malformed version is fresh input
+- **WHEN** a query carrying `strict: true` has `version: 3.9`
+- **THEN** it converts with a deprecation, exactly as a version-less query does
+
+#### Scenario: Stored strict queries migrate
+- **WHEN** a stored query saved with `strict: true` (and another with `strict: false`) before version 4 is loaded
+- **THEN** the first loads with `to_many_handling: "error"`, the second with the default, both execute with the semantics those modes define, and neither emits a deprecation
+
+#### Scenario: Run-by-name top-level strict stays rejected
+- **WHEN** a REST run-by-name request carries a top-level `strict`
+- **THEN** it is rejected like every other top-level query clause there
+
+#### Scenario: Surfaces accept the mode parameter
+- **WHEN** a query sets `to_many_handling` through the REST API or the MCP query tool
+- **THEN** the mode reaches the engine and governs resolution exactly as a direct `SlayerQuery` field does

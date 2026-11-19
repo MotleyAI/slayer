@@ -1,0 +1,96 @@
+{
+ "source": "tests/_dev1846_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  }
+ ]
+}

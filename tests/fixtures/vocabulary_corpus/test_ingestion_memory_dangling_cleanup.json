@@ -1,0 +1,24 @@
+{
+ "source": "tests/test_ingestion_memory_dangling_cleanup.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  }
+ ]
+}

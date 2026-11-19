@@ -1,0 +1,131 @@
+{
+ "source": "tests/test_dev1743_mode_b.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer__region.label"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer__region.label"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(customer__region.*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(customer__region.*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customer__region",
+    "join_pairs": [
+     [
+      "cr_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customer__region",
+    "from_columns": [
+     "cr_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "crc",
+    "formula": "count(customer__region.*)"
+   },
+   "new": {
+    "name": "crc",
+    "expression": "count(customer__region.*)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "crc"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "crc"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stores",
+    "dimensions": [
+     "stores__name"
+    ]
+   },
+   "new": {
+    "population": "stores",
+    "dimensions": [
+     "stores__name"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  }
+ ]
+}

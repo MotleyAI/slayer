@@ -1,0 +1,148 @@
+{
+ "source": "tests/test_dev1920_result_key_stability.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "sum(amount, partition_by=region)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "sum(amount, partition_by=region)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "upper(status)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "upper(status)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "status || '-' || region"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "status || '-' || region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "case when sum(amount, partition_by=customer_id) > 50 then 'high' else 'other' end"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "case when sum(amount, partition_by=customer_id) > 50 then 'high' else 'other' end"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "date_trunc('month', created_at)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "date_trunc('month', created_at)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ],
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ],
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "date_trunc('fiscal_quarter', created_at)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "date_trunc('fiscal_quarter', created_at)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 15,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  }
+ ]
+}

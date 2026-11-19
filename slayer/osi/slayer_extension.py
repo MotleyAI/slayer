@@ -1,4 +1,4 @@
-"""The versioned ``SLAYER`` custom-extension payload: per Ossie entity, the SLayer content Ossie has no place for.
+"""The versioned ``SLAYER`` non-portable-extension payload: per Ossie entity, the SLayer content Ossie has no place for.
 
 Each payload carries a fingerprint over the Ossie content it was written with
 and over its own content; the importer restores what duplicates Ossie content
@@ -9,61 +9,66 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Annotated, Any, Literal, Union
 
 import sqlglot
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import GranularitySpec
-from slayer.core.models import Aggregation, Column, ModelJoin, ModelMeasure
+from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, DatasetMetric
+from slayer.core import vocabulary
+from slayer.core.vocabulary import Spellings
 from slayer.osi.dialects import PORTABLE_READER, reader_for
-from slayer.osi.models import OSICustomExtension, OSIExpression
+from slayer.osi.models import OSIExpression, OSINonportableExtension
 
 VENDOR = "SLAYER"
-PAYLOAD_VERSION = 1
+PAYLOAD_VERSION = 2
 _FINGERPRINT_VERSION = 1
 
 
 class _Payload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[1] = PAYLOAD_VERSION
+    version: Literal[2] = PAYLOAD_VERSION
     #: The name of the Ossie entity the payload was written for.
     entity: str
     fingerprint: str = ""
+    #: A version-1 payload's content as written, which its fingerprint covers.
+    _written: dict[str, Any] | None = PrivateAttr(default=None)
 
 
-class JoinDeclaration(BaseModel):
-    """One SLayer join a relationship stands for, on its declaring model."""
+class RelationshipDeclaration(BaseModel):
+    """One SLayer relationship an Ossie relationship stands for, on its declaring dataset."""
 
     model_config = ConfigDict(extra="forbid")
 
-    model: str
-    join: ModelJoin
+    dataset: str
+    relationship: DatasetRelationship
 
 
 class RelationshipPayload(_Payload):
     kind: Literal["relationship"] = "relationship"
-    declarations: list[JoinDeclaration]
+    declarations: list[RelationshipDeclaration]
 
 
 class MetricPayload(_Payload):
     kind: Literal["metric"] = "metric"
-    model: str
-    measure: ModelMeasure
+    dataset: str
+    metric: DatasetMetric
 
 
-class ColumnContent(BaseModel):
-    """A field's SLayer column attributes; ``sql`` / ``filter`` are its value/filter split, ``type`` its typing."""
+class FieldContent(BaseModel):
+    """A field's SLayer field attributes; ``sql`` / ``filter`` are its value/filter split, ``datatype`` its typing."""
 
     model_config = ConfigDict(extra="forbid")
 
     sql: str | None = None
     filter: str | None = None
-    type: DataType | None = None
+    datatype: DataType | None = None
     hidden: bool = False
     format: NumberFormat | None = None
     granularity: GranularitySpec | None = None
@@ -73,17 +78,17 @@ class ColumnContent(BaseModel):
 
 class FieldPayload(_Payload):
     kind: Literal["field"] = "field"
-    column: ColumnContent
+    field: FieldContent
 
 
 class SourceStructure(BaseModel):
-    """A model's source: a table or SQL with row filters, or saved queries with their variables."""
+    """A dataset's source: a table or SQL with row filters, or saved queries with their variables."""
 
     model_config = ConfigDict(extra="forbid")
 
     sql_table: str | None = None
     sql: str | None = None
-    filters: list[str] = []
+    filters: list[str] | None = None
     source_queries: list[dict[str, Any]] | None = None
     query_variables: dict[str, Any] = {}
 
@@ -96,9 +101,9 @@ class DatasetPayload(_Payload):
     default_time_dimension: str | None = None
     meta: dict[str, Any] | None = None
     aggregations: list[Aggregation] = []
-    #: SLayer-only content: columns reading joined models, measures Ossie cannot express.
-    columns: list[Column] = []
-    measures: list[ModelMeasure] = []
+    #: SLayer-only content: fields reading joined datasets, metrics Ossie cannot express.
+    fields: list[DatasetField] = []
+    metrics: list[DatasetMetric] = []
 
 
 Payload = Annotated[
@@ -108,6 +113,8 @@ _ADAPTER: TypeAdapter[Payload] = TypeAdapter(Payload)
 
 
 def _content(payload: _Payload) -> dict[str, Any]:
+    if payload._written is not None:
+        return payload._written
     return payload.model_dump(mode="json", exclude={"fingerprint"}, exclude_none=True)
 
 
@@ -143,22 +150,105 @@ def fingerprint(payload: _Payload, *, ossie: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def encode(payload: _Payload, *, ossie: Any) -> OSICustomExtension:
-    """``payload`` fingerprinted against ``ossie`` as a ``SLAYER`` custom extension."""
+def encode(payload: _Payload, *, ossie: Any) -> dict[str, Any]:
+    """``payload`` fingerprinted against ``ossie`` as a ``SLAYER`` non-portable extension entry."""
     stamped = payload.model_copy(update={"fingerprint": fingerprint(payload, ossie=ossie)})
-    data = json.dumps(stamped.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"))
-    return OSICustomExtension(vendor_name=VENDOR, data=data)
+    return {"vendor_name": VENDOR, "data": stamped.model_dump(mode="json", exclude_none=True)}
 
 
-def decode(data: str) -> Payload:
-    """The payload in ``data``; raises ``ValueError`` when malformed or of an unknown version or kind."""
-    return _ADAPTER.validate_json(data)
+def _converted_each(items: Any, convert: Any, spellings: Spellings) -> Any:
+    return [convert(i, spellings) for i in items] if isinstance(items, list) else items
+
+
+def _version_2(data: dict[str, Any]) -> dict[str, Any]:
+    """A version-1 payload in the version-2 (Ossie) vocabulary and shapes."""
+    spellings = Spellings(stored=True)
+    out = {**data, "version": 2}
+    kind = out.get("kind")
+    if kind == "field":
+        out = spellings.rename(out, {"column": "field"})
+        out["field"] = vocabulary.field(out.get("field"), spellings)
+    elif kind == "metric":
+        out = spellings.rename(out, {"model": "dataset", "measure": "metric"})
+        out["metric"] = vocabulary.metric(out.get("metric"), spellings)
+    elif kind == "relationship" and isinstance(out.get("declarations"), list):
+        declarations = [spellings.rename(d, {"model": "dataset", "join": "relationship"}) if isinstance(d, dict) else d
+                        for d in out["declarations"]]
+        out["declarations"] = [
+            {**d, "relationship": vocabulary.relationship(d["relationship"], spellings)}
+            if isinstance(d, dict) and isinstance(d.get("relationship"), dict) else d for d in declarations
+        ]
+    elif kind == "dataset":
+        out = vocabulary.dataset(out, spellings)
+        if isinstance(out.get("source"), dict):
+            source = {**out["source"], "source_queries": _converted_each(
+                out["source"].get("source_queries"), vocabulary.query, spellings)}
+            out["source"] = {k: v for k, v in source.items() if v is not None and not (k == "filters" and v == [])}
+        out = {k: v for k, v in out.items() if v is not None}
+    return out
+
+
+def decode(data: dict[str, Any]) -> Payload:
+    """The payload in ``data`` (a version-1 payload read silently as version 2, its fingerprint over its content as
+    written); raises ``ValueError`` when malformed or of an unknown version or kind."""
+    if data.get("version") != 1:
+        return _ADAPTER.validate_python(data)
+    payload = _ADAPTER.validate_python(_version_2(data))
+    payload._written = {k: v for k, v in data.items() if k != "fingerprint"}
+    return payload
 
 
 def matches(payload: _Payload, *, ossie: Any) -> bool:
     return payload.fingerprint == fingerprint(payload, ossie=ossie)
 
 
-def is_slayer(extension: OSICustomExtension | dict[str, Any]) -> bool:
+def is_slayer(extension: OSINonportableExtension | dict[str, Any]) -> bool:
     vendor = extension.get("vendor_name") if isinstance(extension, dict) else extension.vendor_name
     return isinstance(vendor, str) and vendor.strip().upper() == VENDOR
+
+
+def _json_value(value: Any, *, active: set[int], valid: set[int]) -> bool:
+    """Containers on the path are ``active`` (a revisit is a YAML-alias cycle); ``valid`` ones passed already."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if not isinstance(value, (list, dict)) or id(value) in active:
+        return False
+    if id(value) in valid:
+        return True
+    active.add(id(value))
+    if isinstance(value, list):
+        ok = all(_json_value(v, active=active, valid=valid) for v in value)
+    else:
+        ok = all(isinstance(k, str) and _json_value(v, active=active, valid=valid) for k, v in value.items())
+    active.discard(id(value))
+    if ok:
+        valid.add(id(value))
+    return ok
+
+
+def _reject_constant(token: str) -> Any:
+    raise ValueError(f"{token} is not JSON")
+
+
+def decoded_legacy(data: Any) -> Any:
+    """A legacy entry's JSON-string ``data`` decoded; ``None`` when it does not decode; other ``data`` unchanged."""
+    if not isinstance(data, str):
+        return data
+    try:
+        return json.loads(data, parse_constant=_reject_constant)
+    except (ValueError, RecursionError):
+        return None
+
+
+def checked(*, vendor_name: Any, data: Any) -> dict[str, Any] | None:
+    """The entry ``{vendor_name, data}`` when the vendor is a non-blank string and ``data`` a JSON object, else None."""
+    if not (isinstance(vendor_name, str) and vendor_name.strip() and isinstance(data, dict)):
+        return None
+    try:
+        if not _json_value(data, active=set(), valid=set()):
+            return None
+    except RecursionError:
+        return None
+    return {"vendor_name": vendor_name, "data": data}

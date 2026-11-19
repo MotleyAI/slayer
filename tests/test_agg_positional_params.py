@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1847_fixtures import (
     INNER_CR,
-    ModelMeasure,
     make_exec_engine,
     region_key,
     sales_q,
@@ -25,7 +26,7 @@ async def exec_engine(request):
 
 async def _rows(engine, *measures: str) -> list[dict]:
     resp = await engine.execute(sales_q(
-        dimensions=["region"], measures=list(measures)))
+        dimensions=["region"], metrics=list(measures)))
     return sorted(resp.data, key=lambda r: (r["sales.region"] is None,
                                             str(r["sales.region"])))
 
@@ -44,12 +45,12 @@ class TestPositionalEqualsNamed:
     async def test_reaggregation_outer(self, exec_engine):
         pos = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"percentile({INNER_CR}, 0.9)",
-                                   name="p")]))
+            metrics=[QueryMetric(metric=f"percentile({INNER_CR}, 0.9)",
+                                   alias="p")]))
         named = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"percentile({INNER_CR}, p=0.9)",
-                                   name="p")]))
+            metrics=[QueryMetric(metric=f"percentile({INNER_CR}, p=0.9)",
+                                   alias="p")]))
         assert region_key(pos) == region_key(named)
 
 
@@ -71,15 +72,15 @@ class TestPositionalErrors:
             await _rows(exec_engine, "sum(amount, sum(amount, partition_by=region))")
 
     async def test_ranked_rejects_aggregate_ranking_key(self, exec_engine):
-        with pytest.raises(ValueError, match="ranks by a column"):
+        with pytest.raises(ValueError, match="ranks by a field"):
             await _rows(exec_engine, "last(amount, sum(amount, partition_by=region))")
 
     async def test_ranked_rejects_literal_ranking_key(self, exec_engine):
-        with pytest.raises(ValueError, match="ranks by a column"):
+        with pytest.raises(ValueError, match="ranks by a field"):
             await _rows(exec_engine, "last(amount, 1)")
 
     async def test_ranked_rejects_extra_positionals(self, exec_engine):
-        with pytest.raises(ValueError, match="ranks by at most one column"):
+        with pytest.raises(ValueError, match="ranks by at most one field"):
             await _rows(exec_engine, "last(amount, id, amount)")
 
 

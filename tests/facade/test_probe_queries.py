@@ -22,7 +22,7 @@ def test_select_one_matches() -> None:
     batch = match_probe(_parse("SELECT 1"))
     assert batch is not None
     assert batch.columns[0].name == "1"
-    assert batch.columns[0].type == DataType.INT
+    assert batch.columns[0].type == DataType.INTEGER
     assert batch.rows == [{"1": 1}]
 
 
@@ -44,7 +44,7 @@ def test_select_null_where_false() -> None:
     assert batch is not None
     assert batch.rows == []
     assert batch.columns[0].name == "NULL"
-    assert batch.columns[0].type == DataType.INT
+    assert batch.columns[0].type == DataType.INTEGER
 
 
 def test_select_null_where_false_reverse_operands() -> None:
@@ -59,7 +59,7 @@ def test_select_version_function() -> None:
     batch = match_probe(_parse("SELECT version()"))
     assert batch is not None
     assert batch.columns[0].name == "version"
-    assert batch.columns[0].type == DataType.TEXT
+    assert batch.columns[0].type == DataType.STRING
     assert batch.rows == [{"version": f"SLayer Flight SQL {slayer.__version__}"}]
 
 
@@ -73,7 +73,7 @@ def test_select_current_database() -> None:
     batch = match_probe(_parse("SELECT current_database()"))
     assert batch is not None
     assert batch.columns[0].name == "current_database"
-    assert batch.columns[0].type == DataType.TEXT
+    assert batch.columns[0].type == DataType.STRING
     assert batch.rows == [{"current_database": "slayer"}]
 
 

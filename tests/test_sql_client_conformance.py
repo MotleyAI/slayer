@@ -147,7 +147,7 @@ class _IntegersAsDouble(DelegatingSqlClient):
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         types = await self.inner.get_result_column_types(sql)
         return {
-            name: column.model_copy(update={"type": DataType.DOUBLE}) if column.type == DataType.INT else column
+            name: column.model_copy(update={"type": DataType.FLOAT}) if column.type == DataType.INTEGER else column
             for name, column in types.items()
         }
 

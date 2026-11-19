@@ -1,0 +1,22 @@
+{
+ "source": "tests/flight/test_handlers.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  }
+ ]
+}

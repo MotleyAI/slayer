@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_sqlite_storage.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,59 @@
+{
+ "source": "tests/test_memories_inspect.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(amount) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  }
+ ]
+}

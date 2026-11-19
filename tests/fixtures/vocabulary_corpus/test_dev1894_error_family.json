@@ -1,0 +1,15 @@
+{
+ "source": "tests/test_dev1894_error_family.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  }
+ ],
+ "skipped": []
+}

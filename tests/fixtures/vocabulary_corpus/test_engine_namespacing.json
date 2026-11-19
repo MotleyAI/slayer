@@ -1,0 +1,324 @@
+{
+ "source": "tests/test_engine_namespacing.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customers.region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customers.region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customers.region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customers.region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(customers.revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(customers.revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customers.region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customers.region"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 300,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 374,
+   "reason": "not fully literal"
+  }
+ ]
+}

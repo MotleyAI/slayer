@@ -1,0 +1,76 @@
+{
+ "source": "tests/_dev1879_helpers.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "targets",
+    "join_pairs": [
+     [
+      "target_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "targets",
+    "from_columns": [
+     "target_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  }
+ ]
+}

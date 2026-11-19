@@ -11,7 +11,7 @@ import pytest
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.database.client import (
@@ -97,7 +97,7 @@ def _db_types(result: dict[str, ResultColumnType]) -> dict[str, str | None]:
 
 def test_result_column_type_is_reexported_from_the_client() -> None:
     assert ResultColumnType is reflection.ResultColumnType
-    assert ResultColumnType(type=DataType.INT).db_type is None
+    assert ResultColumnType(type=DataType.INTEGER).db_type is None
 
 
 class TestIntegerResultsAreInt:
@@ -111,7 +111,7 @@ class TestIntegerResultsAreInt:
     @pytest.mark.parametrize("backend", ["sqlite", "duckdb", "postgres"], indirect=True)
     async def test_integers(self, backend: DatasourceConfig) -> None:
         result = await _probe(backend, self._SQL)
-        assert _types(result) == {"id": DataType.INT, "len": DataType.INT, "cnt": DataType.INT}
+        assert _types(result) == {"id": DataType.INTEGER, "len": DataType.INTEGER, "cnt": DataType.INTEGER}
         assert _db_types(result) == self._DB_TYPES[backend.type or ""]
 
 
@@ -123,8 +123,8 @@ class TestExactNumericsAreTypedByScale:
     async def test_scale(self, backend: DatasourceConfig, names: tuple[str, str]) -> None:
         result = await _probe(backend, "SELECT a, b FROM t")
         assert result == {
-            "a": ResultColumnType(type=DataType.INT, db_type=names[0]),
-            "b": ResultColumnType(type=DataType.DOUBLE, db_type=names[1]),
+            "a": ResultColumnType(type=DataType.INTEGER, db_type=names[0]),
+            "b": ResultColumnType(type=DataType.FLOAT, db_type=names[1]),
         }
 
 
@@ -132,7 +132,7 @@ class TestFloatsStayDouble:
     @pytest.mark.parametrize("backend", ["sqlite", "duckdb", "postgres"], indirect=True)
     async def test_double_and_average(self, backend: DatasourceConfig) -> None:
         result = await _probe(backend, "SELECT d, AVG(id) OVER () AS av FROM t")
-        assert _types(result) == {"d": DataType.DOUBLE, "av": DataType.DOUBLE}
+        assert _types(result) == {"d": DataType.FLOAT, "av": DataType.FLOAT}
 
 
 class TestPostgresAnswersTheSameFromEitherPath:
@@ -145,30 +145,30 @@ class TestPostgresAnswersTheSameFromEitherPath:
         )
         assert from_async == from_sync
         assert from_async == {
-            "id": ResultColumnType(type=DataType.INT, db_type="integer"),
-            "n0": ResultColumnType(type=DataType.INT, db_type="numeric(12,0)"),
-            "n3": ResultColumnType(type=DataType.DOUBLE, db_type="numeric(12,3)"),
+            "id": ResultColumnType(type=DataType.INTEGER, db_type="integer"),
+            "n0": ResultColumnType(type=DataType.INTEGER, db_type="numeric(12,0)"),
+            "n3": ResultColumnType(type=DataType.FLOAT, db_type="numeric(12,3)"),
         }
 
 
 class TestSqliteCertifiesIntegersFromTheData:
     @pytest.mark.parametrize(("sql", "expected"), [
-        pytest.param("SELECT 1 AS n UNION ALL SELECT 2", DataType.INT, id="integers"),
-        pytest.param("SELECT 1 AS n UNION ALL SELECT NULL", DataType.INT, id="integers-and-null"),
-        pytest.param("SELECT 1 AS n UNION ALL SELECT 2.5", DataType.DOUBLE, id="mixed"),
-        pytest.param("SELECT 1 AS n UNION ALL SELECT 2.0", DataType.DOUBLE, id="integral-real"),
+        pytest.param("SELECT 1 AS n UNION ALL SELECT 2", DataType.INTEGER, id="integers"),
+        pytest.param("SELECT 1 AS n UNION ALL SELECT NULL", DataType.INTEGER, id="integers-and-null"),
+        pytest.param("SELECT 1 AS n UNION ALL SELECT 2.5", DataType.FLOAT, id="mixed"),
+        pytest.param("SELECT 1 AS n UNION ALL SELECT 2.0", DataType.FLOAT, id="integral-real"),
         pytest.param(
             "WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 100000) SELECT n FROM s",
-            DataType.INT, id="at-the-cap",
+            DataType.INTEGER, id="at-the-cap",
         ),
         pytest.param(
             "WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 100001) SELECT n FROM s",
-            DataType.DOUBLE, id="saturated",
+            DataType.FLOAT, id="saturated",
         ),
-        pytest.param("SELECT '42' AS n", DataType.TEXT, id="integer-looking-text"),
-        pytest.param("SELECT 1 AS n UNION ALL SELECT 'x'", DataType.TEXT, id="integer-and-text"),
-        pytest.param("SELECT 1 AS n WHERE 0", DataType.TEXT, id="no-rows"),
-        pytest.param("SELECT NULL AS n", DataType.TEXT, id="only-null"),
+        pytest.param("SELECT '42' AS n", DataType.STRING, id="integer-looking-text"),
+        pytest.param("SELECT 1 AS n UNION ALL SELECT 'x'", DataType.STRING, id="integer-and-text"),
+        pytest.param("SELECT 1 AS n WHERE 0", DataType.STRING, id="no-rows"),
+        pytest.param("SELECT NULL AS n", DataType.STRING, id="only-null"),
     ])
     async def test_verdict(self, sqlite_ds: DatasourceConfig, sql: str, expected: DataType) -> None:
         assert await _probe(sqlite_ds, sql) == {"n": ResultColumnType(type=expected)}
@@ -179,7 +179,7 @@ class TestContainersAreNotIntegers:
         result = await _probe(duckdb_ds, "SELECT [1, 2]::INTEGER[] AS l, {'a': 1} AS s")
         assert _db_types(result) == {"l": "INTEGER[]", "s": "STRUCT(a INTEGER)"}
         for column in result.values():
-            assert column.type != DataType.INT
+            assert column.type != DataType.INTEGER
             assert column.db_type is not None
             assert column.type == info_schema_type(column.db_type)[0]
 
@@ -192,10 +192,10 @@ class TestOpaqueAndUnrecognisedTypes:
             "'00000000-0000-0000-0000-000000000000'::uuid AS u, 'calm'::mood AS e",
         )
         assert result == {
-            "j": ResultColumnType(type=DataType.UNKNOWN, db_type="json"),
-            "jb": ResultColumnType(type=DataType.TEXT, db_type="jsonb"),
-            "u": ResultColumnType(type=DataType.TEXT, db_type="uuid"),
-            "e": ResultColumnType(type=DataType.TEXT),
+            "j": ResultColumnType(type=DataType.OPAQUE, db_type="json"),
+            "jb": ResultColumnType(type=DataType.STRING, db_type="jsonb"),
+            "u": ResultColumnType(type=DataType.STRING, db_type="uuid"),
+            "e": ResultColumnType(type=DataType.STRING),
         }
 
 
@@ -203,13 +203,13 @@ class TestOpaqueAndUnrecognisedTypes:
 async def engine(tmp_path: Path, sqlite_ds: DatasourceConfig) -> AsyncIterator[SlayerQueryEngine]:
     storage = YAMLStorage(base_dir=str(tmp_path / "models"))
     await storage.save_datasource(sqlite_ds)
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="t", sql_table="t", data_source=sqlite_ds.name,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="d", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="d", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.INTEGER),
         ],
     ))
     engine = SlayerQueryEngine(storage=storage)
@@ -222,4 +222,4 @@ async def engine(tmp_path: Path, sqlite_ds: DatasourceConfig) -> AsyncIterator[S
 class TestTheEngineProbe:
     async def test_typed(self, engine: SlayerQueryEngine) -> None:
         result = await engine.get_result_column_types("t")
-        assert _types(result) == {"name": DataType.TEXT, "d": DataType.DOUBLE, "qty": DataType.INT}
+        assert _types(result) == {"name": DataType.STRING, "d": DataType.FLOAT, "qty": DataType.INTEGER}

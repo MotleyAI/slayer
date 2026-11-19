@@ -23,8 +23,8 @@ from slayer.core.keys import (
     ArrayLiteralKey,
     CastKey,
     ListSetKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     Grain,
     InKey,
     LiteralKey,
@@ -36,30 +36,29 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
 )
-from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
-from slayer.core.query import SlayerQuery
-from slayer.engine.cardinality.join_safety import grain_determines
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
+from slayer.engine.cardinality.relationship_safety import grain_determines
 
 from tests import _dev1840_fixtures as f40
 from tests._dev1847_fixtures import (
     AVG_CITY_TOTAL_BY_REGION,
     INNER_CR,
-    ModelMeasure,
     associated_warnings,
     broadcast_warnings,
     chain_q,
-    corders_model,
-    customers_model,
+    corders_dataset,
+    customers_dataset,
     degenerate_warnings,
-    dev1847_models,
+    dev1847_datasets,
     make_exec_engine,
     reagg,
-    regions_model,
+    regions_dataset,
     rows_by,
-    sales_model,
+    sales_dataset,
     sales_q,
 )
-from tests._engine_helpers import models_bundle, seeded_exec_engine
+from tests._engine_helpers import datasets_bundle, seeded_exec_engine
 
 INNER_CUST = "sum(amount, partition_by=customer_id)"
 
@@ -111,7 +110,7 @@ CITY_LEN_WAVG = {"North": 390.0 / 9.0, "South": 70.0, "East": 57.5, "Gap": 8.0,
 
 
 def _dim(expr: str, name: str) -> Dict[str, str]:
-    return {"expression": expr, "name": name}
+    return {"field": expr, "alias": name}
 
 
 def _bool(v: Any) -> Optional[bool]:
@@ -122,10 +121,10 @@ def _num(v: Any) -> Optional[float]:
     return None if v is None else float(v)
 
 
-def _cells(resp, keys: List[str], measure: str, norm=None) -> Dict[Tuple, Any]:
+def _cells(resp, keys: List[str], metric: str, norm=None) -> Dict[Tuple, Any]:
     norms = norm or [lambda v: v] * len(keys)
     return {
-        tuple(n(k) for n, k in zip(norms, key)): row[measure]
+        tuple(n(k) for n, k in zip(norms, key)): row[metric]
         for key, row in rows_by(resp, *keys).items()
     }
 
@@ -144,42 +143,42 @@ def _no_grain_warnings(resp) -> None:
     assert associated_warnings(resp) == []
 
 
-def _sales_variant() -> SlayerModel:
-    s = sales_model()
+def _sales_variant() -> SlayerDataset:
+    s = sales_dataset()
     extra_cols = [
-        Column(name="city_upper", type=DataType.TEXT, sql="UPPER(city)"),
-        Column(name="city_len", type=DataType.INT, sql="LENGTH(city)"),
-        Column(name="prod_flag", type=DataType.INT,
+        DatasetField(name="city_upper", datatype=DataType.STRING, sql="UPPER(city)"),
+        DatasetField(name="city_len", datatype=DataType.INTEGER, sql="LENGTH(city)"),
+        DatasetField(name="prod_flag", datatype=DataType.INTEGER,
                sql="CASE WHEN product = 'P' THEN 1 ELSE 0 END"),
-        Column(name="bad", type=DataType.INT, sql="amount +* )"),
-        Column(name="city_q", type=DataType.TEXT, sql="city", filter="product = 'Q'"),
-        Column(name="city_n", type=DataType.TEXT, sql="city", filter="region = 'North'"),
+        DatasetField(name="bad", datatype=DataType.INTEGER, sql="amount +* )"),
+        DatasetField(name="city_q", datatype=DataType.STRING, sql="city", filter="product = 'Q'"),
+        DatasetField(name="city_n", datatype=DataType.STRING, sql="city", filter="region = 'North'"),
     ]
     wavg = "SUM({value} * {weight}) / SUM({weight})"
     extra_aggs = [
-        Aggregation(name="wmix", formula=wavg,
+        Aggregation(name="wmix", expression=wavg,
                     params=[AggregationParam(name="weight", sql="LENGTH(city) + quantity")]),
-        Aggregation(name="wok", formula=wavg,
+        Aggregation(name="wok", expression=wavg,
                     params=[AggregationParam(name="weight",
                                              sql="LENGTH(city) + LENGTH(region)")]),
-        Aggregation(name="wlit", formula=wavg,
+        Aggregation(name="wlit", expression=wavg,
                     params=[AggregationParam(name="weight", sql="2")]),
-        Aggregation(name="wbad", formula=wavg,
+        Aggregation(name="wbad", expression=wavg,
                     params=[AggregationParam(name="weight", sql="bad + LENGTH(city)")]),
     ]
     return s.model_copy(update={
-        "columns": [*s.columns, *extra_cols],
+        "fields": [*s.fields, *extra_cols],
         "aggregations": [*s.aggregations, *extra_aggs],
     })
 
 
-def _variant_models() -> List[SlayerModel]:
-    c = customers_model()
+def _variant_datasets() -> List[SlayerDataset]:
+    c = customers_dataset()
     c = c.model_copy(update={"aggregations": [
-        Aggregation(name="wsum", formula="SUM({value} * {weight})",
+        Aggregation(name="wsum", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="region_id")]),
     ]})
-    return [_sales_variant(), regions_model(), c, corders_model()]
+    return [_sales_variant(), regions_dataset(), c, corders_dataset()]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -190,7 +189,7 @@ async def exec_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def variant_engine(request):
-    async for engine in make_exec_engine(request, models=_variant_models()):
+    async for engine in make_exec_engine(request, datasets=_variant_datasets()):
         yield engine
 
 
@@ -199,21 +198,21 @@ async def fanning_engine(request):
     if request.param == "duckdb":
         pytest.importorskip("duckdb")
     seed = f40._seed_duckdb if request.param == "duckdb" else f40._seed_sqlite
-    models = [f40.regions_model(), f40.plans_model(), f40.stores_model(),
-              f40.customers_model(declare_reverse=True),
-              f40.orders_model(customers_edge=False)]
-    async with seeded_exec_engine(dialect=request.param, seed=seed, models=models) as (
+    models = [f40.regions_dataset(), f40.plans_dataset(), f40.stores_dataset(),
+              f40.customers_dataset(declare_reverse=True),
+              f40.orders_dataset(customers_edge=False)]
+    async with seeded_exec_engine(dialect=request.param, seed=seed, datasets=models) as (
         engine, _db,
     ):
         yield engine
 
 
 def _acr(**kw) -> SlayerQuery:
-    return sales_q(measures=[reagg("avg", INNER_CR, name="acr")], **kw)
+    return sales_q(metrics=[reagg("avg", INNER_CR, name="acr")], **kw)
 
 
 def _acc(**kw) -> SlayerQuery:
-    return chain_q(measures=[reagg("avg", INNER_CUST, name="acc")], **kw)
+    return chain_q(metrics=[reagg("avg", INNER_CUST, name="acc")], **kw)
 
 
 class TestRowLevelExpressionPartitions:
@@ -299,9 +298,9 @@ class TestAttachedParameterGrain:
     async def test_expression_grained_parameter(self, variant_engine, grain):
         resp = await variant_engine.execute(chain_q(
             dimensions=[_dim("customers.region_id * 10", "rid10")],
-            measures=[ModelMeasure(
-                formula=f"wsum(customers.region_id, weight=sum(amount, partition_by={grain}))",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric=f"wsum(customers.region_id, weight=sum(amount, partition_by={grain}))",
+                alias="w")]))
         _assert_cells(
             _cells(resp, ["corders.rid10"], "corders.w", norm=[int]), RID10_WSUM)
 
@@ -346,7 +345,7 @@ class TestNegativeControls:
     async def test_explicit_outer_partition_does_not_warn(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", _dim("city == 'Alpha'", "is_alpha")],
-            measures=[reagg("avg", INNER_CR, name="acr", partition_by="region")]))
+            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="region")]))
         cells = _cells(resp, ["sales.region", "sales.is_alpha"], "sales.acr",
                        norm=[str, _bool])
         assert set(cells) == set(ALPHA_CELLS)
@@ -357,10 +356,10 @@ class TestNegativeControls:
 
     async def test_adding_the_reaggregation_is_cardinality_neutral(self, exec_engine):
         dims = ["region", _dim("city == 'Alpha'", "is_alpha")]
-        tot = ModelMeasure(formula="sum(amount)", name="tot")
-        base = await exec_engine.execute(sales_q(dimensions=dims, measures=[tot]))
+        tot = QueryMetric(metric="sum(amount)", alias="tot")
+        base = await exec_engine.execute(sales_q(dimensions=dims, metrics=[tot]))
         both = await exec_engine.execute(sales_q(
-            dimensions=dims, measures=[tot, reagg("avg", INNER_CR, name="acr")]))
+            dimensions=dims, metrics=[tot, reagg("avg", INNER_CR, name="acr")]))
         keys = ["sales.region", "sales.is_alpha"]
         assert _cells(base, keys, "sales.tot") == _cells(both, keys, "sales.tot")
 
@@ -371,8 +370,8 @@ class TestDiagnosticNaming:
     def _joined(self, mode: str = "broadcast") -> SlayerQuery:
         return chain_q(
             dimensions=["customers.regions.name"], to_many_handling=mode,
-            measures=[ModelMeasure(formula="avg(sum(amount, partition_by=amount))",
-                                   name="a")])
+            metrics=[QueryMetric(metric="avg(sum(amount, partition_by=amount))",
+                                   alias="a")])
 
     async def test_joined_dimension_broadcast_named_dotted(self, exec_engine):
         resp = await exec_engine.execute(self._joined())
@@ -407,7 +406,7 @@ class TestDiagnosticNaming:
 
     async def test_unnamed_expression_never_internal_alias(self, exec_engine):
         resp = await exec_engine.execute(
-            _acr(dimensions=["region", {"expression": "product == 'P'"}],
+            _acr(dimensions=["region", {"field": "product == 'P'"}],
                  to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
@@ -417,7 +416,7 @@ class TestDiagnosticNaming:
     async def test_degenerate_warning_grains_dotted(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(formula="avg(sum(amount))", name="a")]))
+            metrics=[QueryMetric(metric="avg(sum(amount))", alias="a")]))
         (w,) = degenerate_warnings(resp)
         msg = w.human_message()
         assert "customers.regions.name" in msg
@@ -426,9 +425,9 @@ class TestDiagnosticNaming:
     async def test_parameter_grain_listing_dotted(self, exec_engine):
         query = chain_q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(
-                formula="weighted_avg(sum(amount, partition_by=customers.regions.name), "
-                        "weight=id)", name="w")])
+            metrics=[QueryMetric(
+                metric="weighted_avg(sum(amount, partition_by=customers.regions.name), "
+                        "weight=id)", alias="w")])
         with pytest.raises(ParameterGrainError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)
@@ -440,8 +439,8 @@ class TestBroadcastReasons:
     async def test_undetermined_to_one_column_names_it(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(formula="avg(sum(amount, partition_by=amount))",
-                                   name="a")],
+            metrics=[QueryMetric(metric="avg(sum(amount, partition_by=amount))",
+                                   alias="a")],
             to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
@@ -450,10 +449,10 @@ class TestBroadcastReasons:
 
     async def test_fanning_witness_names_the_hop(self, fanning_engine):
         resp = await fanning_engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers",
+            "population": "customers",
             "dimensions": ["tier", _dim("last_status == 'ok'", "lok")],
-            "measures": [{"formula": "avg(sum(spend, partition_by=[tier, region_id]))",
-                          "name": "a"}],
+            "metrics": [{"metric": "avg(sum(spend, partition_by=[tier, region_id]))",
+                          "alias": "a"}],
             "to_many_handling": "broadcast"}))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
@@ -479,26 +478,26 @@ class TestBroadcastReasons:
 
 class TestDefinitionDefaultParameters:
     async def test_one_undetermined_ref_refuses(self, variant_engine):
-        query = sales_q(dimensions=["region"], measures=[reagg("wmix", INNER_CR, name="w")])
+        query = sales_q(dimensions=["region"], metrics=[reagg("wmix", INNER_CR, name="w")])
         with pytest.raises(ParameterGrainError) as ei:
             await variant_engine.execute(query)
         assert "weight" in str(ei.value)
 
     async def test_unanalysable_ref_refuses(self, variant_engine):
-        query = sales_q(dimensions=["region"], measures=[reagg("wbad", INNER_CR, name="w")])
+        query = sales_q(dimensions=["region"], metrics=[reagg("wbad", INNER_CR, name="w")])
         with pytest.raises(ParameterGrainError):
             await variant_engine.execute(query)
 
     async def test_all_refs_determined_executes(self, variant_engine):
         resp = await variant_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg("wok", INNER_CR, name="w")]))
+            dimensions=["region"], metrics=[reagg("wok", INNER_CR, name="w")]))
         vals = _cells(resp, ["sales.region"], "sales.w")
         assert float(vals[("North",)]) == pytest.approx(840.0 / 19.0)
         assert float(vals[("South",)]) == pytest.approx(70.0)
 
     async def test_literal_default_is_determined(self, variant_engine):
         resp = await variant_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg("wlit", INNER_CR, name="w")]))
+            dimensions=["region"], metrics=[reagg("wlit", INNER_CR, name="w")]))
         vals = _cells(resp, ["sales.region"], "sales.w")
         for region, expected in AVG_CITY_TOTAL_BY_REGION.items():
             assert float(vals[(region,)]) == pytest.approx(expected)
@@ -521,8 +520,8 @@ class TestDerivedColumnSpelling:
     async def test_derived_parameter_executes(self, variant_engine):
         resp = await variant_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"weighted_avg({INNER_CR}, weight=city_len)",
-                                   name="w")]))
+            metrics=[QueryMetric(metric=f"weighted_avg({INNER_CR}, weight=city_len)",
+                                   alias="w")]))
         _assert_cells(
             _cells(resp, ["sales.region"], "sales.w"),
             {(r,): v for r, v in CITY_LEN_WAVG.items()})
@@ -536,15 +535,15 @@ class TestDerivedColumnSpelling:
     async def test_undetermined_derived_parameter_refuses(self, variant_engine):
         query = sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=f"weighted_avg({INNER_CR}, weight=prod_flag)", name="w")])
+            metrics=[QueryMetric(
+                metric=f"weighted_avg({INNER_CR}, weight=prod_flag)", alias="w")])
         with pytest.raises(ParameterGrainError):
             await variant_engine.execute(query)
 
 
 # --- combinator units ------------------------------------------------------
 
-CITY, REGION, PRODUCT = ColumnKey(leaf="city"), ColumnKey(leaf="region"), ColumnKey(leaf="product")
+CITY, REGION, PRODUCT = FieldKey(leaf="city"), FieldKey(leaf="region"), FieldKey(leaf="product")
 CR = Grain.of([CITY, REGION])
 
 
@@ -557,18 +556,18 @@ def _eq(a: ValueKey, b: ValueKey) -> ArithmeticKey:
 
 
 def _sum(by: Optional[List[ValueKey]]) -> AggregateKey:
-    return AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",
+    return AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
                         partition_keys=None if by is None else Grain.of(by))
 
 
-def _determines(key: ValueKey, grain: Grain = CR, models=None, host: str = "sales") -> bool:
-    mbn = {m.name: m for m in (models or [_sales_variant(), *dev1847_models()[1:]])}
-    return grain_determines(key=key, grain=grain, host_model=mbn[host],
-                            models_by_name=mbn, bundle=models_bundle(mbn))
+def _determines(key: ValueKey, grain: Grain = CR, datasets=None, host: str = "sales") -> bool:
+    mbn = {m.name: m for m in (datasets or [_sales_variant(), *dev1847_datasets()[1:]])}
+    return grain_determines(key=key, grain=grain, host_dataset=mbn[host],
+                            datasets_by_name=mbn, bundle=datasets_bundle(mbn))
 
 
-def _derived(name: str) -> ColumnSqlKey:
-    return ColumnSqlKey(model="sales", column_name=name)
+def _derived(name: str) -> FieldSqlKey:
+    return FieldSqlKey(dataset="sales", field_name=name)
 
 
 class TestCombinator:
@@ -581,11 +580,11 @@ class TestCombinator:
         (ArithmeticKey(op="+", operands=(CITY, PRODUCT)), False),
         (ScalarCallKey(name="upper", args=(CITY,)), True),
         (ScalarCallKey(name="iif", args=(_eq(CITY, _lit("Alpha")), REGION, PRODUCT)), False),
-        (InKey(column=CITY, values=(_lit("Alpha"),)), True),
-        (InKey(column=PRODUCT, values=(_lit("P"),)), False),
+        (InKey(field=CITY, values=(_lit("Alpha"),)), True),
+        (InKey(field=PRODUCT, values=(_lit("P"),)), False),
         (SqlFragmentKey(template="LENGTH({r0}) + LENGTH({r1})", refs=(CITY, REGION)), True),
         (SqlFragmentKey(template="LENGTH({r0}) + {r1}",
-                        refs=(CITY, ColumnKey(leaf="quantity"))), False),
+                        refs=(CITY, FieldKey(leaf="quantity"))), False),
         (SqlFragmentKey(template="2"), True),
         (ScalarCallKey(name="iif", args=(
             _eq(ScalarCallKey(name="upper", args=(CITY,)), _lit("ALPHA")), REGION, _lit("x"))),
@@ -605,12 +604,12 @@ class TestCombinator:
         assert _determines(key) is expected
 
     def test_mixed_fanning_child(self):
-        models = [f40.regions_model(), f40.plans_model(), f40.stores_model(),
-                  f40.customers_model(declare_reverse=True),
-                  f40.orders_model(customers_edge=False)]
-        tier_gold = _eq(ColumnKey(leaf="tier"), _lit("gold"))
-        last_ok = _eq(ColumnSqlKey(model="customers", column_name="last_status"), _lit("ok"))
-        grain = Grain.of([ColumnKey(leaf="id")])
+        models = [f40.regions_dataset(), f40.plans_dataset(), f40.stores_dataset(),
+                  f40.customers_dataset(declare_reverse=True),
+                  f40.orders_dataset(customers_edge=False)]
+        tier_gold = _eq(FieldKey(leaf="tier"), _lit("gold"))
+        last_ok = _eq(FieldSqlKey(dataset="customers", field_name="last_status"), _lit("ok"))
+        grain = Grain.of([FieldKey(leaf="id")])
         assert _determines(tier_gold, grain, models, "customers") is True
         assert _determines(ArithmeticKey(op="and", operands=(tier_gold, last_ok)),
                            grain, models, "customers") is False
@@ -649,12 +648,12 @@ class TestCombinator:
 
 # --- key_display ------------------------------------------------------------
 
-NAME = ColumnKey(path=("customers", "regions"), leaf="name")
+NAME = FieldKey(path=("customers", "regions"), leaf="name")
 DISPLAY_CASES: List[Tuple[ValueKey, List[str]]] = [
     (NAME, ["customers.regions.name"]),
-    (ColumnSqlKey(path=("customers",), model="customers", column_name="rid10"),
+    (FieldSqlKey(path=("customers",), dataset="customers", field_name="rid10"),
      ["customers.rid10"]),
-    (TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH),
+    (TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH),
      ["ordered_at", "month"]),
     (StarKey(), ["*"]),
     (_lit("Alpha"), ["'Alpha'"]),
@@ -662,15 +661,15 @@ DISPLAY_CASES: List[Tuple[ValueKey, List[str]]] = [
     (TransformKey(op="rank", input=_sum([CITY])), ["rank", "sum", "amount"]),
     (_eq(CITY, _lit("Alpha")), ["city == 'Alpha'"]),
     (ScalarCallKey(name="upper", args=(CITY,)), ["upper(city)"]),
-    (TimePointCmpKey(op=">=", operand=ColumnKey(leaf="ordered_at"), point="last month"),
+    (TimePointCmpKey(op=">=", operand=FieldKey(leaf="ordered_at"), point="last month"),
      ["ordered_at >= 'last month'"]),
-    (InKey(column=CITY, values=(_lit("Alpha"), _lit("Beta"))),
+    (InKey(field=CITY, values=(_lit("Alpha"), _lit("Beta"))),
      ["city", " in ", "'Alpha'", "'Beta'"]),
-    (SqlFragmentKey(template="LENGTH({r0}) + {r1}", refs=(CITY, ColumnKey(leaf="quantity"))),
+    (SqlFragmentKey(template="LENGTH({r0}) + {r1}", refs=(CITY, FieldKey(leaf="quantity"))),
      ["LENGTH(city) + quantity"]),
-    (CastKey(source=CITY, type_text="INT", data_type=DataType.INT), ["CAST(city AS INT)"]),
+    (CastKey(source=CITY, type_text="INT", data_type=DataType.INTEGER), ["CAST(city AS INT)"]),
     (ArrayLiteralKey(values=(_lit("Alpha"), _lit("Beta"))), ["['Alpha', 'Beta']"]),
-    (ListSetKey(source=ColumnKey(leaf="tags")), ["tags"]),
+    (ListSetKey(source=FieldKey(leaf="tags")), ["tags"]),
 ]
 _REPR_MARKERS = ("Key(", "path=", "leaf=", "operands=", "op=", "refs=", "template=")
 
@@ -688,7 +687,7 @@ class TestKeyDisplay:
         assert "{r" not in text
 
     def test_negated_in(self):
-        text = refs.key_display(InKey(column=CITY, values=(_lit("A"),), negated=True))
+        text = refs.key_display(InKey(field=CITY, values=(_lit("A"),), negated=True))
         assert "not in" in text.lower()
 
     @pytest.mark.parametrize("key,_parts", DISPLAY_CASES)

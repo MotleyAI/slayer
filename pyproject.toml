@@ -35,6 +35,7 @@ greenlet = ">=1"
 pydantic = ">=2.0"
 pyparsing = ">=3.1"
 python-dateutil = ">=2.8"
+typing-extensions = ">=4.5"
 pyyaml = ">=6.0"
 fastapi = ">=0.100"
 uvicorn = ">=0.20"
@@ -83,6 +84,12 @@ snowflake-connector-python = {version = ">=3.13", optional = true}
 snowflake-sqlalchemy = {version = ">=1.7", optional = true}
 # 0.340: credentials pass through undecoded, and HTTP auth needs allow_insecure_auth.
 trino = {version = ">=0.340", optional = true}
+# OpenTelemetry for slayer.otel (opt-in traces, metrics and logs over OTLP).
+opentelemetry-api = {version = ">=1.45", optional = true}
+opentelemetry-sdk = {version = ">=1.45", optional = true}
+opentelemetry-exporter-otlp-proto-http = {version = ">=1.45", optional = true}
+# slayer otel test sends its span through a requests session; some exporter releases make requests optional.
+requests = {version = ">=2.25", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -95,9 +102,10 @@ bigquery = ["sqlalchemy-bigquery"]
 trino = ["trino"]
 dbt = ["dbt-core"]
 flight = ["pyarrow", "protobuf"]
+otel = ["opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-http", "requests"]
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg", "pymysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg", "pymysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-http", "requests"]
 
 [project.scripts]
 slayer = "slayer.cli:main"
@@ -131,12 +139,13 @@ jpype1 = "^1.5.0"
 # and skip cleanly if it's missing; CI workflows assert the extras are
 # importable before invoking pytest so a missing dep surfaces as failure.
 testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
-basedpyright = "^1.39.10"
+basedpyright = "^1.40.2"
 pytest-xdist = ">=3.6"
-living-architecture = "0.6.0"
+living-architecture = "0.12.0"
 jsonschema = "^4.23"
 filelock = ">=3.12,<4"
 pg8000 = "^1.31.6"
+ruamel-yaml = "^0.19.1"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -165,8 +174,9 @@ filterwarnings = [
 typeCheckingMode = "basic"
 # The oldest supported Python: flags newer-only stdlib APIs, and pins results across interpreters.
 pythonVersion = "3.11"
+reportDeprecated = "error"
 include = ["slayer", "tests"]
-exclude = ["slayer/flight/_flight_sql_pb2.py"]
+exclude = ["slayer/flight/_flight_sql_pb2.py", "tests/fixtures/upgrade/*/generate.py"]
 
 [tool.ruff]
 target-version = "py311"

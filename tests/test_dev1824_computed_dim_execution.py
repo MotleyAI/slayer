@@ -22,9 +22,10 @@ import pytest
 
 from slayer.core.errors import SlayerError
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1824_fixtures import (
     BAND35,
-    ModelMeasure,
     REGION_LAST_AT,
     make_exec_engine,
     month_key,
@@ -49,8 +50,8 @@ class TestBandedDimension:
         # Pre-generalization behavior — pinned here as the regression
         # net under the generalized discovery.
         resp = await exec_engine.execute(q(
-            dimensions=["region", {"expression": BAND35, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": BAND35, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {
             (r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
@@ -64,8 +65,8 @@ class TestBandedDimension:
     async def test_expression_over_two_partition_sets(self, exec_engine) -> None:
         gap = "sum(amount, partition_by=city) - sum(amount, partition_by=region)"
         resp = await exec_engine.execute(q(
-            dimensions=["region", {"expression": gap, "name": "gap"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": gap, "alias": "gap"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {
             (r["orders.region"], float(r["orders.gap"])): float(r["orders.s"])
@@ -83,8 +84,8 @@ class TestTransformInDimension:
     async def test_rank_of_partitions_as_dimension(self, exec_engine) -> None:
         # Region totals 100/60/50 rank North=1, NULL=2, South=3 at REGION grain.
         resp = await exec_engine.execute(q(
-            dimensions=["region", {"expression": RANK_DIM, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": RANK_DIM, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {
             r["orders.region"]: (int(r["orders.rr"]), float(r["orders.s"]))
@@ -99,8 +100,8 @@ class TestTransformInDimension:
     async def test_banding_by_rank_is_legal(self, exec_engine) -> None:
         tier = f"CASE WHEN {RANK_DIM} <= 1 THEN 'top' ELSE 'rest' END"
         resp = await exec_engine.execute(q(
-            dimensions=[{"expression": tier, "name": "tier"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=[{"field": tier, "alias": "tier"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {r["orders.tier"]: float(r["orders.s"]) for r in resp.data}
         assert got == {"top": pytest.approx(100.0), "rest": pytest.approx(110.0)}
@@ -109,8 +110,8 @@ class TestTransformInDimension:
         # Dimension context ranks the three regions (1/2/3); measure context
         # ranks the five result rows by their attached totals (1/1/1/4/5).
         as_dim = await exec_engine.execute(q(
-            dimensions=["region", "city", {"expression": RANK_DIM, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", "city", {"field": RANK_DIM, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         dim_ranks = {r["orders.region"]: int(r["orders.rr"]) for r in as_dim.data}
         assert len(as_dim.data) == 5
@@ -118,7 +119,7 @@ class TestTransformInDimension:
 
         as_measure = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=RANK_DIM, name="rr")],
+            metrics=[QueryMetric(metric=RANK_DIM, alias="rr")],
         ))
         measure_ranks = sorted(int(r["orders.rr"]) for r in as_measure.data)
         assert measure_ranks == [1, 1, 1, 4, 5]
@@ -129,9 +130,9 @@ class TestFirstLastInDimension:
         resp = await exec_engine.execute(q(
             dimensions=[
                 "region",
-                {"expression": "last(ordered_at, partition_by=region)", "name": "lt"},
+                {"field": "last(ordered_at, partition_by=region)", "alias": "lt"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {r["orders.region"]: str(r["orders.lt"])[:10] for r in resp.data}
         assert got == REGION_LAST_AT
@@ -140,9 +141,9 @@ class TestFirstLastInDimension:
         resp = await exec_engine.execute(q(
             dimensions=[
                 "region",
-                {"expression": "last(amount, partition_by=region)", "name": "la"},
+                {"field": "last(amount, partition_by=region)", "alias": "la"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {
             r["orders.region"]: (float(r["orders.la"]), float(r["orders.s"]))
@@ -163,9 +164,9 @@ class TestWindowInDimension:
 
     async def test_rolling_partition_total_bands_rows(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", {"expression": self.WBAND, "name": "wband"}],
+            dimensions=["region", {"field": self.WBAND, "alias": "wband"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"]),
@@ -184,8 +185,8 @@ class TestWindowInDimension:
 
     async def test_fails_cleanly_without_time_dimension(self, exec_engine) -> None:
         query = q(
-            dimensions=["region", {"expression": self.WBAND, "name": "wband"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": self.WBAND, "alias": "wband"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         with pytest.raises(ValueError, match=r"resolve its time dimension"):
             await exec_engine.execute(query)
@@ -196,10 +197,10 @@ class TestDimensionErrorSurface:
         query = q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(amount) > 50 THEN 1 ELSE 0 END",
-                 "name": "b"},
+                {"field": "CASE WHEN sum(amount) > 50 THEN 1 ELSE 0 END",
+                 "alias": "b"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         with pytest.raises(ValueError, match=r"partition_by=") as ei:
             await exec_engine.execute(query)
@@ -210,10 +211,10 @@ class TestDimensionErrorSurface:
         combination even when a time dimension is present."""
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="sum(sum(amount, partition_by=[region, city]), "
+            metrics=[QueryMetric(
+                metric="sum(sum(amount, partition_by=[region, city]), "
                         "window='90d')",
-                name="w")])
+                alias="w")])
         with pytest.raises(SlayerError) as ei:
             await exec_engine.execute(query)
         assert "window= on its outer aggregation" in str(ei.value)
@@ -224,10 +225,10 @@ class TestDimensionErrorSurface:
         # tests/test_dev1847_shape_b.py.
         query = q(
             dimensions=[
-                {"expression": BAND35, "name": "band"},
-                {"expression": "sum(amount, partition_by=band)", "name": "b2"},
+                {"field": BAND35, "alias": "band"},
+                {"field": "sum(amount, partition_by=band)", "alias": "b2"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         resp = await exec_engine.execute(query)
         assert resp.data
@@ -238,9 +239,9 @@ class TestDimensionErrorSurface:
         self, exec_engine,
     ) -> None:
         query = q(
-            dimensions=[{"expression": BAND35, "name": "band"}],
-            measures=[ModelMeasure(
-                formula="sum(amount, partition_by=band)", name="bt",
+            dimensions=[{"field": BAND35, "alias": "band"}],
+            metrics=[QueryMetric(
+                metric="sum(amount, partition_by=band)", alias="bt",
             )],
         )
         resp = await exec_engine.execute(query)
@@ -250,8 +251,8 @@ class TestDimensionErrorSurface:
     async def test_grain_circular_dimension_rejected(self, exec_engine) -> None:
         circular = "CASE WHEN sum(amount, partition_by=selfband) > 10 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": circular, "name": "selfband"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": circular, "alias": "selfband"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await exec_engine.execute(query)
@@ -269,8 +270,8 @@ class TestDimensionErrorSurface:
             "THEN 1 ELSE 0 END"
         )
         query = q(
-            dimensions=["region", {"expression": cband, "name": "cband"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": cband, "alias": "cband"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:

@@ -26,12 +26,12 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import (
     IllegalScopeReferenceError,
-    MeasureCycleError,
-    MeasureRecursionLimitError,
+    MetricCycleError,
+    MetricRecursionLimitError,
 )
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import StageColumn, StageSchema
+from slayer.core.scope import StageField, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import parse_expr
@@ -39,30 +39,30 @@ from slayer.core.syntax import parse_expr
 from tests._engine_helpers import _engine_generate
 
 
-def _model(measures) -> SlayerModel:
-    return SlayerModel(
+def _dataset(metrics) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
-        measures=measures,
+        metrics=metrics,
         default_time_dimension="created_at",
     )
 
 
-async def _gen(model, formula, **kw) -> str:
+async def _gen(dataset, expression, **kw) -> str:
     return await _engine_generate(
-        query=SlayerQuery(source_model="orders",
-                          measures=[{"formula": formula, "name": "x"}], **kw),
-        model=model, dialect="duckdb", validate=False,
+        query=SlayerQuery.model_validate({"population": "orders",
+                                          "metrics": [{"metric": expression, "alias": "x"}], **kw}),
+        dataset=dataset, dialect="duckdb", validate=False,
     )
 
 
-_REV = ModelMeasure(name="rev", formula="sum(amount)")
-_CNT = ModelMeasure(name="cnt", formula="count(*)")
-_GRP = ModelMeasure(name="grp", formula="status")
+_REV = DatasetMetric(name="rev", expression="sum(amount)")
+_CNT = DatasetMetric(name="cnt", expression="count(*)")
+_GRP = DatasetMetric(name="grp", expression="status")
 
 
 class TestPositiveResolutionThroughBinder:
@@ -70,37 +70,37 @@ class TestPositiveResolutionThroughBinder:
     deleted pass's matrix covered, now through the binder."""
 
     async def test_root_measure_equals_inline(self) -> None:
-        model = _model([_REV])
-        assert await _gen(model, "rev") == await _gen(_model([]), "sum(amount)")
+        model = _dataset([_REV])
+        assert await _gen(model, "rev") == await _gen(_dataset([]), "sum(amount)")
 
     async def test_arithmetic_operand_expanded(self) -> None:
-        model = _model([_REV])
-        assert await _gen(model, "rev + 1") == await _gen(_model([]), "sum(amount) + 1")
+        model = _dataset([_REV])
+        assert await _gen(model, "rev + 1") == await _gen(_dataset([]), "sum(amount) + 1")
 
     async def test_comparison_operand_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         assert await _gen(model, "rev > 100") == await _gen(
-            _model([]), "sum(amount) > 100")
+            _dataset([]), "sum(amount) > 100")
 
     async def test_unary_operand_expanded(self) -> None:
-        model = _model([_REV])
-        assert await _gen(model, "-rev") == await _gen(_model([]), "-sum(amount)")
+        model = _dataset([_REV])
+        assert await _gen(model, "-rev") == await _gen(_dataset([]), "-sum(amount)")
 
     async def test_boolean_operands_expanded(self) -> None:
-        model = _model([_REV, _CNT])
+        model = _dataset([_REV, _CNT])
         assert await _gen(model, "rev > 100 and cnt > 0") == await _gen(
-            _model([]), "sum(amount) > 100 and count(*) > 0")
+            _dataset([]), "sum(amount) > 100 and count(*) > 0")
 
     async def test_scalar_arg_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         assert await _gen(model, "nullif(rev, 0)") == await _gen(
-            _model([]), "nullif(sum(amount), 0)")
+            _dataset([]), "nullif(sum(amount), 0)")
 
     async def test_transform_input_expanded(self) -> None:
-        model = _model([_REV])
-        td = [{"dimension": "created_at", "granularity": "month"}]
+        model = _dataset([_REV])
+        td = [{"field": "created_at", "granularity": "month"}]
         assert await _gen(model, "cumsum(rev)", time_dimensions=td) == await _gen(
-            _model([]), "cumsum(sum(amount))", time_dimensions=td)
+            _dataset([]), "cumsum(sum(amount))", time_dimensions=td)
 
 
 class TestAggregationScopeNotExpanded:
@@ -108,37 +108,37 @@ class TestAggregationScopeNotExpanded:
     column-level by contract and is NOT expanded — the binder rejects it."""
 
     async def test_agg_source_not_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "sum(rev)")
-        assert "saved measure" in str(ei.value).lower()
+        assert "saved metric" in str(ei.value).lower()
 
     async def test_agg_positional_arg_not_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "last(amount, rev)")
-        assert "saved measure" in str(ei.value).lower()
+        assert "saved metric" in str(ei.value).lower()
 
     async def test_agg_kwarg_not_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "weighted_avg(amount, weight=rev)")
-        assert "saved measure" in str(ei.value).lower()
+        assert "saved metric" in str(ei.value).lower()
 
 
 class TestCycleAndDepthThroughBinder:
     async def test_direct_self_cycle(self) -> None:
-        model = _model([ModelMeasure(name="aov", formula="aov + 1")])
-        with pytest.raises((MeasureCycleError, ValueError)) as ei:
+        model = _dataset([DatasetMetric(name="aov", expression="aov + 1")])
+        with pytest.raises((MetricCycleError, ValueError)) as ei:
             await _gen(model, "aov")
         assert "aov" in str(ei.value)
 
     async def test_cycle_names_the_chain(self) -> None:
-        model = _model([
-            ModelMeasure(name="a", formula="b"),
-            ModelMeasure(name="b", formula="a"),
+        model = _dataset([
+            DatasetMetric(name="a", expression="b"),
+            DatasetMetric(name="b", expression="a"),
         ])
-        with pytest.raises((MeasureCycleError, ValueError)) as ei:
+        with pytest.raises((MetricCycleError, ValueError)) as ei:
             await _gen(model, "a")
         message = str(ei.value).lower()
         assert "a" in message
@@ -146,21 +146,21 @@ class TestCycleAndDepthThroughBinder:
         assert "cycl" in message or "circular" in message
 
     async def test_depth_limit_exceeded(self) -> None:
-        measures = [ModelMeasure(name="m5", formula="sum(amount)")]
+        measures = [DatasetMetric(name="m5", expression="sum(amount)")]
         for i in range(4, 0, -1):
-            measures.append(ModelMeasure(name=f"m{i}", formula=f"m{i + 1}"))
-        model = _model(measures)
-        with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "2"}):
-            with pytest.raises(MeasureRecursionLimitError) as ei:
+            measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
+        model = _dataset(measures)
+        with mock.patch.dict(os.environ, {"SLAYER_METRIC_EXPANSION_DEPTH": "2"}):
+            with pytest.raises(MetricRecursionLimitError) as ei:
                 await _gen(model, "m1")
             assert ei.value.limit == 2
 
     async def test_within_depth_resolves(self) -> None:
-        measures = [ModelMeasure(name="m5", formula="sum(amount)")]
+        measures = [DatasetMetric(name="m5", expression="sum(amount)")]
         for i in range(4, 0, -1):
-            measures.append(ModelMeasure(name=f"m{i}", formula=f"m{i + 1}"))
-        model = _model(measures)
-        assert await _gen(model, "m1") == await _gen(_model([]), "sum(amount)")
+            measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
+        model = _dataset(measures)
+        assert await _gen(model, "m1") == await _gen(_dataset([]), "sum(amount)")
 
 
 class TestTransformArgEligibilityDropped:
@@ -173,11 +173,11 @@ class TestTransformArgEligibilityDropped:
     ``status`` and the query succeeded)."""
 
     async def test_transform_partition_by_measure_not_expanded(self) -> None:
-        model = _model([_REV, _GRP])
+        model = _dataset([_REV, _GRP])
         with pytest.raises(ValueError):
             await _gen(model, "rank(sum(amount), partition_by=grp, direction='desc')",
                        dimensions=["status"],
-                       time_dimensions=[{"dimension": "created_at",
+                       time_dimensions=[{"field": "created_at",
                                          "granularity": "month"}])
 
 
@@ -188,7 +188,7 @@ class TestStageSchemaScope:
     def test_dotted_ref_in_stage_schema_is_rejected(self) -> None:
         stage = StageSchema(
             relation_name="s",
-            columns=[StageColumn(name="aov", sql_alias="aov", type=DataType.DOUBLE)],
+            fields=[StageField(name="aov", sql_alias="aov", datatype=DataType.FLOAT)],
         )
         parsed = parse_expr("customers.aov")
         bundle = ResolvedSourceBundle(dialect="duckdb")

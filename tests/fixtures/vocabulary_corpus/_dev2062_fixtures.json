@@ -1,0 +1,80 @@
+{
+ "source": "tests/_dev2062_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,729 @@
+{
+ "source": "tests/test_cross_model_rename_dev1448.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(cust_rev)",
+    "name": "top_cust_rev"
+   },
+   "new": {
+    "expression": "max(cust_rev)",
+    "name": "top_cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(cust_rev)",
+    "name": "top_cust_rev"
+   },
+   "new": {
+    "expression": "max(cust_rev)",
+    "name": "top_cust_rev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.revenue) / 100"
+   },
+   "new": {
+    "metric": "sum(customers.revenue) / 100"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "max(customers__revenue_sum)"
+   },
+   "new": {
+    "metric": "max(customers__revenue_sum)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(customers.*)",
+    "name": "cust_n"
+   },
+   "new": {
+    "expression": "count(customers.*)",
+    "name": "cust_n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customers.id)",
+    "name": "cust_distinct"
+   },
+   "new": {
+    "expression": "count_distinct(customers.id)",
+    "name": "cust_distinct"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "revenue_sum"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "revenue_sum"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "id_count_distinct"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "id_count_distinct"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(customers.id)"
+   },
+   "new": {
+    "metric": "count_distinct(customers.id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "revenue_avg"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "revenue_avg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(revenue)",
+    "name": "revenue_sum"
+   },
+   "new": {
+    "expression": "avg(revenue)",
+    "name": "revenue_sum"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "metric"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "metric"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customers.id)",
+    "name": "metric"
+   },
+   "new": {
+    "expression": "count_distinct(customers.id)",
+    "name": "metric"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(customers.*)"
+   },
+   "new": {
+    "metric": "count(customers.*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "_count"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "_count"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "customers__region_id"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "customers__region_id"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "region_id"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "region_id"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "revenue_sum__div__100"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "revenue_sum__div__100"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue) / 100"
+   },
+   "new": {
+    "metric": "sum(revenue) / 100"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(revenue)",
+    "name": "rev_avg"
+   },
+   "new": {
+    "expression": "avg(revenue)",
+    "name": "rev_avg"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.revenue)"
+   },
+   "new": {
+    "metric": "sum(customers.revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev",
+    "label": "Customer revenue"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev",
+    "label": "Customer revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.population)",
+    "name": "region_pop"
+   },
+   "new": {
+    "expression": "sum(customers.regions.population)",
+    "name": "region_pop"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(customers.id)"
+   },
+   "new": {
+    "metric": "count_distinct(customers.id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(customers.revenue))",
+    "name": "cum_cust_rev"
+   },
+   "new": {
+    "expression": "cumsum(sum(customers.revenue))",
+    "name": "cum_cust_rev"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 133,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 214,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 259,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 290,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 296,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 337,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 367,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 370,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 388,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 391,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 413,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 471,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 501,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 506,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 507,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 508,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 509,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 515,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 528,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 545,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 578,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 599,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 624,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 657,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 680,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 698,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 712,
+   "reason": "not a standalone metric: ValidationError"
+  },
+  {
+   "line": 724,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 754,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 758,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 791,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 795,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 818,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 850,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 882,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 911,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 954,
+   "reason": "not fully literal"
+  }
+ ]
+}

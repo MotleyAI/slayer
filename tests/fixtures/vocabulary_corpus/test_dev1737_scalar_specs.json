@@ -1,0 +1,56 @@
+{
+ "source": "tests/test_dev1737_scalar_specs.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders",
+    "sql_table": "orders",
+    "data_source": "test",
+    "columns": [
+     {
+      "name": "amount",
+      "type": "DOUBLE"
+     }
+    ],
+    "aggregations": [
+     {
+      "name": "date_diff",
+      "formula": "SUM({value})"
+     }
+    ]
+   },
+   "new": {
+    "name": "orders",
+    "sql_table": "orders",
+    "data_source": "test",
+    "fields": [
+     {
+      "name": "amount",
+      "datatype": "Float"
+     }
+    ],
+    "aggregations": [
+     {
+      "name": "date_diff",
+      "expression": "SUM({value})"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  }
+ ]
+}

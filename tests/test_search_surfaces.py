@@ -22,7 +22,7 @@ from slayer.api.server import create_app
 from slayer.cli import main
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.mcp.server import create_mcp_server
 from slayer.search.service import SearchHit, SearchResponse, SearchService
 from slayer.storage.base import StorageBackend, resolve_storage
@@ -35,14 +35,14 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
             description="Checkout orders.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount_paid", type=DataType.DOUBLE,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount_paid", datatype=DataType.FLOAT,
                        description="Net paid in USD."),
             ],
         ))
@@ -166,9 +166,9 @@ def test_rest_post_search_returns_response_shape(tmp_path) -> None:
 
     async def _seed():
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -228,13 +228,13 @@ def _run_cli(args: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.Ca
     return code, captured.out
 
 
-def test_cli_search_subcommand_help(monkeypatch, capsys) -> None:
+def test_cli_search_subcommand_help(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     code, out = _run_cli(["search", "--help"], monkeypatch, capsys)
     assert code == 0
     assert "search" in out.lower()
 
 
-def test_cli_datasources_refresh_samples_subcommand_help(monkeypatch, capsys) -> None:
+def test_cli_datasources_refresh_samples_subcommand_help(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     code, _ = _run_cli(["datasources", "refresh-samples", "--help"], monkeypatch, capsys)
     assert code == 0
 
@@ -247,9 +247,9 @@ def _seed_cli_storage(tmp_path) -> str:
 
     async def _seed():
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -260,7 +260,7 @@ def _seed_cli_storage(tmp_path) -> str:
     return storage_dir
 
 
-def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
+def test_cli_search_runs_against_storage(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """End-to-end: storage + search subcommand."""
     storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(
@@ -279,7 +279,7 @@ def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
     assert "resolved_input_entities" in payload
 
 
-def test_cli_memory_recall_subcommand_removed(monkeypatch, capsys) -> None:
+def test_cli_memory_recall_subcommand_removed(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """`slayer memory recall` is gone — argparse should reject it."""
     code, _ = _run_cli(["memory", "recall", "--help"], monkeypatch, capsys)
     assert code != 0
@@ -363,9 +363,9 @@ def test_rest_post_search_accepts_datasource(tmp_path) -> None:
 
     async def _seed():
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
 
     asyncio.run(_seed())
@@ -394,7 +394,7 @@ def test_rest_post_search_unknown_datasource_returns_400(tmp_path) -> None:
     assert res.status_code == 400
 
 
-def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch, capsys) -> None:
+def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """``slayer search --datasource X`` parses cleanly."""
     storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Ingest models from SQL Server and start the SLayer API server.
+# Ingest datasets from SQL Server and start the SLayer API server.
 set -e
 
 python -c "
@@ -17,7 +17,7 @@ ds = DatasourceConfig(
 )
 run_sync(storage.save_datasource(ds))
 result = engine.ingest_idempotent_sync(ds)
-print(f'Ingested {len(result.additions)} models')
+print(f'Ingested {len(result.additions)} datasets')
 "
 
 exec slayer serve --host 0.0.0.0 --port 5143 --storage /data

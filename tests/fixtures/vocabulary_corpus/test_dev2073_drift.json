@@ -1,0 +1,78 @@
+{
+ "source": "tests/test_dev2073_drift.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "addresses",
+    "name": "billing_address",
+    "join_pairs": [
+     [
+      "billing_address_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "addresses",
+    "name": "billing_address",
+    "from_columns": [
+     "billing_address_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 150,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  }
+ ]
+}

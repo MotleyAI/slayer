@@ -1,0 +1,83 @@
+{
+ "source": "tests/test_dev1841_golden_sql.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(customers.*)",
+    "name": "nc"
+   },
+   "new": {
+    "expression": "count(customers.*)",
+    "name": "nc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.pop)",
+    "name": "pop"
+   },
+   "new": {
+    "expression": "sum(customers.regions.pop)",
+    "name": "pop"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "median(customers.spend)",
+    "name": "med"
+   },
+   "new": {
+    "expression": "median(customers.spend)",
+    "name": "med"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(stores.rent)",
+    "name": "rent"
+   },
+   "new": {
+    "expression": "sum(stores.rent)",
+    "name": "rent"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.gold_spend)",
+    "name": "gs"
+   },
+   "new": {
+    "expression": "sum(customers.gold_spend)",
+    "name": "gs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=status)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=status)",
+    "name": "cm"
+   }
+  }
+ ],
+ "skipped": []
+}

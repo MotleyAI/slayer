@@ -18,7 +18,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.errors import ListTypeError, UnsupportedServerFunctionError
 from slayer.core.keys import SCALAR_SPECS, CastKey, LiteralKey
-from slayer.core.models import DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import (
@@ -35,8 +35,8 @@ from slayer.sql.render.library import LIBRARY_FUNCTIONS
 from slayer.sql.render.row_expr import DATE_FUNCTIONS, render_cast, render_scalar_call
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2101_fixtures import emit
-from tests._dev2120_fixtures import TIER1, emit_lib, lib_model, lib_query, patch_profile
-from tests._dev2137_fixtures import all_models
+from tests._dev2120_fixtures import TIER1, emit_lib, lib_dataset, lib_query, patch_profile
+from tests._dev2137_fixtures import all_datasets
 
 LIBRARY = LIBRARY_FUNCTIONS | {"try_cast"}
 REGEX = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
@@ -89,7 +89,7 @@ def assert_own_sql(sql: str, *, ds_type: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _unknown_server_version(monkeypatch) -> None:
+def _unknown_server_version(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_profile(monkeypatch, version=None)
 
 
@@ -131,7 +131,7 @@ class LibCase(BaseModel):
     name: str
     build: Callable[[], Any]
     mentions: str
-    models: Callable[[], list[SlayerModel]] = lambda: [lib_model()]
+    datasets: Callable[[], list[SlayerDataset]] = lambda: [lib_dataset()]
 
 
 def _dim(case_id: str, name: str, expr: str, *, mentions: str | None = None) -> LibCase:
@@ -139,21 +139,21 @@ def _dim(case_id: str, name: str, expr: str, *, mentions: str | None = None) -> 
 
 
 def _flt(case_id: str, name: str, expr: str, *, mentions: str | None = None) -> LibCase:
-    return LibCase(case_id=case_id, name=name, build=lambda: lib_query(filters=[expr]), mentions=mentions or name)
+    return LibCase(case_id=case_id, name=name, build=lambda: lib_query(filter=[expr]), mentions=mentions or name)
 
 
 def _lib(**body: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "lib", **body})
+    return SlayerQuery.model_validate({"population": "lib", **body})
 
 
-def _with_saved_measure() -> list[SlayerModel]:
-    base = lib_model()
-    return [base.model_copy(update={"measures": [ModelMeasure(name="txt_total", formula="sum(num_txt * 2)")]})]
+def _with_saved_metric() -> list[SlayerDataset]:
+    base = lib_dataset()
+    return [base.model_copy(update={"metrics": [DatasetMetric(name="txt_total", expression="sum(num_txt * 2)")]})]
 
 
 def _stages() -> list[SlayerQuery]:
-    return [SlayerQuery.model_validate({"name": "s1", "source_model": "lib", "dimensions": ["id", "num_txt"]}),
-            SlayerQuery.model_validate({"source_model": "s1", "dimensions": ["id"], "filters": ["num_txt > 100"]})]
+    return [SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["id", "num_txt"]}),
+            SlayerQuery.model_validate({"population": "s1", "dimensions": ["id"], "filter": ["num_txt > 100"]})]
 
 
 FUNCTION_CASES = [
@@ -214,11 +214,11 @@ COERCION_CASES = [
     _dim("coerce|greatest", "try_cast", "greatest(num_txt, 5)", mentions="number"),
     _dim("coerce|least", "try_cast", "least(5, num_txt)", mentions="number"),
     LibCase(case_id="coerce|measure", name="try_cast", mentions="number",
-            build=lambda: _lib(measures=[{"formula": "sum(num_txt * 2)", "name": "t"}])),
+            build=lambda: _lib(metrics=[{"metric": "sum(num_txt * 2)", "alias": "t"}])),
     LibCase(case_id="coerce|saved-measure", name="try_cast", mentions="number",
-            build=lambda: _lib(measures=["txt_total"]), models=_with_saved_measure),
+            build=lambda: _lib(metrics=["txt_total"]), datasets=_with_saved_metric),
     LibCase(case_id="coerce|order-by", name="try_cast", mentions="number",
-            build=lambda: _lib(dimensions=["id"], order=[{"column": "num_txt * 2"}])),
+            build=lambda: _lib(dimensions=["id"], order=[{"field": "num_txt * 2"}])),
     LibCase(case_id="coerce|stage", name="try_cast", mentions="number", build=_stages),
 ]
 CASES = [*FUNCTION_CASES, *SPELLING_CASES, *COERCION_CASES]
@@ -229,7 +229,7 @@ def test_every_library_function_has_a_case() -> None:
 
 
 async def _emit(case: LibCase, ds_type: str) -> str:
-    return await emit(case.build(), dialect=ds_type, models=case.models())
+    return await emit(case.build(), dialect=ds_type, datasets=case.datasets())
 
 
 @pytest.mark.parametrize("ds_type", DS_TYPES)
@@ -250,7 +250,7 @@ async def test_refused_on_execution_too(ds_type: str) -> None:
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name="test", type=ds_type, host="localhost", database="db"))
-        await storage.save_model(lib_model())
+        await storage.save_dataset(lib_dataset())
         engine, query, name = SlayerQueryEngine(storage=storage), lib_query("json_value(payload, '$.a')"), database(ds_type)
         with pytest.raises(UnsupportedServerFunctionError, match=name):
             await engine.execute(query)
@@ -272,7 +272,7 @@ async def test_refusal_outranks_an_invalid_argument(ds_type: str, expr: str, nam
 
 class TestTier2Like:
     async def test_databricks_like_keeps_the_escape(self) -> None:
-        sql = await emit_lib(lib_query(filters=[r"code LIKE 'a\_%'"]), dialect="databricks")
+        sql = await emit_lib(lib_query(filter=[r"code LIKE 'a\_%'"]), dialect="databricks")
         escape = next(sqlglot.parse_one(sql, read="databricks").find_all(exp.Escape))
         assert isinstance(escape.this, exp.Like), sql
         assert (escape.this.expression.name, escape.expression.name) == ("a\\_%", "\\"), sql
@@ -289,12 +289,12 @@ class TestPresto:
     @pytest.mark.parametrize("expr", ["regexp_like(notes, 'paid.*late')", "regexp_like(code, '^ab$')",
                                       "regexp_like(word, '^paid$', 'i')"])
     async def test_patterns_match_trino(self, expr: str) -> None:
-        presto = await emit_lib(lib_query(filters=[expr]), dialect="presto")
-        trino = await emit_lib(lib_query(filters=[expr]), dialect="trino")
+        presto = await emit_lib(lib_query(filter=[expr]), dialect="presto")
+        trino = await emit_lib(lib_query(filter=[expr]), dialect="trino")
         assert _strings(presto, read="presto") == _strings(trino, read="trino"), presto
 
     async def test_dot_matches_newline(self) -> None:
-        sql = await emit_lib(lib_query(filters=["regexp_like(notes, 'paid.*late')"]), dialect="presto")
+        sql = await emit_lib(lib_query(filter=["regexp_like(notes, 'paid.*late')"]), dialect="presto")
         assert any("(?s)" in s for s in _strings(sql, read="presto")), sql
 
     @pytest.mark.parametrize("expr", ["regexp_like(notes, 'paid.*late')", "regexp_extract(notes, 'paid(.*)late', 1)"])
@@ -303,7 +303,7 @@ class TestPresto:
         assert any(s.startswith("(?s)") for s in _strings(sql, read="presto")), sql
 
     async def test_end_anchor_is_absolute(self) -> None:
-        sql = await emit_lib(lib_query(filters=["regexp_like(code, '^ab$')"]), dialect="presto")
+        sql = await emit_lib(lib_query(filter=["regexp_like(code, '^ab$')"]), dialect="presto")
         assert "(?s)^ab\\z" in _strings(sql, read="presto"), sql
 
     @pytest.mark.parametrize(("expr", "function"), [
@@ -365,7 +365,7 @@ def _col_part(_key: object) -> Expression:
 
 
 def _cast(*, try_: bool) -> CastKey:
-    return CastKey(source=LiteralKey(value="1"), type_text="DOUBLE", data_type=DataType.DOUBLE, try_=try_)
+    return CastKey(source=LiteralKey(value="1"), type_text="DOUBLE", data_type=DataType.FLOAT, try_=try_)
 
 
 @pytest.mark.parametrize("dialect", _UNSUPPORTED, ids=lambda d: type(d).__name__)
@@ -386,8 +386,8 @@ _LIST_HOOKS: dict[str, Callable[[SqlDialect], Any]] = {
     "contains": lambda d: d.build_list_call("contains", (_X, exp.Literal.string("a"))),
     "contains_any": lambda d: d.build_list_call("contains_any", (_X, _Y)),
     "contains_all": lambda d: d.build_list_call("contains_all", (_X, _Y)),
-    "collect": lambda d: d.build_collect(_X, DataType.TEXT),
-    "list_set": lambda d: d.build_list_set(_X, DataType.TEXT),
+    "collect": lambda d: d.build_collect(_X, DataType.STRING),
+    "list_set": lambda d: d.build_list_set(_X, DataType.STRING),
     "list_key": lambda d: d.build_list_key(_X),
 }
 
@@ -409,7 +409,7 @@ def _neutral_defaults() -> dict[str, Expression]:
     out: dict[str, Expression] = {}
     for g in TimeGranularity:
         out[f"date_trunc:{g.value}"] = d.build_date_trunc(_X, g)
-        out[f"date_diff:{g.value}"] = d.build_date_diff(unit=g, start=_X, end=_Y, operand=DataType.TIMESTAMP)
+        out[f"date_diff:{g.value}"] = d.build_date_diff(unit=g, start=_X, end=_Y, operand=DataType.DATETIME)
         out[f"date_add:{g.value}"] = d.build_date_add(expr=_X, count=exp.Literal.number(2), unit=g,
                                                        operand=DataType.DATE)
     for p in DatePart:
@@ -436,11 +436,11 @@ def test_base_defaults_outside_the_library_are_neutral(hook: str, tree: Expressi
 # List constructs (spec: models/list-columns › Backends without native lists reject list constructs)
 # --------------------------------------------------------------------------- #
 def _contractors(**body: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "contractors", **body})
+    return SlayerQuery.model_validate({"population": "contractors", **body})
 
 
 def _count(name: str = "n") -> dict[str, str]:
-    return {"formula": "count(*)", "name": name}
+    return {"metric": "count(*)", "alias": name}
 
 
 class ListCase(BaseModel):
@@ -452,43 +452,43 @@ class ListCase(BaseModel):
 
 LIST_CASES = [
     ListCase(case_id="contains", mentions="contains",
-             build=lambda: _contractors(dimensions=["id"], filters=["contains(skills, 'go')"])),
+             build=lambda: _contractors(dimensions=["id"], filter=["contains(skills, 'go')"])),
     ListCase(case_id="contains_any-literal", mentions="contains_any",
-             build=lambda: _contractors(dimensions=["id"], filters=["contains_any(skills, ['go', 'sql'])"])),
+             build=lambda: _contractors(dimensions=["id"], filter=["contains_any(skills, ['go', 'sql'])"])),
     ListCase(case_id="contains_all-list-column", mentions="contains_all",
-             build=lambda: _contractors(dimensions=["id"], filters=["contains_all(skills, required)"])),
+             build=lambda: _contractors(dimensions=["id"], filter=["contains_all(skills, required)"])),
     ListCase(case_id="length", mentions="length",
-             build=lambda: _contractors(dimensions=["id", {"expression": "length(skills)", "name": "v"}])),
+             build=lambda: _contractors(dimensions=["id", {"field": "length(skills)", "alias": "v"}])),
     ListCase(case_id="array-literal", mentions="length",
-             build=lambda: _contractors(dimensions=["id", {"expression": "length(['go', 'sql'])", "name": "v"}])),
+             build=lambda: _contractors(dimensions=["id", {"field": "length(['go', 'sql'])", "alias": "v"}])),
     ListCase(case_id="element-access", mentions="skills", build=lambda: _contractors(dimensions=["skills.value"])),
     ListCase(case_id="list-child", mentions="skills",
-             build=lambda: _contractors(measures=[{"formula": "count(skills.*)", "name": "n"}])),
+             build=lambda: _contractors(metrics=[{"metric": "count(skills.*)", "alias": "n"}])),
     ListCase(case_id="child-filter", mentions="skills",
-             build=lambda: _contractors(measures=[_count()], filters=["skills.value = 'go'"])),
+             build=lambda: _contractors(metrics=[_count()], filter=["skills.value = 'go'"])),
     ListCase(case_id="nested-hop", mentions="skills",
-             build=lambda: SlayerQuery.model_validate({"source_model": "assignments", "dimensions": ["id"],
-                                                       "filters": ["contractors.skills.value = 'sql'"]})),
+             build=lambda: SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
+                                                       "filter": ["contractors.skills.value = 'sql'"]})),
     ListCase(case_id="stage", mentions="contains",
              build=lambda: [
-                 SlayerQuery.model_validate({"name": "s1", "source_model": "contractors", "dimensions": ["id"],
-                                             "filters": ["contains(skills, 'go')"]}),
-                 SlayerQuery.model_validate({"source_model": "s1", "measures": [_count()]}),
+                 SlayerQuery.model_validate({"name": "s1", "population": "contractors", "dimensions": ["id"],
+                                             "filter": ["contains(skills, 'go')"]}),
+                 SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "count(*)", "alias": "n"}]}),
              ]),
     ListCase(case_id="collect", mentions="collect",
-             build=lambda: _contractors(dimensions=["team"], measures=[{"formula": "collect(city)", "name": "c"}])),
+             build=lambda: _contractors(dimensions=["team"], metrics=[{"metric": "collect(city)", "alias": "c"}])),
     ListCase(case_id="collect-elements", mentions="collect",
              build=lambda: _contractors(dimensions=["team"],
-                                        measures=[{"formula": "collect(skills.value)", "name": "c"}])),
+                                        metrics=[{"metric": "collect(skills.value)", "alias": "c"}])),
 ]
 
 
 @pytest.mark.parametrize("ds_type", NO_LIST)
 @pytest.mark.parametrize("case", LIST_CASES, ids=lambda c: c.case_id)
 async def test_list_construct_refused(case: ListCase, ds_type: str) -> None:
-    query, models = case.build(), all_models()
+    query, models = case.build(), all_datasets()
     with pytest.raises(ListTypeError) as info:
-        await emit(query, dialect=ds_type, models=models)
+        await emit(query, dialect=ds_type, datasets=models)
     msg = str(info.value)
     assert database(ds_type) in msg, msg
     assert case.mentions in msg, msg
@@ -502,16 +502,16 @@ _NEEDS_SERVER = {("nested-hop", "clickhouse")}
     (c, d) for c in LIST_CASES for d in NATIVE_LIST if (c.case_id, d) not in _NEEDS_SERVER
 ], ids=lambda v: v if isinstance(v, str) else v.case_id)
 async def test_list_construct_emits(case: ListCase, ds_type: str) -> None:
-    sql = await emit(case.build(), dialect=ds_type, models=all_models())
+    sql = await emit(case.build(), dialect=ds_type, datasets=all_datasets())
     if ds_type != "postgres":
         assert_own_sql(sql, ds_type=ds_type)
 
 
 @pytest.mark.parametrize("ds_type", TIER2)
 async def test_list_refusal_suggests_presto(ds_type: str) -> None:
-    query, models = LIST_CASES[0].build(), all_models()
+    query, models = LIST_CASES[0].build(), all_datasets()
     with pytest.raises(ListTypeError, match="Presto"):
-        await emit(query, dialect=ds_type, models=models)
+        await emit(query, dialect=ds_type, datasets=models)
 
 
 # --------------------------------------------------------------------------- #

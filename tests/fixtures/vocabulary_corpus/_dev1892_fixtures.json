@@ -1,0 +1,136 @@
+{
+ "source": "tests/_dev1892_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "ct"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "ct"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)",
+    "name": "cc"
+   },
+   "new": {
+    "expression": "count(id)",
+    "name": "cc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(ct, weight=cc)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(ct, weight=cc)",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 117,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 220,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 230,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 266,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 271,
+   "reason": "not fully literal"
+  }
+ ]
+}

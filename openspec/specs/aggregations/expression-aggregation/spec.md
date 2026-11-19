@@ -53,7 +53,7 @@ referenceable in filters, in order and from a downstream stage.
 - **THEN** the key uses a truncated prefix plus a short stable hash, deterministic across runs
 
 #### Scenario: Rename override
-- **WHEN** a measure is declared `{"formula": "sum(amount - cost)", "name": "profit"}`
+- **WHEN** a measure is declared `{"metric": "sum(amount - cost)", "alias": "profit"}`
 - **THEN** the result key uses `profit`
 
 #### Scenario: Date comparison inside a scalar call

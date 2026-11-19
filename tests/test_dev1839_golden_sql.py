@@ -12,12 +12,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1839_fixtures import (
     EXPLICIT_PART_RANK,
     KEYLESS_RANK,
     MEASURE_DIFF,
     MIXED_RANK,
-    ModelMeasure,
     NESTED_RANK,
     SAMEGRAIN_DIFF,
     SAMEGRAIN_RANK,
@@ -37,86 +38,86 @@ WORKING_PREFIX = "lift/"
 
 
 def _cases() -> dict:
-    s = ModelMeasure(formula="sum(amount)", name="s")
+    s = QueryMetric(metric="sum(amount)", alias="s")
     return {
         "lift/dim_mixed_rank": q(
-            dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[s],
+            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            metrics=[s],
         ),
         "lift/dim_keyless_share": q(
-            dimensions=["region", {"expression": KEYLESS_RANK, "name": "kr"}],
-            measures=[s],
+            dimensions=["region", {"field": KEYLESS_RANK, "alias": "kr"}],
+            metrics=[s],
         ),
         "lift/dim_subset_rank": q(
-            dimensions=["region", "city", {"expression": SUBSET_RANK, "name": "sr"}],
-            measures=[s],
+            dimensions=["region", "city", {"field": SUBSET_RANK, "alias": "sr"}],
+            metrics=[s],
         ),
         "lift/dim_nested_cumsum": q(
-            dimensions=["region", "city", {"expression": NESTED_RANK, "name": "nr"}],
+            dimensions=["region", "city", {"field": NESTED_RANK, "alias": "nr"}],
             time_dimensions=month_td(),
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dim_explicit_partition": q(
             dimensions=[
-                "region", "city", {"expression": EXPLICIT_PART_RANK, "name": "er"},
+                "region", "city", {"field": EXPLICIT_PART_RANK, "alias": "er"},
             ],
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dual_role": q(
             dimensions=[
                 "region", "city", "channel",
-                {"expression": MIXED_RANK, "name": "rr"},
+                {"field": MIXED_RANK, "alias": "rr"},
             ],
-            measures=[ModelMeasure(formula=MIXED_RANK, name="rm"), s],
+            metrics=[QueryMetric(metric=MIXED_RANK, alias="rm"), s],
         ),
         "lift/measure_mixed_arithmetic": q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=MEASURE_DIFF, name="d"), s],
+            metrics=[QueryMetric(metric=MEASURE_DIFF, alias="d"), s],
         ),
         "lift/measure_same_grain_arithmetic": q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=SAMEGRAIN_DIFF, name="d")],
+            metrics=[QueryMetric(metric=SAMEGRAIN_DIFF, alias="d")],
         ),
         "lift/dim_same_grain_rank": q(
-            dimensions=["region", {"expression": SAMEGRAIN_RANK, "name": "gr"}],
-            measures=[s],
+            dimensions=["region", {"field": SAMEGRAIN_RANK, "alias": "gr"}],
+            metrics=[s],
         ),
         # DEV-1835 stage-2 lifts the windowed / first-last mixed-grain union
         # (design D9): these render now instead of raising the residual guard.
         "lift/dim_mixed_windowed": q(
             dimensions=[
                 "region", "city",
-                {"expression": "rank(sum(amount, window='90d', partition_by=region)"
-                               " - sum(amount, partition_by=city), direction='desc')", "name": "x"},
+                {"field": "rank(sum(amount, window='90d', partition_by=region)"
+                               " - sum(amount, partition_by=city), direction='desc')", "alias": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dim_mixed_first_last": q(
             dimensions=[
                 "region", "city",
-                {"expression": "rank(last(amount, partition_by=region) - "
-                               "sum(amount, partition_by=city), direction='desc')", "name": "x"},
+                {"field": "rank(last(amount, partition_by=region) - "
+                               "sum(amount, partition_by=city), direction='desc')", "alias": "x"},
             ],
-            measures=[s],
+            metrics=[s],
         ),
         "guard/dim_temporal_axis_missing": q(
             dimensions=[
                 "region", "city",
-                {"expression": "cumsum(sum(amount, partition_by=[region, city]))",
-                 "name": "cs"},
+                {"field": "cumsum(sum(amount, partition_by=[region, city]))",
+                 "alias": "cs"},
             ],
             time_dimensions=month_td(),
-            measures=[s],
+            metrics=[s],
         ),
         "guard/dim_kwarg_outside_union": q(
             dimensions=[
                 "region", "city",
-                {"expression": "rank(sum(amount, partition_by=region) - "
+                {"field": "rank(sum(amount, partition_by=region) - "
                                "sum(amount, partition_by=city), "
-                               "partition_by=channel, direction='desc')", "name": "x"},
+                               "partition_by=channel, direction='desc')", "alias": "x"},
             ],
-            measures=[s],
+            metrics=[s],
         ),
     }
 
@@ -125,7 +126,7 @@ async def _generate_one(query, dialect: str):
     models = dev1839_models()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

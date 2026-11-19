@@ -1,0 +1,133 @@
+{
+ "source": "tests/_time_points_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 142,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 223,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 234,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 249,
+   "reason": "not fully literal"
+  }
+ ]
+}

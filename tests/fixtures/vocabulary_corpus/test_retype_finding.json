@@ -1,0 +1,252 @@
+{
+ "source": "tests/test_retype_finding.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "n_flags",
+    "formula": "count_distinct(flags)"
+   },
+   "new": {
+    "name": "n_flags",
+    "expression": "count_distinct(flags)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "n_codes",
+    "formula": "count_distinct(code)"
+   },
+   "new": {
+    "name": "n_codes",
+    "expression": "count_distinct(code)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "n_gone",
+    "formula": "count_distinct(gone)"
+   },
+   "new": {
+    "name": "n_gone",
+    "expression": "count_distinct(gone)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "legacy",
+    "dimensions": [
+     "flags_upper"
+    ]
+   },
+   "new": {
+    "population": "legacy",
+    "dimensions": [
+     "flags_upper"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "pg_sql",
+    "dimensions": [
+     "payload"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "pg_sql",
+    "dimensions": [
+     "payload"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 150,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 242,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 421,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 423,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 489,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 491,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,50 @@
+{
+ "source": "tests/facade/test_catalog_sql_metabase_golden.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  }
+ ]
+}

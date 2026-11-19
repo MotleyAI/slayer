@@ -1,0 +1,226 @@
+{
+ "source": "tests/test_list_retype_dependents.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "nt",
+    "formula": "max(tags)"
+   },
+   "new": {
+    "name": "nt",
+    "expression": "max(tags)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "contractors",
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "tags = 'go'"
+    ]
+   },
+   "new": {
+    "population": "contractors",
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "tags = 'go'"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "contractors",
+    "join_pairs": [
+     [
+      "contractor_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "contractors",
+    "from_columns": [
+     "contractor_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "nn",
+    "formula": "max(tags)"
+   },
+   "new": {
+    "name": "nn",
+    "expression": "max(tags)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "nc",
+    "formula": "max(contractors.tags)"
+   },
+   "new": {
+    "name": "nc",
+    "expression": "max(contractors.tags)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "mixed",
+    "formula": "count(langs) + max(tools)"
+   },
+   "new": {
+    "name": "mixed",
+    "expression": "count(langs) + max(tools)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "n_tagged",
+    "formula": "count(tags)"
+   },
+   "new": {
+    "name": "n_tagged",
+    "expression": "count(tags)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "n_sets",
+    "formula": "count_distinct(tags)"
+   },
+   "new": {
+    "name": "n_sets",
+    "expression": "count_distinct(tags)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "contractors",
+    "dimensions": [
+     "tags"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "contractors",
+    "dimensions": [
+     "tags"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "ghostly",
+    "formula": "max(tags) + sum(ghost)"
+   },
+   "new": {
+    "name": "ghostly",
+    "expression": "max(tags) + sum(ghost)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "audited",
+    "formula": "max(tags)"
+   },
+   "new": {
+    "name": "audited",
+    "expression": "max(tags)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  }
+ ]
+}

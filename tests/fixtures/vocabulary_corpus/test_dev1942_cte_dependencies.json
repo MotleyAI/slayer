@@ -1,0 +1,50 @@
+{
+ "source": "tests/test_dev1942_cte_dependencies.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "c"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 137,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  }
+ ]
+}

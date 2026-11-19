@@ -1,7 +1,7 @@
 # SQL Clients
 
 Every live database access SLayer makes — query statements, type probes, schema-drift checks,
-ingestion, row-level-security column checks, legacy model upgrades, the MCP datasource tools and
+ingestion, row-level-security column checks, legacy dataset upgrades, the MCP datasource tools and
 the dbt / OSI importers — goes through one **SQL client** per datasource, owned by a query engine.
 By default that client is `SlayerSQLClient`, which connects with the datasource's own credentials.
 A host can instead pass a **client factory** and route everything through its own client, for
@@ -41,7 +41,7 @@ connection's current one.
 `AuthenticationRefused` when it rejects the credentials, and `ObjectNotFound` when a metadata read
 names a schema or table that does not exist (all subclass `SqlClientError`, as do the default client's `SessionStatementRefused` and `WriteStatementRefused`). Any other statement
 failure must reach the caller as the database's own error, message unchanged. SLayer treats these
-strictly: drift deletes a model only when its table is absent from a *successful* listing, a
+strictly: drift deletes a dataset only when its table is absent from a *successful* listing, a
 listed-but-unreadable table yields no verdict, and a session-policy column it cannot confirm
 refuses the query.
 
@@ -93,7 +93,7 @@ engine = SlayerQueryEngine(storage=YAMLStorage(base_dir="./slayer_data"), client
 
 The wrapped client's own work (its catalog queries) never routes through
 your overrides. Metadata still needs the database credentials: without them, queries keep working
-but schema-drift checks refuse, session-policy queries are refused, and ingestion, legacy model
+but schema-drift checks refuse, session-policy queries are refused, and ingestion, legacy dataset
 upgrades and the MCP `describe_datasource` tool fail.
 
 ## A full gateway

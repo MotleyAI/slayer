@@ -1,0 +1,205 @@
+# A SLayer 1.8 export: extensions under the legacy key `custom_extensions` with JSON-string data.
+# Written by the exporter before the key rename; do not edit (the fingerprints must match).
+version: 0.3.0.dev0
+name: shop
+datasets:
+- name: customers
+  source: customers
+  primary_key:
+  - id
+  unique_keys:
+  - - email
+  fields:
+  - name: id
+    expression:
+      sql: c_custkey
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"sql":"c_custkey","type":"INT"},"entity":"id","fingerprint":"86c44ce2d43ed445cca8cdc49aa32de859fed42a3f4f569915bca55b3c4396b0","kind":"field","version":1}'
+  - name: segment
+    expression:
+      sql: segment
+    datatype: String
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"TEXT"},"entity":"segment","fingerprint":"6b6ca65902e7f3614a95d11539ab0d1a0f5d637ed4142483951a9527e765c211","kind":"field","version":1}'
+  - name: discount
+    expression:
+      sql: discount
+    datatype: Float
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"DOUBLE"},"entity":"discount","fingerprint":"531750a69037a7f07e989bab5ca31265b70d4a25cc1c23ae45d585d0f26145cf","kind":"field","version":1}'
+  - name: rate
+    expression:
+      sql: rate
+    datatype: Float
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"DOUBLE"},"entity":"rate","fingerprint":"81e42edb9748c2a2ffaa45f286c07c845574af3c9dce0543b2d36161ff569596","kind":"field","version":1}'
+  - name: email
+    expression:
+      sql: email
+    datatype: String
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"TEXT"},"entity":"email","fingerprint":"edcf44b4f1502ef2c81053570b73f1d5e4686f0a702eb5eb1d68f418d95ebedd","kind":"field","version":1}'
+  metrics:
+  - name: orders_customer_discount
+    expression:
+      sql: SUM(discount)
+    custom_extensions:
+    - vendor_name: ACME
+      data: '{"k": 1}'
+    - vendor_name: SLAYER
+      data: '{"entity":"orders_customer_discount","fingerprint":"1f314efb463acc0c12cfb4991b40e8a50a37d85372cb1ffcd04b6ac86007b69a","kind":"metric","measure":{"formula":"sum(customers.discount)","name":"customer_discount"},"model":"orders","version":1}'
+  custom_extensions:
+  - vendor_name: SLAYER
+    data: '{"access_tags":[],"aggregations":[],"columns":[],"entity":"customers","fingerprint":"cb757345f6bfd99eacefa1e75ef468d851a899aab58939b464e539c310f487fb","hidden":false,"kind":"dataset","measures":[],"source":{"filters":[],"query_variables":{},"sql_table":"customers"},"version":1}'
+- name: orders
+  source: orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: o_orderkey
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"sql":"o_orderkey","type":"INT"},"entity":"id","fingerprint":"1a01c8e51857d8d6dbc0f817a0a20bad16982885577b25186af248f52ca77336","kind":"field","version":1}'
+  - name: customer_id
+    expression:
+      sql: o_custkey
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"sql":"o_custkey","type":"INT"},"entity":"customer_id","fingerprint":"9090721c0f1572d3b6f2ec4d860abe0496ca6acb98e4411b9f3b61f1fb291300","kind":"field","version":1}'
+  - name: total_amount
+    expression:
+      sql: o_totalprice
+    datatype: Decimal
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"sql":"o_totalprice","type":"DOUBLE"},"entity":"total_amount","fingerprint":"01a61c381c0eb8927b003af994a1623c2f7487219a8a41c63a9a3e1d84753249","kind":"field","version":1}'
+  - name: amount
+    expression:
+      sql: amount
+    datatype: Float
+    custom_extensions:
+    - vendor_name: ACME
+      data: '{"k": 1}'
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"DOUBLE"},"entity":"amount","fingerprint":"4fad17db26804ab30133f53a3c55083e572a74e4daa490d9b9a8f87b03c5e7b4","kind":"field","version":1}'
+  - name: quantity
+    expression:
+      sql: quantity
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"INT"},"entity":"quantity","fingerprint":"44f6e90507ad3791508d5fd2967609a450241950ec71d1b905f936274580462f","kind":"field","version":1}'
+  - name: price
+    expression:
+      sql: price
+    datatype: Float
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"DOUBLE"},"entity":"price","fingerprint":"bd0e422478194ba63aa703bf6e8c9f78c1786886e41e539bb173b8fa7440b3fa","kind":"field","version":1}'
+  - name: discount
+    expression:
+      sql: discount
+    datatype: Float
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"DOUBLE"},"entity":"discount","fingerprint":"531750a69037a7f07e989bab5ca31265b70d4a25cc1c23ae45d585d0f26145cf","kind":"field","version":1}'
+  - name: status
+    expression:
+      sql: status
+    datatype: String
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"TEXT"},"entity":"status","fingerprint":"f9203948cb463d38bed61eb3d94a4a1f60474eeebb96f168d244cb7f59c120e0","kind":"field","version":1}'
+  - name: region
+    expression:
+      sql: region
+    datatype: String
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"TEXT"},"entity":"region","fingerprint":"b043eb2874bbca322d89f9ad27f298e3db305165915b12760af2bcedaa34bda4","kind":"field","version":1}'
+  - name: is_paid
+    expression:
+      sql: is_paid
+    datatype: Boolean
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"BOOLEAN"},"entity":"is_paid","fingerprint":"6ccf906c9bb604089265eb366760434ee37bc9e5dc450d222cc039b4ba1d752c","kind":"field","version":1}'
+  - name: ordered_on
+    expression:
+      sql: ordered_on
+    datatype: Date
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"DATE"},"entity":"ordered_on","fingerprint":"25883261ade87ae2aede23d8c19692d0d109b7116e1ccb3e5b4a74e2fa805cb5","kind":"field","version":1}'
+  - name: ordered_at
+    expression:
+      sql: ordered_at
+    datatype: DateTime
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"TIMESTAMP"},"entity":"ordered_at","fingerprint":"6306cf198d8893aab36a5a1b95b89d4863590e6221aa744d231e0ddd9fc17c69","kind":"field","version":1}'
+  - name: order_year
+    expression:
+      sql: order_year
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"INT"},"entity":"order_year","fingerprint":"958c68d82f12d82f7841a91def10a31ff5190720260d43a334e6856c3641d121","kind":"field","version":1}'
+  - name: note
+    expression:
+      sql: note
+    datatype: String
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"column":{"hidden":false,"type":"TEXT"},"entity":"note","fingerprint":"ea4a15288fed3541885cb25250d189a3148c44dc024959a7f92c3dd8640a6565","kind":"field","version":1}'
+  metrics:
+  - name: revenue
+    expression:
+      sql: SUM(amount)
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"entity":"revenue","fingerprint":"85c0447dee91e5b544fc24b6ed44ba5022b02a8ef340db07e833b1101b3ecad5","kind":"metric","measure":{"formula":"sum(amount)","name":"revenue"},"model":"orders","version":1}'
+  - name: n
+    expression:
+      sql: COUNT(*)
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"entity":"n","fingerprint":"d8ae745b67bd194de6f88e191cfeb17580d0059b231c79baad1d0f013dc5a477","kind":"metric","measure":{"formula":"count(*)","name":"n"},"model":"orders","version":1}'
+  - name: aov
+    expression:
+      sql: SUM(amount) / COUNT(*)
+    custom_extensions:
+    - vendor_name: SLAYER
+      data: '{"entity":"aov","fingerprint":"face0494cfe5ee4cdac02538dd7de209524c2704d59b68261e50539611e5c7fe","kind":"metric","measure":{"formula":"revenue
+        / n","name":"aov"},"model":"orders","version":1}'
+  custom_extensions:
+  - vendor_name: ACME
+    data: '{"k": 1}'
+  - vendor_name: SLAYER
+    data: '{"access_tags":[],"aggregations":[],"columns":[],"default_time_dimension":"ordered_on","entity":"orders","fingerprint":"42fed391ed9b6132463808fc7e9eaf09f51962ac057a816d320895d72ce7592f","hidden":true,"kind":"dataset","measures":[{"formula":"change_pct(revenue)","name":"revenue_growth"}],"source":{"filters":[],"query_variables":{},"sql_table":"orders"},"version":1}'
+relationships:
+- name: buyer
+  from: orders
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - id
+  custom_extensions:
+  - vendor_name: ACME
+    data: '{"k": 1}'
+  - vendor_name: SLAYER
+    data: '{"declarations":[{"join":{"cardinality":"many_to_one","join_pairs":[["customer_id","id"]],"join_type":"inner","name":"buyer","target_model":"customers"},"model":"orders"}],"entity":"buyer","fingerprint":"cc31a04bbe80e10694d8b92b24630fad0c5704ef7b8f65e6a99e845aa5761c45","kind":"relationship","version":1}'
+custom_extensions:
+- vendor_name: ACME
+  data: '{"k": 1}'

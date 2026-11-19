@@ -1,0 +1,34 @@
+{
+ "source": "tests/integration/_consecutive_periods_calendar.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  }
+ ]
+}

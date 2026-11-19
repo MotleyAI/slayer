@@ -1,0 +1,74 @@
+{
+ "source": "tests/test_dev2101_variables.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "{f}(amount)"
+    ],
+    "variables": {
+     "f": "sum"
+    }
+   },
+   "new": {
+    "metrics": [
+     "{f}(amount)"
+    ],
+    "variables": {
+     "f": "sum"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount, partition_by={x})"
+    ],
+    "dimensions": [
+     "region"
+    ],
+    "variables": {
+     "x": "region"
+    }
+   },
+   "new": {
+    "metrics": [
+     "sum(amount, partition_by={x})"
+    ],
+    "dimensions": [
+     "region"
+    ],
+    "variables": {
+     "x": "region"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount, {k}=1)"
+    ],
+    "variables": {
+     "k": "partition_by"
+    }
+   },
+   "new": {
+    "metrics": [
+     "sum(amount, {k}=1)"
+    ],
+    "variables": {
+     "k": "partition_by"
+    }
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 14,
+   "reason": "unclassifiable"
+  }
+ ]
+}

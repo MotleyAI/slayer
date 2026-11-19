@@ -77,59 +77,59 @@
   "closed/cancel_then_fanning::sqlite": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value AS (\n  SELECT\n    SUM(regions__countries.gdp * region_events.value) AS \"region_events.regions.countries.gdp_wsum_fan_weight_value_host\"\n  FROM region_events AS region_events\n  LEFT JOIN regions AS regions\n    ON region_events.region_id = regions.id\n  LEFT JOIN countries AS regions__countries\n    ON regions.country_id = regions__countries.id\n)\nSELECT\n  _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value.\"region_events.regions.countries.gdp_wsum_fan_weight_value_host\" AS \"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value",
   "closed/cancel_then_fanning::tsql": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value AS (\n  SELECT\n    SUM(regions__countries.gdp * region_events.value) AS [region_events___regions___countries___gdp_wsum_fan_weight_value_host]\n  FROM region_events AS region_events\n  LEFT JOIN regions AS regions\n    ON region_events.region_id = regions.id\n  LEFT JOIN countries AS regions__countries\n    ON regions.country_id = regions__countries.id\n)\nSELECT\n  _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value.[region_events___regions___countries___gdp_wsum_fan_weight_value_host] AS [orders___w]\nFROM _base\nCROSS JOIN _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value",
   "closed/query_typed_revisit::bigquery": {
-    "error": "CircularJoinPathError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
+    "error": "CircularRelationshipPathError",
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::duckdb": {
-    "error": "CircularJoinPathError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
+    "error": "CircularRelationshipPathError",
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::mysql": {
-    "error": "CircularJoinPathError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
+    "error": "CircularRelationshipPathError",
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::postgres": {
-    "error": "CircularJoinPathError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
+    "error": "CircularRelationshipPathError",
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::snowflake": {
-    "error": "CircularJoinPathError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
+    "error": "CircularRelationshipPathError",
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::sqlite": {
-    "error": "CircularJoinPathError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
+    "error": "CircularRelationshipPathError",
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::tsql": {
-    "error": "CircularJoinPathError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
+    "error": "CircularRelationshipPathError",
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
   },
   "closed/second_order_nowhere::bigquery": {
-    "error": "UnresolvableDimensionJoinError",
-    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid relationship path from 'orders'. not reachable forward from the owning dataset or the query root."
   },
   "closed/second_order_nowhere::duckdb": {
-    "error": "UnresolvableDimensionJoinError",
-    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid relationship path from 'orders'. not reachable forward from the owning dataset or the query root."
   },
   "closed/second_order_nowhere::mysql": {
-    "error": "UnresolvableDimensionJoinError",
-    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid relationship path from 'orders'. not reachable forward from the owning dataset or the query root."
   },
   "closed/second_order_nowhere::postgres": {
-    "error": "UnresolvableDimensionJoinError",
-    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid relationship path from 'orders'. not reachable forward from the owning dataset or the query root."
   },
   "closed/second_order_nowhere::snowflake": {
-    "error": "UnresolvableDimensionJoinError",
-    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid relationship path from 'orders'. not reachable forward from the owning dataset or the query root."
   },
   "closed/second_order_nowhere::sqlite": {
-    "error": "UnresolvableDimensionJoinError",
-    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid relationship path from 'orders'. not reachable forward from the owning dataset or the query root."
   },
   "closed/second_order_nowhere::tsql": {
-    "error": "UnresolvableDimensionJoinError",
-    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+    "error": "UnresolvableDimensionRelationshipError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid relationship path from 'orders'. not reachable forward from the owning dataset or the query root."
   }
 }

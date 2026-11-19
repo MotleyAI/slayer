@@ -8,32 +8,26 @@ This leads to a challenge: how to combine the simplicity of custom transforms (s
 
 Many semantic layers achieve that via some sort of escape syntax, such as {} or $, that allows to inject DSL expressions into the SQL used in defining columns. In a way, that option is almost the only one available if the only place for any nontrivial operations or expressions is in column definitions, and all queries do is retrieve these.
 
-In SLayer, we chose a different path: the model defines the abstraction between the DSL and the underlying database, so the `sql` and `filter` properties of a model's `columns` (and the model-level `filters` list) only allow raw SQL. And the query underlying a `sql`-mode model can be any valid SQL SELECT expression at all.
+In SLayer, we chose a different path: the dataset defines the abstraction between the DSL and the underlying database, so the `sql` and `filter` properties of a dataset's `fields` (and the dataset-level `filters` list) only allow raw SQL. And the query underlying a `sql`-mode dataset can be any valid SQL SELECT expression at all.
 
-Any [transforms](../../concepts/formulas.md#transform-functions) from our DSL are then applied at query time inside a query's `measures` list; the `filters` list of a query likewise only refers to DSL-side entities — column names, query-time aggregations, transforms, and named formulas from that query.
+Any [transforms](../../concepts/formulas.md#transform-functions) from our DSL are then applied at query time inside a query's `metrics` list; the `filter` list of a query likewise only refers to DSL-side entities — field names, query-time aggregations, transforms, and named expressions from that query.
 
-What if you want to add to a query a filter that directly references the underlying tables, and can only be phrased in terms of SQL, rather than DSL-side entities? Just use the [query extension feature](../../concepts/queries.md#query-extensions) of a query: add a column carrying the raw SQL expression to the model definition right inside the query, then filter on it by name.
+What if a query needs an expression the dataset doesn't define? Write it right where it is used, in the DSL: a query carries no raw SQL, so the expression uses SLayer's portable function library and the dataset's field names.
 
 ```json
 {
-  "source_model": "orders",
-  "extensions": [{
-    "source_name": "orders",
-    "columns": [
-      {"name": "is_weekend", "sql": "CASE WHEN EXTRACT(dow FROM ordered_at) IN (0, 6) THEN 1 ELSE 0 END", "type": "INT"}
-    ]
-  }],
-  "measures": ["count(*)", "sum(order_total)"],
+  "population": "orders",
+  "metrics": ["count(*)", "sum(order_total)"],
   "dimensions": ["stores.name"],
-  "filters": ["is_weekend = 1"]
+  "filter": ["day_of_week(ordered_at) IN (6, 7)"]
 }
 ```
 
-Here, `EXTRACT(dow FROM ordered_at) IN (0, 6)` is raw SQL over the underlying table columns — it lives on the model side, as a column added by the query's `extensions`. The query's own `measures`, `dimensions`, and `filters` still use DSL-level names: the filter refers to the new column by name.
+Here, `day_of_week(ordered_at) IN (6, 7)` keeps the weekend orders (ISO numbering, Monday = 1) on every database. An expression that can only be phrased in a database's own SQL belongs on the dataset side: add it to the dataset as a field with that `sql`, and filter on the field by name.
 
-What if you want to get fancy, and use expressions such as time-shift for defining derived measures or dimensions?
+What if you want to get fancy, and use expressions such as time-shift for defining derived metrics or dimensions?
 
-That is also doable — save the query as a [query-backed model](../../concepts/models.md#query-backed-models) (via `engine.create_model_from_query()` or the `create_model` MCP tool with a `query` argument). The result becomes a regular model you can query by name or use as `source_model` in other queries. See the [Multistage Queries tutorial](../06_multistage_queries/multistage_queries.md) for a worked example.
+That is also doable — save the query as a [query-backed dataset](../../concepts/models.md#query-backed-datasets) (via `engine.create_dataset_from_query()` or the `create_dataset` MCP tool with a `query` argument). The result becomes a regular dataset you can query by name or use as `population` in other queries. See the [Multistage Queries tutorial](../06_multistage_queries/multistage_queries.md) for a worked example.
 
 ---
 

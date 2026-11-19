@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import slayer.live_schema.ingestion as ingestion_mod
-from slayer.core.models import ModelJoin
+from slayer.core.models import DatasetRelationship
 
 from tests._dev1853_fixtures import rows_set
 from tests._dev2073_fixtures import (
@@ -35,7 +35,7 @@ class TestParallelFksAreAddressable:
             assert edges[BILLING] == "billing_address"
             assert edges[SHIPPING] == "shipping_address"
             resp = await lv.query(
-                source_model="orders",
+                population="orders",
                 dimensions=["id", "billing_address.city", "shipping_address.city"],
             )
             assert rows_set(resp, "orders.id", "orders.billing_address.city") == BILLING_CITIES
@@ -52,7 +52,7 @@ class TestParallelFksAreAddressable:
         async with live(CHAIN) as lv:
             await lv.ingest()
             assert await lv.edges() == {("orders", "customers", (("customer_id", "id"),)): None}
-            resp = await lv.query(source_model="orders", dimensions=["id", "customers.name"])
+            resp = await lv.query(population="orders", dimensions=["id", "customers.name"])
             assert rows_set(resp, "orders.id", "orders.customers.name") == {
                 (1, "Alice"), (2, "Alice"), (3, "Bob"),
             }
@@ -65,9 +65,9 @@ class TestNamingRespectsAuthoredJoins:
             INSERT INTO orders VALUES (1, 2, 10.0);
         """) as lv:
             await lv.ingest()
-            orders = await lv.model("orders")
-            legacy = ModelJoin(target_model="addresses", join_pairs=[["legacy_addr", "id"]])
-            await lv.storage.save_model(orders.model_copy(update={"joins": [legacy]}))
+            orders = await lv.dataset("orders")
+            legacy = DatasetRelationship(to="addresses", from_columns=["legacy_addr"], to_columns=["id"])
+            await lv.storage.save_dataset(orders.model_copy(update={"relationships": [legacy]}))
             lv.run("ALTER TABLE orders ADD COLUMN billing_address_id INTEGER REFERENCES addresses(id);"
                    "UPDATE orders SET billing_address_id = 1;")
 
@@ -77,7 +77,7 @@ class TestNamingRespectsAuthoredJoins:
             edges = await lv.edges()
             assert edges[("orders", "addresses", (("legacy_addr", "id"),))] == "legacy_addr"
             assert edges[BILLING] == "billing_address"
-            resp = await lv.query(source_model="orders", dimensions=["legacy_addr.city", "billing_address.city"])
+            resp = await lv.query(population="orders", dimensions=["legacy_addr.city", "billing_address.city"])
             assert rows_set(resp, "orders.legacy_addr.city", "orders.billing_address.city") == {("Lima", "Oslo")}
 
     async def test_purely_hand_authored_parallel_set_is_untouched(self) -> None:
@@ -85,22 +85,22 @@ class TestNamingRespectsAuthoredJoins:
             CREATE TABLE orders (id INTEGER PRIMARY KEY, a1 INTEGER, a2 INTEGER);
         """) as lv:
             await lv.ingest()
-            orders = await lv.model("orders")
-            joins = [ModelJoin(target_model="addresses", join_pairs=[[col, "id"]]) for col in ("a1", "a2")]
-            await lv.storage.save_model(orders.model_copy(update={"joins": joins}))
+            orders = await lv.dataset("orders")
+            joins = [DatasetRelationship(to="addresses", from_columns=[col], to_columns=["id"]) for col in ("a1", "a2")]
+            await lv.storage.save_dataset(orders.model_copy(update={"relationships": joins}))
 
             await lv.ingest()
 
-            assert [j.name for j in (await lv.model("orders")).joins] == [None, None]
+            assert [j.name for j in (await lv.dataset("orders")).relationships] == [None, None]
 
     async def test_user_set_name_is_kept(self) -> None:
         async with live(ADDRESSES_ONLY + """
             CREATE TABLE orders (id INTEGER PRIMARY KEY, billing_address_id INTEGER REFERENCES addresses(id));
         """) as lv:
             await lv.ingest()
-            orders = await lv.model("orders")
-            named = [j.model_copy(update={"name": "bill_to"}) for j in orders.joins]
-            await lv.storage.save_model(orders.model_copy(update={"joins": named}))
+            orders = await lv.dataset("orders")
+            named = [j.model_copy(update={"name": "bill_to"}) for j in orders.relationships]
+            await lv.storage.save_dataset(orders.model_copy(update={"relationships": named}))
             lv.run("ALTER TABLE orders ADD COLUMN shipping_address_id INTEGER REFERENCES addresses(id);")
 
             await lv.ingest()
@@ -152,9 +152,9 @@ class TestGeneratedNamesAvoidCollisions:
             CREATE TABLE orders (id INTEGER PRIMARY KEY, invoice_id INTEGER REFERENCES invoices(id));
         """) as lv:
             await lv.ingest()
-            orders = await lv.model("orders")
-            named = [j.model_copy(update={"name": "billing_address"}) for j in orders.joins]
-            await lv.storage.save_model(orders.model_copy(update={"joins": named}))
+            orders = await lv.dataset("orders")
+            named = [j.model_copy(update={"name": "billing_address"}) for j in orders.relationships]
+            await lv.storage.save_dataset(orders.model_copy(update={"relationships": named}))
             lv.run("ALTER TABLE orders ADD COLUMN billing_address_id INTEGER REFERENCES addresses(id);"
                    "ALTER TABLE orders ADD COLUMN shipping_address_id INTEGER REFERENCES addresses(id);")
 

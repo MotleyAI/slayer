@@ -1,0 +1,32 @@
+{
+ "source": "tests/integration/test_dev1933_postgres_verbatim.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 132,
+   "reason": "not fully literal"
+  }
+ ]
+}

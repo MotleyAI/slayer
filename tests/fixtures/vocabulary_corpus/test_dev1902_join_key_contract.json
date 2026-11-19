@@ -1,0 +1,178 @@
+{
+ "source": "tests/test_dev1902_join_key_contract.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amt"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "amt"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "quantity",
+      "sql": "\"qty\"",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "quantity",
+      "sql": "\"qty\"",
+      "datatype": "Float"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not a standalone relationship: ValidationError"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not a standalone relationship: ValidationError"
+  },
+  {
+   "line": 155,
+   "reason": "not a standalone dataset: ValidationError"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 266,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 277,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 312,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 316,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 318,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 359,
+   "reason": "not fully literal"
+  }
+ ]
+}

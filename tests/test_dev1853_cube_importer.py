@@ -6,18 +6,18 @@ declarations import both edges and surface as an ambiguous hop.
 
 from __future__ import annotations
 
-from slayer.core.enums import JoinCardinality
-from slayer.core.join_walker import edges_between
-from slayer.core.models import SlayerModel
+from slayer.core.enums import RelationshipCardinality
+from slayer.core.relationship_walker import edges_between
+from slayer.core.models import SlayerDataset
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeCube, CubeDimension, CubeJoin, CubeProject
 
 DS = "test_ds"
 
 
-def _convert(project: CubeProject) -> dict[str, SlayerModel]:
+def _convert(project: CubeProject) -> dict[str, SlayerDataset]:
     result = CubeToSlayerConverter(project=project, data_source=DS).convert()
-    return {m.name: m for m in result.models}
+    return {m.name: m for m in result.datasets}
 
 
 def _project(*, customers_join_sql: str) -> CubeProject:
@@ -53,8 +53,8 @@ class TestMutuallyInverseDeclarations:
     ) -> None:
         models = _convert(
             _project(customers_join_sql="{CUBE}.id = {orders.customer_id}"))
-        orders_joins = models["orders"].joins
-        customers_joins = models["customers"].joins
+        orders_joins = models["orders"].relationships
+        customers_joins = models["customers"].relationships
         assert len(orders_joins) + len(customers_joins) == 1
         assert len(edges_between(source=models["orders"],
                                  target=models["customers"])) == 1
@@ -64,14 +64,14 @@ class TestMutuallyInverseDeclarations:
     def test_surviving_edge_is_the_to_one_declaration(self) -> None:
         models = _convert(
             _project(customers_join_sql="{CUBE}.id = {orders.customer_id}"))
-        assert len(models["orders"].joins) == 1
-        assert models["orders"].joins[0].cardinality == JoinCardinality.MANY_TO_ONE
-        assert models["customers"].joins == []
+        assert len(models["orders"].relationships) == 1
+        assert models["orders"].relationships[0].cardinality == RelationshipCardinality.MANY_TO_ONE
+        assert models["customers"].relationships == []
 
 
 class TestContradictingDeclarations:
     def test_different_columns_import_both_edges(self) -> None:
         models = _convert(
             _project(customers_join_sql="{CUBE}.id = {orders.alt_id}"))
-        assert len(models["orders"].joins) == 1
-        assert len(models["customers"].joins) == 1
+        assert len(models["orders"].relationships) == 1
+        assert len(models["customers"].relationships) == 1

@@ -22,7 +22,7 @@ async def engine(request):
 
 
 def _query(**kw: Any) -> SlayerQuery:
-    return q(measures=[m("count(*)")], **kw)
+    return q(metrics=[m("count(*)")], **kw)
 
 
 class TestConstruction:
@@ -30,13 +30,13 @@ class TestConstruction:
     def test_literal_placeholder_accepted(self, entry: Any) -> None:
         query = _query(time_dimensions=[entry])
         assert query.time_dimensions is not None
-        assert query.time_dimensions[0].dimension == SHIFTED
+        assert query.time_dimensions[0].field == SHIFTED
 
     def test_functional_form_in_dimensions_moves_to_time_dimensions(self) -> None:
         query = _query(dimensions=[f"date_trunc('month', {SHIFTED})"])
         assert query.dimensions is None
         assert query.time_dimensions is not None
-        assert query.time_dimensions[0].dimension == SHIFTED
+        assert query.time_dimensions[0].field == SHIFTED
 
     def test_placeholder_names_include_the_expression(self) -> None:
         assert extract_placeholder_names(_query(time_dimensions=[td(SHIFTED)])) == {"days"}
@@ -55,7 +55,7 @@ class TestExecution:
         assert by_bucket(resp, KEY, "orders.v") == expected
 
     async def test_named_time_dimension_keeps_its_name(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_query(time_dimensions=[td(SHIFTED, name="effective_at")],
+        resp = await engine.execute(_query(time_dimensions=[td(SHIFTED, alias="effective_at")],
                                            variables={"days": 30}))
         assert by_bucket(resp, "orders.effective_at", "orders.v")["2025-03"] == 3.0
 

@@ -17,7 +17,7 @@ import sqlglot
 from slayer.core.query import SlayerQuery
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 from tests._engine_helpers import _engine_generate, _extract_cte_body
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -25,22 +25,22 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1958_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_TD = {"dimension": "ordered_at", "granularity": "month"}
+_TD = {"field": "ordered_at", "granularity": "month"}
 _TD_DR = {**_TD, "date_range": ["2024-02-01", "2024-03-31"]}
 _SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
 _REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
 _EVENT = "customers.regions.region_events.value"
 
 
-def _monthly(formula: str, *, dr: bool = False, dims=("region",), **kw) -> dict:
-    return {"source_model": "monthly", "dimensions": list(dims),
+def _monthly(expression: str, *, dr: bool = False, dims=("region",), **kw) -> dict:
+    return {"population": "monthly", "dimensions": list(dims),
             "time_dimensions": [_TD_DR if dr else _TD],
-            "measures": [{"formula": formula, "name": "t"}], **kw}
+            "metrics": [{"metric": expression, "alias": "t"}], **kw}
 
 
-def _orders(formula: str, *, dims, **kw) -> dict:
-    return {"source_model": "orders", "dimensions": list(dims), "time_dimensions": [_TD],
-            "measures": [{"formula": formula, "name": "t"}], **kw}
+def _orders(expression: str, *, dims, **kw) -> dict:
+    return {"population": "orders", "dimensions": list(dims), "time_dimensions": [_TD],
+            "metrics": [{"metric": expression, "alias": "t"}], **kw}
 
 
 def _cases() -> dict:
@@ -66,13 +66,13 @@ def _cases() -> dict:
         "frame/non_time_partition": _monthly(f"time_shift({_REGION_SHARE}, -1)", dr=True),
         "frame/mixed_conjunction": _monthly(
             "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
-            filters=["ordered_at >= '2024-02-01' and region = 'North'"]),
-        "join/two_offsets": {**_monthly(""), "measures": [
-            {"formula": f"time_shift({_SHARE}, -1)", "name": "t1"},
-            {"formula": f"time_shift({_SHARE}, -2)", "name": "t2"}]},
+            filter=["ordered_at >= '2024-02-01' and region = 'North'"]),
+        "join/two_offsets": {**_monthly(""), "metrics": [
+            {"metric": f"time_shift({_SHARE}, -1)", "alias": "t1"},
+            {"metric": f"time_shift({_SHARE}, -2)", "alias": "t2"}]},
         "join/unaligned_day": _monthly("time_shift(sum(amount), -1, 'day')"),
         "population/association_filter": _orders(
-            f"time_shift({_SHARE}, -1)", dims=["status"], filters=[f"{_EVENT} > 40"]),
+            f"time_shift({_SHARE}, -1)", dims=["status"], filter=[f"{_EVENT} > 40"]),
         "population/associate_dimension": _orders(
             "time_shift(sum(amount), -1)", dims=[_EVENT], to_many_handling="associate"),
         "population/tier_partition": _orders(
@@ -82,11 +82,11 @@ def _cases() -> dict:
             f"time_shift(sum(amount) / sum(amount, partition_by=[{_EVENT}]), -1)",
             dims=["status"]),
         "stage/share": [
-            {"name": "s1", "source_model": "monthly", "dimensions": ["region"],
-             "time_dimensions": [_TD], "measures": [{"formula": "sum(amount)", "name": "rev"}]},
-            {"source_model": "s1", "dimensions": ["region"], "time_dimensions": [_TD_DR],
-             "measures": [{"formula": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
-                           "name": "t"}]}],
+            {"name": "s1", "population": "monthly", "dimensions": ["region"],
+             "time_dimensions": [_TD], "metrics": [{"metric": "sum(amount)", "alias": "rev"}]},
+            {"population": "s1", "dimensions": ["region"], "time_dimensions": [_TD_DR],
+             "metrics": [{"metric": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
+                           "alias": "t"}]}],
     }
 
 
@@ -103,13 +103,13 @@ def _query(case) -> SlayerQuery | list[SlayerQuery | dict]:
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1832_models()
-    root_name = case[0]["source_model"] if isinstance(case, list) else case["source_model"]
-    root = next(m for m in models if m.name == root_name)
+    datasets = dev1832_datasets()
+    root_name = case[0]["population"] if isinstance(case, list) else case["population"]
+    root = next(d for d in datasets if d.name == root_name)
     try:
         return await _engine_generate(
-            query=_query(case), model=root,
-            extra_models=[m for m in models if m is not root],
+            query=_query(case), dataset=root,
+            extra_datasets=[d for d in datasets if d is not root],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

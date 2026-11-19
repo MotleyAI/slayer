@@ -33,14 +33,14 @@ from slayer.core.enums import DataType
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
     TimePointCmpKey,
 )
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.population.filter_reachability import (
     UnhandledValueKindError,
@@ -52,7 +52,7 @@ from slayer.ir.bound import bound_filter_from_key
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.compile.stages import (
     _PushBlocked,
-    _cross_model_inherited_filters,
+    _cross_dataset_inherited_filters,
 )
 from slayer.engine.plan import plan_query
 
@@ -61,76 +61,76 @@ from slayer.engine.plan import plan_query
 # Model graph:  orders -> customers -> regions
 #                      -> warehouses            (SIBLING branch)
 # --------------------------------------------------------------------------- #
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="population", type=DataType.DOUBLE),
-            Column(name="pop_x2", sql="population * 2", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.FLOAT),
+            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="balance", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def _warehouses() -> SlayerModel:
-    return SlayerModel(
+def _warehouses() -> SlayerDataset:
+    return SlayerDataset(
         name="warehouses", sql_table="warehouses", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             # deliberately shares the name 'regions' territory: a warehouse
             # also has a region_id, so 'regions' appears on BOTH branches
-            Column(name="region_id", type=DataType.INT),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="warehouse_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="warehouse_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             # a model and a column that share a name — the heuristic's blind spot
-            Column(name="customers", type=DataType.TEXT),
+            DatasetField(name="customers", datatype=DataType.STRING),
             # derived, LOCAL to the host, but its SQL crosses INTO customers
-            Column(name="host_derived_crossing", sql="customers.balance * 2",
-                   type=DataType.DOUBLE),
+            DatasetField(name="host_derived_crossing", sql="customers.balance * 2",
+                   datatype=DataType.FLOAT),
             # derived, local, purely local sql
-            Column(name="host_derived_local", sql="amount * 2",
-                   type=DataType.DOUBLE),
+            DatasetField(name="host_derived_local", sql="amount * 2",
+                   datatype=DataType.FLOAT),
             # derived, host-declared, sql that is BOTH host-local AND crossing
-            Column(name="host_derived_mixed", sql="amount * customers.balance",
-                   type=DataType.DOUBLE),
+            DatasetField(name="host_derived_mixed", sql="amount * customers.balance",
+                   datatype=DataType.FLOAT),
             # derived referencing TWO models
-            Column(name="multi_model",
+            DatasetField(name="multi_model",
                    sql="customers.balance + customers.regions.population",
-                   type=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # derived-of-derived across two hops
-            Column(name="deep_pop", sql="customers.regions.pop_x2",
-                   type=DataType.DOUBLE),
+            DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
+                   datatype=DataType.FLOAT),
             # quoted dotted identifier
-            Column(name="quoted_cross", sql='"customers"."balance"',
-                   type=DataType.DOUBLE),
+            DatasetField(name="quoted_cross", sql='"customers"."balance"',
+                   datatype=DataType.FLOAT),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
     )
 
@@ -139,8 +139,8 @@ def _bundle() -> ResolvedSourceBundle:
     host = _orders()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=host,
-        referenced_models=[host, _customers(), _regions(), _warehouses()],
+        population=host,
+        referenced_datasets=[host, _customers(), _regions(), _warehouses()],
     )
 
 
@@ -148,14 +148,14 @@ def _paths_for(key):
     """Anchored crossed-join-path set for one ValueKey, at plan time."""
     return key_closure(
         key=key,
-        anchor_model=_orders(),
+        anchor_dataset=_orders(),
         anchor_relation="orders",
         bundle=_bundle(),
     ) or ()
 
 
-def _derived(name: str) -> ColumnSqlKey:
-    return ColumnSqlKey(path=(), model="orders", column_name=name)
+def _derived(name: str) -> FieldSqlKey:
+    return FieldSqlKey(path=(), dataset="orders", field_name=name)
 
 
 # --------------------------------------------------------------------------- #
@@ -164,10 +164,10 @@ def _derived(name: str) -> ColumnSqlKey:
 class TestCrossedPathScan:
 
     def test_plain_local_column_crosses_nothing(self) -> None:
-        assert _paths_for(ColumnKey(path=(), leaf="amount")) == ()
+        assert _paths_for(FieldKey(path=(), leaf="amount")) == ()
 
     def test_joined_column_carries_its_path(self) -> None:
-        paths = _paths_for(ColumnKey(path=("customers",), leaf="balance"))
+        paths = _paths_for(FieldKey(path=("customers",), leaf="balance"))
         assert ("customers",) in paths
 
     def test_host_derived_crossing_is_detected(self) -> None:
@@ -200,7 +200,7 @@ class TestCrossedPathScan:
     def test_same_named_model_and_column_is_not_a_crossing(self) -> None:
         """`orders.customers` is a COLUMN whose name matches a joined MODEL.
         Referencing it crosses nothing."""
-        assert _paths_for(ColumnKey(path=(), leaf="customers")) == ()
+        assert _paths_for(FieldKey(path=(), leaf="customers")) == ()
 
 
 class TestCompositeKeyKindsAreTotal:
@@ -211,26 +211,26 @@ class TestCompositeKeyKindsAreTotal:
         key = ArithmeticKey(
             op="+",
             operands=(
-                ColumnKey(path=(), leaf="amount"),
-                ColumnKey(path=("customers",), leaf="balance"),
+                FieldKey(path=(), leaf="amount"),
+                FieldKey(path=("customers",), leaf="balance"),
             ),
         )
         assert ("customers",) in _paths_for(key)
 
     def test_time_point_covers_its_operand(self) -> None:
-        key = TimePointCmpKey(op=">=", operand=ColumnKey(path=("customers",), leaf="balance"), point="2025-Q1")
+        key = TimePointCmpKey(op=">=", operand=FieldKey(path=("customers",), leaf="balance"), point="2025-Q1")
         assert ("customers",) in _paths_for(key)
 
     def test_in_covers_the_tested_value(self) -> None:
         key = InKey(
-            column=ColumnKey(path=("customers",), leaf="balance"),
+            field=FieldKey(path=("customers",), leaf="balance"),
             values=(LiteralKey(value=1), LiteralKey(value=2)),
         )
         assert ("customers",) in _paths_for(key)
 
     def test_aggregate_covers_its_source(self) -> None:
         key = AggregateKey(
-            agg="sum", source=ColumnKey(path=("customers",), leaf="balance"),
+            agg="sum", source=FieldKey(path=("customers",), leaf="balance"),
         )
         assert ("customers",) in _paths_for(key)
 
@@ -240,7 +240,7 @@ class TestCompositeKeyKindsAreTotal:
         key = ArithmeticKey(
             op="+",
             operands=(
-                ColumnKey(path=(), leaf="amount"),
+                FieldKey(path=(), leaf="amount"),
                 _derived("host_derived_crossing"),
             ),
         )
@@ -252,7 +252,7 @@ class TestCompositeKeyKindsAreTotal:
         cross nothing — so the crossing can only ride on the column; the old
         host-local shape crossed nothing whatever the scan did (vacuous)."""
         key = InKey(
-            column=ColumnKey(path=("customers",), leaf="balance"),
+            field=FieldKey(path=("customers",), leaf="balance"),
             values=(LiteralKey(value=1),),
         )
         assert ("customers",) in _paths_for(key)
@@ -270,7 +270,7 @@ class TestCompositeKeyKindsAreTotal:
         bogus, model, bundle = _Bogus(), _orders(), _bundle()
         with pytest.raises(UnhandledValueKindError) as excinfo:
             key_closure(
-                key=bogus, anchor_model=model,
+                key=bogus, anchor_dataset=model,
                 anchor_relation="orders", bundle=bundle,
             )
         assert "_Bogus" in str(excinfo.value), (
@@ -293,16 +293,16 @@ class TestProducerInheritanceRouting:
             for m in (_orders(), _customers(), _regions(), _warehouses())
         }
         host = models["orders"]
-        return _cross_model_inherited_filters(
+        return _cross_dataset_inherited_filters(
             base_filters=[(bound_filter_from_key(key), "f")],
             target_path=tuple(target_path),
-            root_model=models[target_path[-1]],
-            models_by_name=models,
+            root_dataset=models[target_path[-1]],
+            datasets_by_name=models,
             host_name=host.name,
-            host_model=host,
+            host_dataset=host,
             bundle=ResolvedSourceBundle(
                 dialect="postgres",
-                source_model=host, referenced_models=list(models.values()),
+                population=host, referenced_datasets=list(models.values()),
             ),
         )
 
@@ -312,12 +312,12 @@ class TestProducerInheritanceRouting:
         reachable for target ('customers',); structurally it is not — it now
         pushes as a semi-join along the reverse path instead of inlining."""
         inherited, pushed = self._split(
-            ColumnKey(path=("warehouses", "regions"), leaf="population"),
+            FieldKey(path=("warehouses", "regions"), leaf="population"),
             target_path=("customers",),
         )
         assert not inherited
         (sj,) = pushed
-        assert [h.target_model for h in sj.hops] == [
+        assert [h.to for h in sj.hops] == [
             "orders", "warehouses", "regions",
         ]
 
@@ -325,7 +325,7 @@ class TestProducerInheritanceRouting:
         """A dependency BELOW the target strips to a remainder the root's own
         graph must prove; a hop the root has no edge for is an invariant
         violation (binding refuses it first) and raises, never drops."""
-        key = ColumnKey(
+        key = FieldKey(
             path=("customers", "regions", "subregions"), leaf="population",
         )
         with pytest.raises(_PushBlocked):
@@ -333,7 +333,7 @@ class TestProducerInheritanceRouting:
 
     def test_exact_path_match_is_inherited(self) -> None:
         inherited, pushed = self._split(
-            ColumnKey(path=("customers", "regions"), leaf="population"),
+            FieldKey(path=("customers", "regions"), leaf="population"),
             target_path=("customers", "regions"),
         )
         assert inherited
@@ -345,25 +345,25 @@ class TestProducerInheritanceRouting:
         key = ArithmeticKey(
             op="+",
             operands=(
-                ColumnKey(path=("customers",), leaf="balance"),
-                ColumnKey(path=("warehouses",), leaf="id"),
+                FieldKey(path=("customers",), leaf="balance"),
+                FieldKey(path=("warehouses",), leaf="id"),
             ),
         )
         inherited, pushed = self._split(key, target_path=("customers",))
         assert not inherited
         (sj,) = pushed
-        assert [h.target_model for h in sj.hops] == ["orders", "warehouses"]
+        assert [h.to for h in sj.hops] == ["orders", "warehouses"]
 
     def test_host_local_is_not_inherited(self) -> None:
         inherited, pushed = self._split(
-            ColumnKey(path=(), leaf="amount"), target_path=("customers",),
+            FieldKey(path=(), leaf="amount"), target_path=("customers",),
         )
         assert not inherited
         (sj,) = pushed
-        assert [h.target_model for h in sj.hops] == ["orders"]
+        assert [h.to for h in sj.hops] == ["orders"]
 
     def test_push_block_names_the_missing_edge(self) -> None:
-        key = ColumnKey(
+        key = FieldKey(
             path=("customers", "regions", "subregions"), leaf="population",
         )
         with pytest.raises(_PushBlocked, match="regions to subregions"):
@@ -379,7 +379,7 @@ class TestInlineScalarsAreNotReferences:
         in AggregateKey.kwargs. Rejecting it took down planning for every
         filter over a parametric aggregate."""
         key = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="balance"),
+            source=FieldKey(path=("customers",), leaf="balance"),
             agg="percentile",
             kwargs=(("p", Decimal("0.9")),),
         )
@@ -388,13 +388,13 @@ class TestInlineScalarsAreNotReferences:
     def test_decimal_scalar_call_arg_is_scalar(self) -> None:
         key = ScalarCallKey(
             name="round",
-            args=(ColumnKey(path=("customers",), leaf="balance"), Decimal("2")),
+            args=(FieldKey(path=("customers",), leaf="balance"), Decimal("2")),
         )
         assert ("customers",) in _paths_for(key)
 
     def test_string_and_bool_args_are_scalars(self) -> None:
         key = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="balance"),
+            source=FieldKey(path=("customers",), leaf="balance"),
             agg="sum",
             kwargs=(("window", "90d"), ("flag", True)),
         )
@@ -405,10 +405,10 @@ class TestInlineScalarsAreNotReferences:
         aggregate must plan, not raise."""
         planned = plan_query(
             query=SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": [{"formula": "amount", "name": "amount"}],
-                "measures": [{"formula": "percentile(amount, p=0.9)", "name": "p90"}],
-                "filters": ["percentile(amount, p=0.9) > 100"],
+                "population": "orders",
+                "dimensions": [{"field": "amount", "alias": "amount"}],
+                "metrics": [{"metric": "percentile(amount, p=0.9)", "alias": "p90"}],
+                "filter": ["percentile(amount, p=0.9) > 100"],
             }),
             bundle=_bundle(),
         )
@@ -431,14 +431,14 @@ class TestCoordinateSystemInvariant:
         """A key crossing ('customers','regions') from the orders root is
         ('regions',) when the anchor IS customers. A summary that were copied
         rather than recomputed would report the parent's paths."""
-        key = ColumnKey(path=("customers", "regions"), leaf="population")
+        key = FieldKey(path=("customers", "regions"), leaf="population")
         from_orders = key_closure(
-            key=key, anchor_model=_orders(), anchor_relation="orders",
+            key=key, anchor_dataset=_orders(), anchor_relation="orders",
             bundle=_bundle(),
         )
         rerooted = key.model_copy(update={"path": ("regions",)})
         from_customers = key_closure(
-            key=rerooted, anchor_model=_customers(),
+            key=rerooted, anchor_dataset=_customers(),
             anchor_relation="customers", bundle=_bundle(),
         )
         assert from_orders != from_customers, (
@@ -452,21 +452,21 @@ class TestCoordinateSystemInvariant:
         """The nested (rerooted) plan a cross-model CTE compiles must carry its
         OWN summary, not the parent's."""
         host = _orders()
-        host.columns.append(
-            Column(name="eu_amount", sql="amount",
-                   filter="customers.balance > 0", type=DataType.DOUBLE),
+        host.fields.append(
+            DatasetField(name="eu_amount", sql="amount",
+                   filter="customers.balance > 0", datatype=DataType.FLOAT),
         )
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host,
-            referenced_models=[host, _customers(), _regions(), _warehouses()],
+            population=host,
+            referenced_datasets=[host, _customers(), _regions(), _warehouses()],
         )
         planned = plan_query(
             query=SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": [{"formula": "amount", "name": "amount"}],
-                "measures": [{"formula": "sum(eu_amount)", "name": "eu"}],
-                "filters": ["sum(eu_amount) > 100"],
+                "population": "orders",
+                "dimensions": [{"field": "amount", "alias": "amount"}],
+                "metrics": [{"metric": "sum(eu_amount)", "alias": "eu"}],
+                "filter": ["sum(eu_amount) > 100"],
             }),
             bundle=bundle,
         )

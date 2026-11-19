@@ -1,0 +1,160 @@
+{
+ "source": "tests/test_dev1835_dedup.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "rt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "rt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='1y')",
+    "name": "wb"
+   },
+   "new": {
+    "expression": "sum(amount, window='1y')",
+    "name": "wb"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='1y', partition_by=region)",
+    "name": "we"
+   },
+   "new": {
+    "expression": "sum(amount, window='1y', partition_by=region)",
+    "name": "we"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "lb"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "lb"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, partition_by=region)",
+    "name": "le"
+   },
+   "new": {
+    "expression": "last(amount, partition_by=region)",
+    "name": "le"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "rt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "rt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='1y')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w90"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w90"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='45d')",
+    "name": "w45"
+   },
+   "new": {
+    "expression": "sum(amount, window='45d')",
+    "name": "w45"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(ok_amount, window='90d')",
+    "name": "wok"
+   },
+   "new": {
+    "expression": "sum(ok_amount, window='90d')",
+    "name": "wok"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "lo"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "lo"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, shipped_at)",
+    "name": "ls"
+   },
+   "new": {
+    "expression": "last(amount, shipped_at)",
+    "name": "ls"
+   }
+  }
+ ],
+ "skipped": []
+}

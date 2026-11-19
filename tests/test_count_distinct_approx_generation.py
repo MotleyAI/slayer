@@ -14,25 +14,25 @@ from slayer.core.enums import (
     PRIMARY_KEY_AGGREGATIONS,
     DataType,
 )
-from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _engine_generate
 
 
-async def _generate(dialect: str, query: SlayerQuery, model: SlayerModel) -> str:
-    return await _engine_generate(query=query, model=model, dialect=dialect)
+async def _generate(dialect: str, query: SlayerQuery, dataset: SlayerDataset) -> str:
+    return await _engine_generate(query=query, dataset=dataset, dialect=dialect)
 
 
-def _model() -> SlayerModel:
-    return SlayerModel(
+def _dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
-            Column(name="status", sql="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
     )
 
@@ -70,19 +70,19 @@ def test_allowed_on_primary_key_columns() -> None:
 
 async def test_duckdb_emits_native_approx() -> None:
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count_distinct_approx(customer_id)")],
+        population="orders",
+        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
     )
-    sql = (await _generate("duckdb", query, _model())).lower()
+    sql = (await _generate("duckdb", query, _dataset())).lower()
     assert "approx_count_distinct(" in sql
 
 
 async def test_postgres_emits_exact_fallback() -> None:
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count_distinct_approx(customer_id)")],
+        population="orders",
+        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
     )
-    sql = (await _generate("postgres", query, _model())).upper()
+    sql = (await _generate("postgres", query, _dataset())).upper()
     assert "COUNT(DISTINCT" in sql
     # Exact fallback — no native approximate-distinct *function* is emitted.
     # (The result-column alias still carries the requested aggregation name,
@@ -96,20 +96,20 @@ async def test_clickhouse_routes_to_native_uniq() -> None:
     """Proves SQLGenerator dispatches count_distinct_approx to the dialect
     override (not just that the override exists)."""
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count_distinct_approx(customer_id)")],
+        population="orders",
+        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
     )
-    sql = (await _generate("clickhouse", query, _model())).lower()
+    sql = (await _generate("clickhouse", query, _dataset())).lower()
     assert "uniq(" in sql
 
 
 async def test_approx_on_primary_key_column_generates() -> None:
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count_distinct_approx(id)")],
+        population="orders",
+        metrics=[QueryMetric(metric="count_distinct_approx(id)")],
     )
     # Must not raise an eligibility error on the PK column.
-    sql = await _generate("duckdb", query, _model())
+    sql = await _generate("duckdb", query, _dataset())
     assert "approx_count_distinct(" in sql.lower()
 
 
@@ -122,8 +122,8 @@ async def test_alias_heals_to_count_distinct_approx_and_emits_native() -> None:
     'Unknown function' or 'has no formula'."""
     for alias in ("approx_count_distinct", "countdistinctapprox"):
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula=f"{alias}(customer_id)")],
+            population="orders",
+            metrics=[QueryMetric(metric=f"{alias}(customer_id)")],
         )
-        sql = (await _generate("duckdb", query, _model())).lower()
+        sql = (await _generate("duckdb", query, _dataset())).lower()
         assert "approx_count_distinct(" in sql, alias

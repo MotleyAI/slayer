@@ -114,7 +114,7 @@ class TestAggregateHooks:
         d = get_dialect(name)
         _check(name, f"offset|{granularity.value}|{offset}", lambda: d.build_date_add(
             expr=_created(), count=exp.Literal.number(offset), unit=granularity,
-            operand=DataType.TIMESTAMP,
+            operand=DataType.DATETIME,
         ))
 
     def test_date_trunc_tree_is_consistent(self, name: str) -> None:

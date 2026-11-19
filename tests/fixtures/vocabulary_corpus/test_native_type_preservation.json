@@ -1,0 +1,113 @@
+{
+ "source": "tests/test_native_type_preservation.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "dimensions": [
+     "wide"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "dimensions": [
+     "wide"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "dimensions": [
+     "wide"
+    ],
+    "filters": [
+     "wide > 0"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "dimensions": [
+     "wide"
+    ],
+    "filter": [
+     "wide > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "dimensions": [
+     "whole"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "dimensions": [
+     "whole"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  }
+ ]
+}

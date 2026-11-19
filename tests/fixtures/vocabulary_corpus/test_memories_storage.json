@@ -1,0 +1,20 @@
+{
+ "source": "tests/test_memories_storage.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -13,23 +13,24 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1900_fixtures import (
     HOME_WIDEN_VALUE,
-    ModelMeasure,
     SlayerQuery,
-    home_path_models,
+    home_path_datasets,
     make_exec_engine,
     orders_q,
 )
 
-EXPLICIT = ModelMeasure(
-    formula="wsum_cust_spend(customers.regions.pop, weight=customers.spend)", name="w")
-DEFAULT = ModelMeasure(formula="wsum_cust_spend(customers.regions.pop)", name="w")
+EXPLICIT = QueryMetric(
+    metric="wsum_cust_spend(customers.regions.pop, weight=customers.spend)", alias="w")
+DEFAULT = QueryMetric(metric="wsum_cust_spend(customers.regions.pop)", alias="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
-    async for e in make_exec_engine(request, models=home_path_models()):
+    async for e in make_exec_engine(request, datasets=home_path_datasets()):
         yield e
 
 
@@ -37,13 +38,13 @@ class TestDefinitionDefaultJoinsHomeCandidates:
     async def test_explicit_weight_widens_the_home(self, engine):
         """Reference: an explicit weight=customers.spend already roots the
         aggregate at the shallower customers home."""
-        resp = await engine.execute(orders_q(measures=[EXPLICIT]))
+        resp = await engine.execute(orders_q(metrics=[EXPLICIT]))
         assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
     async def test_definition_default_matches_the_explicit(self, engine):
         """Subject: the non-overridden default must join the home candidates the
         same way — identical value to spelling it explicitly."""
-        resp = await engine.execute(orders_q(measures=[DEFAULT]))
+        resp = await engine.execute(orders_q(metrics=[DEFAULT]))
         assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
 
@@ -53,7 +54,7 @@ class TestReverseHopDefaultFailsClosed:
         default; customers is not on the path, so nothing cancels and there is
         no forward home."""
         q = SlayerQuery(
-            source_model="regions",
-            measures=[ModelMeasure(formula="wsum_cust_spend(pop)", name="w")])
-        with pytest.raises(ValueError, match="unproven join hop"):
+            population="regions",
+            metrics=[QueryMetric(metric="wsum_cust_spend(pop)", alias="w")])
+        with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(q)

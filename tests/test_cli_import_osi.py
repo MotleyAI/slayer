@@ -63,15 +63,15 @@ def test_import_osi_saves_models_and_prints_report(shop_setup, capsys) -> None:
     assert "orders" in out  # per-model summary printed
 
     storage = YAMLStorage(base_dir=str(store))
-    names = run_sync(storage.list_models())
+    names = run_sync(storage.list_datasets())
     assert {"orders", "customers", "products", "regions"}.issubset(set(names))
 
-    orders = run_sync(storage.get_model("orders", data_source="testds"))
+    orders = run_sync(storage.get_dataset("orders", data_source="testds"))
     assert orders is not None
-    measure_names = {m.name for m in orders.measures}
+    measure_names = {m.name for m in orders.metrics}
     assert {"total_amount", "order_count", "aov"}.issubset(measure_names)
     # relationship -> join persisted
-    assert any(j.target_model == "customers" for j in orders.joins)
+    assert any(j.to == "customers" for j in orders.relationships)
 
 
 def test_import_osi_nonexistent_path_exits(tmp_path: Path) -> None:
@@ -148,26 +148,26 @@ def test_current_spec_document_imports_end_to_end(duck_store, capsys) -> None:
     assert "0 unconverted" in capsys.readouterr().out
 
     storage = YAMLStorage(base_dir=str(store))
-    orders = run_sync(storage.get_model("orders", data_source=DATASOURCE))
+    orders = run_sync(storage.get_dataset("orders", data_source=DATASOURCE))
     assert orders is not None
-    assert {c.name for c in orders.columns if not c.hidden} == {
+    assert {c.name for c in orders.fields if not c.hidden} == {
         "order_id", "customer_id", "amount", "quantity", "status", "ordered_on", "tip_or_zero"}
-    assert [j.join_pairs for j in orders.joins] == [[["customer_id", "id"]]]
+    assert [j.column_pairs for j in orders.relationships] == [[("customer_id", "id")]]
 
-    rows = run_sync(_rows(store, db, {"source_model": "orders",
-                                      "measures": ["total_amount", "completed_amount", "order_count"]}))
+    rows = run_sync(_rows(store, db, {"population": "orders",
+                                      "metrics": ["total_amount", "completed_amount", "order_count"]}))
     assert float(rows[0]["orders.total_amount"]) == pytest.approx(22)
     assert float(rows[0]["orders.completed_amount"]) == pytest.approx(17)
     assert rows[0]["orders.order_count"] == 3
 
-    rows = run_sync(_rows(store, db, {"source_model": "orders", "dimensions": ["customers.segment"],
-                                      "measures": ["total_amount"]}))
+    rows = run_sync(_rows(store, db, {"population": "orders", "dimensions": ["customers.segment"],
+                                      "metrics": ["total_amount"]}))
     assert {r["orders.customers.segment"]: float(r["orders.total_amount"]) for r in rows} == {"b2b": 15, "b2c": 7}
 
-    loaded = {name: run_sync(storage.get_model(name, data_source=DATASOURCE)) for name in ("orders", "customers")}
+    loaded = {name: run_sync(storage.get_dataset(name, data_source=DATASOURCE)) for name in ("orders", "customers")}
     [home] = [name for name, model in loaded.items()
-              if model is not None and any(x.name == "net_amount" for x in model.measures)]
-    rows = run_sync(_rows(store, db, {"source_model": home, "measures": ["net_amount", "amount_per_customer"]}))
+              if model is not None and any(x.name == "net_amount" for x in model.metrics)]
+    rows = run_sync(_rows(store, db, {"population": home, "metrics": ["net_amount", "amount_per_customer"]}))
     assert float(rows[0][f"{home}.net_amount"]) == pytest.approx(19.5)
     assert float(rows[0][f"{home}.amount_per_customer"]) == pytest.approx(11)
 
@@ -183,8 +183,8 @@ def test_explicit_dialect_is_honoured_first(duck_store, tmp_path: Path) -> None:
                                      f_dialects("pick", ("SNOWFLAKE", "amount * 2"), sql="amount * 1")])])
     path = write_yaml(tmp_path / "doc.yaml", doc)
     _run_import_osi(_duck_args(store, path, dialect="SNOWFLAKE"))
-    orders = run_sync(YAMLStorage(base_dir=str(store)).get_model("orders", data_source=DATASOURCE))
+    orders = run_sync(YAMLStorage(base_dir=str(store)).get_dataset("orders", data_source=DATASOURCE))
     assert orders is not None
-    pick = orders.get_column("pick")
+    pick = orders.get_field("pick")
     assert pick is not None
     assert pick.sql == "amount * 2"

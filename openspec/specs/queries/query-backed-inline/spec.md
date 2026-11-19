@@ -8,7 +8,7 @@ the explicit splice.
 ## Requirements
 
 ### Requirement: Consuming a query-backed model equals splicing its stages
-Consuming a stored query-backed model as a relation — as the `source_model`, as a stage's
+Consuming a stored query-backed model as a relation — as the `population`, as a stage's
 source, or as a join / cross-model target — SHALL return the same values and result keys as the
 same statement with that model's stages written into the query list as named stages. Its final
 stage SHALL be readable under the model's own name; its private stage names SHALL stay local to it.
@@ -17,7 +17,7 @@ only when the statement reads it; reaching it through stored joins alone neither
 contributes its warnings.
 
 #### Scenario: Parity as the source
-- **WHEN** a query's `source_model` is a stored multi-stage query-backed model
+- **WHEN** a query's `population` is a stored multi-stage query-backed model
 - **THEN** its rows and result keys equal the explicit splice and the hand-computed values, on SQLite and DuckDB
 
 #### Scenario: Parity as a stage source
@@ -37,7 +37,7 @@ contributes its warnings.
 - **THEN** the statement executes and returns the hand-computed values
 
 #### Scenario: Dependency through a join target only
-- **WHEN** a spliced stage depends on another only through `joins[].target_model` and the input list is supplied in reverse order
+- **WHEN** a spliced stage depends on another only through `relationships[].to` and the input list is supplied in reverse order
 - **THEN** it executes and returns the hand-computed values
 
 #### Scenario: Reaching is not reading
@@ -90,14 +90,14 @@ disagree on a placeholder it uses SHALL fail closed with an error naming the mod
 - **THEN** it fails with an error naming the model
 
 ### Requirement: Extensions over a spliced model
-An extension of a stored query-backed model SHALL apply its columns, measures and joins exactly
+An extension of a stored query-backed model SHALL apply its measures and joins exactly
 once, to the model's spliced output, in every stage of a query list — whether the stage reads
 the model as its source, as a join target or along a path — with the values an equivalent
 extension of an explicit sibling stage holding the same queries produces.
 
 #### Scenario: Root extension applies once
-- **WHEN** a query's source is a stored query-backed model that the query extends with a column and a join
-- **THEN** the column and the join are each present once and the values match the explicit splice
+- **WHEN** a query's source is a stored query-backed model that the query extends with a measure and a join
+- **THEN** the measure and the join are each present once and the values match the explicit splice
 
 #### Scenario: Stage-level measure extension stays rejected
 - **WHEN** a non-root stage reads a stored query-backed model and extends it with a measure that the stage selects
@@ -119,7 +119,7 @@ the query-backed model it belongs to; the consumer's own warnings SHALL be uncha
 ### Requirement: Query-backed cycles are rejected
 A query-backed model that references itself directly or transitively SHALL raise one cycle error,
 naming the ordered cycle path, whether the cycle is reached by executing a consumer, by running a
-model by name, by `save_model`, or by column-type discovery. No cached SQL SHALL be used to break a
+model by name, by `save_dataset`, or by column-type discovery. No cached SQL SHALL be used to break a
 cycle. A planning failure unrelated to a cycle SHALL keep its own error.
 
 #### Scenario: Direct and transitive cycles

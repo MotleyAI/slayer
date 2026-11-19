@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dimension_routing.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  }
+ ]
+}

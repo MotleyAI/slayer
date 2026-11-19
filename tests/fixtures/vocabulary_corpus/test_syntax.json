@@ -1,0 +1,84 @@
+{
+ "source": "tests/test_syntax.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  }
+ ]
+}

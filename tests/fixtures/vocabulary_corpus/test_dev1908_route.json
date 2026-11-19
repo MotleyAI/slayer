@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_dev1908_route.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  }
+ ]
+}

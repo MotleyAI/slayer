@@ -1,0 +1,360 @@
+{
+ "source": "tests/test_stage2_host_migration.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "warehouses",
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(wh_pop)"
+   },
+   "new": {
+    "metric": "sum(wh_pop)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.balance)"
+   },
+   "new": {
+    "metric": "sum(customers.balance)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "shippers",
+    "join_pairs": [
+     [
+      "shipper_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "shippers",
+    "from_columns": [
+     "shipper_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.balance)"
+   },
+   "new": {
+    "metric": "sum(customers.balance)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "cust_ref",
+      "CustId"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "cust_ref"
+    ],
+    "to_columns": [
+     "CustId"
+    ]
+   }
+  },
+  {
+   "kind": "dimension",
+   "old": {
+    "name": "balance",
+    "model": "customers"
+   },
+   "new": {
+    "field": "customers.balance"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 188,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 246,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 250,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 253,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 258,
+   "reason": "not fully literal"
+  }
+ ]
+}

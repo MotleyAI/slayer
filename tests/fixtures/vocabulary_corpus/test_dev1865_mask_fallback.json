@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_dev1865_mask_fallback.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "part"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "part"
+   }
+  }
+ ],
+ "skipped": []
+}

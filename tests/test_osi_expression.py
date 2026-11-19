@@ -13,10 +13,10 @@ import pytest
 import sqlglot
 
 from slayer.core.enums import DataType
-from slayer.core.join_search import shortest_route
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.relationship_search import shortest_route
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.syntax import parse_expr
-from slayer.importers.aggregates import convert_expression, formula_refusal
+from slayer.importers.aggregates import convert_expression, expression_refusal
 from slayer.sql.dialects import dialect_for_ds_type
 
 # Single-model context: everything is owned by "orders"; refs are local (bare).
@@ -39,50 +39,50 @@ def _norm(sql: str) -> str:
 def test_sum_bare():
     r = _run("SUM(amount)")
     assert r.ok
-    assert r.formula == "sum(amount)"
+    assert r.expression == "sum(amount)"
     assert r.materialized == []
 
 
 def test_count_star():
-    assert _run("COUNT(*)").formula == "count(*)"
+    assert _run("COUNT(*)").expression == "count(*)"
 
 
 def test_count_col():
-    assert _run("COUNT(customer_id)").formula == "count(customer_id)"
+    assert _run("COUNT(customer_id)").expression == "count(customer_id)"
 
 
 def test_count_distinct():
-    assert _run("COUNT(DISTINCT customer_id)").formula == "count_distinct(customer_id)"
+    assert _run("COUNT(DISTINCT customer_id)").expression == "count_distinct(customer_id)"
 
 
 def test_avg_min_max():
-    assert _run("AVG(amount)").formula == "avg(amount)"
-    assert _run("MIN(amount)").formula == "min(amount)"
-    assert _run("MAX(amount)").formula == "max(amount)"
+    assert _run("AVG(amount)").expression == "avg(amount)"
+    assert _run("MIN(amount)").expression == "min(amount)"
+    assert _run("MAX(amount)").expression == "max(amount)"
 
 
 # ─────────────────────── arithmetic + constants + scalar ────────────────────
 
 def test_difference_of_aggs():
-    assert _run("SUM(amount) - SUM(quantity)").formula == "sum(amount) - sum(quantity)"
+    assert _run("SUM(amount) - SUM(quantity)").expression == "sum(amount) - sum(quantity)"
 
 
 def test_divide_by_constant():
-    assert _run("SUM(amount) / 100").formula == "sum(amount) / 100"
+    assert _run("SUM(amount) / 100").expression == "sum(amount) / 100"
 
 
 def test_ratio_is_plain_arithmetic():
-    assert _run("(SUM(amount)) / (COUNT(*))").formula == "sum(amount) / count(*)"
+    assert _run("(SUM(amount)) / (COUNT(*))").expression == "sum(amount) / count(*)"
 
 
 def test_scalar_passthrough_nullif():
     r = _run("SUM(amount) / NULLIF(COUNT(*), 0)")
     assert r.ok
-    assert r.formula == "sum(amount) / nullif(count(*), 0)"
+    assert r.expression == "sum(amount) / nullif(count(*), 0)"
 
 
 def test_constant_times_agg():
-    assert _run("0.9 * SUM(amount)").formula == "0.9 * sum(amount)"
+    assert _run("0.9 * SUM(amount)").expression == "0.9 * sum(amount)"
 
 
 # ───────────────────── derived-column materialization ───────────────────────
@@ -96,18 +96,18 @@ def test_expressible_operand_is_inline(expr, inline):
     r = _run(expr, entity_name="m")
     assert r.ok
     assert r.materialized == []
-    assert r.formula is not None
-    assert parse_expr(r.formula) == parse_expr(inline)
+    assert r.expression is not None
+    assert parse_expr(r.expression) == parse_expr(inline)
 
 
 def test_materialize_operand_outside_the_formula_language():
     r = _run("SUM(LENGTH(LPAD(status, 12, 'x')))", entity_name="pad")
     assert r.ok
     [mc] = r.materialized
-    assert mc.owning_model == "orders"
+    assert mc.owning_dataset == "orders"
     assert mc.name.startswith("_pad")
     assert _norm(mc.sql) == _norm("LENGTH(LPAD(status, 12, 'x'))")
-    assert r.formula == f"sum({mc.name})"
+    assert r.expression == f"sum({mc.name})"
 
 
 def test_materialize_dedups_identical_operand():
@@ -116,7 +116,7 @@ def test_materialize_dedups_identical_operand():
     # The identical operand is materialized once and reused.
     assert len(r.materialized) == 1
     nm = r.materialized[0].name
-    assert r.formula == f"sum({nm}) - min({nm})"
+    assert r.expression == f"sum({nm}) - min({nm})"
 
 
 def test_cross_dataset_operand_is_inline():
@@ -125,28 +125,28 @@ def test_cross_dataset_operand_is_inline():
     r = _run("SUM(quantity * products.price)", owner_of=owner, ref_of=ref)
     assert r.ok
     assert r.materialized == []
-    assert r.formula is not None
-    assert parse_expr(r.formula) == parse_expr("sum(quantity * products.price)")
+    assert r.expression is not None
+    assert parse_expr(r.expression) == parse_expr("sum(quantity * products.price)")
 
 
 def test_cross_dataset_operand_outside_the_formula_language_clean_fails():
     owner = lambda q, c: "orders" if c == "status" else "products"  # noqa: E731
     r = _run("SUM(LENGTH(LPAD(status, 12, products.category)))", owner_of=owner)
     assert not r.ok
-    assert r.formula is None
+    assert r.expression is None
     assert r.reason
 
 
 # ───────────────────────────── percentile ──────────────────────────────────
 
 def test_percentile_cont():
-    assert _run("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)").formula == (
+    assert _run("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)").expression == (
         "percentile(amount, p=0.9)"
     )
 
 
 def test_percentile_cont_half_is_median():
-    assert _run("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)").formula == (
+    assert _run("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)").expression == (
         "median(amount)"
     )
 
@@ -181,8 +181,8 @@ def test_array_length_with_a_dimension_clean_fails(sql: str):
     "collect(status)", "median(amount)", "percentile(amount, p=0.9)",
 ])
 def test_library_call_refused_by_the_target(formula: str):
-    assert formula_refusal(formula, dialect=dialect_for_ds_type("mysql"))
-    assert formula_refusal(formula, dialect=dialect_for_ds_type("postgres")) is None
+    assert expression_refusal(formula, dialect=dialect_for_ds_type("mysql"))
+    assert expression_refusal(formula, dialect=dialect_for_ds_type("postgres")) is None
 
 
 @pytest.mark.parametrize("ds_type", ["mysql", "mssql"])
@@ -197,7 +197,7 @@ def test_percentile_on_a_refusing_dialect_clean_fails(ds_type: str):
 def test_top_level_case_clean_fails():
     r = _run("CASE WHEN status = 'x' THEN 1 ELSE 0 END")
     assert not r.ok
-    assert r.formula is None
+    assert r.expression is None
     assert r.reason
 
 
@@ -239,7 +239,7 @@ def test_qualified_column_emits_dotted_ref():
     ref = lambda m, c: f"customers.{c}"  # noqa: E731
     r = _run("COUNT(DISTINCT customers.customer_id)", owner_of=owner, ref_of=ref)
     assert r.ok
-    assert r.formula == "count_distinct(customers.customer_id)"
+    assert r.expression == "count_distinct(customers.customer_id)"
 
 
 def test_unreachable_ref_clean_fails():
@@ -254,26 +254,26 @@ def test_multihop_ref_backed_by_real_join_graph():
     # Prove the expression layer builds the SAME dotted path the converter would,
     # driven by join_search.shortest_route (orders -> customers -> regions).
     models = [
-        SlayerModel(name="orders", sql_table="orders", data_source="d",
-                    columns=[Column(name="customer_id", type=DataType.INT)],
-                    joins=[ModelJoin(target_model="customers",
-                                     join_pairs=[["customer_id", "customer_id"]])]),
-        SlayerModel(name="customers", sql_table="customers", data_source="d",
-                    columns=[Column(name="region_id", type=DataType.INT)],
-                    joins=[ModelJoin(target_model="regions",
-                                     join_pairs=[["region_id", "region_id"]])]),
-        SlayerModel(name="regions", sql_table="regions", data_source="d",
-                    columns=[Column(name="population", type=DataType.INT)]),
+        SlayerDataset(name="orders", sql_table="orders", data_source="d",
+                    fields=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+                    relationships=[DatasetRelationship(to="customers",
+                                     from_columns=["customer_id"], to_columns=["customer_id"])]),
+        SlayerDataset(name="customers", sql_table="customers", data_source="d",
+                    fields=[DatasetField(name="region_id", datatype=DataType.INTEGER)],
+                    relationships=[DatasetRelationship(to="regions",
+                                     from_columns=["region_id"], to_columns=["region_id"])]),
+        SlayerDataset(name="regions", sql_table="regions", data_source="d",
+                    fields=[DatasetField(name="population", datatype=DataType.INTEGER)]),
     ]
     by_name = {m.name: m for m in models}
     anchor = "orders"
 
     def ref_of(model: str, column: str):
-        route = shortest_route(root=by_name[anchor], target=model, models_by_name=by_name)
+        route = shortest_route(root=by_name[anchor], target=model, datasets_by_name=by_name)
         if route is None:
             return None
         return ".".join([*route.tokens, column])
 
     r = _run("SUM(regions.population)", owner_of=lambda q, c: "regions", ref_of=ref_of)
     assert r.ok
-    assert r.formula == "sum(customers.regions.population)"
+    assert r.expression == "sum(customers.regions.population)"

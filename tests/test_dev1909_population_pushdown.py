@@ -27,8 +27,8 @@ from slayer.core.errors import (
     BroadcastGrainWarning,
     SlayerError,
 )
-from slayer.core.models import Column, DataType
-from slayer.core.query import TimeDimension
+from slayer.core.models import DatasetField, DataType
+from slayer.core.query import QueryMetric, TimeDimension
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
@@ -37,7 +37,6 @@ from tests._dev1892_fixtures import assert_ref_free
 from tests._engine_helpers import _join_aliases
 from tests._dev1900_fixtures import (
     AMOUNT_SUM,
-    ModelMeasure,
     POP_FILTER_ASSOC_BY_STATUS,
     POP_FILTER_COUNT_BY_TIER,
     POP_FILTER_DERIVED_ASSOC,
@@ -52,26 +51,26 @@ from tests._dev1900_fixtures import (
     POP_FILTER_WINDOWED_BY_MONTH,
     TO_ONE_FILTER_AMOUNT,
     cust_q,
-    dev1900_models,
+    dev1900_datasets,
     make_exec_engine,
     month_key,
     orders_q,
     pushed_filter_infos,
     rows_by,
-    unparseable_derived_models,
+    unparseable_derived_datasets,
 )
 
 MODES = ["broadcast", "associate", "error"]
 OK = "orders.status = 'ok'"
 OR_MIX = "tier = 'bronze' or orders.status = 'ok'"
 
-SPEND = ModelMeasure(formula="sum(spend)", name="sp")
-PARTITIONED = ModelMeasure(formula="sum(spend, partition_by=tier)", name="pt")
-COUNT = ModelMeasure(formula="count(*)", name="n")
-WINDOWED = ModelMeasure(formula="sum(spend, window='1y')", name="w")
-LAST = ModelMeasure(formula="last(spend, customers.signup_at)", name="l")
-NESTED = ModelMeasure(formula="avg(sum(spend, partition_by=tier))", name="ac")
-ORDERS_AMOUNT = ModelMeasure(formula="sum(orders.amount)", name="oa")
+SPEND = QueryMetric(metric="sum(spend)", alias="sp")
+PARTITIONED = QueryMetric(metric="sum(spend, partition_by=tier)", alias="pt")
+COUNT = QueryMetric(metric="count(*)", alias="n")
+WINDOWED = QueryMetric(metric="sum(spend, window='1y')", alias="w")
+LAST = QueryMetric(metric="last(spend, customers.signup_at)", alias="l")
+NESTED = QueryMetric(metric="avg(sum(spend, partition_by=tier))", alias="ac")
+ORDERS_AMOUNT = QueryMetric(metric="sum(orders.amount)", alias="oa")
 
 #: Python-warning carriers the semi-join push must never emit.
 _SLAYER_WARNS = (
@@ -80,13 +79,13 @@ _SLAYER_WARNS = (
 
 def _orders_month_td():
     return [TimeDimension(
-        dimension="orders.ordered_at",
+        field="orders.ordered_at",
         granularity=TimeGranularity.MONTH)]
 
 
 def _signup_month_td():
     return [TimeDimension(
-        dimension="signup_at",
+        field="signup_at",
         granularity=TimeGranularity.MONTH)]
 
 
@@ -98,7 +97,7 @@ async def backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_backend(request):
-    async for e in make_exec_engine(request, models=unparseable_derived_models()):
+    async for e in make_exec_engine(request, datasets=unparseable_derived_datasets()):
         yield request.param, e
 
 
@@ -111,15 +110,15 @@ async def _dry(engine, query, dialect: str) -> str:
 
 def _pop_infos(resp) -> list:
     """The population-push entries: a semi_join_pushed entry naming no aggregate."""
-    return [i for i in pushed_filter_infos(resp) if i.measure is None]
+    return [i for i in pushed_filter_infos(resp) if i.metric is None]
 
 
 def _bundle1900() -> ResolvedSourceBundle:
-    m = dev1900_models()
+    m = dev1900_datasets()
     src = next(x for x in m if x.name == "customers")
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=src, referenced_models=[x for x in m if x.name != "customers"])
+        population=src, referenced_datasets=[x for x in m if x.name != "customers"])
 
 
 class TestDateRangeMaskAccounting:
@@ -131,11 +130,11 @@ class TestDateRangeMaskAccounting:
     def _producer_plan(self):
         q = cust_q(
             time_dimensions=[{
-                "dimension": "orders.ordered_at", "granularity": "month",
+                "field": "orders.ordered_at", "granularity": "month",
                 "date_range": ["2020-01-01", "2020-12-31"]}],
             dimensions=["tier"],
-            measures=[PARTITIONED],
-            filters=["tier = 'gold'"])
+            metrics=[PARTITIONED],
+            filter=["tier = 'gold'"])
         planned = plan_query(query=q, bundle=_bundle1900())
         (attach,) = planned.regroup_attach_plans
         return attach.producer_plan
@@ -157,8 +156,8 @@ class TestOrderWrapInheritsPopulation:
 
     def _wrap_producer_plan(self):
         q = cust_q(
-            dimensions=["tier"], measures=[SPEND], filters=[OK],
-            order=[{"column": "orders.amount", "direction": "asc"}])
+            dimensions=["tier"], metrics=[SPEND], filter=[OK],
+            order=[{"field": "orders.amount", "direction": "asc"}])
         planned = plan_query(query=q, bundle=_bundle1900())
         (attach,) = planned.regroup_attach_plans
         return attach.producer_plan
@@ -177,20 +176,20 @@ class TestWindowedDerivedFanningAxisFailsClosed:
     (reads as safe); only the dependency closure reveals the fan."""
 
     def _bundle(self) -> ResolvedSourceBundle:
-        m = dev1900_models()
+        m = dev1900_datasets()
         cust = next(x for x in m if x.name == "customers")
-        cust.columns.append(Column(
-            name="bad_date", type=DataType.DATE,
+        cust.fields.append(DatasetField(
+            name="bad_date", datatype=DataType.DATE,
             sql="CAST(regions.region_events.value AS DATE)"))
         return ResolvedSourceBundle(
             dialect="postgres",
-            source_model=cust, referenced_models=[x for x in m if x.name != "customers"])
+            population=cust, referenced_datasets=[x for x in m if x.name != "customers"])
 
     @pytest.mark.parametrize("mode", MODES)
     def test_pathless_derived_window_axis_raises(self, mode):
         q = cust_q(
-            time_dimensions=[{"dimension": "bad_date", "granularity": "month"}],
-            measures=[WINDOWED], to_many_handling=mode)
+            time_dimensions=[{"field": "bad_date", "granularity": "month"}],
+            metrics=[WINDOWED], to_many_handling=mode)
         bundle = self._bundle()
         with pytest.raises((SlayerError, ValueError)) as ei:
             plan_query(query=q, bundle=bundle)
@@ -206,12 +205,12 @@ class TestMultiMeasureProducerNamesEveryMeasure:
         _, engine = backend
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
-            measures=[
-                ModelMeasure(formula="sum(spend, partition_by=tier)", name="ptsum"),
-                ModelMeasure(formula="max(spend, partition_by=tier)", name="ptmax"),
+            metrics=[
+                QueryMetric(metric="sum(spend, partition_by=tier)", alias="ptsum"),
+                QueryMetric(metric="max(spend, partition_by=tier)", alias="ptmax"),
             ],
-            filters=[OK]))
-        named = {i.measure for i in pushed_filter_infos(resp)}
+            filter=[OK]))
+        named = {i.metric for i in pushed_filter_infos(resp)}
         assert {"ptsum", "ptmax"} <= named
 
 
@@ -221,7 +220,7 @@ class TestHostBaseRestrictsByAssociation:
         """customers · orders.status='ok' · spend:sum = 420 (never 520), each mode."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND], filters=[OK], to_many_handling=mode))
+            metrics=[SPEND], filter=[OK], to_many_handling=mode))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(
             POP_FILTER_STRUCTURAL_ASSOC)
         (info,) = _pop_infos(resp)
@@ -232,7 +231,7 @@ class TestHostBaseRestrictsByAssociation:
         """orders · customers.regions.bad_pop>0 · amount:sum = 120 (never 220)."""
         _, engine = backend
         resp = await engine.execute(orders_q(
-            measures=[AMOUNT_SUM], filters=["customers.regions.bad_pop > 0"],
+            metrics=[AMOUNT_SUM], filter=["customers.regions.bad_pop > 0"],
             to_many_handling=mode))
         assert float(resp.data[0]["orders.amt"]) == pytest.approx(
             POP_FILTER_DERIVED_ASSOC)
@@ -242,7 +241,7 @@ class TestHostBaseRestrictsByAssociation:
     async def test_base_restricts_by_exists_and_does_not_join_orders(self, backend):
         """The host base carries a correlated EXISTS and never LEFT JOINs orders."""
         dialect, engine = backend
-        sql = await _dry(engine, cust_q(measures=[SPEND], filters=[OK]), dialect)
+        sql = await _dry(engine, cust_q(metrics=[SPEND], filter=[OK]), dialect)
         assert "EXISTS" in sql.upper(), sql
         assert "orders" not in _join_aliases(sql, dialect=dialect), sql
 
@@ -251,7 +250,7 @@ class TestHostBaseRestrictsByAssociation:
         _, engine = backend
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            resp = await engine.execute(cust_q(measures=[SPEND], filters=[OK]))
+            resp = await engine.execute(cust_q(metrics=[SPEND], filter=[OK]))
         assert _pop_infos(resp), "expected the population semi_join_pushed entry"
         assert [w for w in caught if issubclass(w.category, _SLAYER_WARNS)] == []
 
@@ -261,8 +260,8 @@ class TestSameRowBinding:
         """dims=[orders.status], spend:sum, orders.amount=20 → one cell 'new'."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["orders.status"], measures=[SPEND],
-            filters=["orders.amount = 20"]))
+            dimensions=["orders.status"], metrics=[SPEND],
+            filter=["orders.amount = 20"]))
         assert {r["customers.orders.status"] for r in resp.data} == {"new"}
 
 
@@ -270,7 +269,7 @@ class TestToOneStaysInline:
     async def test_provably_to_one_filter_stays_inline(self, backend):
         """A to-one filter is a plain row restriction: SQL joins, no EXISTS push."""
         dialect, engine = backend
-        q = orders_q(measures=[AMOUNT_SUM], filters=["customers.tier = 'gold'"])
+        q = orders_q(metrics=[AMOUNT_SUM], filter=["customers.tier = 'gold'"])
         resp = await engine.execute(q)
         assert float(resp.data[0]["orders.amt"]) == pytest.approx(TO_ONE_FILTER_AMOUNT)
         assert _pop_infos(resp) == []
@@ -282,13 +281,13 @@ class TestProducersInheritDisposition:
         """sum(spend, partition_by=tier) · ok = gold 190 / silver 230 (never 290);
         two entries: the producer measure and the population (no aggregate)."""
         dialect, engine = backend
-        q = cust_q(dimensions=["tier"], measures=[PARTITIONED], filters=[OK])
+        q = cust_q(dimensions=["tier"], metrics=[PARTITIONED], filter=[OK])
         resp = await engine.execute(q)
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in POP_FILTER_PARTITIONED_BY_TIER}
         for tier, spend in POP_FILTER_PARTITIONED_BY_TIER.items():
             assert float(by[(tier,)]["customers.pt"]) == pytest.approx(spend), tier
-        measures = {i.measure for i in pushed_filter_infos(resp)}
+        measures = {i.metric for i in pushed_filter_infos(resp)}
         assert None in measures, measures
         assert "pt" in measures, measures
         sql = await _dry(engine, q, dialect)
@@ -299,7 +298,7 @@ class TestProducersInheritDisposition:
         """*:count over the distinct population per tier = gold 3 / silver 2."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], measures=[COUNT], filters=[OK]))
+            dimensions=["tier"], metrics=[COUNT], filter=[OK]))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in POP_FILTER_COUNT_BY_TIER}
         for tier, n in POP_FILTER_COUNT_BY_TIER.items():
@@ -311,7 +310,7 @@ class TestProducersInheritDisposition:
         the producer carries the EXISTS and never joins orders (both entries)."""
         dialect, engine = backend
         q = cust_q(
-            time_dimensions=_signup_month_td(), measures=[WINDOWED], filters=[OK])
+            time_dimensions=_signup_month_td(), metrics=[WINDOWED], filter=[OK])
         resp = await engine.execute(q)
         by_month = {
             month_key(r["customers.signup_at"]): r["customers.w"]
@@ -320,7 +319,7 @@ class TestProducersInheritDisposition:
         assert set(by_month) == set(POP_FILTER_WINDOWED_BY_MONTH)
         for month, spend in POP_FILTER_WINDOWED_BY_MONTH.items():
             assert float(by_month[month]) == pytest.approx(spend), month
-        measures = {i.measure for i in pushed_filter_infos(resp)}
+        measures = {i.metric for i in pushed_filter_infos(resp)}
         assert None in measures, measures
         assert "w" in measures, measures
         sql = await _dry(engine, q, dialect)
@@ -334,9 +333,9 @@ class TestProducersInheritDisposition:
         fails closed in every mode, filter or not: its axis is not attributable
         from the population root; the error names the time dimension (decision 12)."""
         _, engine = backend
-        kw = {"filters": [OK]} if with_filter else {}
+        kw = {"filter": [OK]} if with_filter else {}
         query = cust_q(
-            time_dimensions=_orders_month_td(), measures=[WINDOWED],
+            time_dimensions=_orders_month_td(), metrics=[WINDOWED],
             to_many_handling=mode, **kw)
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
@@ -349,7 +348,7 @@ class TestProducersInheritDisposition:
         disposition: last(spend) picks are per tier, the sibling sum is unmultiplied."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], measures=[SPEND, LAST], filters=[OK]))
+            dimensions=["tier"], metrics=[SPEND, LAST], filter=[OK]))
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in POP_FILTER_PARTITIONED_BY_TIER}
         for tier, spend in POP_FILTER_PARTITIONED_BY_TIER.items():
@@ -361,7 +360,7 @@ class TestProducersInheritDisposition:
         """avg(sum(spend, partition_by=tier)) · dims=[tier]: inner totals count each
         customer once (gold 190, not 290); the EXISTS rides the producer body."""
         dialect, engine = backend
-        q = cust_q(dimensions=["tier"], measures=[NESTED], filters=[OK])
+        q = cust_q(dimensions=["tier"], metrics=[NESTED], filter=[OK])
         resp = await engine.execute(q)
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in POP_FILTER_NESTED_INNER_BY_TIER}
@@ -375,8 +374,8 @@ class TestProducersInheritDisposition:
         """spend:sum · [ok, regions.region_events.value>=50] = 280; one entry each."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND],
-            filters=[OK, "regions.region_events.value >= 50"]))
+            metrics=[SPEND],
+            filter=[OK, "regions.region_events.value >= 50"]))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(POP_FILTER_TWO_BRANCH)
         assert len(_pop_infos(resp)) == 2
 
@@ -385,14 +384,14 @@ class TestProducerOnlySpine:
     async def test_producer_only_value(self, backend):
         """orders.amount:sum over ok orders = 82 (population restriction on the spine)."""
         _, engine = backend
-        resp = await engine.execute(cust_q(measures=[ORDERS_AMOUNT], filters=[OK]))
+        resp = await engine.execute(cust_q(metrics=[ORDERS_AMOUNT], filter=[OK]))
         assert float(resp.data[0]["customers.oa"]) == pytest.approx(POP_FILTER_PRODUCER_ONLY)
 
     async def test_producer_only_no_match_yields_zero_rows(self, backend):
         """A predicate no order passes yields zero rows — never one NULL-carrying row."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[ORDERS_AMOUNT], filters=["orders.status = 'nonesuch'"]))
+            metrics=[ORDERS_AMOUNT], filter=["orders.status = 'nonesuch'"]))
         assert resp.data == []
 
 
@@ -402,7 +401,7 @@ class TestRawRowMode:
         customer (5), never one per matching order (6)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filters=[OK], distinct_dimension_values=False))
+            dimensions=["tier"], filter=[OK], distinct_dimension_values=False))
         assert len(resp.data) == POP_FILTER_RAW_ROWS
 
 
@@ -414,7 +413,7 @@ class TestOutOfScopeNowPushed:
         """An out-of-scope OR conjunct restricts dims-only result rows, no warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filters=[OR_MIX]))
+            dimensions=["tier"], filter=[OR_MIX]))
         assert {r["customers.tier"] for r in resp.data} == POP_FILTER_OUT_OF_SCOPE_TIERS
 
     async def test_host_producer_pushes_not_drops(self, backend):
@@ -422,7 +421,7 @@ class TestOutOfScopeNowPushed:
         / silver 230 / bronze 40, no dropped warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX]))
+            dimensions=["tier"], metrics=[PARTITIONED], filter=[OR_MIX]))
         by = rows_by(resp, "customers.tier")
         for tier, spend in {"gold": 190.0, "silver": 230.0, "bronze": 40.0}.items():
             assert float(by[(tier,)]["customers.pt"]) == pytest.approx(spend), tier
@@ -434,7 +433,7 @@ class TestOutOfScopeNowPushed:
         error under error mode."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX],
+            dimensions=["tier"], metrics=[PARTITIONED], filter=[OR_MIX],
             to_many_handling=mode))
         by = rows_by(resp, "customers.tier")
         for tier, spend in {"gold": 190.0, "silver": 230.0, "bronze": 40.0}.items():
@@ -446,14 +445,14 @@ class TestOutOfScopeNowPushed:
         association = 460 (never 560), every mode; no dropped warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND], filters=[OR_MIX], to_many_handling=mode))
+            metrics=[SPEND], filter=[OR_MIX], to_many_handling=mode))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(460.0)
 
     async def test_raw_row_pushes(self, backend):
         """OR-mix in raw-row mode returns one row per population customer (6)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filters=[OR_MIX], distinct_dimension_values=False))
+            dimensions=["tier"], filter=[OR_MIX], distinct_dimension_values=False))
         assert len(resp.data) == 6
 
 
@@ -464,8 +463,8 @@ class TestUnanalyzableFailsClosed:
         """A filter on a derived column no dialect can parse fails closed, with or
         without an aggregate, in every mode — naming the filter and the column."""
         _, engine = unparse_backend
-        kw = {"filters": ["customers.regions.unparseable > 0"], "to_many_handling": mode}
-        q = (orders_q(measures=[AMOUNT_SUM], **kw) if with_measure
+        kw = {"filter": ["customers.regions.unparseable > 0"], "to_many_handling": mode}
+        q = (orders_q(metrics=[AMOUNT_SUM], **kw) if with_measure
              else orders_q(dimensions=["customers.tier"], **kw))
         with pytest.raises(ValueError) as ei:
             await engine.execute(q)
@@ -479,7 +478,7 @@ class TestUnaffectedShapes:
     async def test_dimension_only_query_unaffected(self, backend):
         """A fanning filter with no measures executes, restricted by association."""
         _, engine = backend
-        resp = await engine.execute(cust_q(dimensions=["tier"], filters=[OK]))
+        resp = await engine.execute(cust_q(dimensions=["tier"], filter=[OK]))
         assert {r["customers.tier"] for r in resp.data} == {"gold", "silver"}
 
 
@@ -489,8 +488,8 @@ class TestBoundaryAssociationArmUntouched:
         new 100 / ok 150 (dev-1910, unchanged) and no population entry is added."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["orders.status"], measures=[SPEND],
-            filters=["orders.amount in (20, 30)"], to_many_handling="associate"))
+            dimensions=["orders.status"], metrics=[SPEND],
+            filter=["orders.amount in (20, 30)"], to_many_handling="associate"))
         by = rows_by(resp, "customers.orders.status")
         for status, spend in POP_FILTER_ASSOC_BY_STATUS.items():
             assert float(by[(status,)]["customers.sp"]) == pytest.approx(spend), status

@@ -1,0 +1,37 @@
+{
+ "source": "tests/test_dev2171_osi_import.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "id"
+    ],
+    "measures": [
+     "notes"
+    ],
+    "order": [
+     {
+      "column": "id"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "id"
+    ],
+    "metrics": [
+     "notes"
+    ],
+    "order": [
+     {
+      "field": "id"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

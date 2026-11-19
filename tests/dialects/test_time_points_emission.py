@@ -13,7 +13,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects import get_dialect
 
 from tests._engine_helpers import _engine_generate
-from tests._time_points_fixtures import PinnedClock, customers_model, ev_model
+from tests._time_points_fixtures import PinnedClock, customers_dataset, ev_dataset
 
 TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "snowflake", "bigquery"]
 TYPED = [d for d in TIER1 if d not in ("sqlite", "bigquery")]
@@ -22,22 +22,22 @@ STRFTIME = "STRFTIME('%Y-%m-%d %H:%M:%f', "
 
 async def _sql(
     dialect: str, *, filters: list[str], date_range=None, granularity: str = "month", column: str = "ts",
-    measures: list | None = None,
+    metrics: list | None = None,
 ) -> str:
-    td: dict = {"dimension": column, "granularity": granularity}
+    td: dict = {"field": column, "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     query = {
-        "source_model": "ev", "measures": measures or [{"formula": "count(*)", "name": "n"}],
-        "time_dimensions": [td], "filters": filters,
+        "population": "ev", "metrics": metrics or [{"metric": "count(*)", "alias": "n"}],
+        "time_dimensions": [td], "filter": filters,
     }
     return await _engine_generate(
-        query=[query], model=ev_model(), extra_models=[customers_model()], dialect=dialect, clock=PinnedClock(),
+        query=[query], dataset=ev_dataset(), extra_datasets=[customers_dataset()], dialect=dialect, clock=PinnedClock(),
     )
 
 
 def _literal(dialect: str, value: date) -> str:
-    dt = DataType.TIMESTAMP if isinstance(value, datetime) else DataType.DATE
+    dt = DataType.DATETIME if isinstance(value, datetime) else DataType.DATE
     d = get_dialect(dialect)
     return d.build_temporal_literal(value=value, dt=dt).sql(dialect=d.sqlglot_name)
 
@@ -103,10 +103,10 @@ async def test_granularity_call_literal_comparison_is_a_raw_column_bound(dialect
     ("date_add(d, 2, 'hour') >= '2025-Q1'", None),
     ("date_trunc('month', ts) >= '2025-Q1'", None),
     ("now() >= '2025-Q1'", None),
-    ("max(ts) >= '2025-Q1'", [{"formula": "count(*)", "name": "n"}]),
+    ("max(ts) >= '2025-Q1'", [{"metric": "count(*)", "alias": "n"}]),
 ], ids=["column", "timestamp_add", "date_add", "datetime_add", "trunc", "now", "aggregate"])
 async def test_bigquery_bounds_are_plain_iso_text(filt, measures) -> None:
-    sql = _flat(await _sql("bigquery", filters=[filt], measures=measures))
+    sql = _flat(await _sql("bigquery", filters=[filt], metrics=measures))
     assert re.search(r">=\s*'2025-01-01( 00:00:00)?'", sql), sql
     assert "CAST('2025-01-01" not in sql, sql
     assert "TIMESTAMP('2025-01-01" not in sql, sql

@@ -2,7 +2,7 @@
 
 ``SlayerResponse.population`` / ``.population_inferred`` are populated uniformly
 across execute, dry-run, explain, cache miss/hit, refresh (real re-execution),
-run-by-name, explicit vs inferred vs inline/extension source models, and the
+run-by-name, explicit vs inferred vs extended source models, and the
 Python client's decode path. Engine-level datasource forwarding into inference
 is covered here too.
 """
@@ -14,23 +14,21 @@ import tempfile
 import pytest
 
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import PopulationErrorReason, PopulationInferenceError
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import DatasetExtension, QueryMetric, SlayerQuery
 from slayer.engine.cache import CacheConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1866_fixtures import (
-    DS_CHAIN,
     DS_WIDGETS_A,
     make_chain_exec_engine,
     make_inference_storage,
@@ -39,7 +37,7 @@ from tests._dev1866_fixtures import (
 
 _INFERRED = SlayerQuery.model_validate({
     "dimensions": ["customers.region"],
-    "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+    "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 })
 
 
@@ -57,40 +55,29 @@ class TestExplicitVsInferredReporting:
 
     async def test_explicit_string_flag_false(self, engine) -> None:
         resp = await engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["region"],
+            population="customers", dimensions=["region"],
         ))
         assert resp.population == "customers"
         assert resp.population_inferred is False
 
     async def test_explicit_extension_reports_source_name(self, engine) -> None:
         resp = await engine.execute(SlayerQuery(
-            source_model="customers",
-            extensions=[ModelExtension.model_validate({
-                "source_name": "customers",
-                "columns": [{"name": "region_copy", "sql": "region"}],
+            population="customers",
+            extensions=[DatasetExtension.model_validate({
+                "dataset": "customers",
+                "metrics": [{"name": "n", "expression": "count(*)"}],
             })],
             dimensions=["region"],
         ))
         assert resp.population == "customers"
         assert resp.population_inferred is False
 
-    async def test_explicit_inline_model_reports_its_name(self, engine) -> None:
-        resp = await engine.execute(SlayerQuery(
-            source_model=SlayerModel(
-                name="inl_cust", data_source=DS_CHAIN, sql_table="customers",
-                columns=[Column(name="region", type=DataType.TEXT)],
-            ),
-            dimensions=["region"],
-        ))
-        assert resp.population == "inl_cust"
-        assert resp.population_inferred is False
-
-    async def test_run_by_name_reports_population(self, engine) -> None:
-        await engine.create_model_from_query(
+    async def test_run_by_name_reports_population(self, engine: SlayerQueryEngine) -> None:
+        await engine.create_dataset_from_query(
             query=SlayerQuery(
-                source_model="customers",
+                population="customers",
                 dimensions=["region"],
-                measures=[ModelMeasure(formula="sum(orders.amount)", name="rev")],
+                metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
             ),
             name="cust_by_region",
         )
@@ -101,10 +88,10 @@ class TestExplicitVsInferredReporting:
     @pytest.mark.parametrize("dry_run", [False, True])
     async def test_stage_population_reports_the_stage_name(self, engine, dry_run) -> None:
         stage = SlayerQuery.model_validate({
-            "name": "by_region", "source_model": "customers", "dimensions": ["region"],
-            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "name": "by_region", "population": "customers", "dimensions": ["region"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
-        main = SlayerQuery.model_validate({"source_model": "by_region", "measures": [{"formula": "sum(rev)"}]})
+        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"metric": "sum(rev)"}]})
         resp = await engine.execute([stage, main], dry_run=dry_run)
         assert resp.population == "by_region"
         assert resp.population_inferred is False
@@ -134,9 +121,9 @@ class TestReportedAcrossExecutionModes:
         """Explicit and inferred twins share a cache key (identical SQL); a cache
         hit must report the CURRENT query's inferred flag, not the stored one."""
         explicit = SlayerQuery.model_validate({
-            "source_model": "customers",
+            "population": "customers",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         first = await engine.execute(explicit, cache=True)
         assert first.population_inferred is False
@@ -189,26 +176,26 @@ class TestEngineDatasourceForwarding:
             await storage.save_datasource(
                 DatasourceConfig(name=ds, type="sqlite", database=":memory:"),
             )
-        regions = SlayerModel(
+        regions = SlayerDataset(
             name="regions", data_source="dsa", sql_table="regions",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                     Column(name="name", type=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="name", datatype=DataType.STRING)],
         )
-        cust_a = SlayerModel(
+        cust_a = SlayerDataset(
             name="customers", data_source="dsa", sql_table="customers",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                     Column(name="region_id", type=DataType.INT),
-                     Column(name="name", type=DataType.TEXT)],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                             cardinality=JoinCardinality.MANY_TO_ONE)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="region_id", datatype=DataType.INTEGER),
+                     DatasetField(name="name", datatype=DataType.STRING)],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
+                             cardinality=RelationshipCardinality.MANY_TO_ONE)],
         )
-        cust_b = SlayerModel(  # name collides with dsa.customers
+        cust_b = SlayerDataset(  # name collides with dsa.customers
             name="customers", data_source="dsb", sql_table="customers",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                     Column(name="name", type=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="name", datatype=DataType.STRING)],
         )
         for model in (regions, cust_a, cust_b):
-            await storage.save_model(model, _validate=False)
+            await storage.save_dataset(model, _validate=False)
         engine = SlayerQueryEngine(storage=storage)
         # regions scopes to dsa; customers (the winner) exists in both dsa and dsb.
         resp = await engine.execute(

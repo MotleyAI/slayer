@@ -91,7 +91,7 @@ async def test_renamed_fields_example(tmp_path: Path) -> None:
     models = by_name(result)
     assert {name: visible(model) for name, model in models.items()} == _declared_fields("renamed_fields.yaml")
     assert not result.unconverted_metrics
-    rows = await query(result=result, db=db, payload={"source_model": "orders", "measures": ["gross_revenue"]})
+    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["gross_revenue"]})
     assert float(rows[0]["orders.gross_revenue"]) == pytest.approx(21.75)
 
 
@@ -101,6 +101,15 @@ def test_tpcds_example(tmp_path: Path) -> None:
         _declared_fields("tpcds_semantic_model.yaml")
     assert sorted(e.metric_name or "" for e in result.unconverted_metrics) == [
         "brand_rank_in_store", "cumulative_sales", "monthly_sales_change"]
+
+
+def test_tpcds_document_extensions_stored_as_objects(tmp_path: Path) -> None:
+    result, _ = _import(tmp_path, "tpcds_semantic_model.yaml", _TPCDS_DDL)
+    expected = _document("tpcds_semantic_model.yaml")["nonportable_extensions"]
+    assert [e["vendor_name"] for e in expected] == ["SALESFORCE", "DBT"]
+    assert all(isinstance(e["data"], dict) for e in expected)
+    for model in result.datasets:
+        assert (model.meta or {})["osi_semantic_model"]["nonportable_extensions"] == expected, model.name
 
 
 def test_flights_semantic_model_example(tmp_path: Path) -> None:

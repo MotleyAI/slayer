@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_seeded_exec_engine.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "nums",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "nums",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  }
+ ]
+}

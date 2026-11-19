@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
-from slayer.importers.physical import unreadable_columns
+from slayer.core.models import DatasetField
+from slayer.importers.physical import unreadable_fields
 
-STATUS = Column(name="status", sql="status", type=DataType.TEXT)
-LEGAL = Column(name="Status", sql='"LegalType"', type=DataType.TEXT)
-DONE = Column(name="done", sql="amount", type=DataType.DOUBLE, filter="status = 'completed'")
+STATUS = DatasetField(name="status", sql="status", datatype=DataType.STRING)
+LEGAL = DatasetField(name="Status", sql='"LegalType"', datatype=DataType.STRING)
+DONE = DatasetField(name="done", sql="amount", datatype=DataType.FLOAT, filter="status = 'completed'")
 
 
 def test_an_exact_name_column_wins_over_a_case_only_namesake() -> None:
-    assert unreadable_columns([STATUS, LEGAL, DONE], dialect="duckdb") == {}
+    assert unreadable_fields([STATUS, LEGAL, DONE], dialect="duckdb") == {}
 
 
 def test_a_case_only_namesake_alone_still_masks() -> None:
-    found = unreadable_columns([LEGAL, DONE], dialect="duckdb")
-    assert "masked by the column 'Status'" in found["done"]
+    found = unreadable_fields([LEGAL, DONE], dialect="duckdb")
+    assert "masked by the field 'Status'" in found["done"]

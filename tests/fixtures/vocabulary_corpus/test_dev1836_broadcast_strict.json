@@ -1,0 +1,83 @@
+{
+ "source": "tests/test_dev1836_broadcast_strict.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.spend)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.spend)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.pop)",
+    "name": "pop"
+   },
+   "new": {
+    "expression": "sum(customers.regions.pop)",
+    "name": "pop"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.pop)",
+    "name": "pop"
+   },
+   "new": {
+    "expression": "sum(customers.regions.pop)",
+    "name": "pop"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   }
+  }
+ ],
+ "skipped": []
+}

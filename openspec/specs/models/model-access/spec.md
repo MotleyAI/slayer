@@ -7,11 +7,11 @@ Lets a host application show each caller only the semantic models their access t
 
 ### Requirement: Models carry access tags
 
-A model SHALL carry `access_tags`, a list of strings that defaults to empty. An empty list means the model is public. The tags SHALL round-trip unchanged through model JSON, storage, git sync, import and export, REST, the Python client, and MCP `create_model` / `edit_model`. SLayer SHALL accept any string as a tag. A stored model without the field SHALL load as untagged, and models SHALL be written at schema version 15. Access tags are independent of the `hidden` flag: `hidden` curates the catalog for everyone and keeps the model queryable.
+A model SHALL carry `access_tags`, a list of strings that defaults to empty. An empty list means the model is public. The tags SHALL round-trip unchanged through model JSON, storage, git sync, import and export, REST, the Python client, and MCP `create_dataset` / `edit_dataset`. SLayer SHALL accept any string as a tag. A stored model without the field SHALL load as untagged, and models SHALL be written at schema version 15. Access tags are independent of the `hidden` flag: `hidden` curates the catalog for everyone and keeps the model queryable.
 
 #### Scenario: Tags round-trip through MCP and storage
 
-- **WHEN** `create_model` is called with `access_tags=["hr"]` and the model is read back through storage, REST and inspect
+- **WHEN** `create_dataset` is called with `access_tags=["hr"]` and the model is read back through storage, REST and inspect
 - **THEN** each returns `access_tags == ["hr"]`
 
 #### Scenario: A pre-v15 model loads untagged
@@ -52,8 +52,8 @@ A store wrapped with a caller's tags and a `bypass` flag (both required, with no
 
 A model SHALL read every model that one of the following references, and every model on the path of such a reference:
 
-- the source of each stage of a query-backed model (a model name, an extension's base, or an inline model);
-- the targets of extension and inline joins;
+- the source of each stage of a query-backed model (a model name or an extension's base);
+- the targets of extension joins;
 - every dotted reference path in its stages' fields: dimensions, time dimensions, measures, filters and order;
 - every dotted reference path in its own definitions: column SQL, column filters, model filters, saved measure formulas (including saved measures they reference), and aggregation parameters.
 
@@ -135,7 +135,7 @@ For a non-bypass caller, each model the filtered store returns SHALL omit every 
 
 ### Requirement: Memories follow the models they link to
 
-A memory's linked models SHALL be the models named by its `<datasource>.<model>[.<leaf>]` entities plus the models its example query reads. Datasource-only entities and `memory:` references SHALL link no model. For a non-bypass caller, a memory SHALL be hidden iff it links at least one model and every linked model exists in the full store but is invisible. A visible memory SHALL be returned without entities naming invisible models (or their columns and measures) or hidden memories, and without its example query when that query reads an invisible model. Query-resolution warnings SHALL NOT fire for a query withheld this way.
+A memory's linked models SHALL be the models named by its `<datasource>.<dataset>[.<leaf>]` entities plus the models its example query reads. Datasource-only entities and `memory:` references SHALL link no model. For a non-bypass caller, a memory SHALL be hidden iff it links at least one model and every linked model exists in the full store but is invisible. A visible memory SHALL be returned without entities naming invisible models (or their columns and measures) or hidden memories, and without its example query when that query reads an invisible model. Query-resolution warnings SHALL NOT fire for a query withheld this way.
 
 #### Scenario: A memory linked only to a hidden model is hidden
 
@@ -212,7 +212,7 @@ A store wrapped with `bypass=True` SHALL read and write exactly as the store it 
 
 ### Requirement: Narrowed access is reported
 
-A model's access is narrowed when it reads, transitively, a tagged model whose tags do not include all of its own (an untagged model reading a tagged one is narrowed). Saving a narrowed model SHALL emit a structured `narrowed_access` warning naming the models that narrow it. Saving a tagged model SHALL emit the warning for each model that becomes narrowed because it reads it. Model validation SHALL report every narrowed model. A narrowed model SHALL still save.
+A model's access is narrowed when it reads, transitively, a tagged model whose tags do not include all of its own (an untagged model reading a tagged one is narrowed). Saving a narrowed model SHALL emit a structured `narrowed_access` warning naming the models that narrow it. Saving a tagged model SHALL emit the warning for each model that becomes narrowed because it reads it. A save through MCP or REST SHALL return each such warning in its response. Model validation SHALL report every narrowed model. A narrowed model SHALL still save.
 
 #### Scenario: Saving a public model that reads a tagged one warns
 
@@ -228,6 +228,11 @@ A model's access is narrowed when it reads, transitively, a tagged model whose t
 
 - **WHEN** model validation runs over a datasource holding a narrowed model
 - **THEN** the report lists it as narrowed, naming the models that narrow it
+
+#### Scenario: A REST model save returns the warning
+
+- **WHEN** an untagged query-backed model reading `hr` is saved through `POST /datasets`, and again through `PUT /datasets/{name}`
+- **THEN** each response carries a `warnings` list holding the structured `narrowed_access` warning naming `hr`
 
 ### Requirement: Cached views are never shared across callers
 

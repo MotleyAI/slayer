@@ -12,29 +12,29 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.search import graph
 from slayer.search.graph import clear_cache, get_filtered_ids, is_available
 from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 
-# Walks every JOINS path of up to 30 hops: several seconds over the cycles below.
-RUNAWAY = "MATCH (a)-[:JOINS*]->(b) RETURN DISTINCT b.id AS id"
-MODELS = "MATCH (m:Model) RETURN m.id AS id"
+# Walks every RELATIONSHIPS path of up to 30 hops: several seconds over the cycles below.
+RUNAWAY = "MATCH (a)-[:RELATIONSHIPS*]->(b) RETURN DISTINCT b.id AS id"
+MODELS = "MATCH (m:Dataset) RETURN m.id AS id"
 DATASOURCES = "MATCH (d:Datasource) RETURN d.id AS id"
 
 #: m0 ⇄ m1 ⇄ m2 plus m2 → m0: dense enough that RUNAWAY takes seconds untimed.
 _EDGES = {0: [1], 1: [2, 0], 2: [0, 1]}
 
 
-def _model(i: int) -> SlayerModel:
+def _dataset(i: int) -> SlayerDataset:
     targets = _EDGES[i]
-    return SlayerModel(
+    return SlayerDataset(
         name=f"m{i}", sql_table=f"m{i}", data_source="shop",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 *(Column(name=f"f{j}", type=DataType.INT) for j in range(len(targets)))],
-        joins=[ModelJoin(target_model=f"m{t}", join_pairs=[[f"f{j}", "id"]], name=f"e{i}_{j}")
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 *(DatasetField(name=f"f{j}", datatype=DataType.INTEGER) for j in range(len(targets)))],
+        relationships=[DatasetRelationship(to=f"m{t}", from_columns=[f"f{j}"], to_columns=["id"], name=f"e{i}_{j}")
                for j, t in enumerate(targets)],
     )
 
@@ -45,7 +45,7 @@ async def cyclic_storage() -> AsyncIterator[YAMLStorage]:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(DatasourceConfig(name="shop", type="sqlite", database=":memory:"))
         for i in _EDGES:
-            await storage.save_model(_model(i), _validate=False)
+            await storage.save_dataset(_dataset(i), _validate=False)
         clear_cache()
         yield storage
         clear_cache()
@@ -56,7 +56,7 @@ def _limit(monkeypatch: pytest.MonkeyPatch, ms: int) -> None:
     clear_cache()
 
 
-async def test_runaway_traversal_times_out(cyclic_storage, monkeypatch) -> None:
+async def test_runaway_traversal_times_out(cyclic_storage, monkeypatch: pytest.MonkeyPatch) -> None:
     _limit(monkeypatch, 300)
     await get_filtered_ids(MODELS, cyclic_storage)  # warm the cache
     start = time.monotonic()
@@ -89,7 +89,7 @@ class _BlockingConn:
 
 
 @pytest.fixture
-def blocking_conns(monkeypatch) -> list[_BlockingConn]:
+def blocking_conns(monkeypatch: pytest.MonkeyPatch) -> list[_BlockingConn]:
     built: list[_BlockingConn] = []
     real_build = graph.build_graph
 

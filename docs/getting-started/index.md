@@ -1,6 +1,6 @@
 # Getting Started
 
-SLayer is a semantic layer that sits between your database and whatever consumes the data — AI agents, apps, scripts, or dashboards. You define your data model once (or let SLayer auto-generate it), and consumers query using measures, dimensions, and filters instead of writing SQL.
+SLayer is a semantic layer that sits between your database and whatever consumes the data — AI agents, apps, scripts, or dashboards. You define your data model once (or let SLayer auto-generate it), and consumers query using metrics, dimensions, and filters instead of writing SQL.
 
 ## Which interface is right for you?
 
@@ -10,9 +10,9 @@ SLayer is a semantic layer that sits between your database and whatever consumes
 | Query from the terminal or scripts | **CLI** | [CLI Setup](cli.md) |
 | Build an app that queries data (any language) | **REST API** | [REST API Setup](rest-api.md) |
 | Use SLayer as a Python library | **Python SDK** | [Python Setup](python.md) |
-| Find prior context (memories) and discover models / columns | **All four** | [Search](../concepts/search.md) · [Memories](../concepts/memories.md) |
+| Find prior context (memories) and discover datasets / fields | **All four** | [Search](../concepts/search.md) · [Memories](../concepts/memories.md) |
 
-All four interfaces use the same query language and the same models — pick the one that fits your workflow. You can use multiple interfaces simultaneously (e.g., MCP for your agent + REST API for your dashboard).
+All four interfaces use the same query language and the same datasets — pick the one that fits your workflow. You can use multiple interfaces simultaneously (e.g., MCP for your agent + REST API for your dashboard).
 
 ## Supported Databases
 
@@ -37,7 +37,7 @@ require it, so `pip install motley-slayer` alone gives you a working driver.
 After setting up your interface, explore:
 
 - [Terminology](../concepts/terminology.md) — key terms and concepts
-- [Models](../concepts/models.md) — define custom dimensions and measures
+- [Datasets](../concepts/models.md) — define custom dimensions and metrics
 - [Queries](../concepts/queries.md) — query structure and parameters
-- [Formulas](../concepts/formulas.md) — transforms, arithmetic, filters
+- [Expressions](../concepts/formulas.md) — transforms, arithmetic, filters
 - [Examples](../examples/01_dynamic/dynamic.md) — interactive notebooks

@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_model_access_caches.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  }
+ ]
+}

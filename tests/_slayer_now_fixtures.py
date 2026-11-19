@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -34,13 +34,13 @@ EV = TableSpec(
 )
 
 
-def ev_model() -> SlayerModel:
-    return SlayerModel(
+def ev_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="ts", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="ts", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -54,7 +54,7 @@ PINNED_WINDOW = ids_in(datetime(2025, 4, 1), datetime(2025, 7, 1))
 
 
 def ids_query(*filters: str) -> dict:
-    return {"source_model": "ev", "dimensions": ["id"], "filters": list(filters)}
+    return {"population": "ev", "dimensions": ["id"], "filter": list(filters)}
 
 
 def row_ids(rows: list[dict]) -> set[int]:
@@ -72,7 +72,7 @@ async def now_engine(
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing SQLite engine over ``ev``; built without a clock unless ``clock`` is given."""
     async with seeded_exec_engine(
-        dialect="sqlite", seed=lambda p: seed_backend("sqlite", p, [EV]), models=[ev_model()], clock=clock,
+        dialect="sqlite", seed=lambda p: seed_backend("sqlite", p, [EV]), datasets=[ev_dataset()], clock=clock,
     ) as (engine, _db):
         yield engine
 
@@ -83,5 +83,5 @@ async def seeded_storage(base_dir: str) -> YAMLStorage:
     seed_backend("sqlite", db_path, [EV])
     storage = YAMLStorage(base_dir=os.path.join(base_dir, "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path))
-    await storage.save_model(ev_model())
+    await storage.save_dataset(ev_dataset())
     return storage

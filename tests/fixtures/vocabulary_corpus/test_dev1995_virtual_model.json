@@ -1,0 +1,90 @@
+{
+ "source": "tests/test_dev1995_virtual_model.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(id)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "c"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "to_many_handling": "associate",
+    "dimensions": [
+     "orders.status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(spend)",
+      "name": "c"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "to_many_handling": "associate",
+    "dimensions": [
+     "orders.status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(spend)",
+      "alias": "c"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "abs(sum(customers.spend) - 200)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "abs(sum(customers.spend) - 200)",
+    "direction": "asc"
+   }
+  }
+ ],
+ "skipped": []
+}

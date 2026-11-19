@@ -1,0 +1,99 @@
+{
+ "source": "tests/test_dev1838_interning.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=customers.tier)",
+    "name": "rt"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=customers.tier)",
+    "name": "rt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "lb"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "lb"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, customers.signup_at)",
+    "name": "ls"
+   },
+   "new": {
+    "expression": "last(amount, customers.signup_at)",
+    "name": "ls"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(ok_amount, window='90d')",
+    "name": "wok"
+   },
+   "new": {
+    "expression": "sum(ok_amount, window='90d')",
+    "name": "wok"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=customers.tier)",
+    "name": "rt"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=customers.tier)",
+    "name": "rt"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  }
+ ]
+}

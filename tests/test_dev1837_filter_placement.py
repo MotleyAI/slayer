@@ -18,9 +18,10 @@ import sqlglot
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1837_fixtures import (
     BAND35,
-    ModelMeasure,
     gen,
     make_exec_engine,
     month_key,
@@ -36,7 +37,7 @@ async def exec_engine(request):
         yield engine
 
 
-BAND = {"expression": BAND35, "name": "band"}
+BAND = {"field": BAND35, "alias": "band"}
 
 
 def _by_band_month(resp, *values):
@@ -52,10 +53,10 @@ class TestPostFilterOnShiftedValue:
         resp = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["change(sum(amount)) > 0"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="change(sum(amount))", name="c"),
+            filter=["change(sum(amount)) > 0"],
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="change(sum(amount))", alias="c"),
             ],
         ))
         got = _by_band_month(resp, "m", "c")
@@ -69,8 +70,8 @@ class TestPostFilterOnShiftedValue:
         dry = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["change(sum(amount)) > 0"],
-            measures=[ModelMeasure(formula="change(sum(amount))", name="c")],
+            filter=["change(sum(amount)) > 0"],
+            metrics=[QueryMetric(metric="change(sum(amount))", alias="c")],
         ), dry_run=True)
         assert dry.sql is not None
         assert "__regroup__" not in dry.sql, dry.sql
@@ -84,16 +85,16 @@ class TestConjunctionSplits:
         base_kwargs = dict(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="change(sum(amount))", name="c"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="change(sum(amount))", alias="c"),
             ],
         )
         anded = await exec_engine.execute(q(
-            filters=["band == 1 and change(sum(amount)) > 0"], **base_kwargs,
+            filter=["band == 1 and change(sum(amount)) > 0"], **base_kwargs,
         ))
         separate = await exec_engine.execute(q(
-            filters=["band == 1", "change(sum(amount)) > 0"], **base_kwargs,
+            filter=["band == 1", "change(sum(amount)) > 0"], **base_kwargs,
         ))
         got = _by_band_month(anded, "m", "c")
         assert set(got) == {(1, "2024-02"), (1, "2024-03")}
@@ -104,13 +105,13 @@ class TestConjunctionSplits:
     async def test_band_and_row_predicate_conjunction_splits(self, exec_engine) -> None:
         base_kwargs = dict(
             dimensions=[BAND],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         )
         anded = await exec_engine.execute(q(
-            filters=["band == 1 and status == 'ok'"], **base_kwargs,
+            filter=["band == 1 and status == 'ok'"], **base_kwargs,
         ))
         separate = await exec_engine.execute(q(
-            filters=["band == 1", "status == 'ok'"], **base_kwargs,
+            filter=["band == 1", "status == 'ok'"], **base_kwargs,
         ))
         got = {int(r["orders.band"]): float(r["orders.m"]) for r in anded.data}
         assert got == {1: pytest.approx(100.0)}
@@ -125,8 +126,8 @@ class TestConjunctionSplits:
         resp = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["band == 1 or change(sum(amount)) > 0"],
-            measures=[ModelMeasure(formula="change(sum(amount))", name="c")],
+            filter=["band == 1 or change(sum(amount)) > 0"],
+            metrics=[QueryMetric(metric="change(sum(amount))", alias="c")],
         ))
         got = _by_band_month(resp, "c")
         assert set(got) == {(1, "2024-01"), (1, "2024-02"), (1, "2024-03")}
@@ -143,10 +144,10 @@ class TestShiftedCteRegroupAwareness:
     QUERY_KWARGS = dict(
         dimensions=[BAND],
         time_dimensions=month_td(),
-        filters=["band == 1"],
-        measures=[
-            ModelMeasure(formula="sum(amount)", name="m"),
-            ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+        filter=["band == 1"],
+        metrics=[
+            QueryMetric(metric="sum(amount)", alias="m"),
+            QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
         ],
     )
 

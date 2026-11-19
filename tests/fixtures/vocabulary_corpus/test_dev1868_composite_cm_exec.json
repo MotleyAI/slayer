@@ -1,0 +1,83 @@
+{
+ "source": "tests/test_dev1868_composite_cm_exec.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) / sum(customers.spend)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(amount) / sum(customers.spend)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "round(sum(customers.spend) / sum(amount), 2)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "round(sum(customers.spend) / sum(amount), 2)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend) * 2",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(customers.spend) * 2",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend) - max(customers.spend)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(customers.spend) - max(customers.spend)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend) / sum(customers.regions.pop)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(customers.spend) / sum(customers.regions.pop)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "sp"
+   }
+  }
+ ],
+ "skipped": []
+}

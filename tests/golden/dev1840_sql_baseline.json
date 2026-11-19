@@ -1,31 +1,31 @@
 {
   "excluded/ambiguous_inversion::bigquery": {
-    "error": "AmbiguousJoinPathError",
-    "message": "Ambiguous join hop 'tickets' \u2192 'agents': 2 edges connect these models and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "AmbiguousRelationshipPathError",
+    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
   },
   "excluded/ambiguous_inversion::duckdb": {
-    "error": "AmbiguousJoinPathError",
-    "message": "Ambiguous join hop 'tickets' \u2192 'agents': 2 edges connect these models and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "AmbiguousRelationshipPathError",
+    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
   },
   "excluded/ambiguous_inversion::mysql": {
-    "error": "AmbiguousJoinPathError",
-    "message": "Ambiguous join hop 'tickets' \u2192 'agents': 2 edges connect these models and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "AmbiguousRelationshipPathError",
+    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
   },
   "excluded/ambiguous_inversion::postgres": {
-    "error": "AmbiguousJoinPathError",
-    "message": "Ambiguous join hop 'tickets' \u2192 'agents': 2 edges connect these models and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "AmbiguousRelationshipPathError",
+    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
   },
   "excluded/ambiguous_inversion::snowflake": {
-    "error": "AmbiguousJoinPathError",
-    "message": "Ambiguous join hop 'tickets' \u2192 'agents': 2 edges connect these models and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "AmbiguousRelationshipPathError",
+    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
   },
   "excluded/ambiguous_inversion::sqlite": {
-    "error": "AmbiguousJoinPathError",
-    "message": "Ambiguous join hop 'tickets' \u2192 'agents': 2 edges connect these models and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "AmbiguousRelationshipPathError",
+    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
   },
   "excluded/ambiguous_inversion::tsql": {
-    "error": "AmbiguousJoinPathError",
-    "message": "Ambiguous join hop 'tickets' \u2192 'agents': 2 edges connect these models and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
+    "error": "AmbiguousRelationshipPathError",
+    "message": "Ambiguous relationship hop 'tickets' \u2192 'agents': 2 edges connect these datasets and no edge name resolves it.\n  - declared on 'tickets': pairs [opened_by=id], cardinality None\n  - declared on 'tickets': pairs [closed_by=id], cardinality None\nGive one edge a `name` and use it as the path segment to disambiguate."
   },
   "excluded/mixed_or::bigquery": "WITH _base AS (\n  SELECT\n    customers.tier AS `orders___customers___tier`\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  WHERE\n    (\n      customers.tier = 'gold' OR orders.channel = 'app'\n    )\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS `customers___tier`,\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum`\n  FROM customers AS customers\n  WHERE\n    EXISTS(\n      SELECT\n        1\n      FROM orders AS orders\n      WHERE\n        customers.id = orders.customer_id\n        AND (\n          customers.tier = 'gold' OR orders.channel = 'app'\n        )\n    )\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.`orders___customers___tier`,\n  _cm_orders__customers__spend_sum.`customers___spend_sum` AS `orders___cm`\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.`orders___customers___tier` IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.`customers___tier`\nORDER BY\n  _base.`orders___customers___tier` ASC NULLS LAST",
   "excluded/mixed_or::duckdb": "WITH _base AS (\n  SELECT\n    customers.tier AS \"orders.customers.tier\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  WHERE\n    (\n      customers.tier = 'gold' OR orders.channel = 'app'\n    )\n  GROUP BY\n    customers.tier\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  WHERE\n    EXISTS(\n      SELECT\n        1\n      FROM orders AS orders\n      WHERE\n        customers.id = orders.customer_id\n        AND (\n          customers.tier = 'gold' OR orders.channel = 'app'\n        )\n    )\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"orders.customers.tier\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.tier\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.tier\"\nORDER BY\n  _base.\"orders.customers.tier\" ASC",

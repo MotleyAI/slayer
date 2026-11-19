@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev2015_time_dimensions.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 36,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 85,
+   "reason": "not a standalone query: ValidationError"
+  }
+ ]
+}

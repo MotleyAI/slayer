@@ -1,0 +1,427 @@
+{
+ "source": "tests/test_dev2102_memory_entities.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "avg(amount * 2)"
+   },
+   "new": {
+    "metric": "avg(amount * 2)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount * 2)",
+    "name": "premium_total"
+   },
+   "new": {
+    "expression": "sum(amount * 2)",
+    "name": "premium_total"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "ship_region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "ship_region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "avg(orders.amount * 2)"
+   },
+   "new": {
+    "metric": "avg(orders.amount * 2)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "Customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "Customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "Customers.shout"
+   },
+   "new": {
+    "metric": "Customers.shout"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "shout",
+    "formula": "max(upper(name))"
+   },
+   "new": {
+    "name": "shout",
+    "expression": "max(upper(name))"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 173,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 188,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 217,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 226,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 226,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 244,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 261,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 264,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 268,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 270,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 284,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 286,
+   "reason": "not fully literal"
+  }
+ ]
+}

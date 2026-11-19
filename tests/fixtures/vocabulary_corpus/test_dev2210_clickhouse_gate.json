@@ -1,0 +1,38 @@
+{
+ "source": "tests/test_dev2210_clickhouse_gate.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ups_orders",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "ups_orders",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "returns",
+    "dimensions": [
+     "id",
+     "done_orders.status"
+    ]
+   },
+   "new": {
+    "population": "returns",
+    "dimensions": [
+     "id",
+     "done_orders.status"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

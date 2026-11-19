@@ -1,0 +1,102 @@
+{
+ "source": "tests/test_engine_ownership.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  }
+ ]
+}

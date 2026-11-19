@@ -1,0 +1,195 @@
+{
+ "source": "tests/facade/test_translator.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "custom_metric",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "custom_metric",
+    "expression": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1662,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1667,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1668,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2137,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2406,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2409,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2410,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2411,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2415,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2417,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2418,
+   "reason": "not fully literal"
+  }
+ ]
+}

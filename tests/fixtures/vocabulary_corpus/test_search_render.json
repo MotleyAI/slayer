@@ -1,0 +1,81 @@
+{
+ "source": "tests/test_search_render.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(amount) / count(*)",
+    "description": "Average order value."
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(amount) / count(*)",
+    "description": "Average order value."
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 520,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 524,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 532,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 536,
+   "reason": "not fully literal"
+  }
+ ]
+}

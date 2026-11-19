@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_declared_list_variables.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 294,
+   "reason": "not fully literal"
+  }
+ ]
+}

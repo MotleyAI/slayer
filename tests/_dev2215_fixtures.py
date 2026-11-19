@@ -22,12 +22,12 @@ from __future__ import annotations
 import contextlib
 import json
 import warnings
-from collections.abc import AsyncGenerator, Iterable, Iterator
+from collections.abc import AsyncGenerator, Generator, Iterable
 from datetime import datetime
 from typing import Any, Optional
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
@@ -93,76 +93,76 @@ TABLES = (ORDERS, CUSTOMERS, EVENTS, LEDGER)
 # Models
 # --------------------------------------------------------------------------- #
 def trimmed() -> Aggregation:
-    return Aggregation(name="trimmed", formula="AVG(CASE WHEN {value} > {cutoff} THEN {value} END)",
+    return Aggregation(name="trimmed", expression="AVG(CASE WHEN {value} > {cutoff} THEN {value} END)",
                        params=[AggregationParam(name="cutoff", sql="0")])
 
 
 def share() -> Aggregation:
-    return Aggregation(name="share", formula="SUM({value}) * 1.0 / COUNT(*)")
+    return Aggregation(name="share", expression="SUM({value}) * 1.0 / COUNT(*)")
 
 
-def orders_model(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source, default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.INT),
-            Column(name="weight", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="note", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.INTEGER),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="note", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         aggregations=[trimmed(), share(), *aggregations],
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="score", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="score", datatype=DataType.FLOAT),
         ],
     )
 
 
-def events_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def events_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="events", sql_table="events", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
 
-def ledger_model(*, data_source: str = "test") -> SlayerModel:
+def ledger_dataset(*, data_source: str = "test") -> SlayerDataset:
     """Grandfathered case collision: ``Revenue`` and ``revenue`` (save with ``_validate=False``)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="ledger", sql_table="ledger", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="Revenue", sql="rev_a", type=DataType.DOUBLE),
-            Column(name="revenue", sql="rev_b", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="Revenue", sql="rev_a", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", sql="rev_b", datatype=DataType.FLOAT),
         ],
     )
 
 
-def dev2215_models(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> list[SlayerModel]:
-    return [orders_model(data_source=data_source, aggregations=aggregations), customers_model(data_source=data_source),
-            events_model(data_source=data_source), ledger_model(data_source=data_source)]
+def dev2215_datasets(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> list[SlayerDataset]:
+    return [orders_dataset(data_source=data_source, aggregations=aggregations), customers_dataset(data_source=data_source),
+            events_dataset(data_source=data_source), ledger_dataset(data_source=data_source)]
 
 
 # --------------------------------------------------------------------------- #
@@ -170,13 +170,13 @@ def dev2215_models(*, data_source: str = "test", aggregations: Iterable[Aggregat
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
 async def dev2215_engine(
-    backend: str, *, models: Optional[list[SlayerModel]] = None, clock: Optional[PinnedClock] = None,
+    backend: str, *, datasets: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
     datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the seed; the datasource defines ``fiscal_year``; models are saved unvalidated."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
-        models=dev2215_models() if models is None else models,
+        datasets=dev2215_datasets() if datasets is None else datasets,
         clock=clock if clock is not None else PinnedClock(NOW),
         datasource_fields=DS_FIELDS if datasource_fields is None else datasource_fields,
     ) as (engine, _db):
@@ -194,11 +194,11 @@ def postgres_statements() -> list[str]:
 # Queries and readers
 # --------------------------------------------------------------------------- #
 def q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(formula: str, name: str = "v") -> dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str = "v") -> dict[str, str]:
+    return {"metric": expression, "alias": name}
 
 
 FIRST_LAST = [m("first(status, updated_at)", "f"), m("last(status, updated_at)", "l")]
@@ -207,7 +207,7 @@ FIRST_LAST_BY_CUSTOMER = {1: ("a", "c"), 2: (None, None), 3: ("p", None)}
 
 
 def events_query() -> SlayerQuery:
-    return q(source_model="events", dimensions=["customer_id"], measures=FIRST_LAST)
+    return q(population="events", dimensions=["customer_id"], metrics=FIRST_LAST)
 
 
 async def check_events(engine: SlayerQueryEngine) -> None:
@@ -216,13 +216,13 @@ async def check_events(engine: SlayerQueryEngine) -> None:
     assert got == FIRST_LAST_BY_CUSTOMER
 
 
-def single(resp: SlayerResponse, name: str = "v", *, model: str = "orders") -> Any:
+def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{model}.{name}"]
+    return resp.data[0][f"{dataset}.{name}"]
 
 
-def ids(resp: SlayerResponse, *, model: str = "orders") -> set[int]:
-    return {int(r[f"{model}.id"]) for r in resp.data}
+def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:
+    return {int(r[f"{dataset}.id"]) for r in resp.data}
 
 
 def num(value: Any) -> Optional[float]:
@@ -234,16 +234,16 @@ def day(value: Any) -> Optional[str]:
     return None if value is None else str(value)[:10]
 
 
-def by_key(resp: SlayerResponse, key: str, value: str = "v", *, model: str = "orders") -> dict[Any, Any]:
-    out = {r[f"{model}.{key}"]: r[f"{model}.{value}"] for r in resp.data}
+def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str = "orders") -> dict[Any, Any]:
+    out = {r[f"{dataset}.{key}"]: r[f"{dataset}.{value}"] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 
 
-def count_by(resp: SlayerResponse, key: str, *, value: str = "n", model: str = "orders") -> dict[Any, int]:
+def count_by(resp: SlayerResponse, key: str, *, value: str = "n", dataset: str = "orders") -> dict[Any, int]:
     """``{key cell: count}`` with integer keys where the cell is numeric."""
     return {(int(k) if isinstance(k, (int, float)) else k): int(v)
-            for k, v in by_key(resp, key, value, model=model).items()}
+            for k, v in by_key(resp, key, value, dataset=dataset).items()}
 
 
 def sorted_rows(resp: SlayerResponse) -> list[str]:
@@ -263,7 +263,7 @@ def warnings_mentioning(resp: SlayerResponse, *needles: str) -> list[Any]:
 
 
 @contextlib.contextmanager
-def recorded_warnings() -> Iterator[list[warnings.WarningMessage]]:
+def recorded_warnings() -> Generator[list[warnings.WarningMessage], None, None]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         yield caught

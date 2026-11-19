@@ -1,0 +1,21 @@
+{
+ "source": "tests/test_stored_upgrade_date_ranges.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_range",
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_range",
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

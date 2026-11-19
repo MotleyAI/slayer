@@ -30,8 +30,8 @@ engine = SlayerQueryEngine(
 
 # Any input shape works — SlayerQuery / dict, a multi-stage list, or a
 # run-by-name string. Each funnels into one final SQL that is cached.
-resp = await engine.execute({"source_model": "orders",
-                             "measures": [{"formula": "sum(amount)"}]},
+resp = await engine.execute({"population": "orders",
+                             "metrics": ["sum(amount)"]},
                             cache=True)
 ```
 
@@ -112,8 +112,8 @@ class RefreshResult:
 
 `refresh()` re-prepares each stale entry from its **original input** through the
 full `execute` pipeline (not the frozen SQL), so `whole_periods_only` boundaries
-re-snap and model/schema edits are picked up. If the freshly-prepared SQL differs
-(a new period, an edited model), the entry is re-keyed under the new SQL hash.
+re-snap and dataset/schema edits are picked up. If the freshly-prepared SQL differs
+(a new period, an edited dataset), the entry is re-keyed under the new SQL hash.
 `refresh()` is continue-on-failure: a failed refresh-key scan or re-execution
 leaves the existing entry unchanged and records a `RefreshError`.
 
@@ -121,9 +121,9 @@ leaves the existing entry unchanged and records a `RefreshError`.
 it was cached under** (its SQL-client fingerprint), reusing the client created
 at write time — so a `datasource`-priority change or a same-name connection edit
 between caching and `refresh()` can never migrate a table-backed entry or read
-from a different database. One residual: a run-by-name **query-backed** model
+from a different database. One residual: a run-by-name **query-backed** dataset
 resolves its inner `source_queries` metadata through the current datasource
-priority, so if the same backing-model name lives in two datasources and the
+priority, so if the same backing-dataset name lives in two datasources and the
 priority changes between caching and `refresh()`, the inner SQL may be shaped
 from the other datasource. After repointing or re-prioritising a datasource
 while a cache is live, call `clear_cache()`.

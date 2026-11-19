@@ -1,0 +1,435 @@
+{
+ "source": "tests/test_dev1739_execution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "city_rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "city_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) / sum(amount, partition_by=region)",
+    "name": "share"
+   },
+   "new": {
+    "expression": "sum(amount) / sum(amount, partition_by=region)",
+    "name": "share"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) / sum(amount, partition_by=region)",
+    "name": "share"
+   },
+   "new": {
+    "expression": "sum(amount) / sum(amount, partition_by=region)",
+    "name": "share"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) / sum(amount, partition_by=[])",
+    "name": "share"
+   },
+   "new": {
+    "expression": "sum(amount) / sum(amount, partition_by=[])",
+    "name": "share"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "city_rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "city_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "city_rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "city_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "city_rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "city_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "city_rev",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "city_rev",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "city_rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "city_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(ok_amount)",
+    "name": "city_ok"
+   },
+   "new": {
+    "expression": "sum(ok_amount)",
+    "name": "city_ok"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(ok_amount, partition_by=region)",
+    "name": "region_ok"
+   },
+   "new": {
+    "expression": "sum(ok_amount, partition_by=region)",
+    "name": "region_ok"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[])",
+    "name": "grand"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[])",
+    "name": "grand"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "city_rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "city_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(nomatch, partition_by=[])",
+    "name": "nsum"
+   },
+   "new": {
+    "expression": "sum(nomatch, partition_by=[])",
+    "name": "nsum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(nomatch, partition_by=[])",
+    "name": "ncount"
+   },
+   "new": {
+    "expression": "count(nomatch, partition_by=[])",
+    "name": "ncount"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "cell"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "cell"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=ordered_at)",
+    "name": "month_total"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=ordered_at)",
+    "name": "month_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*, partition_by=region)",
+    "name": "region_n"
+   },
+   "new": {
+    "expression": "count(*, partition_by=region)",
+    "name": "region_n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[region, channel])",
+    "name": "rc"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[region, channel])",
+    "name": "rc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "plain"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "plain"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[region, city])",
+    "name": "deg"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[region, city])",
+    "name": "deg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend) / sum(customers.spend, partition_by=[])",
+    "name": "share"
+   },
+   "new": {
+    "expression": "sum(customers.spend) / sum(customers.spend, partition_by=[])",
+    "name": "share"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=customers.tier)",
+    "name": "deg"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=customers.tier)",
+    "name": "deg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=customers.regions.name)",
+    "name": "region_sp"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=customers.regions.name)",
+    "name": "region_sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   }
+  }
+ ],
+ "skipped": []
+}

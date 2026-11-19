@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.query import (
-    ModelMeasure,
+    QueryMetric,
     SlayerQuery,
     TimeDimension,
 )
@@ -29,7 +29,7 @@ async def exec_engine(request):
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -40,8 +40,8 @@ class TestMultiOutputProducerValues:
         band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
                 "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
-            dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": band, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -53,11 +53,11 @@ class TestMultiOutputProducerValues:
         resp = await exec_engine.execute(_q(
             dimensions=[
                 "region",
-                {"expression": BAND, "name": "band_hi"},
-                {"expression": "CASE WHEN count(amount, partition_by=city) > 1 "
-                               "THEN 1 ELSE 0 END", "name": "band_n"},
+                {"field": BAND, "alias": "band_hi"},
+                {"field": "CASE WHEN count(amount, partition_by=city) > 1 "
+                               "THEN 1 ELSE 0 END", "alias": "band_n"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band_hi"]), int(r["orders.band_n"])):
               float(r["orders.s"]) for r in resp.data}
@@ -72,9 +72,9 @@ class TestMultiOutputProducerValues:
 class TestNotFilterOnComputedDim:
     async def test_not_band_keeps_only_band_zero_groups(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["not (band == 1)"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": BAND, "alias": "band"}],
+            filter=["not (band == 1)"],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -89,14 +89,14 @@ class TestDateRangeReachesProducer:
         # (5000, not > 5000) bands to 0. Every Jan city total is <= 5000 -> all
         # band 0, distinguishing the two behaviours by VALUE.
         jan = [TimeDimension(
-            dimension="ordered_at",
+            field="ordered_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-01-01", "2024-01-31"],
         )]
         resp = await exec_engine.execute(_q(
-            dimensions=["region", {"expression": BAND, "name": "band"}],
+            dimensions=["region", {"field": BAND, "alias": "band"}],
             time_dimensions=jan,
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         by = {(r["orders.region"], month_key(r["orders.ordered_at"]),
                int(r["orders.band"])): float(r["orders.s"]) for r in resp.data}
@@ -109,9 +109,9 @@ class TestDateRangeReachesProducer:
 class TestOrderByComputedDimDescending:
     async def test_order_by_band_desc(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
-            order=[{"column": "band", "direction": "desc"}],
+            dimensions=["region", {"field": BAND, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            order=[{"field": "band", "direction": "desc"}],
         ))
         bands = [int(r["orders.band"]) for r in resp.data]
         assert bands == sorted(bands, reverse=True)

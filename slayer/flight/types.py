@@ -22,24 +22,25 @@ from __future__ import annotations
 
 import pyarrow as pa
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind
 from slayer.facade.datatypes import SUPPORTED_DATATYPES, datatype_to_jdbc
 from slayer.facade.rows import RowBatch
 
-_DATATYPE_TO_ARROW: dict[DataType, pa.DataType] = {
-    DataType.TEXT: pa.utf8(),
-    DataType.INT: pa.int64(),
-    DataType.DOUBLE: pa.float64(),
-    DataType.BOOLEAN: pa.bool_(),
-    DataType.DATE: pa.date32(),
-    DataType.TIMESTAMP: pa.timestamp("us"),
+_KIND_TO_ARROW: dict[TypeKind, pa.DataType] = {
+    TypeKind.TEXT: pa.utf8(),
+    TypeKind.INT: pa.int64(),
+    TypeKind.DOUBLE: pa.float64(),
+    TypeKind.BOOLEAN: pa.bool_(),
+    TypeKind.DATE: pa.date32(),
+    TypeKind.TIMESTAMP: pa.timestamp("us"),
     # Opaque columns travel as Arrow strings — see DataType.is_opaque. The
     # forward map is intentionally lossy here: UNKNOWN -> utf8 -> TEXT does
     # not round-trip back to UNKNOWN.
-    DataType.UNKNOWN: pa.utf8(),
+    TypeKind.UNKNOWN: pa.utf8(),
     # Lists travel as their JSON array text.
-    DataType.ARRAY: pa.utf8(),
+    TypeKind.ARRAY: pa.utf8(),
 }
+_DATATYPE_TO_ARROW: dict[DataType, pa.DataType] = {t: _KIND_TO_ARROW[t.kind] for t in DataType}
 
 
 def datatype_to_arrow(dt: DataType) -> pa.DataType:
@@ -57,17 +58,17 @@ def arrow_to_datatype(at: pa.DataType) -> DataType | None:
     the wire schema wins (§5.3).
     """
     if pa.types.is_string(at) or pa.types.is_large_string(at):
-        return DataType.TEXT
+        return DataType.STRING
     if pa.types.is_integer(at):
-        return DataType.INT
+        return DataType.INTEGER
     if pa.types.is_floating(at) or pa.types.is_decimal(at):
-        return DataType.DOUBLE
+        return DataType.FLOAT
     if pa.types.is_boolean(at):
         return DataType.BOOLEAN
     if pa.types.is_date(at):
         return DataType.DATE
     if pa.types.is_timestamp(at):
-        return DataType.TIMESTAMP
+        return DataType.DATETIME
     return None
 
 

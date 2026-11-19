@@ -2,7 +2,7 @@
 ``help_content/NN_name.md`` (``NN_`` fixes teaching order, stripped for the
 topic key) and read via ``inspect(entity_type="memory")`` / ``search``.
 Seeding is idempotent (upsert, skip-if-unchanged) and seeds no entities, so
-help never surfaces in a model's Learnings section."""
+help never surfaces in a dataset's Learnings section."""
 
 from __future__ import annotations
 
@@ -24,12 +24,12 @@ HELP_ID_PREFIX = "help."
 #: and inspect(compact=True). Keyed by the topic key (``NN_`` prefix stripped).
 _DESCRIPTIONS: dict[str, str] = {
     "intro": "Start here: what {{product}} is, the judgment calls queries require, and the deep-dive topics.",
-    "models": "Read before creating or editing a model: columns, saved measures, custom aggregations, joins, filters, query-backed models, result keys.",
+    "datasets": "Read before creating or editing a dataset: fields, saved metrics, custom aggregations, relationships, filters, query-backed datasets, result keys.",
     "workflow": "Read before building a non-trivial query: method, filter literals, verifying a result, error decoder, connecting databases.",
-    "aggregations": "Read when a measure needs an aggregation beyond sum/count, partition_by, a trailing window, nesting, or empty-input semantics.",
-    "transforms": "Read when a measure needs a running total, period-over-period change, time shift, lag/lead, ranking, or a streak.",
+    "aggregations": "Read when a metric needs an aggregation beyond sum/count, partition_by, a trailing window, nesting, or empty-input semantics.",
+    "transforms": "Read when a metric needs a running total, period-over-period change, time shift, lag/lead, ranking, or a streak.",
     "time": "Read when a query filters or buckets by time: time-point forms, date_range and look-back, running totals from the start.",
-    "joins": "Read when a query uses another model's fields: dotted paths, choosing the root, joined aggregates, broadcast vs associate, anti-joins.",
+    "relationships": "Read when a query uses another dataset's fields: dotted paths, choosing the root, joined aggregates, broadcast vs associate, anti-joins.",
     "queries": "Read when one query object is not enough: query shapes, stages and their column names, raw rows, variables, debugging.",
 }
 
@@ -39,7 +39,11 @@ RETIRED_HELP_IDS: tuple[str, ...] = (
     "help.formulas",
     "help.filters",
     "help.extending",
+    "help.models",
+    "help.joins",
 )
+#: Retired help topics and the topics that replaced them.
+RENAMED_HELP_IDS: dict[str, str] = {"help.models": "help.datasets", "help.joins": "help.relationships"}
 
 
 class HelpTopic(BaseModel):

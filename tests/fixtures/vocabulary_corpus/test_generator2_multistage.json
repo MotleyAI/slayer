@@ -1,0 +1,583 @@
+{
+ "source": "tests/test_generator2_multistage.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s2",
+    "source_model": "s1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "name": "s2",
+    "population": "s1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s2",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "min(amount_sum_max)"
+     }
+    ]
+   },
+   "new": {
+    "population": "s2",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "min(amount_sum_max)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(customers.revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(customers__revenue_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(customers__revenue_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     },
+     {
+      "formula": "sum(customers.revenue)"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     },
+     {
+      "metric": "sum(customers.revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     },
+     {
+      "formula": "max(customers__revenue_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(amount_sum)"
+     },
+     {
+      "metric": "max(customers__revenue_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(customers.revenue)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "customers__region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "customers__region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "dimensions": [
+     "customers__region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "dimensions": [
+     "customers__region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "places",
+    "dimensions": [
+     "loc",
+     "city"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "name": "s1",
+    "population": "places",
+    "dimensions": [
+     "loc",
+     "city"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "loc"
+    ],
+    "measures": [
+     {
+      "formula": "count(city)"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "loc"
+    ],
+    "metrics": [
+     {
+      "metric": "count(city)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 412,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 417,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 418,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 419,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,83 @@
+{
+ "source": "tests/test_dev1847_shape_b.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=spend_band)",
+    "name": "bt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=spend_band)",
+    "name": "bt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=spend_band)",
+    "name": "bt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=spend_band)",
+    "name": "bt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, partition_by=spend_band)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, partition_by=spend_band)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": []
+}

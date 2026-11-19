@@ -1,0 +1,322 @@
+{
+ "source": "tests/test_dev2102_scope_and_targets.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "credit_total",
+    "formula": "sum(credit)"
+   },
+   "new": {
+    "name": "credit_total",
+    "expression": "sum(credit)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "x",
+    "formula": "count(*)"
+   },
+   "new": {
+    "name": "x",
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "spent"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "spent"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.credit_total",
+    "name": "ct"
+   },
+   "new": {
+    "expression": "customers.credit_total",
+    "name": "ct"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "credit_total",
+    "formula": "sum(credit)"
+   },
+   "new": {
+    "name": "credit_total",
+    "expression": "sum(credit)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.credit)",
+    "name": "ct"
+   },
+   "new": {
+    "expression": "sum(customers.credit)",
+    "name": "ct"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cust_spend.spent2",
+    "name": "s2"
+   },
+   "new": {
+    "expression": "cust_spend.spent2",
+    "name": "s2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "spent2",
+    "formula": "sum(spent * 2)"
+   },
+   "new": {
+    "name": "spent2",
+    "expression": "sum(spent * 2)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "mm",
+    "formula": "sum(spent)"
+   },
+   "new": {
+    "name": "mm",
+    "expression": "sum(spent)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(mm)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(mm)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "spent"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "spent"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(mm)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(mm)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.credit_total",
+    "name": "ct"
+   },
+   "new": {
+    "expression": "customers.credit_total",
+    "name": "ct"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "customers.credit_total",
+      "name": "a"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "customers.credit_total",
+      "alias": "a"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(a)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(a)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "spent"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "spent"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "double_spent",
+    "name": "t"
+   },
+   "new": {
+    "expression": "double_spent",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "double_spent",
+    "formula": "sum(spent * 2)"
+   },
+   "new": {
+    "name": "double_spent",
+    "expression": "sum(spent * 2)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "Customers.credit_total",
+    "name": "ct"
+   },
+   "new": {
+    "expression": "Customers.credit_total",
+    "name": "ct"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cities",
+    "name": "t"
+   },
+   "new": {
+    "expression": "cities",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "cities",
+    "formula": "count_distinct(upper(city))"
+   },
+   "new": {
+    "name": "cities",
+    "expression": "count_distinct(upper(city))"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(a)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(a)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(t)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(t)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 33,
+   "reason": "not a standalone dataset: ValidationError"
+  }
+ ]
+}

@@ -1,0 +1,100 @@
+{
+ "source": "tests/_dev1915_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  }
+ ]
+}

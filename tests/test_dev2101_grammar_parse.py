@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import re
 from decimal import Decimal
 
@@ -11,27 +11,27 @@ import pytest
 from slayer.core import syntax
 from slayer.core.enums import DataType
 from slayer.core.errors import IllegalWindowInFilterError
-from slayer.core.keys import AggregateKey, ColumnKey, Grain, TransformKey, ValueKey
-from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
-from slayer.core.scope import ModelScope
+from slayer.core.keys import AggregateKey, FieldKey, Grain, TransformKey, ValueKey
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import AggCall, Cast, DottedRef, Literal, Ref, ScalarCall, TransformCall, parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.DOUBLE),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         aggregations=[Aggregation(
-            name="wsum", formula="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="1")],
+            name="wsum", expression="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="1")],
         )],
     )
 
@@ -39,8 +39,8 @@ def _orders() -> SlayerModel:
 def bound(text: str) -> ValueKey:
     """``text`` bound over ``orders``: keyword-versus-comparison is decided here, not at parse."""
     orders = _orders()
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=orders), bundle=bundle).value_key
+    bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=orders), bundle=bundle).value_key
 
 
 def same(a: str, b: str) -> None:
@@ -58,7 +58,8 @@ def rejected(text: str, *needles: str, exc: type[Exception] = ValueError) -> str
 
 class TestOneParser:
     def test_parser_lives_in_core(self) -> None:
-        assert importlib.util.find_spec("slayer.engine.syntax") is None
+        with pytest.raises(ImportError, match="slayer.core.syntax"):
+            importlib.import_module("slayer.engine.syntax")
 
     def test_no_filter_only_entry_point(self) -> None:
         assert not hasattr(syntax, "parse_filter_expr")
@@ -199,7 +200,7 @@ class TestKeywordArguments:
         key = bound("wsum(price, weight = quantity)")
         assert isinstance(key, AggregateKey)
         assert key.agg == "wsum"
-        assert dict(key.kwargs) == {"weight": ColumnKey(path=(), leaf="quantity")}
+        assert dict(key.kwargs) == {"weight": FieldKey(path=(), leaf="quantity")}
 
     def test_kwarg_in_transform(self) -> None:
         assert isinstance(parse_expr("rank(sum(amount), direction = 'desc')"), TransformCall)
@@ -324,7 +325,7 @@ class TestFilterClause:
         assert parsed.filter is not None
         key = bound(text)
         assert isinstance(key, AggregateKey)
-        assert key.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
+        assert key.partition_keys == Grain.of([FieldKey(path=(), leaf="region")])
 
     def test_filtered_aggregation_in_arithmetic(self) -> None:
         parsed = parse_expr("sum(amount) FILTER (WHERE status = 'paid') / sum(amount)")

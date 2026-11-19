@@ -7,21 +7,21 @@ query's final stage, which then runs as one query, plus how agents discover a mo
 ## Requirements
 
 ### Requirement: A refined run equals the hand-written merged final stage
-Run-by-name SHALL accept a refinement carrying any of `dimensions`, `time_dimensions`, `measures`,
-`filters`, `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`,
+Run-by-name SHALL accept a refinement carrying any of `dimensions`, `time_dimensions`, `metrics`,
+`filter`, `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`,
 `distinct_dimension_values` and `to_many_handling`, with the same input forms and validation as the
 same fields of a query. The refinement SHALL merge into the saved query's final stage only — earlier
 stages are never changed — and the result SHALL be exactly the values, result keys, warnings and
 errors of that merged stage written by hand in place of the saved final stage. A refinement carrying
-`source_model`, `name`, `version`, `variables` or any unknown field SHALL be rejected. An empty
+`population`, `name`, `version`, `variables` or any unknown field SHALL be rejected. An empty
 refinement SHALL behave exactly like no refinement.
 
 Scenario data for this capability (executed on SQLite and DuckDB): table `orders(id, customer_id, region,
 status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c1, US, refunded, 40,
 2025-01-20), (3, c2, EU, paid, 70, 2025-02-03), (4, c3, EU, paid, 35, 2025-02-17), (5, c2, US, paid,
 50, 2025-03-09); model `orders` over it with default time dimension `ordered_at`. Saved query
-`monthly_revenue` = `{"source_model": "orders", "time_dimensions": [{"dimension": "ordered_at",
-"granularity": "month"}], "measures": [{"formula": "sum(amount)", "name": "revenue"}], "filters":
+`monthly_revenue` = `{"population": "orders", "time_dimensions": [{"field": "ordered_at",
+"granularity": "month"}], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter":
 ["status = 'paid'"]}`, which runs by name to 2025-01 → 100, 2025-02 → 105, 2025-03 → 50 under keys
 `orders.ordered_at`, `orders.revenue`.
 
@@ -30,19 +30,19 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 - **THEN** the rows are (US, 2025-01, 100), (EU, 2025-02, 105), (US, 2025-03, 50)
 
 #### Scenario: Extra measure
-- **WHEN** `monthly_revenue` runs with refinement `{"measures": ["count(*)"]}`
+- **WHEN** `monthly_revenue` runs with refinement `{"metrics": ["count(*)"]}`
 - **THEN** the result adds `orders._count` = 1, 2, 1 for 2025-01, 2025-02, 2025-03
 
 #### Scenario: Extra filter ANDs with the saved filters
-- **WHEN** `monthly_revenue` runs with refinement `{"filters": ["amount >= 50"]}`
+- **WHEN** `monthly_revenue` runs with refinement `{"filter": ["amount >= 50"]}`
 - **THEN** the rows are 2025-01 → 100, 2025-02 → 70, 2025-03 → 50
 
 #### Scenario: Window added to the saved time dimension
-- **WHEN** `monthly_revenue` runs with refinement `{"time_dimensions": [{"dimension": "ordered_at", "granularity": "month", "date_range": ["2025-02-01", "2025-03-31"]}]}`
+- **WHEN** `monthly_revenue` runs with refinement `{"time_dimensions": [{"field": "ordered_at", "granularity": "month", "date_range": ["2025-02-01", "2025-03-31"]}]}`
 - **THEN** the rows are 2025-02 → 105, 2025-03 → 50
 
 #### Scenario: Order and limit
-- **WHEN** `monthly_revenue` runs with refinement `{"order": [{"column": "revenue", "direction": "desc"}], "limit": 1}`
+- **WHEN** `monthly_revenue` runs with refinement `{"order": [{"field": "revenue", "direction": "desc"}], "limit": 1}`
 - **THEN** the single row is 2025-02 → 105
 
 #### Scenario: Second granularity renames the saved key
@@ -58,7 +58,7 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 - **THEN** the result equals the plain run by name, with the same SQL
 
 #### Scenario: Forbidden refinement fields
-- **WHEN** a refinement carries `source_model`, `name`, `version`, `variables`, or an unknown key
+- **WHEN** a refinement carries `population`, `name`, `version`, `variables`, or an unknown key
 - **THEN** it is rejected as invalid input before anything executes
 
 ### Requirement: Merge rules per field
@@ -71,7 +71,7 @@ inside a string literal or quoted identifier is compared exactly. Two entries wi
 SHALL collapse into one when they are equal in every field. A refinement measure whose formula is a
 bare name, or that name qualified by the root, equal to a saved measure entry's name — named with that
 same name, unnamed, or the string shorthand — SHALL restate that saved entry: it collapses into the
-saved entry when every field it explicitly sets (`label`, `type`, `description`, `meta`; an explicit
+saved entry when every field it explicitly sets (`label`, `datatype`, `description`, `meta`; an explicit
 `null` included) equals the saved entry's value, and conflicts otherwise. Time dimensions SHALL be
 keyed by (dimension, granularity), the dimension compared as a formula is: a new key is appended; for
 an existing key each of `date_range` and `label` takes the side that sets it, keeps equal values, and
@@ -83,11 +83,11 @@ supplies them, an explicit empty `order` or `null` clearing the saved value, and
 unchanged otherwise.
 
 #### Scenario: Identical duplicates collapse
-- **WHEN** `monthly_revenue` runs with refinement `{"dimensions": ["orders.region"], "measures": [{"formula": "sum(amount)", "name": "revenue"}]}`
+- **WHEN** `monthly_revenue` runs with refinement `{"dimensions": ["orders.region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}]}`
 - **THEN** the result equals the extra-dimension scenario's, with no name-collision error
 
 #### Scenario: A root-qualified formula is the saved formula
-- **WHEN** `monthly_revenue` runs with refinement measures `[{"formula": "sum(orders.amount)", "name": "revenue"}]`, or with a refinement time dimension `date_trunc('month', orders.ordered_at)`
+- **WHEN** `monthly_revenue` runs with refinement measures `[{"metric": "sum(orders.amount)", "alias": "revenue"}]`, or with a refinement time dimension `date_trunc('month', orders.ordered_at)`
 - **THEN** each collapses into the saved entry, and the result equals the plain run by name
 
 #### Scenario: Literals are never conflated
@@ -95,15 +95,15 @@ unchanged otherwise.
 - **THEN** the refinement measure is appended as a distinct entry
 
 #### Scenario: Restating a saved measure by name
-- **WHEN** `monthly_revenue` runs with refinement measures `[{"formula": "revenue", "name": "revenue"}, "count(*)"]`, `[{"formula": "revenue"}, "count(*)"]`, `["revenue", "count(*)"]` or `["orders.revenue", "count(*)"]`
+- **WHEN** `monthly_revenue` runs with refinement measures `[{"metric": "revenue", "alias": "revenue"}, "count(*)"]`, `[{"metric": "revenue"}, "count(*)"]`, `["revenue", "count(*)"]` or `["orders.revenue", "count(*)"]`
 - **THEN** each result equals that of refinement measures `["count(*)"]`
 
 #### Scenario: Restatement with differing metadata conflicts
-- **WHEN** a refinement restates `revenue` as `{"formula": "revenue", "label": "Rev"}` and the saved entry's label differs (including a saved label with an explicit `null` restatement)
-- **THEN** a refinement conflict error names `measures` and `revenue`
+- **WHEN** a refinement restates `revenue` as `{"metric": "revenue", "label": "Rev"}` and the saved entry's label differs (including a saved label with an explicit `null` restatement)
+- **THEN** a refinement conflict error names `metrics` and `revenue`
 
 #### Scenario: Restatement under another name is not a restatement
-- **WHEN** a refinement measure is `{"formula": "revenue", "name": "r2"}`
+- **WHEN** a refinement measure is `{"metric": "revenue", "alias": "r2"}`
 - **THEN** it is appended as a new entry, as before
 
 #### Scenario: Same date range on the saved window
@@ -111,7 +111,7 @@ unchanged otherwise.
 - **THEN** it runs unchanged, with no error
 
 #### Scenario: Filter narrowing a saved window
-- **WHEN** that saved query (which also orders by `revenue` desc with `limit` 2) runs with refinement `{"filters": ["ordered_at >= '2025-02-01'"]}`
+- **WHEN** that saved query (which also orders by `revenue` desc with `limit` 2) runs with refinement `{"filter": ["ordered_at >= '2025-02-01'"]}`
 - **THEN** the single row is 2025-02 → 105
 
 #### Scenario: Clearing a saved limit
@@ -131,17 +131,17 @@ unchanged otherwise.
 ### Requirement: Conflicting refinements fail closed
 A refinement entry with the same identity as a saved entry but differing in any other field, and a
 time-dimension `date_range` or `label` set differently on both sides, SHALL raise a refinement
-conflict error naming the field, the key (measure or dimension name, or `column@granularity`), the
+conflict error naming the field, the key (measure or dimension name, or `field@granularity`), the
 saved value and the refinement value, with a suggestion; for a `date_range` conflict the suggestion
 SHALL be to add a filter on the time column or to save the window as a filter with variables.
 Nothing SHALL execute.
 
 #### Scenario: Same measure name, different formula
-- **WHEN** `monthly_revenue` runs with refinement `{"measures": [{"formula": "count(*)", "name": "revenue"}]}`
-- **THEN** a refinement conflict error names `measures`, `revenue`, `sum(amount)` and `count(*)`
+- **WHEN** `monthly_revenue` runs with refinement `{"metrics": [{"metric": "count(*)", "alias": "revenue"}]}`
+- **THEN** a refinement conflict error names `metrics`, `revenue`, `sum(amount)` and `count(*)`
 
 #### Scenario: Same measure, different metadata
-- **WHEN** a refinement repeats a saved measure's name and formula with a different `label` (or `type`, `description`, `meta`), for a named and for an unnamed measure
+- **WHEN** a refinement repeats a saved measure's name and formula with a different `label` (or `datatype`, `description`, `meta`), for a named and for an unnamed measure
 - **THEN** a refinement conflict error is raised
 
 #### Scenario: Same computed dimension name, different expression
@@ -158,11 +158,11 @@ stages exactly as the saved final stage does; a reference the final stage cannot
 with the ordinary resolution error.
 
 #### Scenario: Refining the final stage
-- **WHEN** the saved query `[{"name": "per_customer", "source_model": "orders", "dimensions": ["customer_id", "region"], "measures": [{"formula": "sum(amount)", "name": "revenue"}], "filters": ["status = 'paid'"]}, {"source_model": "per_customer", "measures": [{"formula": "avg(revenue)", "name": "avg_revenue"}]}]` runs by name
+- **WHEN** the saved query `[{"name": "per_customer", "population": "orders", "dimensions": ["customer_id", "region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["status = 'paid'"]}, {"population": "per_customer", "metrics": [{"metric": "avg(revenue)", "alias": "avg_revenue"}]}]` runs by name
 - **THEN** `per_customer.avg_revenue` is 63.75
 - **WHEN** it runs with refinement `{"dimensions": ["region"]}`
 - **THEN** the rows are (US, 75.0), (EU, 52.5)
-- **WHEN** it runs with refinement `{"filters": ["region = 'EU'"]}`
+- **WHEN** it runs with refinement `{"filter": ["region = 'EU'"]}`
 - **THEN** the value is 52.5
 
 #### Scenario: A column aggregated away
@@ -175,11 +175,11 @@ filter containing `{placeholders}` SHALL be substituted with the same precedence
 stage's own filters.
 
 #### Scenario: Refinement with runtime variables
-- **WHEN** the saved query `{"source_model": "orders", "dimensions": ["region"], "measures": [{"formula": "sum(amount)", "name": "revenue"}], "filters": ["status = '{status}'"]}` saved with variables `{"status": "paid"}` runs by name
+- **WHEN** the saved query `{"population": "orders", "dimensions": ["region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["status = '{status}'"]}` saved with variables `{"status": "paid"}` runs by name
 - **THEN** the rows are US → 150, EU → 105
 - **WHEN** it runs with variables `{"status": "refunded"}`
 - **THEN** the single row is US → 40
-- **WHEN** it runs with refinement `{"measures": ["count(*)"]}` and variables `{"status": "refunded"}`
+- **WHEN** it runs with refinement `{"metrics": ["count(*)"]}` and variables `{"status": "refunded"}`
 - **THEN** the single row is US → 40 with `_count` 1
 
 #### Scenario: Placeholder in a refinement filter
@@ -232,7 +232,7 @@ exactly that entry, and refreshing a stale refined entry SHALL re-run the refine
 
 ### Requirement: Saved queries are discoverable from their models
 Inspecting a model SHALL list the non-hidden saved queries of its datasource any of whose stages
-name that model as `source_model` (directly or as the base of a model extension), each once, with
+name that model as `population` (directly or as the base of a model extension), each once, with
 name and description (descriptions truncated like other inspect descriptions), in the markdown and
 JSON outputs of the compact and full model views and of views listing model skeletons; the listing
 SHALL be omitted when empty and SHALL be a selectable inspect section. A model SHALL never list

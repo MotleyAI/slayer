@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_result_column_type_drivers.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 348,
+   "reason": "not fully literal"
+  }
+ ]
+}

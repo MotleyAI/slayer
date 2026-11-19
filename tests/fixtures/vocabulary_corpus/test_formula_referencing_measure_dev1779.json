@@ -1,0 +1,341 @@
+{
+ "source": "tests/test_formula_referencing_measure_dev1779.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "order_count",
+    "formula": "count(id)"
+   },
+   "new": {
+    "name": "order_count",
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "unique_customers",
+    "formula": "count_distinct(customer)"
+   },
+   "new": {
+    "name": "unique_customers",
+    "expression": "count_distinct(customer)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "total_revenue",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "total_revenue",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "habit_score",
+    "formula": "order_count / unique_customers"
+   },
+   "new": {
+    "name": "habit_score",
+    "expression": "order_count / unique_customers"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "stores",
+    "join_pairs": [
+     [
+      "store_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "stores",
+    "from_columns": [
+     "store_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "order_count",
+    "formula": "count(id)"
+   },
+   "new": {
+    "name": "order_count",
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "running_orders",
+    "formula": "cumsum(order_count)"
+   },
+   "new": {
+    "name": "running_orders",
+    "expression": "cumsum(order_count)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "running_orders",
+     "order_count"
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "running_orders",
+     "order_count"
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "order_count",
+    "formula": "count(id)"
+   },
+   "new": {
+    "name": "order_count",
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "mom_orders",
+    "formula": "change_pct(order_count)"
+   },
+   "new": {
+    "name": "mom_orders",
+    "expression": "change_pct(order_count)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "mom_orders",
+     "order_count"
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "mom_orders",
+     "order_count"
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "habit_score",
+     "order_count",
+     "unique_customers",
+     "total_revenue"
+    ],
+    "dimensions": [
+     "stores.name"
+    ],
+    "order": [
+     {
+      "column": "habit_score",
+      "direction": "desc"
+     }
+    ],
+    "limit": 100
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "habit_score",
+     "order_count",
+     "unique_customers",
+     "total_revenue"
+    ],
+    "dimensions": [
+     "stores.name"
+    ],
+    "order": [
+     {
+      "field": "habit_score",
+      "direction": "desc"
+     }
+    ],
+    "limit": 100
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "order_count",
+    "formula": "count(id)"
+   },
+   "new": {
+    "name": "order_count",
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "bad",
+    "formula": "order_count / nonexistent_measure"
+   },
+   "new": {
+    "name": "bad",
+    "expression": "order_count / nonexistent_measure"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "bad"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "bad"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "order_count",
+    "formula": "count(id)"
+   },
+   "new": {
+    "name": "order_count",
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "running_bad",
+    "formula": "cumsum(nonexistent_measure)"
+   },
+   "new": {
+    "name": "running_bad",
+    "expression": "cumsum(nonexistent_measure)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "running_bad"
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "running_bad"
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 217,
+   "reason": "not fully literal"
+  }
+ ]
+}

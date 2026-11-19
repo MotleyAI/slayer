@@ -1,29 +1,34 @@
-"""Result models + rendering for ``recommend_root_model``.
+"""Result models + rendering for ``recommend_population``.
 
-Given a set of ``model.column`` / ``model.metric`` items an agent wants in
-one query, the engine recommends a root model (query ``source_model``) and
-the join-qualified reference path for each item from that root. These
+Given a set of ``dataset.field`` / ``dataset.metric`` items an agent wants in
+one query, the engine recommends a root dataset (query ``population``) and
+the relationship-qualified reference path for each item from that root. These
 models are the caller-facing shape returned by the engine and echoed
 verbatim through MCP / REST / CLI / SlayerClient.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel, ModelWrapValidatorHandler, model_validator
+from typing_extensions import deprecated
+
+from slayer.core.vocabulary import COVERAGE_KEYS, RECOMMENDATION_KEYS, attribute_used, name_twins, renamed_input
 
 
 class ItemPath(BaseModel):
-    """One input item paired with its join-qualified reference path from
+    """One input item paired with its relationship-qualified reference path from
     the recommended root (relative to the root, root name excluded — the
-    same form used inside a ``SlayerQuery`` whose ``source_model`` is the
+    same form used inside a ``SlayerQuery`` whose ``population`` is the
     root). Any aggregation suffix is preserved verbatim."""
 
     input_item: str
     path: str
-    # True for a saved measure / aggregation-suffixed item — reachable
+    # True for a saved metric / aggregation-suffixed item — reachable
     # from the root but not a determination item that steers the recommendation.
     attachment: bool = False
-    # An attachment on a dataset no join path reaches: its path is the root's product hop.
+    # An attachment on a dataset no relationship path reaches: its path is the root's product hop.
     unrelated: bool = False
 
 
@@ -31,46 +36,82 @@ class CandidateCoverage(BaseModel):
     """A partial-root candidate for the no-common-root diagnostic: which
     input items it can reach and which it cannot."""
 
-    model_name: str
+    dataset_name: str
     reachable_items: list[str]
     unreachable_items: list[str]
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler[CandidateCoverage]) -> CandidateCoverage:
+        return renamed_input(data, handler, COVERAGE_KEYS, stored=False)
 
-class RootModelRecommendation(BaseModel):
-    """Outcome of :meth:`SlayerQueryEngine.recommend_root_model`.
+    @property
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self) -> str:
+        attribute_used(self, old="model_name", new="dataset_name")
+        return self.dataset_name
 
-    When ``reachable`` is ``True``, ``root_model`` names the recommended
-    ``source_model`` and ``item_paths`` gives every item's path from it.
-    When ``False``, no single model reaches all items: ``root_model`` is
+    @model_name.setter
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self, value: str) -> None:
+        attribute_used(self, old="model_name", new="dataset_name")
+        self.dataset_name = value
+
+
+class PopulationRecommendation(BaseModel):
+    """Outcome of :meth:`SlayerQueryEngine.recommend_population`.
+
+    When ``reachable`` is ``True``, ``population`` names the recommended
+    ``population`` and ``item_paths`` gives every item's path from it.
+    When ``False``, no single dataset reaches all items: ``population`` is
     ``None``, ``item_paths`` is empty, and ``coverage`` lists the Pareto
     frontier of partial roots so the caller can split the work into a
     multi-stage query.
     """
 
     data_source: str
-    root_model: str | None
+    population: str | None
     reachable: bool
     item_paths: list[ItemPath] = []
     coverage: list[CandidateCoverage] = []
     message: str = ""
     warnings: list[str] = []
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(
+        cls, data: Any, handler: ModelWrapValidatorHandler[PopulationRecommendation],
+    ) -> PopulationRecommendation:
+        return renamed_input(data, handler, RECOMMENDATION_KEYS, stored=False)
 
-def _render_item_paths(rec: RootModelRecommendation) -> list[str]:
+    @property
+    @deprecated("root_model is deprecated; use population", category=None)
+    def root_model(self) -> str | None:
+        attribute_used(self, old="root_model", new="population")
+        return self.population
+
+    @root_model.setter
+    @deprecated("root_model is deprecated; use population", category=None)
+    def root_model(self, value: str | None) -> None:
+        attribute_used(self, old="root_model", new="population")
+        self.population = value
+
+
+def _render_item_paths(rec: PopulationRecommendation) -> list[str]:
     lines = [
-        f"Recommended root model: `{rec.root_model}`",
+        f"Recommended root dataset: `{rec.population}`",
         "",
         "| Input item | Path from root |",
         "|------------|----------------|",
     ]
     for ip in rec.item_paths:
-        note = " (unrelated: no join path, aggregated over its own rows)" if ip.unrelated else ""
+        note = " (unrelated: no relationship path, aggregated over its own rows)" if ip.unrelated else ""
         lines.append(f"| `{ip.input_item}` | `{ip.path}`{note} |")
     return lines
 
 
-def _render_coverage(rec: RootModelRecommendation) -> list[str]:
-    lines = ["Recommended root model: _none_ — no single model reaches every item."]
+def _render_coverage(rec: PopulationRecommendation) -> list[str]:
+    lines = ["Recommended root dataset: _none_ — no single dataset reaches every item."]
     if rec.message:
         lines.extend(["", rec.message])
     if rec.coverage:
@@ -84,14 +125,14 @@ def _render_coverage(rec: RootModelRecommendation) -> list[str]:
     for c in rec.coverage:
         reaches = ", ".join(f"`{i}`" for i in c.reachable_items) or "_(none)_"
         misses = ", ".join(f"`{i}`" for i in c.unreachable_items) or "_(none)_"
-        lines.append(f"| `{c.model_name}` | {reaches} | {misses} |")
+        lines.append(f"| `{c.dataset_name}` | {reaches} | {misses} |")
     return lines
 
 
-def render_recommendation_markdown(rec: RootModelRecommendation) -> str:
+def render_recommendation_markdown(rec: PopulationRecommendation) -> str:
     """Render a recommendation as human-readable markdown (MCP / CLI)."""
     lines = [f"Datasource: `{rec.data_source}`"]
-    if rec.reachable and rec.root_model is not None:
+    if rec.reachable and rec.population is not None:
         lines.extend(_render_item_paths(rec))
     else:
         lines.extend(_render_coverage(rec))
@@ -100,3 +141,11 @@ def render_recommendation_markdown(rec: RootModelRecommendation) -> str:
         lines.append("Warnings:")
         lines.extend(f"- {w}" for w in rec.warnings)
     return "\n".join(lines)
+
+
+if TYPE_CHECKING:
+    @deprecated("RootModelRecommendation is deprecated; use PopulationRecommendation", category=None)
+    class RootModelRecommendation(PopulationRecommendation): ...
+
+
+__getattr__ = name_twins(namespace=globals(), renames={"RootModelRecommendation": "PopulationRecommendation"})

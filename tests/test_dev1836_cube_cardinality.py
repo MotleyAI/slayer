@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.enums import JoinCardinality
-from slayer.core.models import SlayerModel
+from slayer.core.enums import RelationshipCardinality
+from slayer.core.models import SlayerDataset
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeCube, CubeDimension, CubeJoin, CubeProject
 
@@ -35,22 +35,22 @@ def _project(join_kwargs: dict) -> CubeProject:
     ])
 
 
-def _convert(project: CubeProject) -> tuple[dict[str, SlayerModel], object]:
+def _convert(project: CubeProject) -> tuple[dict[str, SlayerDataset], object]:
     result = CubeToSlayerConverter(project=project, data_source=DS).convert()
-    return {m.name: m for m in result.models}, result.report
+    return {m.name: m for m in result.datasets}, result.report
 
 
 @pytest.mark.parametrize(("relationship", "expected"), [
-    ("many_to_one", JoinCardinality.MANY_TO_ONE),
-    ("belongs_to", JoinCardinality.MANY_TO_ONE),
-    ("one_to_many", JoinCardinality.ONE_TO_MANY),
-    ("has_many", JoinCardinality.ONE_TO_MANY),
-    ("one_to_one", JoinCardinality.ONE_TO_ONE),
-    ("has_one", JoinCardinality.ONE_TO_ONE),
+    ("many_to_one", RelationshipCardinality.MANY_TO_ONE),
+    ("belongs_to", RelationshipCardinality.MANY_TO_ONE),
+    ("one_to_many", RelationshipCardinality.ONE_TO_MANY),
+    ("has_many", RelationshipCardinality.ONE_TO_MANY),
+    ("one_to_one", RelationshipCardinality.ONE_TO_ONE),
+    ("has_one", RelationshipCardinality.ONE_TO_ONE),
 ])
 def test_relationship_maps_to_cardinality(relationship, expected) -> None:
     models, report = _convert(_project({"relationship": relationship}))
-    (join,) = models["orders"].joins
+    (join,) = models["orders"].relationships
     assert join.cardinality == expected
     assert not any(relationship in issue.message for issue in report.issues)
 
@@ -58,14 +58,14 @@ def test_relationship_maps_to_cardinality(relationship, expected) -> None:
 def test_parsed_default_maps_like_an_explicit_value() -> None:
     # CubeJoin defaults relationship to Cube's own default, many_to_one.
     models, _ = _convert(_project({}))
-    (join,) = models["orders"].joins
-    assert join.cardinality == JoinCardinality.MANY_TO_ONE
+    (join,) = models["orders"].relationships
+    assert join.cardinality == RelationshipCardinality.MANY_TO_ONE
 
 
 def test_unknown_relationship_is_not_trusted_and_reported() -> None:
     """F10 — an unrecognized string leaves cardinality unset and warns."""
     models, report = _convert(_project({"relationship": "zero_or_more"}))
-    (join,) = models["orders"].joins
+    (join,) = models["orders"].relationships
     assert join.cardinality is None
     hits = [i for i in report.issues if "zero_or_more" in i.message]
     assert hits, [i.message for i in report.issues]

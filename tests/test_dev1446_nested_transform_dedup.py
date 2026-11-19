@@ -22,7 +22,7 @@ from typing import AsyncIterator, Tuple
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -54,16 +54,16 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
         )
     )
@@ -95,15 +95,15 @@ def _cte_body(sql: str, name: str) -> str:
 def _query() -> SlayerQuery:
     # Monthly SUM(amount): Jan=17, Feb=8, Mar=9. change = current - prior:
     # Jan -> NULL, Feb -> -9, Mar -> +1. Only March passes ``change > 0``.
-    return SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [
+    return SlayerQuery.model_validate({"population": "orders", "time_dimensions": [
             TimeDimension(
-                dimension="created_at",
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
             )
-        ], "measures": [{"formula": "sum(amount)", "name": "revenue"}], "filters": ["change(sum(amount)) > 0"]})
+        ], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["change(sum(amount)) > 0"]})
 
 
-async def test_dev1446_change_filter_keeps_correct_rows(engine):
+async def test_dev1446_change_filter_keeps_correct_rows(engine: Tuple[SlayerQueryEngine, str]):
     eng, _ = engine
     resp = await eng.execute(_query())
     assert resp.columns == ["orders.created_at", "orders.revenue"]
@@ -112,7 +112,7 @@ async def test_dev1446_change_filter_keeps_correct_rows(engine):
     ]
 
 
-async def test_dev1446_aggregate_interned_to_one_slot(engine):
+async def test_dev1446_aggregate_interned_to_one_slot(engine: Tuple[SlayerQueryEngine, str]):
     """The inner ``sum(amount)`` inside ``change(...)`` dedupes onto the
     declared ``revenue`` slot — no separate ``amount_sum`` column is minted,
     and the ``change`` arithmetic in the filter is computed against the

@@ -4,7 +4,7 @@ Pins the public write-side surface introduced by the facade refactor:
 
 * ``SearchService.upsert_memory(mem)`` calls every registered
   retriever's ``upsert_memory(mem)`` exactly once, in declaration order.
-* Same for ``refresh_model_subtree`` and ``refresh_datasource``.
+* Same for ``refresh_dataset_subtree`` and ``refresh_datasource``.
 * Aggregated warnings are deduped while preserving retriever
   declaration order (Codex Finding 5).
 * Per-retriever exceptions are isolated: when retriever 1 raises,
@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.retriever import RetrievalResult, Retriever
 from slayer.search.service import SearchService
@@ -40,9 +40,9 @@ async def storage() -> AsyncIterator[StorageBackend]:
         await s.save_datasource(DatasourceConfig(
             name="mydb", type="sqlite", database=":memory:",
         ))
-        await s.save_model(SlayerModel(
+        await s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         yield s
 
@@ -68,7 +68,7 @@ class _RecordingRetriever(Retriever):
         self._raise_on_subtree = raise_on_subtree
         self._raise_on_datasource = raise_on_datasource
         self.upsert_calls: list[Memory] = []
-        self.subtree_calls: list[SlayerModel] = []
+        self.subtree_calls: list[SlayerDataset] = []
         self.ds_calls: list[str] = []
 
     async def retrieve(self, **kwargs) -> RetrievalResult:
@@ -80,8 +80,8 @@ class _RecordingRetriever(Retriever):
             raise RuntimeError(f"{self.name} boom")
         return [self._upsert_warn] if self._upsert_warn else []
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> list[str]:
-        self.subtree_calls.append(model)
+    async def refresh_dataset_subtree(self, dataset: SlayerDataset) -> list[str]:
+        self.subtree_calls.append(dataset)
         if self._raise_on_subtree:
             raise RuntimeError(f"{self.name} subtree-boom")
         return [self._subtree_warn] if self._subtree_warn else []
@@ -90,7 +90,7 @@ class _RecordingRetriever(Retriever):
         self,
         *,
         name: str,
-        models: list[SlayerModel],
+        datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
         self.ds_calls.append(name)
@@ -138,11 +138,11 @@ async def test_refresh_model_subtree_calls_every_retriever(
     r1 = _RecordingRetriever(name="r1")
     r2 = _RecordingRetriever(name="r2")
     service = SearchService(storage=storage, retrievers=[r1, r2])
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
-    await service.refresh_model_subtree(model)
+    await service.refresh_dataset_subtree(model)
     assert r1.subtree_calls == [model]
     assert r2.subtree_calls == [model]
 
@@ -153,7 +153,7 @@ async def test_refresh_datasource_calls_every_retriever(
     r1 = _RecordingRetriever(name="r1")
     r2 = _RecordingRetriever(name="r2")
     service = SearchService(storage=storage, retrievers=[r1, r2])
-    await service.refresh_datasource(name="mydb", models=[])
+    await service.refresh_datasource(name="mydb", datasets=[])
     assert r1.ds_calls == ["mydb"]
     assert r2.ds_calls == ["mydb"]
 
@@ -216,11 +216,11 @@ async def test_refresh_model_subtree_warnings_ordered_and_deduped(
     r2 = _RecordingRetriever(name="r2", subtree_warn="dup")
     r3 = _RecordingRetriever(name="r3", subtree_warn="other")
     service = SearchService(storage=storage, retrievers=[r1, r2, r3])
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
-    warnings = await service.refresh_model_subtree(model)
+    warnings = await service.refresh_dataset_subtree(model)
     assert warnings == ["dup", "other"]
 
 
@@ -231,7 +231,7 @@ async def test_refresh_datasource_warnings_ordered_and_deduped(
     r2 = _RecordingRetriever(name="r2", ds_warn="b")
     r3 = _RecordingRetriever(name="r3", ds_warn="a")
     service = SearchService(storage=storage, retrievers=[r1, r2, r3])
-    warnings = await service.refresh_datasource(name="mydb", models=[])
+    warnings = await service.refresh_datasource(name="mydb", datasets=[])
     assert warnings == ["a", "b"]
 
 
@@ -244,11 +244,11 @@ async def test_refresh_model_subtree_exception_isolated(
     r1 = _RecordingRetriever(name="r1", raise_on_subtree=True)
     r2 = _RecordingRetriever(name="r2", subtree_warn="r2-still-ran")
     service = SearchService(storage=storage, retrievers=[r1, r2])
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
-    warnings = await service.refresh_model_subtree(model)
+    warnings = await service.refresh_dataset_subtree(model)
     assert len(r1.subtree_calls) == 1
     assert len(r2.subtree_calls) == 1
     boom_warnings = [
@@ -264,7 +264,7 @@ async def test_refresh_datasource_exception_isolated(
     r1 = _RecordingRetriever(name="r1", raise_on_datasource=True)
     r2 = _RecordingRetriever(name="r2", ds_warn="r2-still-ran")
     service = SearchService(storage=storage, retrievers=[r1, r2])
-    warnings = await service.refresh_datasource(name="mydb", models=[])
+    warnings = await service.refresh_datasource(name="mydb", datasets=[])
     assert len(r1.ds_calls) == 1
     assert len(r2.ds_calls) == 1
     boom_warnings = [
@@ -282,7 +282,7 @@ async def test_search_service_does_not_expose_delete_methods(  # NOSONAR(S7503) 
     delete_* fan-out methods. (The ABC delete hooks exist for future
     use; the orchestrator does not call them.)"""
     service = SearchService(storage=storage)
-    for forbidden in ("delete_memory", "delete_model", "delete_datasource"):
+    for forbidden in ("delete_memory", "delete_dataset", "delete_datasource"):
         assert not hasattr(service, forbidden), (
             f"SearchService.{forbidden} should not exist this PR "
             f"(storage owns embedding cascade)."

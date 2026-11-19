@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -18,11 +18,11 @@ from sqlglot.expressions.core import Expression
 import slayer.live_schema.schema_drift as schema_drift
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import IngestableObject
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import EditModelDelete, LiveTable, WholeModelDelete
+from slayer.live_schema.schema_drift import EditDatasetDelete, LiveTable, ToDeleteEntry, WholeDatasetDelete
 from slayer.live_schema.schema_scope import SchemaRef
 from slayer.database import sqlite_introspect
 from slayer.database.client import DatabaseUnavailable, SlayerSQLClient
@@ -43,57 +43,57 @@ INSERT INTO orders VALUES (1, 10.0, 1, 1);
 """
 
 
-def _base_models(ds: str) -> list[SlayerModel]:
+def _base_datasets(ds: str) -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name="customers", sql_table="customers", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="products", sql_table="products", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="price", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="price", datatype=DataType.FLOAT),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="orders", sql_table="orders", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="product_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="product_id", datatype=DataType.INTEGER),
                 # Derived, so never drift; executing it fails for a non-drift reason.
-                Column(name="bad", sql="no_such_fn(id)", type=DataType.DOUBLE),
+                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-                ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+                DatasetRelationship(to="products", from_columns=["product_id"], to_columns=["id"]),
             ],
         ),
     ]
 
 
-def _sql_model(*, name: str, sql: str, ds: str = "ds") -> SlayerModel:
-    return SlayerModel(
+def _sql_dataset(*, name: str, sql: str, ds: str = "ds") -> SlayerDataset:
+    return SlayerDataset(
         name=name, sql=sql, data_source=ds,
-        columns=[
+        fields=[
             # A 0-row SQLite trial reports every column as TEXT.
-            Column(name="id", type=DataType.TEXT, primary_key=True),
-            Column(name="bad", sql="no_such_fn(id)", type=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
         ],
     )
 
 
 # Reads orders + customers (not products) and fails for a non-drift reason.
 _UNRELATED_FAILURE = {
-    "source_model": "orders",
+    "population": "orders",
     "dimensions": ["customers.region"],
-    "measures": [{"formula": "sum(bad)"}],
+    "metrics": [{"metric": "sum(bad)"}],
 }
 
 
@@ -118,8 +118,8 @@ class _Env:
         with transaction(self.db_path) as conn:
             conn.executescript(sql)
 
-    async def save(self, model: SlayerModel) -> None:
-        await self.engine.storage.save_model(model)
+    async def save(self, dataset: SlayerDataset) -> None:
+        await self.engine.storage.save_dataset(dataset)
 
 
 class _Spies:
@@ -136,14 +136,14 @@ class _Spies:
         return {str(c.kwargs["client"].datasource.database) for c in self.listing.call_args_list}
 
     def trialled(self) -> list[str]:
-        return [c.kwargs["model"].name for c in self.trial.call_args_list]
+        return [c.kwargs["dataset"].name for c in self.trial.call_args_list]
 
     def probed_tables(self) -> set[str]:
         return {c.kwargs["table"] for c in self.probe.call_args_list}
 
 
 @contextlib.asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client
@@ -156,14 +156,14 @@ def _install_clock(engine: SlayerQueryEngine, clock: _Clock) -> None:
     engine._drift_snapshots = schema_drift.LiveSnapshotCache(clock=clock)
 
 
-async def _make_env(tmp: Path, *, schema: str, models: list[SlayerModel]) -> _Env:
+async def _make_env(tmp: Path, *, schema: str, datasets: list[SlayerDataset]) -> _Env:
     db_path = str(tmp / "live.db")
     with transaction(db_path) as conn:
         conn.executescript(schema)
     storage = YAMLStorage(base_dir=str(tmp / "storage"))
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=db_path))
-    for m in models:
-        await storage.save_model(m)
+    for m in datasets:
+        await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     clock = _Clock()
     _install_clock(engine, clock)
@@ -173,7 +173,7 @@ async def _make_env(tmp: Path, *, schema: str, models: list[SlayerModel]) -> _En
 @pytest.fixture
 async def env(tmp_path: Path) -> AsyncIterator[_Env]:
     # No pre-drop connection: SQLite's EXPLAIN plans against a pooled connection's stale schema.
-    e = await _make_env(tmp_path, schema=_SCHEMA, models=_base_models("ds"))
+    e = await _make_env(tmp_path, schema=_SCHEMA, datasets=_base_datasets("ds"))
     try:
         yield e
     finally:
@@ -187,7 +187,7 @@ def spies(env: _Env) -> Any:
     ) as introspect, patch.object(
         ingestion, "list_ingestable_objects", wraps=ingestion.list_ingestable_objects,
     ) as listing, patch.object(
-        schema_drift, "_live_columns_for_sql_model", wraps=schema_drift._live_columns_for_sql_model,
+        schema_drift, "_live_columns_for_sql_dataset", wraps=schema_drift._live_columns_for_sql_dataset,
     ) as trial, patch.object(
         sqlite_introspect, "probe_sqlite_integer_column",
         wraps=sqlite_introspect.probe_sqlite_integer_column,
@@ -214,7 +214,8 @@ async def _fails_with_drift(
 
 
 def _blamed(err: SchemaDriftError) -> set[str]:
-    return {e.model_name for e in err.to_delete}
+    entries: list[ToDeleteEntry] = err.to_delete
+    return {e.dataset_name for e in entries}
 
 
 _EXPLAIN = pytest.mark.parametrize("explain", [False, True], ids=["data-query", "explain"])
@@ -225,12 +226,12 @@ class TestReadSetScope:
     async def test_drift_in_a_read_join_target_wraps(self, env: _Env, explain: bool) -> None:
         env.live("DROP TABLE customers")
         err = await _fails_with_drift(env.engine, {
-            "source_model": "orders", "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders", "dimensions": ["customers.region"],
+            "metrics": [{"metric": "sum(amount)"}],
         }, explain=explain)
         assert "customers" in _blamed(err)
         assert any(
-            isinstance(e, WholeModelDelete) and e.model_name == "customers" for e in err.to_delete
+            isinstance(e, WholeDatasetDelete) and e.dataset_name == "customers" for e in err.to_delete
         )
         assert isinstance(err.__cause__, SQLAlchemyError)
 
@@ -247,29 +248,29 @@ class TestReadSetScope:
         [
             pytest.param(
                 "customers",
-                {"source_model": "orders", "dimensions": ["customers.region"],
-                 "measures": [{"formula": "sum(amount)"}]},
+                {"population": "orders", "dimensions": ["customers.region"],
+                 "metrics": [{"metric": "sum(amount)"}]},
                 None,
                 id="single-stage",
             ),
             pytest.param(
                 "customers",
-                {"source_model": "s1", "measures": [{"formula": "sum(total)"}]},
-                {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
-                 "measures": [{"formula": "sum(amount)", "name": "total"}]},
+                {"population": "s1", "metrics": [{"metric": "sum(total)"}]},
+                {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
+                 "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
                 id="multi-stage",
             ),
             pytest.param(
                 "orders",
-                {"source_model": "customers", "dimensions": ["region"],
-                 "measures": [{"formula": "sum(orders.amount)"}]},
+                {"population": "customers", "dimensions": ["region"],
+                 "metrics": [{"metric": "sum(orders.amount)"}]},
                 None,
                 id="cross-model-producer",
             ),
             pytest.param(
                 "orders",
-                {"source_model": "customers", "measures": [{"formula": "count(*)"}],
-                 "filters": ["orders.amount > 5"]},
+                {"population": "customers", "metrics": [{"metric": "count(*)"}],
+                 "filter": ["orders.amount > 5"]},
                 None,
                 id="filter-semi-join",
             ),
@@ -282,29 +283,29 @@ class TestReadSetScope:
         payload: Any = [named, query] if named is not None else query
         err = await _fails_with_drift(env.engine, payload)
         assert dropped in _blamed(err)
-        assert dropped in err.models
+        assert dropped in err.datasets
 
     async def test_a_pruned_stored_stage_is_not_read(self, env: _Env) -> None:
-        await env.engine.create_model_from_query(
+        await env.engine.create_dataset_from_query(
             query=[
-                {"name": "unused", "source_model": "products", "dimensions": ["name"],
-                 "measures": [{"formula": "count(*)", "name": "n"}]},
-                {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
-                 "measures": [{"formula": "sum(amount)", "name": "total"}]},
-                {"source_model": "s1", "measures": [{"formula": "sum(total)", "name": "grand"}]},
+                {"name": "unused", "population": "products", "dimensions": ["name"],
+                 "metrics": [{"metric": "count(*)", "alias": "n"}]},
+                {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
+                 "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
+                {"population": "s1", "metrics": [{"metric": "sum(total)", "alias": "grand"}]},
             ],
             name="qb_pruned",
         )
-        stored = await env.engine.storage.get_model("qb_pruned", data_source="ds")
+        stored = await env.engine.storage.get_dataset("qb_pruned", data_source="ds")
         assert stored is not None
         # Swap s1's measure for one that fails at execution (not drift).
         stages = [
-            s.model_copy(update={"measures": [{"formula": "sum(bad)", "name": "total"}]})
+            s.model_copy(update={"metrics": [{"metric": "sum(bad)", "alias": "total"}]})
             if s.name == "s1" else s
             for s in stored.source_queries or []
         ]
         await env.save(stored.model_copy(update={"source_queries": stages}))
-        query = {"source_model": "qb_pruned", "measures": [{"formula": "sum(grand)"}]}
+        query = {"population": "qb_pruned", "metrics": [{"metric": "sum(grand)"}]}
         dry = await env.engine.execute(query, dry_run=True)
         assert "products" not in (dry.sql or ""), "fixture must prune the unused stage"
 
@@ -312,17 +313,17 @@ class TestReadSetScope:
         await _fails_unwrapped(env.engine, query)
 
     async def test_query_backed_source_is_read_through_its_stages(self, env: _Env) -> None:
-        await env.engine.create_model_from_query(
+        await env.engine.create_dataset_from_query(
             query=[
-                {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
-                 "measures": [{"formula": "sum(amount)", "name": "total"}]},
-                {"source_model": "s1", "measures": [{"formula": "sum(total)", "name": "grand"}]},
+                {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
+                 "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
+                {"population": "s1", "metrics": [{"metric": "sum(total)", "alias": "grand"}]},
             ],
             name="qb",
         )
         env.live("ALTER TABLE orders DROP COLUMN amount")
         err = await _fails_with_drift(
-            env.engine, {"source_model": "qb", "measures": [{"formula": "sum(grand)"}]},
+            env.engine, {"population": "qb", "metrics": [{"metric": "sum(grand)"}]},
         )
         assert "orders" in _blamed(err)
 
@@ -331,21 +332,21 @@ class TestPayload:
     async def test_models_lists_only_the_blamed_models(self, env: _Env) -> None:
         env.live("ALTER TABLE customers DROP COLUMN region")
         err = await _fails_with_drift(env.engine, {
-            "source_model": "orders", "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders", "dimensions": ["customers.region"],
+            "metrics": [{"metric": "sum(amount)"}],
         })
-        assert err.models == ["customers"]
-        assert err.models == sorted(_blamed(err))
+        assert err.datasets == ["customers"]
+        assert err.datasets == sorted(_blamed(err))
 
     async def test_models_are_sorted_and_distinct_across_blamed_entries(self, env: _Env) -> None:
         # Dropping customers blames it wholesale and cascades orders' join.
         env.live("DROP TABLE customers")
         err = await _fails_with_drift(env.engine, {
-            "source_model": "orders", "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders", "dimensions": ["customers.region"],
+            "metrics": [{"metric": "sum(amount)"}],
         })
-        assert err.models == ["customers", "orders"]
-        assert err.models == sorted(_blamed(err))
+        assert err.datasets == ["customers", "orders"]
+        assert err.datasets == sorted(_blamed(err))
 
 
 class TestScopedInspection:
@@ -354,17 +355,17 @@ class TestScopedInspection:
             f"CREATE TABLE t{i} (id INTEGER PRIMARY KEY, v REAL);" for i in range(10)
         )
         models = [
-            SlayerModel(
+            SlayerDataset(
                 name=f"t{i}", sql_table=f"t{i}", data_source="ds",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="v", type=DataType.DOUBLE),
-                    Column(name="bad", sql="no_such_fn(v)", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="v", datatype=DataType.FLOAT),
+                    DatasetField(name="bad", sql="no_such_fn(v)", datatype=DataType.FLOAT),
                 ],
             )
             for i in range(10)
         ]
-        e = await _make_env(tmp_path, schema=schema, models=models)
+        e = await _make_env(tmp_path, schema=schema, datasets=models)
         try:
             with patch.object(
                 schema_drift, "_introspect_one_table", wraps=schema_drift._introspect_one_table,
@@ -373,7 +374,7 @@ class TestScopedInspection:
                 wraps=sqlite_introspect.probe_sqlite_integer_column,
             ) as probe:
                 await _fails_unwrapped(
-                    e.engine, {"source_model": "t3", "measures": [{"formula": "sum(bad)"}]},
+                    e.engine, {"population": "t3", "metrics": [{"metric": "sum(bad)"}]},
                 )
             assert [c.kwargs["table_name"] for c in introspect.call_args_list] == ["t3"]
             assert {c.kwargs["table"] for c in probe.call_args_list} == {"t3"}
@@ -381,23 +382,23 @@ class TestScopedInspection:
             await e.engine.aclose()
 
     async def test_unread_sql_models_are_not_trial_executed(self, env: _Env, spies: _Spies) -> None:
-        await env.save(_sql_model(name="sq_orders", sql="SELECT id, amount FROM orders"))
-        await env.save(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
+        await env.save(_sql_dataset(name="sq_orders", sql="SELECT id, amount FROM orders"))
+        await env.save(_sql_dataset(name="sq_customers", sql="SELECT id, region FROM customers"))
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         assert spies.trialled() == []
 
     async def test_only_the_read_sql_model_is_trial_executed(self, env: _Env, spies: _Spies) -> None:
-        await env.save(_sql_model(name="sq_orders", sql="SELECT id, amount FROM orders"))
-        await env.save(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
+        await env.save(_sql_dataset(name="sq_orders", sql="SELECT id, amount FROM orders"))
+        await env.save(_sql_dataset(name="sq_customers", sql="SELECT id, region FROM customers"))
         await _fails_unwrapped(
-            env.engine, {"source_model": "sq_orders", "measures": [{"formula": "sum(bad)"}]},
+            env.engine, {"population": "sq_orders", "metrics": [{"metric": "sum(bad)"}]},
         )
         assert spies.trialled() == ["sq_orders"]
 
     async def test_a_schema_qualified_read_table_resolves_like_full_validation(
         self, env: _Env, spies: _Spies,
     ) -> None:
-        orders = await env.engine.storage.get_model("orders", data_source="ds")
+        orders = await env.engine.storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         await env.save(orders.model_copy(update={"sql_table": "main.orders"}))
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
@@ -405,16 +406,16 @@ class TestScopedInspection:
 
     async def test_a_read_view_resolves_like_full_validation(self, env: _Env) -> None:
         env.live("CREATE VIEW v_orders AS SELECT id, amount FROM orders")
-        await env.save(SlayerModel(
+        await env.save(SlayerDataset(
             name="orders_view", sql_table="v_orders", data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="bad", sql="no_such_fn(id)", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
             ],
         ))
         await _fails_unwrapped(
-            env.engine, {"source_model": "orders_view", "measures": [{"formula": "sum(bad)"}]},
+            env.engine, {"population": "orders_view", "metrics": [{"metric": "sum(bad)"}]},
         )
 
     async def test_explicit_validation_stays_whole_datasource(self, env: _Env, spies: _Spies) -> None:
@@ -422,10 +423,10 @@ class TestScopedInspection:
             "ALTER TABLE products DROP COLUMN name; ALTER TABLE customers DROP COLUMN region;"
         )
         await _fails_unwrapped(
-            env.engine, {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]},
+            env.engine, {"population": "orders", "metrics": [{"metric": "sum(bad)"}]},
         )
-        entries = await env.engine.validate_models(data_source="ds")
-        assert {e.model_name for e in entries} >= {"customers", "products"}
+        entries = await env.engine.validate_datasets(data_source="ds")
+        assert {e.dataset_name for e in entries} >= {"customers", "products"}
         assert {"customers", "products", "orders"} <= set(spies.introspected())
 
 
@@ -446,10 +447,10 @@ class TestSnapshotReuse:
         assert sorted(spies.introspected()) == ["customers", "orders"]
 
     async def test_sql_model_trial_result_is_reused(self, env: _Env, spies: _Spies) -> None:
-        await env.save(_sql_model(name="sq_orders", sql="SELECT id, amount FROM orders"))
+        await env.save(_sql_dataset(name="sq_orders", sql="SELECT id, amount FROM orders"))
         for _ in range(3):
             await _fails_unwrapped(
-                env.engine, {"source_model": "sq_orders", "measures": [{"formula": "sum(bad)"}]},
+                env.engine, {"population": "sq_orders", "metrics": [{"metric": "sum(bad)"}]},
             )
         assert spies.trialled() == ["sq_orders"]
 
@@ -457,18 +458,18 @@ class TestSnapshotReuse:
         self, env: _Env, spies: _Spies,
     ) -> None:
         sql = "SELECT id, amount FROM orders"
-        await env.save(_sql_model(name="sq_b", sql=sql))
-        await env.save(_sql_model(name="sq_a", sql=sql).model_copy(update={
-            "joins": [ModelJoin(target_model="sq_b", join_pairs=[["id", "id"]])],
+        await env.save(_sql_dataset(name="sq_b", sql=sql))
+        await env.save(_sql_dataset(name="sq_a", sql=sql).model_copy(update={
+            "relationships": [DatasetRelationship(to="sq_b", from_columns=["id"], to_columns=["id"])],
         }))
         await _fails_unwrapped(env.engine, {
-            "source_model": "sq_a", "dimensions": ["sq_b.id"],
-            "measures": [{"formula": "sum(bad)"}],
+            "population": "sq_a", "dimensions": ["sq_b.id"],
+            "metrics": [{"metric": "sum(bad)"}],
         })
         assert len(spies.trialled()) == 1
 
     async def test_broken_sql_model_classification_is_reused(self, env: _Env, spies: _Spies) -> None:
-        await env.save(_sql_model(
+        await env.save(_sql_dataset(
             name="sq_broken", sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
         ))
         with patch.object(
@@ -476,7 +477,7 @@ class TestSnapshotReuse:
         ) as resolve:
             for _ in range(2):
                 await _fails_unwrapped(
-                    env.engine, {"source_model": "sq_broken", "measures": [{"formula": "count(*)"}]},
+                    env.engine, {"population": "sq_broken", "metrics": [{"metric": "count(*)"}]},
                 )
         assert spies.trialled() == ["sq_broken"]
         assert resolve.call_count == 1
@@ -492,7 +493,7 @@ class TestSnapshotReuse:
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         env.clock.now += _TTL_S / 2
         env.live("CREATE TABLE orders_v2 AS SELECT * FROM orders")
-        orders = await env.engine.storage.get_model("orders", data_source="ds")
+        orders = await env.engine.storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         await env.save(orders.model_copy(update={"sql_table": "orders_v2"}))
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
@@ -506,7 +507,7 @@ class TestSnapshotReuse:
     ) -> None:
         env.live("DROP TABLE orders")
         spies.listing.side_effect = RuntimeError("permission denied")
-        query = {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]}
+        query = {"population": "orders", "metrics": [{"metric": "sum(amount)"}]}
         for _ in range(2):
             err = await _fails_unwrapped(env.engine, query)
             assert "no such table" in str(err).lower()
@@ -515,20 +516,20 @@ class TestSnapshotReuse:
     async def test_a_model_edit_within_the_window_is_honoured(self, env: _Env, spies: _Spies) -> None:
         env.live("ALTER TABLE orders DROP COLUMN amount")
         first = await _fails_with_drift(
-            env.engine, {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
+            env.engine, {"population": "orders", "metrics": [{"metric": "sum(amount)"}]},
         )
         assert any(
-            isinstance(e, EditModelDelete) and e.model_name == "orders"
-            and "amount" in e.remove.columns
+            isinstance(e, EditDatasetDelete) and e.dataset_name == "orders"
+            and "amount" in e.remove.fields
             for e in first.to_delete
         )
-        orders = await env.engine.storage.get_model("orders", data_source="ds")
+        orders = await env.engine.storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         await env.save(orders.model_copy(update={
-            "columns": [c for c in orders.columns if c.name != "amount"],
+            "fields": [c for c in orders.fields if c.name != "amount"],
         }))
         await _fails_unwrapped(
-            env.engine, {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]},
+            env.engine, {"population": "orders", "metrics": [{"metric": "sum(bad)"}]},
         )
         assert spies.listing.call_count == 1
 
@@ -537,7 +538,7 @@ class TestSnapshotReuse:
     ) -> None:
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         env.live("CREATE TABLE orders_v2 AS SELECT * FROM orders")
-        orders = await env.engine.storage.get_model("orders", data_source="ds")
+        orders = await env.engine.storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         await env.save(orders.model_copy(update={"sql_table": "orders_v2"}))
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
@@ -545,11 +546,11 @@ class TestSnapshotReuse:
 
     async def test_a_dropped_tables_absence_is_reused(self, env: _Env, spies: _Spies) -> None:
         env.live("DROP TABLE orders")
-        query = {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]}
+        query = {"population": "orders", "metrics": [{"metric": "sum(amount)"}]}
         for _ in range(3):
             err = await _fails_with_drift(env.engine, query)
             assert any(
-                isinstance(e, WholeModelDelete) and e.model_name == "orders" for e in err.to_delete
+                isinstance(e, WholeDatasetDelete) and e.dataset_name == "orders" for e in err.to_delete
             )
         assert spies.listing.call_count == 1
 
@@ -565,10 +566,10 @@ class TestSnapshotReuse:
         def _listing(*, client: Any, ref: SchemaRef, include_views: bool) -> list[Any]:
             return [IngestableObject(name=n, kind="table") for n in listed_objects[ref.name]]
 
-        def _orders(schema: str) -> SlayerModel:
-            return SlayerModel(
+        def _orders(schema: str) -> SlayerDataset:
+            return SlayerDataset(
                 name="orders", sql_table=f"{schema}.orders", data_source="ds",
-                columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.STRING, primary_key=True)],
             )
 
         snapshot = schema_drift.DriftSnapshot(created_at=0.0)
@@ -578,15 +579,15 @@ class TestSnapshotReuse:
             ), patch.object(
                 ingestion, "list_ingestable_objects", side_effect=_listing,
             ) as listing, patch.object(
-                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
+                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.STRING}),
             ):
                 first = await schema_drift.validate_datasource(
-                    datasource=ds, models=[_orders("a")], client=client, snapshot=snapshot,
+                    datasource=ds, datasets=[_orders("a")], client=client, snapshot=snapshot,
                 )
                 # b.orders is created after the listing; only its basename was listed (in a).
                 listed_objects["b"].append("orders")
                 second = await schema_drift.validate_datasource(
-                    datasource=ds, models=[_orders("b")], client=client, snapshot=snapshot,
+                    datasource=ds, datasets=[_orders("b")], client=client, snapshot=snapshot,
                 )
         assert first == []
         assert second == []
@@ -599,9 +600,9 @@ class TestSnapshotReuse:
         with transaction(db_path) as conn:
             conn.executescript("CREATE TABLE seed (id INTEGER);")
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders", sql_table="a.orders", data_source="ds",
-            columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.STRING, primary_key=True)],
         )
         async with _client(ds) as client:
             with patch.object(
@@ -610,10 +611,10 @@ class TestSnapshotReuse:
                 ingestion, "list_ingestable_objects",
                 side_effect=lambda **_: [IngestableObject(name="orders", kind="table")],
             ), patch.object(
-                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
+                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.STRING}),
             ) as introspect:
                 entries = await schema_drift.validate_datasource(
-                    datasource=ds, models=[model], client=client,
+                    datasource=ds, datasets=[model], client=client,
                     snapshot=schema_drift.DriftSnapshot(created_at=0.0),
                 )
         assert entries == []
@@ -622,10 +623,10 @@ class TestSnapshotReuse:
     async def test_explicit_validation_reads_live(self, env: _Env, spies: _Spies) -> None:
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         env.live("ALTER TABLE customers DROP COLUMN region")
-        entries = await env.engine.validate_models(data_source="ds")
+        entries = await env.engine.validate_datasets(data_source="ds")
         assert any(
-            isinstance(e, EditModelDelete) and e.model_name == "customers"
-            and "region" in e.remove.columns
+            isinstance(e, EditDatasetDelete) and e.dataset_name == "customers"
+            and "region" in e.remove.fields
             for e in entries
         )
         assert spies.listing.call_count == 2
@@ -642,9 +643,9 @@ class TestResolvedDatasource:
             await env.engine.storage.save_datasource(
                 DatasourceConfig(name=other, type="sqlite", database=path),
             )
-            await env.save(SlayerModel(
+            await env.save(SlayerDataset(
                 name=f"{other}_t", sql_table=f"{other}_t", data_source=other,
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             ))
         spies.listing.reset_mock()
         render = SlayerQueryEngine._plan_and_render
@@ -652,8 +653,8 @@ class TestResolvedDatasource:
         async def _foreign_source(self: SlayerQueryEngine, **kwargs: Any) -> Any:
             # A pipeline model always carries a data_source; make it disagree with the executing one.
             rendered = await render(self, **kwargs)
-            foreign = rendered.model.model_copy(update={"data_source": "ds_a"})
-            return rendered.model_copy(update={"model": foreign})
+            foreign = rendered.dataset.model_copy(update={"data_source": "ds_a"})
+            return rendered.model_copy(update={"dataset": foreign})
 
         monkeypatch.setattr(SlayerQueryEngine, "_plan_and_render", _foreign_source)
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
@@ -674,8 +675,8 @@ class TestUnreadableTable:
         self, env: _Env,
     ) -> None:
         with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
-            entries = await env.engine.validate_models(data_source="ds")
-        assert "customers" not in {e.model_name for e in entries}
+            entries = await env.engine.validate_datasets(data_source="ds")
+        assert "customers" not in {e.dataset_name for e in entries}
 
     async def test_an_unreadable_read_table_is_no_attribution_evidence(self, env: _Env) -> None:
         with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
@@ -687,12 +688,12 @@ class TestUnreadableTable:
         env.live("ALTER TABLE customers DROP COLUMN region")
         with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
             await _fails_unwrapped(env.engine, {
-                "source_model": "customers", "dimensions": ["region"],
-                "measures": [{"formula": "count(*)"}],
+                "population": "customers", "dimensions": ["region"],
+                "metrics": [{"metric": "count(*)"}],
             })
             env.live("ALTER TABLE orders DROP COLUMN amount")
             err = await _fails_with_drift(
-                env.engine, {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
+                env.engine, {"population": "orders", "metrics": [{"metric": "sum(amount)"}]},
             )
         assert "orders" in _blamed(err)
 
@@ -711,8 +712,8 @@ async def _unreachable_engine(tmp: Path) -> SlayerQueryEngine:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(tmp / "missing" / "live.db")),
     )
-    await storage.save_model(_base_models("ds")[0])
-    await storage.save_model(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
+    await storage.save_dataset(_base_datasets("ds")[0])
+    await storage.save_dataset(_sql_dataset(name="sq_customers", sql="SELECT id, region FROM customers"))
     engine = SlayerQueryEngine(storage=storage)
     _install_clock(engine, _Clock())
     return engine
@@ -724,14 +725,14 @@ class TestUnreachableDatasource:
         self, tmp_path: Path, source: str,
     ) -> None:
         engine = await _unreachable_engine(tmp_path)
-        query = {"source_model": source, "measures": [{"formula": "count(*)"}]}
+        query = {"population": source, "metrics": [{"metric": "count(*)"}]}
         try:
             with patch.object(
                 SlayerSQLClient, "_metadata", autospec=True,
                 side_effect=SlayerSQLClient._metadata,
             ) as connect, patch.object(
-                schema_drift, "_live_columns_for_sql_model",
-                wraps=schema_drift._live_columns_for_sql_model,
+                schema_drift, "_live_columns_for_sql_dataset",
+                wraps=schema_drift._live_columns_for_sql_dataset,
             ) as trial:
                 await _fails_unwrapped(engine, query, expected=DatabaseUnavailable)
                 attempts = connect.call_count + trial.call_count
@@ -748,11 +749,11 @@ class TestUnreachableDatasource:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=str(tmp_path / "missing" / "live.db")),
         )
-        await storage.save_model(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
+        await storage.save_dataset(_sql_dataset(name="sq_customers", sql="SELECT id, region FROM customers"))
         engine = SlayerQueryEngine(storage=storage)
         try:
             with pytest.raises(DatabaseUnavailable):
-                await engine.validate_models(data_source="ds")
+                await engine.validate_datasets(data_source="ds")
         finally:
             await engine.aclose()
 
@@ -762,77 +763,77 @@ _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
 _LONG = "AnExtremelyLongModelNameThatForcesIdentifierFitting"
 
 _QB_STAGES = [
-    {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
-     "measures": [{"formula": "sum(amount)", "name": "total"}]},
-    {"source_model": "s1", "measures": [{"formula": "sum(total)", "name": "grand"}]},
+    {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
+     "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
+    {"population": "s1", "metrics": [{"metric": "sum(total)", "alias": "grand"}]},
 ]
 
 # (id, input, expected read set); query-backed models qb / qb_pruned are saved by the test.
 _READ_SET_CORPUS = [
     pytest.param(
-        {"source_model": "orders", "dimensions": ["customers.region"],
-         "measures": [{"formula": "sum(amount)"}]},
+        {"population": "orders", "dimensions": ["customers.region"],
+         "metrics": [{"metric": "sum(amount)"}]},
         {"orders", "customers"}, id="single-stage",
     ),
     pytest.param(
-        [_QB_STAGES[0], {"source_model": "s1", "measures": [{"formula": "sum(total)"}]}],
+        [_QB_STAGES[0], {"population": "s1", "metrics": [{"metric": "sum(total)"}]}],
         {"orders", "customers"}, id="multi-stage",
     ),
     pytest.param(
-        {"source_model": "qb", "measures": [{"formula": "sum(grand)"}]},
+        {"population": "qb", "metrics": [{"metric": "sum(grand)"}]},
         {"qb", "orders", "customers"}, id="query-backed-splice",
     ),
     pytest.param(
-        {"source_model": "qb_pruned", "measures": [{"formula": "sum(grand)"}]},
+        {"population": "qb_pruned", "metrics": [{"metric": "sum(grand)"}]},
         {"qb_pruned", "orders", "customers"}, id="pruned-splice",
     ),
     pytest.param(
-        {"source_model": "customers", "dimensions": ["region"],
-         "measures": [{"formula": "sum(orders.amount)"}]},
+        {"population": "customers", "dimensions": ["region"],
+         "metrics": [{"metric": "sum(orders.amount)"}]},
         {"customers", "orders"}, id="cross-model-producer",
     ),
     pytest.param(
-        {"source_model": "customers", "measures": [{"formula": "count(*)"}],
-         "filters": ["orders.amount > 5"]},
+        {"population": "customers", "metrics": [{"metric": "count(*)"}],
+         "filter": ["orders.amount > 5"]},
         {"customers", "orders"}, id="filter-semi-join",
     ),
     pytest.param(
-        {"source_model": "sq_orders", "measures": [{"formula": "count(*)"}]},
+        {"population": "sq_orders", "metrics": [{"metric": "count(*)"}]},
         {"sq_orders"}, id="sql-model",
     ),
 ]
 
 
-def _long_chain_models(ds: str) -> list[SlayerModel]:
+def _long_chain_datasets(ds: str) -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name=f"{_LONG}Invoice", sql_table="invoices", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="customer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model=f"{_LONG}Customer", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to=f"{_LONG}Customer", from_columns=["customer_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name=f"{_LONG}Customer", sql_table="customers", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="consumer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="consumer_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model=f"{_LONG}Consumer", join_pairs=[["consumer_id", "id"]])],
+            relationships=[DatasetRelationship(to=f"{_LONG}Consumer", from_columns=["consumer_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name=f"{_LONG}Consumer", sql_table="consumers", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="lifetime_value", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="lifetime_value", datatype=DataType.FLOAT),
             ],
         ),
     ]
 
 
-def _assert_relations_stamped(statement: Expression, *, model_by_table: dict[str, str]) -> set[str]:
+def _assert_relations_stamped(statement: Expression, *, dataset_by_table: dict[str, str]) -> set[str]:
     """Every physical model relation carries the stamp, stage/CTE relations never; returns stamped sql models."""
     ctes = {c.alias_or_name for c in statement.find_all(exp.CTE)}
     sql_models = [s for s in statement.find_all(exp.Subquery) if _STAMP in s.meta]
@@ -844,7 +845,7 @@ def _assert_relations_stamped(statement: Expression, *, model_by_table: dict[str
         if table.name in ctes:
             assert stamp is None, f"stage/CTE relation {table.name!r} stamped {stamp!r}"
         else:
-            assert stamp == model_by_table[table.name], f"{table.sql()} stamped {stamp!r}"
+            assert stamp == dataset_by_table[table.name], f"{table.sql()} stamped {stamp!r}"
     return {s.meta[_STAMP] for s in sql_models}
 
 
@@ -868,12 +869,12 @@ async def _render(engine: SlayerQueryEngine, payload: Any) -> tuple[Expression, 
 class TestReadSetStamp:
     @pytest.fixture
     async def corpus_env(self, env: _Env) -> _Env:
-        await env.save(_sql_model(name="sq_orders", sql="SELECT id, amount FROM orders"))
-        await env.engine.create_model_from_query(query=_QB_STAGES, name="qb")
-        await env.engine.create_model_from_query(
+        await env.save(_sql_dataset(name="sq_orders", sql="SELECT id, amount FROM orders"))
+        await env.engine.create_dataset_from_query(query=_QB_STAGES, name="qb")
+        await env.engine.create_dataset_from_query(
             query=[
-                {"name": "unused", "source_model": "products", "dimensions": ["name"],
-                 "measures": [{"formula": "count(*)", "name": "n"}]},
+                {"name": "unused", "population": "products", "dimensions": ["name"],
+                 "metrics": [{"metric": "count(*)", "alias": "n"}]},
                 *_QB_STAGES,
             ],
             name="qb_pruned",
@@ -887,7 +888,7 @@ class TestReadSetStamp:
         statement, touched, _ = await _render(corpus_env.engine, payload)
         sql_models = _assert_relations_stamped(
             statement,
-            model_by_table={"orders": "orders", "customers": "customers", "products": "products"},
+            dataset_by_table={"orders": "orders", "customers": "customers", "products": "products"},
         )
         assert sql_models == expected & {"sq_orders"}
         assert touched == expected
@@ -898,19 +899,19 @@ class TestReadSetStamp:
             name="pg", type="postgres", host="localhost", port=5432,
             database="x", username="u", password="p",
         ))
-        for m in _long_chain_models("pg"):
-            await storage.save_model(m)
+        for m in _long_chain_datasets("pg"):
+            await storage.save_dataset(m)
         engine = SlayerQueryEngine(storage=storage)
         try:
             statement, touched, sql = await _render(engine, {
-                "source_model": f"{_LONG}Invoice",
+                "population": f"{_LONG}Invoice",
                 "dimensions": ["status", f"{_LONG}Customer.{_LONG}Consumer.lifetime_value"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
         finally:
             await engine.aclose()
         assert _FIT_MARKER_RE.search(sql), "fixture must force identifier fitting"
-        _assert_relations_stamped(statement, model_by_table={
+        _assert_relations_stamped(statement, dataset_by_table={
             "invoices": f"{_LONG}Invoice", "customers": f"{_LONG}Customer",
             "consumers": f"{_LONG}Consumer",
         })

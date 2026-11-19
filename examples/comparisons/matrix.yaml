@@ -15,7 +15,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`sum(revenue, partition_by=region)`"
-    caveat: "`partition_by=[]` gives the grand total; takes lists, dotted join paths and time buckets."
+    caveat: "`partition_by=[]` gives the grand total; takes lists, dotted relationship paths and time buckets."
   malloy:
     verdict: 'yes'
     how: "`all(revenue, region)` · `exclude(revenue, city)`"
@@ -123,7 +123,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`avg(customers.score)`"
-    caveat: Each aggregate computed at its own model; unproven to-one dimensions are associated with a warning.
+    caveat: Each aggregate computed at its own dataset; unproven to-one dimensions are associated with a warning.
   malloy:
     verdict: 'yes'
     how: "`orders.customers.count()`"
@@ -207,7 +207,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`\"filters\": [\"tier = 'bronze' or orders.status = 'ok'\"]`"
+    how: "`\"filter\": [\"tier = 'bronze' or orders.status = 'ok'\"]`"
     caveat: "Pushed down as `EXISTS`; each customer once. `orders.id is null` = \"no orders\"."
   malloy:
     verdict: 'yes'
@@ -271,7 +271,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`\"order\": [{\"column\": \"sum(amount)\", \"direction\": \"desc\"}]`"
+    how: "`\"order\": [{\"field\": \"sum(amount)\", \"direction\": \"desc\"}]`"
   malloy:
     verdict: partial
     text: "A second stage; `order-by-not-found-in-output` otherwise."
@@ -311,7 +311,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    text: Named stages form a dependency graph; save as a query-backed model; re-bucket at equal or coarser grain.
+    text: Named stages form a dependency graph; save as a query-backed dataset; re-bucket at equal or coarser grain.
   malloy:
     verdict: 'yes'
     how: "`query: by_day is orders -> {...}`"
@@ -332,7 +332,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`\"source_model\": {\"source_name\": \"orders\", \"columns\": [...], \"joins\": [...]}`"
+    how: "`\"population\": {\"dataset\": \"orders\", \"fields\": [...], \"relationships\": [...]}`"
   malloy:
     verdict: 'yes'
     how: "`extend: { join_one: ...; measure: ... }`"
@@ -372,7 +372,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    text: "Typed error; `Column.granularity` set on query-backed models (probe-verified)."
+    text: "Typed error; `DatasetField.granularity` set on query-backed datasets (probe-verified)."
   malloy:
     verdict: 'no'
     text: "`m.day` returns month starts labelled as days."
@@ -453,7 +453,7 @@ rows:
   slayer:
     verdict: partial
     how: "`count_distinct(tags.value)` · `contains(tags, 'vip')`"
-    caveat: "List columns aggregate fan-out-safe beside parent aggregates (Q27); struct columns are opaque."
+    caveat: "List fields aggregate fan-out-safe beside parent aggregates (Q27); struct fields are opaque."
   malloy:
     verdict: 'yes'
     how: "`tags.each.sum()`"
@@ -473,7 +473,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`query(\"monthly_rev\", refine={\"dimensions\": [\"customers.tier\"]})`"
-    caveat: "Dimensions, measures, filters, order and limit merge into the saved query's final stage; a conflicting redefinition is a typed error (verified)."
+    caveat: "Dimensions, metrics, filters, order and limit merge into the saved query's final stage; a conflicting redefinition is a typed error (verified)."
   malloy:
     verdict: 'yes'
     how: "`flights -> by_carrier + { where: ... }`"
@@ -512,7 +512,7 @@ rows:
   origin: Malloy
   slayer:
     verdict: 'yes'
-    text: "The reading follows where the inputs live (all verified): `avg(customers.credit)` is per customer, even as a measure declared on orders; an orders filter keeps customers with orders; an orders-side column (`credit: customers.credit`, in a model extension) reads per order."
+    text: "The reading follows where the inputs live (all verified): `avg(customers.credit)` is per customer, even as a metric declared on orders; an orders filter keeps customers with orders; an orders-side field (`credit: customers.credit`, in a dataset extension) reads per order."
   malloy:
     verdict: 'yes'
     how: "`customers.credit.avg()` vs `source.avg(customers.credit)` (verified)"
@@ -534,7 +534,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`count(events.id) / count(*)` from `customers`"
-    caveat: "Computed over events' own rows and repeated on every row with an `unrelated_dataset` warning; a spine time dimension buckets it per period, warning-free when it is the only dimension; grouping by an events column is a typed error (verified)."
+    caveat: "Computed over events' own rows and repeated on every row with an `unrelated_dataset` warning; a spine time dimension buckets it per period, warning-free when it is the only dimension; grouping by an events field is a typed error (verified)."
   malloy:
     verdict: partial
     how: "`extend: { join_cross: events }` · `events.count()`"
@@ -669,7 +669,7 @@ rows:
   origin: Malloy
   slayer:
     verdict: partial
-    text: Sampled top values per column feed search.
+    text: Sampled top values per field feed search.
   malloy:
     verdict: 'yes'
     how: "`index: * by total_ratings`"
@@ -706,7 +706,7 @@ rows:
   origin: Malloy
   slayer:
     verdict: partial
-    text: SQL models and columns; a Postgres-wire facade accepting a SQL subset.
+    text: SQL datasets and fields; a Postgres-wire facade accepting a SQL subset.
     caveat: No full SQL over semantic queries.
   malloy:
     verdict: 'yes'
@@ -766,7 +766,7 @@ rows:
   origin: Cube
   slayer:
     verdict: 'yes'
-    text: "Facade models over named join edges; `hidden` keeps the models behind them out of listings (verified)."
+    text: "Facade datasets over named relationships; `hidden` keeps the datasets behind them out of listings (verified)."
   malloy:
     verdict: 'yes'
     how: "`source: s is x extend { accept: ... }`"
@@ -840,7 +840,7 @@ rows:
   origin: Cube
   slayer:
     verdict: 'yes'
-    how: "`\"measures\": [\"sum(orders.amount)\", \"sum(returns.amount)\"]` from `customers`"
+    how: "`\"metrics\": [\"sum(orders.amount)\", \"sum(returns.amount)\"]` from `customers`"
   malloy:
     verdict: 'yes'
     text: "A hub source with two `join_many`s."
@@ -860,7 +860,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "One Trino datasource; `sql_table: postgresql.public.customers` joins `mysql.shop.orders`"
-    caveat: "Verified live against Postgres and MySQL catalogs. Models on two SLayer datasources still can't meet in one query."
+    caveat: "Verified live against Postgres and MySQL catalogs. Datasets on two SLayer datasources still can't meet in one query."
   malloy:
     verdict: 'yes'
     how: "`trino.table('catalog.schema.table')` on one Trino connection"
@@ -899,7 +899,7 @@ rows:
   origin: MetricFlow
   slayer:
     verdict: 'yes'
-    text: "Join edges traversed both ways, with dotted multi-hop paths inferred."
+    text: "Relationships traversed both ways, with dotted multi-hop paths inferred."
   malloy:
     verdict: partial
     text: Joins declared per source; dotted paths follow them.
@@ -917,8 +917,8 @@ rows:
   origin: MetricFlow
   slayer:
     verdict: 'yes'
-    how: "`\"time_dimensions\": [{\"dimension\": \"time_spine.timestamp\", \"granularity\": \"month\", \"date_range\": [...]}]`"
-    caveat: A built-in spine each model joins through its own date column; per group too; two equally short routes fail loudly (verified).
+    how: "`\"time_dimensions\": [{\"field\": \"time_spine.timestamp\", \"granularity\": \"month\", \"date_range\": [...]}]`"
+    caveat: A built-in spine each dataset joins through its own date field; per group too; two equally short routes fail loudly (verified).
   malloy:
     verdict: partial
     text: A hand-made calendar source joined to each fact; symmetric aggregates keep it exact (verified).
@@ -1014,7 +1014,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`slayer mcp` (stdio) · `slayer serve` (SSE)"
-    caveat: "Datasource, ingestion, model-editing, query, search and memory tools, plus built-in help; from an empty store to an answer over MCP alone (probe-verified)."
+    caveat: "Datasource, ingestion, dataset-editing, query, search and memory tools, plus built-in help; from an empty store to an answer over MCP alone (probe-verified)."
   malloy:
     verdict: 'yes'
     text: "Publisher MCP: `get_context`, `execute_query`, `compile_model`, `reload_package`, docs search; skills as prompts."
@@ -1036,7 +1036,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`save_memory(learning=\"status 'bad' marks a cancelled order\", linked_entities=[\"orders.status\"])`"
-    caveat: "A note, or a vetted example query, tied to models and columns; `search` and `inspect` return it with them (probe-verified)."
+    caveat: "A note, or a vetted example query, tied to datasets and fields; `search` and `inspect` return it with them (probe-verified)."
   malloy:
     verdict: 'no'
     text: "No memory store; a Publisher skill tells agents to write learnings as `#(doc)` annotations into model files."
@@ -1056,7 +1056,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`search(question=\"which city does a customer live in\")`"
-    caveat: "One ranked list of models, columns, measures and memories: stemmed full text, entity overlap, optional embeddings, plus a graph filter (probe-verified without embeddings)."
+    caveat: "One ranked list of datasets, fields, metrics and memories: stemmed full text, entity overlap, optional embeddings, plus a graph filter (probe-verified without embeddings)."
   malloy:
     verdict: 'yes'
     how: "`get_context` (Publisher MCP)"
@@ -1077,8 +1077,8 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`ingest_datasource_models(datasource_name=\"shop\")` · `slayer serve --ingest-on-startup`"
-    caveat: "Foreign keys become joins and comments descriptions; join cardinality from the keys. Re-runs add without overwriting (probe-verified)."
+    how: "`ingest_datasource(datasource_name=\"shop\")` · `slayer serve --ingest-on-startup`"
+    caveat: "Foreign keys become relationships and comments descriptions; relationship cardinality from the keys. Re-runs add without overwriting (probe-verified)."
   malloy:
     verdict: partial
     text: "`conn.table('x')` reads a table's columns at compile time; joins and measures are written by hand."
@@ -1097,7 +1097,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`edit_model(model_name=\"orders\", measures=[{\"name\": \"aov\", \"formula\": \"sum(amount) / count(*)\"}])`"
+    how: "`edit_dataset(dataset_name=\"orders\", metrics=[{\"name\": \"aov\", \"expression\": \"sum(amount) / count(*)\"}])`"
     caveat: "Over MCP, REST, CLI or Python; the next query sees it (probe-verified)."
   malloy:
     verdict: partial
@@ -1119,8 +1119,8 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`validate_models` · `SchemaDriftError`"
-    caveat: "A failing query names the drifted model; `validate_models` returns the `edit_model` call that fixes it; re-ingestion keeps hand edits (probe-verified)."
+    how: "`validate_datasets` · `SchemaDriftError`"
+    caveat: "A failing query names the drifted dataset; `validate_datasets` returns the `edit_dataset` call that fixes it; re-ingestion keeps hand edits (probe-verified)."
   malloy:
     verdict: partial
     text: "A dropped column is a compile error with file and line at reload; Publisher keeps serving the previous model, flagged stale."

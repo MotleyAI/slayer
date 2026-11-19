@@ -18,10 +18,12 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 
-from tests._dev1835_fixtures import ModelMeasure, month_td, q
-from tests._dev1739_fixtures import dev1739_models
+from slayer.core.query import QueryMetric
+
+from tests._dev1835_fixtures import month_td, q
+from tests._dev1739_fixtures import dev1739_datasets
 from tests._engine_helpers import _engine_generate
 from tests.test_dev1837_guards import ARM_WINDOWED_RANKED, _sources_containing
 
@@ -61,22 +63,22 @@ G8_MALFORMED = (
     "  suggestion: Use syntax like '1y2m3w5d6h7min8s'."
 )
 G2_MESSAGE = (
-    "TimeAxisError: Windowed measure could not resolve its time dimension.\n"
+    "TimeAxisError: Windowed metric could not resolve its time dimension.\n"
     "  suggestion: Add a single time_dimensions entry, or set main_time_dimension "
     "to select among multiple time dimensions."
 )
 NO_RANKING_COLUMN = (
-    "first/last aggregation requires a ranking time column "
+    "first/last aggregation requires a ranking time field "
     "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
-    "model's default_time_dimension); none is resolvable for "
-    "model 'orders'."
+    "dataset's default_time_dimension); none is resolvable for "
+    "dataset 'orders'."
 )
 
 
-async def _gen(query, *, models=None) -> str:
-    models = models or dev1739_models()
+async def _gen(query, *, datasets=None) -> str:
+    datasets = datasets or dev1739_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=datasets[0], extra_datasets=datasets[1:],
         dialect="duckdb", validate=False,
     )
 
@@ -94,7 +96,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g8_malformed_duration(self) -> None:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount, window='90x')", name="w")],
+            metrics=[QueryMetric(metric="sum(amount, window='90x')", alias="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -103,25 +105,25 @@ class TestPreservedGuardsVerbatim:
     async def test_g2_no_resolvable_time_dimension(self) -> None:
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="w")],
+            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
         assert str(ei.value) == G2_MESSAGE
 
     async def test_ranked_no_ranking_column(self) -> None:
-        models = dev1739_models()
+        models = dev1739_datasets()
         # A second temporal column leaves no sole-column default either.
         models[0] = models[0].model_copy(update={
             "default_time_dimension": None,
-            "columns": [*models[0].columns, Column(name="updated_at", sql="ordered_at", type=DataType.TIMESTAMP)],
+            "fields": [*models[0].fields, DatasetField(name="updated_at", sql="ordered_at", datatype=DataType.DATETIME)],
         })
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="last(amount)", name="l")],
+            metrics=[QueryMetric(metric="last(amount)", alias="l")],
         )
         with pytest.raises(ValueError) as ei:
-            await _gen(query, models=models)
+            await _gen(query, datasets=models)
         assert str(ei.value) == NO_RANKING_COLUMN
 
 
@@ -134,8 +136,8 @@ class TestRepointedGuards:
         # unreachable from the customers root.
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, window='90d')", name="w",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='90d')", alias="w",
             )],
             to_many_handling="broadcast",
         )

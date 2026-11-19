@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import TimeSpineError
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.refs import auto_name_from_expression
 from slayer.engine.query_engine import SlayerResponse
 from tests._dev1737_fixtures import TableSpec
@@ -18,7 +18,7 @@ from tests._dev2015_fixtures import (
     bucket_key,
     num,
     spine_engine,
-    spine_models,
+    spine_datasets,
     spine_query,
     spine_td,
     spine_tables,
@@ -43,23 +43,23 @@ ORDER_CELLS = {("2025-01", "2025-01"): (50.0, 1.0), ("2025-01", "2025-02"): (100
 RETURNS_BY_MONTH = {"2025-02": 20.0, "2025-03": 10.0, "2025-05": 5.0}
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="order_date",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="shipped_at", type=DataType.DATE),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="eff", type=DataType.DATE, sql="COALESCE(shipped_at, order_date)"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="shipped_at", datatype=DataType.DATE),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="eff", datatype=DataType.DATE, sql="COALESCE(shipped_at, order_date)"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
-def _models() -> list[SlayerModel]:
-    return [_orders_model() if model.name == "orders" else model for model in spine_models()]
+def _datasets() -> list[SlayerDataset]:
+    return [_orders_dataset() if model.name == "orders" else model for model in spine_datasets()]
 
 
 def _tables() -> list[TableSpec]:
@@ -87,7 +87,7 @@ def _cells(resp: SlayerResponse) -> dict[tuple[str, str], tuple]:
 
 @pytest.fixture(params=BACKENDS)
 async def engine(request):
-    async with spine_engine(request.param, models=_models(), tables=_tables()) as eng:
+    async with spine_engine(request.param, datasets=_datasets(), tables=_tables()) as eng:
         yield eng
 
 
@@ -96,8 +96,8 @@ class TestSpineExpressionRejected:
     @pytest.mark.parametrize("with_axis", [False, True], ids=["alone", "beside-the-axis"])
     async def test_typed_error_before_sql(self, engine, expression: str, with_axis: bool) -> None:
         tds = [spine_td()] if with_axis else []
-        query = spine_query(measures=TWO_FACTS, time_dimensions=[
-            *tds, {"dimension": expression, "granularity": "month", "date_range": JAN_JUN},
+        query = spine_query(metrics=TWO_FACTS, time_dimensions=[
+            *tds, {"field": expression, "granularity": "month", "date_range": JAN_JUN},
         ])
         with pytest.raises(TimeSpineError) as info:
             await engine.execute(query, dry_run=True)
@@ -108,16 +108,16 @@ class TestSpineExpressionRejected:
 
 class TestFactExpressionIsADimensionOfP:
     async def test_values_per_spine_month_and_bucket(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=TWO_FACTS, time_dimensions=[
-            spine_td(), {"dimension": EFF_EXPR, "granularity": "month"},
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS, time_dimensions=[
+            spine_td(), {"field": EFF_EXPR, "granularity": "month"},
         ], to_many_handling="broadcast"))
         assert _cells(resp) == _expected()
 
     async def test_equal_to_the_column_holding_the_value(self, engine) -> None:
-        expr = await engine.execute(spine_query(measures=TWO_FACTS, time_dimensions=[
-            spine_td(), {"dimension": EFF_EXPR, "granularity": "month"},
+        expr = await engine.execute(spine_query(metrics=TWO_FACTS, time_dimensions=[
+            spine_td(), {"field": EFF_EXPR, "granularity": "month"},
         ]))
-        col = await engine.execute(spine_query(measures=TWO_FACTS, time_dimensions=[
-            spine_td(), {"dimension": "orders.eff", "granularity": "month"},
+        col = await engine.execute(spine_query(metrics=TWO_FACTS, time_dimensions=[
+            spine_td(), {"field": "orders.eff", "granularity": "month"},
         ]))
         assert _cells(expr) == _cells(col)

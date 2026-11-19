@@ -10,24 +10,24 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import JoinKeyError
-from slayer.core.join_walker import OrientedJoin, edges_between, join_key_columns
+from slayer.core.errors import RelationshipKeyError
+from slayer.core.relationship_walker import OrientedRelationship, edges_between, relationship_key_fields
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    SlayerModel,
-    is_base_column_sql,
+    DatasetRelationship,
+    SlayerDataset,
+    is_base_field_sql,
     physical_column_sql,
 )
-from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.engine.cardinality.join_safety import audit_join_safety
+from slayer.core.query import DatasetExtension, SlayerQuery
+from slayer.engine.cardinality.relationship_safety import audit_relationship_safety
 from slayer.engine.query_engine import SlayerQueryEngine, _detection_skip_reason
 from slayer.live_schema.schema_drift import (
-    EditModelDelete,
+    EditDatasetDelete,
     LiveTable,
     compute_datasource_drops,
-    diff_sql_table_model,
+    diff_sql_table_dataset,
 )
 from slayer.ir.source_bundle import apply_extension_overlay
 from slayer.storage.sqlite_conn import transaction
@@ -38,25 +38,25 @@ from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1902_fixtures import customers_model, orders_model, regions_model
+from tests._dev1902_fixtures import customers_dataset, orders_dataset, regions_dataset
 
 
-def _physical_pairs(*, edge: OrientedJoin, source: SlayerModel, target: SlayerModel) -> list[tuple[str, str]]:
-    return [(s.physical_name, t.physical_name) for s, t in join_key_columns(edge=edge, source=source, target=target)]
+def _physical_pairs(*, edge: OrientedRelationship, source: SlayerDataset, target: SlayerDataset) -> list[tuple[str, str]]:
+    return [(s.physical_name, t.physical_name) for s, t in relationship_key_fields(edge=edge, source=source, target=target)]
 
 
-def _orders(*columns: Column, pairs: list[list[str]], target: str = "customers") -> SlayerModel:
-    return SlayerModel(
+def _orders(*columns: DatasetField, pairs: list[list[str]], target: str = "customers") -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), *columns],
-        joins=[ModelJoin(target_model=target, join_pairs=pairs)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), *columns],
+        relationships=[DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs])],
     )
 
 
-def _customers(*columns: Column) -> SlayerModel:
-    return SlayerModel(
+def _customers(*columns: DatasetField) -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=list(columns) or [Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=list(columns) or [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 
@@ -70,7 +70,7 @@ class TestBaseColumnSeam:
         ("customers.id", False),
     ])
     def test_is_base_column_sql(self, sql, expected):
-        assert is_base_column_sql(sql) is expected
+        assert is_base_field_sql(sql) is expected
 
     @pytest.mark.parametrize(("sql", "name", "expected"), [
         (None, "id", "id"),
@@ -82,9 +82,9 @@ class TestBaseColumnSeam:
         assert physical_column_sql(sql=sql, name=name) == expected
 
     def test_column_is_base_and_physical_name(self):
-        renamed = Column(name="customer_id", sql="cust_fk")
-        quoted = Column(name="id", sql='"CustPK"')
-        plain = Column(name="status")
+        renamed = DatasetField(name="customer_id", sql="cust_fk")
+        quoted = DatasetField(name="id", sql='"CustPK"')
+        plain = DatasetField(name="status")
         assert renamed.is_base
         assert quoted.is_base
         assert plain.is_base
@@ -93,50 +93,50 @@ class TestBaseColumnSeam:
         assert plain.physical_name == "status"
 
     def test_physical_name_of_expression_column_raises(self):
-        col = Column(name="ck", sql="CAST(id AS INT)")
+        col = DatasetField(name="ck", sql="CAST(id AS INT)")
         assert not col.is_base
-        with pytest.raises(JoinKeyError):
+        with pytest.raises(RelationshipKeyError):
             _ = col.physical_name
 
 
 class TestSourceSideAtConstruction:
     def test_renamed_source_key_is_accepted(self):
-        model = _orders(Column(name="customer_id", sql="cust_fk"),
+        model = _orders(DatasetField(name="customer_id", sql="cust_fk"),
                         pairs=[["customer_id", "id"]])
-        assert model.joins[0].join_pairs == [["customer_id", "id"]]
+        assert model.relationships[0].column_pairs == [("customer_id", "id")]
 
     def test_quoted_base_source_key_is_accepted(self):
-        _orders(Column(name="customer_id", sql='"CustFK"'), pairs=[["customer_id", "id"]])
+        _orders(DatasetField(name="customer_id", sql='"CustFK"'), pairs=[["customer_id", "id"]])
 
     def test_undeclared_source_key_rejected(self):
         with pytest.raises(ValueError) as exc:
             _orders(pairs=[["customer_id", "id"]])
         msg = str(exc.value)
-        assert "JoinKeyError: join orders → customers key 'customer_id'" in msg
+        assert "RelationshipKeyError: relationship orders → customers key 'customer_id'" in msg
         assert "declare" in msg.lower()
         assert "suggestion:" in msg
 
     def test_physical_spelling_of_a_renamed_source_key_rejected(self):
-        fk = Column(name="customer_id", sql="cust_fk")
-        with pytest.raises(ValueError, match="join orders → customers key 'cust_fk'"):
+        fk = DatasetField(name="customer_id", sql="cust_fk")
+        with pytest.raises(ValueError, match="relationship orders → customers key 'cust_fk'"):
             _orders(fk, pairs=[["cust_fk", "id"]])
 
     def test_expression_source_key_rejected(self):
-        ck = Column(name="ck", sql="CAST(id AS INT)")
+        ck = DatasetField(name="ck", sql="CAST(id AS INT)")
         with pytest.raises(ValueError) as exc:
             _orders(ck, pairs=[["ck", "id"]])
         msg = str(exc.value)
-        assert "join orders → customers key 'ck'" in msg
-        assert "base column" in msg
+        assert "relationship orders → customers key 'ck'" in msg
+        assert "base field" in msg
 
     def test_filtered_source_key_rejected(self):
-        fk = Column(name="customer_id", sql="cust_fk", filter="status = 'ok'")
-        with pytest.raises(ValueError, match="join orders → customers key 'customer_id'"):
+        fk = DatasetField(name="customer_id", sql="cust_fk", filter="status = 'ok'")
+        with pytest.raises(ValueError, match="relationship orders → customers key 'customer_id'"):
             _orders(fk, pairs=[["customer_id", "id"]])
 
     def test_dotted_key_entry_rejected(self):
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            ModelJoin(target_model="customers", join_pairs=[["customers.id", "id"]])
+            DatasetRelationship(to="customers", from_columns=["customers.id"], to_columns=["id"])
 
     @pytest.mark.parametrize("pair", [
         ["cust:id", "id"], ["customer_id", "c:id"],
@@ -144,50 +144,42 @@ class TestSourceSideAtConstruction:
     ])
     def test_other_column_name_rules_apply(self, pair):
         with pytest.raises(ValueError, match="must not"):
-            ModelJoin(target_model="customers", join_pairs=[pair])
+            DatasetRelationship(to="customers", from_columns=[pair[0]], to_columns=[pair[1]])
 
     def test_dotted_target_entry_rejected(self):
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "c.id"]])
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["c.id"])
 
     def test_model_validate_path_rejects_too(self):
         with pytest.raises(ValueError, match="key 'customer_id'"):
-            SlayerModel.model_validate({
+            SlayerDataset.model_validate({
                 "name": "orders", "data_source": "test", "sql_table": "orders",
-                "columns": [{"name": "id", "type": "INT", "primary_key": True}],
-                "joins": [{"target_model": "customers",
-                           "join_pairs": [["customer_id", "id"]]}],
+                "fields": [{"name": "id", "datatype": "Integer", "primary_key": True}],
+                "relationships": [{"to": "customers",
+                           "from_columns": ["customer_id"], "to_columns": ["id"]}],
             })
 
 
 class TestExtensionOverlay:
     def test_extension_join_with_undeclared_key_rejected(self):
-        ext = ModelExtension(source_name="orders", joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])
-        base = orders_model()
-        with pytest.raises(ValueError, match="join orders → regions key 'region_id'"):
+        ext = DatasetExtension(dataset="orders", relationships=[
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])])
+        base = orders_dataset()
+        with pytest.raises(ValueError, match="relationship orders → regions key 'region_id'"):
             apply_extension_overlay(base, ext)
-
-    def test_extension_declaring_the_key_is_accepted(self):
-        ext = ModelExtension(
-            source_name="orders",
-            columns=[Column(name="region_id", sql="region_fk", type=DataType.INT)],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])
-        merged = apply_extension_overlay(orders_model(), ext)
-        assert [j.target_model for j in merged.joins] == ["customers", "regions"]
 
     async def test_query_extension_fails_before_sql(self):
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
-            for m in (orders_model(), customers_model(), regions_model()):
-                await storage.save_model(m)
+            for m in (orders_dataset(), customers_dataset(), regions_dataset()):
+                await storage.save_dataset(m)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "extensions": [ModelExtension(source_name="orders", joins=[
-                    ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])],
-                "measures": [{"formula": "sum(amount)", "name": "amt"}],
+                "population": "orders",
+                "extensions": [DatasetExtension(dataset="orders", relationships=[
+                    DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])])],
+                "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
                 "dimensions": ["regions.name"]})
             with pytest.raises(ValueError, match="key 'region_id'"):
                 await engine.execute(query, dry_run=True)
@@ -198,145 +190,145 @@ class TestTargetSide:
         with tempfile.TemporaryDirectory() as d:
             storage = SQLiteStorage(db_path=os.path.join(d, "store.db"))
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
-            await storage.save_model(_customers(
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="code", sql="UPPER(code_raw)")))
+            await storage.save_dataset(_customers(
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="code", sql="UPPER(code_raw)")))
             engine = SlayerQueryEngine(storage=storage)
-            orders = _orders(Column(name="customer_code"), pairs=[["customer_code", "code"]])
-            with pytest.raises(JoinKeyError) as exc:
-                await engine.save_model(orders)
+            orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
+            with pytest.raises(RelationshipKeyError) as exc:
+                await engine.save_dataset(orders)
             first, *rest = str(exc.value).splitlines()
-            assert first.startswith("JoinKeyError: join orders → customers key 'code'")
-            assert any(line.lstrip().startswith("suggestion:") and "base column" in line
+            assert first.startswith("RelationshipKeyError: relationship orders → customers key 'code'")
+            assert any(line.lstrip().startswith("suggestion:") and "base field" in line
                        for line in rest)
-            assert await storage.get_model("orders", data_source="test") is None
+            assert await storage.get_dataset("orders", data_source="test") is None
 
     async def test_save_accepts_renamed_target_key(self):
         with tempfile.TemporaryDirectory() as d:
             storage = SQLiteStorage(db_path=os.path.join(d, "store.db"))
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
-            await storage.save_model(customers_model())
-            await storage.save_model(regions_model())
+            await storage.save_dataset(customers_dataset())
+            await storage.save_dataset(regions_dataset())
             engine = SlayerQueryEngine(storage=storage)
-            await engine.save_model(orders_model())
-            assert await storage.get_model("orders", data_source="test") is not None
+            await engine.save_dataset(orders_dataset())
+            assert await storage.get_dataset("orders", data_source="test") is not None
 
     def test_audit_reports_undeclared_target_key(self):
-        orders = _orders(Column(name="customer_id"), pairs=[["customer_id", "cust_key"]])
-        findings = audit_join_safety(models=[orders, _customers()])
+        orders = _orders(DatasetField(name="customer_id"), pairs=[["customer_id", "cust_key"]])
+        findings = audit_relationship_safety(datasets=[orders, _customers()])
         errors = [f for f in findings if f.severity == "error"]
         (finding,) = errors
-        assert finding.model == "orders"
-        assert finding.target_model == "customers"
+        assert finding.dataset == "orders"
+        assert finding.to == "customers"
         assert "'cust_key'" in finding.message
         assert "declare" in finding.message.lower()
 
     def test_audit_is_silent_on_a_valid_renamed_graph(self):
-        findings = audit_join_safety(
-            models=[orders_model(), customers_model(), regions_model()])
+        findings = audit_relationship_safety(
+            datasets=[orders_dataset(), customers_dataset(), regions_dataset()])
         assert [f for f in findings if f.severity == "error"] == []
 
 
 class TestPhysicalJoinPairs:
     def test_forward_orientation(self):
-        orders, customers = orders_model(), customers_model()
+        orders, customers = orders_dataset(), customers_dataset()
         (edge,) = edges_between(source=orders, target=customers)
         assert _physical_pairs(edge=edge, source=orders, target=customers) == [
             ("cust_fk", "customer_pk")]
 
     def test_reverse_orientation(self):
-        orders, customers = orders_model(), customers_model()
+        orders, customers = orders_dataset(), customers_dataset()
         (edge,) = edges_between(source=customers, target=orders)
         assert _physical_pairs(edge=edge, source=customers, target=orders) == [
             ("customer_pk", "cust_fk")]
 
     def test_quoted_key_unquoted(self):
-        orders, customers = orders_model(), customers_model(pk_sql='"CustPK"')
+        orders, customers = orders_dataset(), customers_dataset(pk_sql='"CustPK"')
         (edge,) = edges_between(source=orders, target=customers)
         assert _physical_pairs(edge=edge, source=orders, target=customers) == [
             ("cust_fk", "CustPK")]
 
     def test_unresolvable_target_key_raises(self):
-        orders = _orders(Column(name="customer_id"), pairs=[["customer_id", "cust_key"]])
+        orders = _orders(DatasetField(name="customer_id"), pairs=[["customer_id", "cust_key"]])
         customers = _customers()
         (edge,) = edges_between(source=orders, target=customers)
-        with pytest.raises(JoinKeyError, match="'cust_key'"):
+        with pytest.raises(RelationshipKeyError, match="'cust_key'"):
             _physical_pairs(edge=edge, source=orders, target=customers)
 
     async def test_query_crossing_unresolvable_join_fails_before_sql(self):
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
-            await storage.save_model(_customers(
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name")), _validate=False)
-            await storage.save_model(_orders(
-                Column(name="customer_id"), Column(name="amount", type=DataType.DOUBLE),
+            await storage.save_dataset(_customers(
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name")), _validate=False)
+            await storage.save_dataset(_orders(
+                DatasetField(name="customer_id"), DatasetField(name="amount", datatype=DataType.FLOAT),
                 pairs=[["customer_id", "cust_key"]]), _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
-                "source_model": "orders", "dimensions": ["customers.name"],
-                "measures": [{"formula": "sum(amount)", "name": "amt"}]})
-            with pytest.raises(JoinKeyError, match="'cust_key'"):
+                "population": "orders", "dimensions": ["customers.name"],
+                "metrics": [{"metric": "sum(amount)", "alias": "amt"}]})
+            with pytest.raises(RelationshipKeyError, match="'cust_key'"):
                 await engine.execute(query, dry_run=True)
 
 
-def _parties(*key: Column) -> SlayerModel:
-    return SlayerModel(
+def _parties(*key: DatasetField) -> SlayerDataset:
+    return SlayerDataset(
         name="parties", data_source="test", sql_table="parties",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), *key],
-        joins=[ModelJoin(target_model="entities", join_pairs=[[key[0].name, "code"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), *key],
+        relationships=[DatasetRelationship(to="entities", from_columns=[key[0].name], to_columns=["code"])],
     )
 
 
-_LIVE = LiveTable(columns={"id": DataType.INT, "legalEntityType": DataType.TEXT})
+_LIVE = LiveTable(columns={"id": DataType.INTEGER, "legalEntityType": DataType.STRING})
 
 
 class TestDriftAndRefinement:
     def test_quoted_self_name_present_is_not_drift(self):
-        model = _parties(Column(name="legalEntityType", sql='"legalEntityType"'))
-        entry, dropped = diff_sql_table_model(
-            model=model, live_table=_LIVE, available_models_in_ds={"parties", "entities"})
+        model = _parties(DatasetField(name="legalEntityType", sql='"legalEntityType"'))
+        entry, dropped = diff_sql_table_dataset(
+            dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
         assert entry is None
         assert dropped == set()
 
     def test_quoted_rename_present_keeps_its_join(self):
-        model = _parties(Column(name="entity_type", sql='"legalEntityType"'))
-        entry, _ = diff_sql_table_model(
-            model=model, live_table=_LIVE, available_models_in_ds={"parties", "entities"})
+        model = _parties(DatasetField(name="entity_type", sql='"legalEntityType"'))
+        entry, _ = diff_sql_table_dataset(
+            dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
         assert entry is None
 
     def test_quoted_base_column_missing_is_drift(self):
-        model = _parties(Column(name="entity_type", sql='"entityKind"'))
-        entry, dropped = diff_sql_table_model(
-            model=model, live_table=_LIVE, available_models_in_ds={"parties", "entities"})
-        assert isinstance(entry, EditModelDelete)
-        assert entry.remove.columns == ["entity_type"]
+        model = _parties(DatasetField(name="entity_type", sql='"entityKind"'))
+        entry, dropped = diff_sql_table_dataset(
+            dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
+        assert isinstance(entry, EditDatasetDelete)
+        assert entry.remove.fields == ["entity_type"]
         assert dropped == {"entity_type"}
 
     @pytest.mark.parametrize("key", ["id", "cust_id"])
     def test_dropped_local_key_drops_its_join(self, key):
         """A dropped local key (PK or not) takes its join with it."""
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                     Column(name="cust_id", type=DataType.INT)],
-            joins=[ModelJoin(target_model="customers", join_pairs=[[key, "id"]])],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="cust_id", datatype=DataType.INTEGER)],
+            relationships=[DatasetRelationship(to="customers", from_columns=[key], to_columns=["id"])],
         )
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers", data_source="test", sql_table="customers",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         )
-        live = LiveTable(columns={c: DataType.INT for c in ("id", "cust_id") if c != key})
-        diffs = {m.name: diff_sql_table_model(
-            model=m, live_table=live if m is orders else LiveTable(columns={"id": DataType.INT}),
-            available_models_in_ds={"orders", "customers"}) for m in (orders, customers)}
+        live = LiveTable(columns={c: DataType.INTEGER for c in ("id", "cust_id") if c != key})
+        diffs = {m.name: diff_sql_table_dataset(
+            dataset=m, live_table=live if m is orders else LiveTable(columns={"id": DataType.INTEGER}),
+            available_datasets_in_ds={"orders", "customers"}) for m in (orders, customers)}
         entries = compute_datasource_drops(
-            models=[orders, customers], sql_table_diffs=diffs, sql_diffs={})
-        entry = next(e for e in entries if e.model_name == "orders")
-        assert isinstance(entry, EditModelDelete)
-        assert key in entry.remove.columns
-        assert entry.remove.joins == ["customers"]
+            datasets=[orders, customers], sql_table_diffs=diffs, sql_diffs={})
+        entry = next(e for e in entries if e.dataset_name == "orders")
+        assert isinstance(entry, EditDatasetDelete)
+        assert key in entry.remove.fields
+        assert entry.remove.relationships == ["customers"]
 
     def test_quoted_double_column_is_refined(self):
         with tempfile.TemporaryDirectory() as d:
@@ -346,7 +338,7 @@ class TestDriftAndRefinement:
                 conn.executemany("INSERT INTO items VALUES (?, ?)", [(1, 10), (2, 20)])
             doc = {
                 "name": "items", "sql_table": "items", "data_source": "live",
-                "columns": [{"name": "quantity", "sql": '"qty"', "type": "DOUBLE"}],
+                "fields": [{"name": "quantity", "sql": '"qty"', "datatype": "Float"}],
             }
             ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
             client = SlayerSQLClient(datasource=ds)
@@ -356,18 +348,18 @@ class TestDriftAndRefinement:
                 client.close()
                 engine_factory.invalidate_engine(ds)
             assert changed is True
-            assert doc["columns"][0]["type"] == "INT"
+            assert doc["fields"][0]["datatype"] == "Integer"
 
     def test_detection_profiles_renamed_base_keys(self):
         assert _detection_skip_reason(
-            model=orders_model(), target=customers_model(),
+            dataset=orders_dataset(), target=customers_dataset(),
             src_cols=["customer_id"], tgt_cols=["id"]) is None
 
     def test_detection_skips_non_base_target_key(self):
-        target = _customers(Column(name="id", type=DataType.INT, primary_key=True),
-                            Column(name="code", sql="UPPER(code_raw)"))
-        orders = _orders(Column(name="customer_code"), pairs=[["customer_code", "code"]])
+        target = _customers(DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                            DatasetField(name="code", sql="UPPER(code_raw)"))
+        orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
         note = _detection_skip_reason(
-            model=orders, target=target, src_cols=["customer_code"], tgt_cols=["code"])
+            dataset=orders, target=target, src_cols=["customer_code"], tgt_cols=["code"])
         assert note is not None
         assert "code" in note

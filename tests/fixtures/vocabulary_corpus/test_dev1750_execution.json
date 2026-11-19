@@ -1,0 +1,279 @@
+{
+ "source": "tests/test_dev1750_execution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wscaled_sum(amount)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wscaled_sum(amount)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "delta"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "delta"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change_pct(sum(amount))",
+    "name": "pct"
+   },
+   "new": {
+    "expression": "change_pct(sum(amount))",
+    "name": "pct"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(wscaled_sum(amount))",
+    "name": "delta"
+   },
+   "new": {
+    "expression": "change(wscaled_sum(amount))",
+    "name": "delta"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change_pct(wscaled_sum(amount))",
+    "name": "delta"
+   },
+   "new": {
+    "expression": "change_pct(wscaled_sum(amount))",
+    "name": "delta"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "liscaled_sum(amount)",
+    "name": "li"
+   },
+   "new": {
+    "expression": "liscaled_sum(amount)",
+    "name": "li"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(liscaled_sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(liscaled_sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount) > 20)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount) > 20)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(customers.spend) > 0)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(customers.spend) > 0)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 269,
+   "reason": "not fully literal"
+  }
+ ]
+}

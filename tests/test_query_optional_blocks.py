@@ -9,96 +9,75 @@ classifier that backs inspect discoverability.
 
 import pytest
 
-from slayer.core.models import Column, SlayerModel
-from slayer.core.query import extract_model_variables, substitute_variables
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import extract_dataset_variables
+from slayer.sql.dialects import SqliteDialect
+from slayer.sql.mode_a_variables import bind_mode_a
+
+_SQLITE = SqliteDialect()
 
 # ── block rendering ─────────────────────────────────────────────────────────
 
 
 def test_block_renders_parenthesised_when_var_present():
-    out = substitute_variables(
-        "WHERE 1=1 AND {? brand IN ({brand}) ?}",
-        {"brand": ["acme", "zeta"]},
-        backslash_escapes=False,
-    )
-    assert out == "WHERE 1=1 AND (brand IN ('acme', 'zeta'))"
+    out = bind_mode_a("1=1 AND {? brand IN ({brand}) ?}",
+        {"brand": ["acme", "zeta"]}, dialect=_SQLITE, field="f")
+    assert out == "1=1 AND (brand IN ('acme', 'zeta'))"
 
 
 def test_block_collapses_to_one_equals_one_when_var_missing():
-    out = substitute_variables(
-        "WHERE 1=1 AND {? brand IN ({brand}) ?}",
-        {},
-        backslash_escapes=False,
-    )
-    assert out == "WHERE 1=1 AND (1=1)"
+    out = bind_mode_a("1=1 AND {? brand IN ({brand}) ?}",
+        {}, dialect=_SQLITE, field="f")
+    assert out == "1=1 AND (1=1)"
 
 
 def test_block_collapses_if_any_inner_var_missing():
     # from present, to absent -> whole block collapses.
-    out = substitute_variables(
-        "AND {? d >= '{d_from}' AND d <= '{d_to}' ?}",
-        {"d_from": "2025-01-01"},
-        backslash_escapes=False,
-    )
-    assert out == "AND (1=1)"
+    out = bind_mode_a("{? d >= '{d_from}' AND d <= '{d_to}' ?}",
+        {"d_from": "2025-01-01"}, dialect=_SQLITE, field="f")
+    assert out == "(1=1)"
 
 
 def test_block_renders_range_when_all_present():
-    out = substitute_variables(
-        "AND {? d >= '{d_from}' AND d <= '{d_to}' ?}",
-        {"d_from": "2025-01-01", "d_to": "2025-12-31"},
-        backslash_escapes=False,
-    )
-    assert out == "AND (d >= '2025-01-01' AND d <= '2025-12-31')"
+    out = bind_mode_a("{? d >= '{d_from}' AND d <= '{d_to}' ?}",
+        {"d_from": "2025-01-01", "d_to": "2025-12-31"}, dialect=_SQLITE, field="f")
+    assert out == "(d >= '2025-01-01' AND d <= '2025-12-31')"
 
 
 def test_scalar_position_block_collapse_reproduces_cube_cast_shape():
     # Optional arrow in scalar position -> the (1=1)::TYPE Cube "booby-trap".
-    out = substitute_variables(
-        "{? '{d_from}' ?}::TIMESTAMP AS d", {}, backslash_escapes=False
-    )
+    out = bind_mode_a("{? '{d_from}' ?}::TIMESTAMP AS d", {}, dialect=_SQLITE, field="f")
     assert out == "(1=1)::TIMESTAMP AS d"
 
 
 def test_multiple_independent_blocks_mix_present_and_missing():
-    out = substitute_variables(
-        "WHERE 1=1 AND {? a IN ({a}) ?} AND {? b IN ({b}) ?}",
-        {"a": ["x"]},
-        backslash_escapes=False,
-    )
-    assert out == "WHERE 1=1 AND (a IN ('x')) AND (1=1)"
+    out = bind_mode_a("1=1 AND {? a IN ({a}) ?} AND {? b IN ({b}) ?}",
+        {"a": ["x"]}, dialect=_SQLITE, field="f")
+    assert out == "1=1 AND (a IN ('x')) AND (1=1)"
 
 
 def test_string_value_inside_block_is_escaped():
-    out = substitute_variables(
-        "{? name = '{name}' ?}", {"name": "O'Brien"}, backslash_escapes=False
-    )
+    out = bind_mode_a("{? name = '{name}' ?}", {"name": "O'Brien"}, dialect=_SQLITE, field="f")
     assert out == "(name = 'O''Brien')"
 
 
 def test_block_with_list_containing_apostrophe_and_comma():
     # Block + IN-list + SQL escaping interaction: commas inside a value must
     # not split it into two list elements; apostrophes are quote-doubled.
-    out = substitute_variables(
-        "{? brand IN ({brand}) ?}",
-        {"brand": ["O'Reilly", "ACME, Inc."]},
-        backslash_escapes=False,
-    )
+    out = bind_mode_a("{? brand IN ({brand}) ?}",
+        {"brand": ["O'Reilly", "ACME, Inc."]}, dialect=_SQLITE, field="f")
     assert out == "(brand IN ('O''Reilly', 'ACME, Inc.'))"
 
 
 def test_plain_vars_still_substitute_alongside_blocks():
-    out = substitute_variables(
-        "d >= '{d_from}' AND {? brand IN ({brand}) ?}",
-        {"d_from": "2025-01-01", "brand": ["a"]},
-        backslash_escapes=False,
-    )
+    out = bind_mode_a("d >= '{d_from}' AND {? brand IN ({brand}) ?}",
+        {"d_from": "2025-01-01", "brand": ["a"]}, dialect=_SQLITE, field="f")
     assert out == "d >= '2025-01-01' AND (brand IN ('a'))"
 
 
 def test_brace_escapes_do_not_open_or_close_a_block():
     # {{ and }} stay literal; no block is parsed here.
-    out = substitute_variables("{{not a block}}", {}, backslash_escapes=False)
+    out = bind_mode_a("{{not a block}}", {}, dialect=_SQLITE, field="f")
     assert out == "{not a block}"
 
 
@@ -107,77 +86,77 @@ def test_brace_escapes_do_not_open_or_close_a_block():
 
 def test_nested_block_raises():
     with pytest.raises(ValueError, match="[Nn]est"):
-        substitute_variables("{? a {? {b} ?} ?}", {"b": "1"}, backslash_escapes=False)
+        bind_mode_a("{? a {? {b} ?} ?}", {"b": "1"}, dialect=_SQLITE, field="f")
 
 
 def test_unterminated_block_raises():
     with pytest.raises(ValueError, match="[Uu]nterminated|unclosed"):
-        substitute_variables("AND {? brand IN ({brand})", {"brand": ["a"]}, backslash_escapes=False)
+        bind_mode_a("AND {? brand IN ({brand})", {"brand": ["a"]}, dialect=_SQLITE, field="f")
 
 
 def test_stray_block_close_raises():
     with pytest.raises(ValueError):
-        substitute_variables("AND brand ?}", {}, backslash_escapes=False)
+        bind_mode_a("AND brand ?}", {}, dialect=_SQLITE, field="f")
 
 
 def test_block_with_no_variables_raises():
     with pytest.raises(ValueError, match="[Vv]ariable"):
-        substitute_variables("{? 1=1 ?}", {}, backslash_escapes=False)
+        bind_mode_a("{? 1=1 ?}", {}, dialect=_SQLITE, field="f")
 
 
 # ── extract_model_variables ─────────────────────────────────────────────────
 
 
-def _sql_model(**kw) -> SlayerModel:
+def _sql_dataset(**kw) -> SlayerDataset:
     kw.setdefault("name", "m")
     kw.setdefault("data_source", "ds")
-    return SlayerModel(**kw)
+    return SlayerDataset(**kw)
 
 
 def test_extract_bare_var_without_default_is_required():
-    model = _sql_model(sql="SELECT * FROM t WHERE d >= '{d_from}'")
-    v = extract_model_variables(model)
+    model = _sql_dataset(sql="SELECT * FROM t WHERE d >= '{d_from}'")
+    v = extract_dataset_variables(model)
     assert v.required == ["d_from"]
     assert v.optional == []
 
 
 def test_extract_bare_var_with_default_is_optional():
-    model = _sql_model(
+    model = _sql_dataset(
         sql="SELECT * FROM t WHERE region = '{region}'",
         query_variables={"region": "EU"},
     )
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert v.required == []
     assert v.optional == ["region"]
 
 
 def test_extract_in_block_var_is_optional():
-    model = _sql_model(sql="SELECT * FROM t WHERE 1=1 AND {? brand IN ({brand}) ?}")
-    v = extract_model_variables(model)
+    model = _sql_dataset(sql="SELECT * FROM t WHERE 1=1 AND {? brand IN ({brand}) ?}")
+    v = extract_dataset_variables(model)
     assert v.required == []
     assert v.optional == ["brand"]
 
 
 def test_extract_bare_occurrence_wins_over_in_block():
     # A var used bare somewhere AND inside a block classifies as required.
-    model = _sql_model(
+    model = _sql_dataset(
         sql="SELECT '{x}' AS a, CASE WHEN 1=1 THEN {? y = {x} ?} END FROM t"
     )
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert "x" in v.required
     assert "x" not in v.optional
 
 
 def test_extract_walks_all_four_mode_a_surfaces():
-    model = _sql_model(
+    model = _sql_dataset(
         sql="SELECT * FROM t WHERE {? a IN ({a}) ?}",
         filters=["b >= '{b_from}'"],
-        columns=[
-            Column(name="c1", sql="CASE WHEN {? c IN ({c}) ?} THEN 1 END"),
-            Column(name="c2", sql="x", filter="d = '{d}'"),
+        fields=[
+            DatasetField(name="c1", sql="CASE WHEN {? c IN ({c}) ?} THEN 1 END"),
+            DatasetField(name="c2", sql="x", filter="d = '{d}'"),
         ],
     )
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert set(v.optional) == {"a", "c"}
     assert set(v.required) == {"b_from", "d"}
 
@@ -186,16 +165,16 @@ def test_extract_on_malformed_block_does_not_raise():
     # Read-only inspection must never crash on a stored model whose SQL only
     # *looks* like a block (a literal '?}' e.g. inside a regex/JSON path). It is
     # classified as block-free; execution still raises.
-    model = _sql_model(sql="SELECT * FROM t WHERE tag ~ 'a?}' AND x = '{y}'")
-    v = extract_model_variables(model)
+    model = _sql_dataset(sql="SELECT * FROM t WHERE tag ~ 'a?}' AND x = '{y}'")
+    v = extract_dataset_variables(model)
     assert v.required == ["y"]
 
 
 def test_extract_dedupes_and_sorts():
-    model = _sql_model(
+    model = _sql_dataset(
         sql="WHERE {? a IN ({a}) ?} AND {? a IN ({a}) ?}",
-        columns=[Column(name="c", sql="z >= '{z_from}'")],
+        fields=[DatasetField(name="c", sql="z >= '{z_from}'")],
     )
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert v.optional == ["a"]
     assert v.required == ["z_from"]

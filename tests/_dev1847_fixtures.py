@@ -11,16 +11,16 @@ from typing import AsyncIterator, List, Optional
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import FieldRef, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -30,105 +30,105 @@ from tests._dev1841_fixtures import associated_warnings
 from tests._engine_helpers import _engine_generate
 
 
-def sales_model() -> SlayerModel:
-    return SlayerModel(
+def sales_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="city", type=DataType.TEXT),
-            Column(name="product", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.DOUBLE),
-            Column(name="unit_price", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="product", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="unit_price", datatype=DataType.FLOAT),
             # amount restricted to product 'Q' — sparse by design.
-            Column(name="q_amount", type=DataType.DOUBLE, sql="amount",
+            DatasetField(name="q_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="product = 'Q'"),
         ],
         aggregations=[
-            Aggregation(name="dsum", formula="SUM({value})"),
+            Aggregation(name="dsum", expression="SUM({value})"),
             # weight defaults to a COLUMN — outer use must fail closed.
             Aggregation(name="wavg",
-                        formula="SUM({value} * {weight}) / SUM({weight})",
+                        expression="SUM({value} * {weight}) / SUM({weight})",
                         params=[AggregationParam(name="weight", sql="amount")]),
         ],
     )
 
 
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                         cardinality=JoinCardinality.MANY_TO_ONE)],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
 
-def corders_model() -> SlayerModel:
-    return SlayerModel(
+def corders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="corders", data_source="test", sql_table="corders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                         cardinality=JoinCardinality.MANY_TO_ONE)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
 
-def dev1847_models() -> List[SlayerModel]:
+def dev1847_datasets() -> List[SlayerDataset]:
     """``[sales, regions, customers, corders]`` — sales first (engine host)."""
-    return [sales_model(), regions_model(), customers_model(), corders_model()]
+    return [sales_dataset(), regions_dataset(), customers_dataset(), corders_dataset()]
 
 
-def source_queries_equiv_model() -> SlayerModel:
+def source_queries_equiv_dataset() -> SlayerDataset:
     """The manual two-stage encoding the re-aggregation must match."""
-    return SlayerModel(
+    return SlayerDataset(
         name="avg_city_total_by_region", data_source="test",
         source_queries=[
             SlayerQuery(
-                name="city_region_total", source_model="sales",
-                dimensions=[ColumnRef(name="region"), ColumnRef(name="city")],
-                measures=[ModelMeasure(formula="sum(amount)", name="city_total")],
+                name="city_region_total", population="sales",
+                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
+                metrics=[QueryMetric(metric="sum(amount)", alias="city_total")],
             ),
             SlayerQuery(
-                source_model="city_region_total",
-                dimensions=[ColumnRef(name="region")],
-                measures=[ModelMeasure(formula="avg(city_total)", name="acr")],
+                population="city_region_total",
+                dimensions=[QueryDimension(field="region")],
+                metrics=[QueryMetric(metric="avg(city_total)", alias="acr")],
             ),
         ],
     )
 
 
 def sales_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     return SlayerQuery(**kw)
 
 
 def chain_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "corders")
+    kw.setdefault("population", "corders")
     return SlayerQuery(**kw)
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "postgres") -> str:
     """Emit SQL for ``query`` against the sales graph at ``dialect`` (dry-run)."""
-    models = dev1847_models()
+    models = dev1847_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False)
 
 
@@ -137,10 +137,10 @@ INNER_CITY = "sum(amount, partition_by=city)"          # [city] grain (spans reg
 INNER_CRP = "sum(amount, partition_by=[city, region, product])"
 
 
-def reagg(outer: str, inner: str, *, name: str, **kw) -> ModelMeasure:
+def reagg(outer: str, inner: str, *, name: str, **kw) -> QueryMetric:
     """An ``<outer>(<inner>)`` re-aggregation measure, e.g. reagg('avg', INNER_CR)."""
     extra = "".join(f", {k}={v}" for k, v in kw.items())
-    return ModelMeasure(formula=f"{outer}({inner}{extra})", name=name)
+    return QueryMetric(metric=f"{outer}({inner}{extra})", alias=name)
 
 
 #: The warning kind DEV-1847 adds for an operand grain == outer grain.
@@ -323,7 +323,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
@@ -331,7 +331,7 @@ async def make_exec_engine(
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=models if models is not None else dev1847_models(),
+        dialect=dialect, seed=seed, datasets=datasets if datasets is not None else dev1847_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -342,10 +342,10 @@ def region_key(resp) -> dict:
 
 
 __all__ = [
-    "Column", "ColumnRef", "DataType", "ModelJoin", "ModelMeasure",
-    "SlayerModel", "SlayerQuery", "JoinCardinality",
-    "sales_model", "regions_model", "customers_model", "corders_model",
-    "dev1847_models", "source_queries_equiv_model",
+    "DatasetField", "FieldRef", "DataType", "DatasetRelationship", "DatasetMetric",
+    "SlayerDataset", "SlayerQuery", "RelationshipCardinality",
+    "sales_dataset", "regions_dataset", "customers_dataset", "corders_dataset",
+    "dev1847_datasets", "source_queries_equiv_dataset",
     "sales_q", "chain_q", "reagg", "region_key", "rows_by", "gen",
     "make_exec_engine",
     "broadcast_warnings", "associated_warnings", "degenerate_warnings",

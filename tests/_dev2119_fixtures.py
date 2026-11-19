@@ -32,9 +32,9 @@ from collections.abc import AsyncGenerator, Iterable
 from datetime import date, datetime
 from typing import Any, Optional
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
@@ -124,101 +124,101 @@ CREATED_MONTH_COUNT = {"2024-12": 1, "2025-01": 2, "2025-02": 2, "2025-03": 1}
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="city", type=DataType.TEXT),
-            Column(name="product", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.INT),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
-            Column(name="refunded_at", type=DataType.TIMESTAMP),
-            Column(name="created_txt", type=DataType.TEXT),
-            Column(name="eff", type=DataType.TIMESTAMP, sql="COALESCE(shipped_at, created_at)"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="product", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+            DatasetField(name="refunded_at", datatype=DataType.DATETIME),
+            DatasetField(name="created_txt", datatype=DataType.STRING),
+            DatasetField(name="eff", datatype=DataType.DATETIME, sql="COALESCE(shipped_at, created_at)"),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="regions", join_pairs=[["region", "code"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="regions", from_columns=["region"], to_columns=["code"]),
         ],
     )
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="signup_ts", type=DataType.TIMESTAMP),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="discount", type=DataType.DOUBLE),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="signup_ts", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
     )
 
 
-def accounts_model() -> SlayerModel:
+def accounts_dataset() -> SlayerDataset:
     """The ``customers`` table with a declared one-to-many hop to ``orders``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="accounts", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="signup_ts", type=DataType.TIMESTAMP),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="signup_ts", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]],
-                         cardinality=JoinCardinality.ONE_TO_MANY)],
+        relationships=[DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"],
+                         cardinality=RelationshipCardinality.ONE_TO_MANY)],
     )
 
 
-def balances_model() -> SlayerModel:
-    return SlayerModel(
+def balances_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="balances", sql_table="balances", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="balance", type=DataType.DOUBLE),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
 
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="code", type=DataType.TEXT),
-            Column(name="manager", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", datatype=DataType.STRING),
+            DatasetField(name="manager", datatype=DataType.STRING),
         ],
     )
 
 
-def monthly_model() -> SlayerModel:
+def monthly_dataset() -> SlayerDataset:
     """Query-backed: ``created_at`` cached at ``month``, ``refunded_at`` unbucketed."""
-    return SlayerModel(
+    return SlayerDataset(
         name="monthly", data_source="test",
         source_queries=[SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["refunded_at"],
-            "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "population": "orders", "dimensions": ["refunded_at"],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })],
     )
 
 
-def dev2119_models() -> list[SlayerModel]:
-    return [orders_model(), customers_model(), accounts_model(), balances_model(), regions_model(), monthly_model()]
+def dev2119_datasets() -> list[SlayerDataset]:
+    return [orders_dataset(), customers_dataset(), accounts_dataset(), balances_dataset(), regions_dataset(), monthly_dataset()]
 
 
 # --------------------------------------------------------------------------- #
@@ -226,38 +226,38 @@ def dev2119_models() -> list[SlayerModel]:
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
 async def engine_for(
-    backend: str, *, models: Optional[list[SlayerModel]] = None, clock: Optional[PinnedClock] = None,
+    backend: str, *, datasets: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
     datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """An executing engine over the seeded dataset on ``sqlite`` or ``duckdb``."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
-        models=dev2119_models() if models is None else models,
+        datasets=dev2119_datasets() if datasets is None else datasets,
         clock=clock if clock is not None else PinnedClock(NOW), datasource_fields=datasource_fields,
     ) as (engine, _):
         yield engine
 
 
 async def emit(query: SlayerQuery | list[SlayerQuery | dict], *, dialect: str,
-               models: Optional[Iterable[SlayerModel]] = None) -> str:
+               datasets: Optional[Iterable[SlayerDataset]] = None) -> str:
     """Dry-run SQL over the dev2119 models on ``dialect`` (asserts it parses there)."""
-    first, *rest = list(models) if models is not None else dev2119_models()
-    return await _engine_generate(query=query, model=first, extra_models=rest, dialect=dialect)
+    first, *rest = list(datasets) if datasets is not None else dev2119_datasets()
+    return await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect)
 
 
 # --------------------------------------------------------------------------- #
 # Queries and readers
 # --------------------------------------------------------------------------- #
 def q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(formula: str, name: str = "v") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def td(dimension: str, granularity: str = "month", **extra: Any) -> dict[str, Any]:
-    return {"dimension": dimension, "granularity": granularity, **extra}
+    return {"field": dimension, "granularity": granularity, **extra}
 
 
 def num(value: Any) -> Optional[float]:

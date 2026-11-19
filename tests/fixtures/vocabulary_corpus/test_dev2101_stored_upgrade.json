@@ -1,0 +1,98 @@
+{
+ "source": "tests/test_dev2101_stored_upgrade.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = \"paid\""
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = \"paid\""
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_q",
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_q",
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_q",
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_q",
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_q",
+    "dimensions": [
+     "tag"
+    ],
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_q",
+    "dimensions": [
+     "tag"
+    ],
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(amount)"
+    ],
+    "filters": [
+     "status = \"ok\""
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(amount)"
+    ],
+    "filter": [
+     "status = \"ok\""
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  }
+ ]
+}

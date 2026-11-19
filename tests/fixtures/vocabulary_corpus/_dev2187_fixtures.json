@@ -1,0 +1,108 @@
+{
+ "source": "tests/_dev2187_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "revenue",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "revenue",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "avg(score)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "avg(score)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "tot"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "tot"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  }
+ ]
+}

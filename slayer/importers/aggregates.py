@@ -1,10 +1,10 @@
-"""Source SQL aggregation expression -> SLayer measure formula, shared by the importers.
+"""Source SQL aggregation expression -> SLayer metric expression, shared by the importers.
 
 ``convert_expression`` replaces each outermost aggregate (``FILTER`` included)
 with a sentinel, renders the surrounding arithmetic with sqlglot, and
-substitutes each aggregate's formula text. How an aggregate's operand becomes a
-formula reference is the importer's ``OperandPolicy``: OSI writes it inline in
-formula syntax (``InlineOperands``), Cube reads it through a Mode-A column.
+substitutes each aggregate's expression text. How an aggregate's operand becomes an
+expression reference is the importer's ``OperandPolicy``: OSI writes it inline in
+expression syntax (``InlineOperands``), Cube reads it through a Mode-A field.
 Anything inexpressible is clean-failed (``ok=False``) with a reason.
 """
 
@@ -38,24 +38,24 @@ _AGG_NODES = (exp.Filter, exp.AggFunc, exp.WithinGroup)
 
 _BINARY_OPS: dict[type[exp.Expr], str] = {
     exp.Add: "+", exp.Sub: "-", exp.Mul: "*", exp.Div: "/", exp.Mod: "%",
-    exp.EQ: "==", exp.NEQ: "!=", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=",
+    exp.EQ: "=", exp.NEQ: "!=", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=",
     exp.And: "and", exp.Or: "or",
 }
-# Passthrough scalars whose sqlglot argument order is not the formula's.
+# Passthrough scalars whose sqlglot argument order is not the expression's.
 _NOT_INLINE_FUNCS = frozenset({"log"})
 _FUNC_ARG_KEYS = frozenset({"this", "expression", "expressions", "decimals"})
 _LIST_LENGTH_NAMES = frozenset({"cardinality", "array_length"})
 
 OwnerOf = Callable[[Optional[str], str], Optional[str]]
 RefOf = Callable[[str, str], Optional[str]]
-NameTaken = Callable[[str, str], bool]  # (owning_model, name) -> already exists?
-IsList = Callable[[Optional[str], str], bool]  # (qualifier, column) -> list-valued?
+NameTaken = Callable[[str, str], bool]  # (owning_dataset, name) -> already exists?
+IsList = Callable[[Optional[str], str], bool]  # (qualifier, field) -> list-valued?
 
 
-class MaterializedColumn(BaseModel):
-    """A hidden helper Column the converter must create on ``owning_model``."""
+class MaterializedField(BaseModel):
+    """A hidden helper field the converter must create on ``owning_dataset``."""
 
-    owning_model: str
+    owning_dataset: str
     name: str
     sql: str
     filter: str | None = None
@@ -63,12 +63,12 @@ class MaterializedColumn(BaseModel):
 
 
 class ExprResult(BaseModel):
-    """Outcome of converting one source expression to a SLayer formula."""
+    """Outcome of converting one source expression to a SLayer expression."""
 
     ok: bool
-    formula: str | None = None
+    expression: str | None = None
     reason: str | None = None
-    materialized: list[MaterializedColumn] = []
+    materialized: list[MaterializedField] = []
     warnings: list[str] = []
 
 
@@ -89,7 +89,7 @@ class Unconvertible(Exception):
 
 
 class _NotInline(Exception):
-    """The operand has no formula-syntax rendering."""
+    """The operand has no expression-syntax rendering."""
 
 
 def sql_string(value: str) -> str:
@@ -123,7 +123,7 @@ def _value_branches(node: exp.Expr) -> list[exp.Expr | None] | None:
 
 
 def list_valued(node: exp.Expr, *, is_list: Callable[[exp.Expr], bool]) -> bool:
-    """Whether ``node`` yields a list: a list column, or a conditional that can return one."""
+    """Whether ``node`` yields a list: a list field, or a conditional that can return one."""
     branches = _value_branches(node)
     if branches is None:
         return is_list(node)
@@ -146,13 +146,13 @@ def length_arg(node: exp.Expr) -> Expression | None:
 
 
 class OperandPolicy:
-    """How an importer turns an aggregate's operand into a formula reference."""
+    """How an importer turns an aggregate's operand into an expression reference."""
 
-    #: Whether ``CASE`` and string literals may appear between aggregates (the formula grammar reads them).
+    #: Whether ``CASE`` and string literals may appear between aggregates (the expression grammar reads them).
     sql_residual = False
 
     def __init__(self) -> None:
-        self.materialized: list[MaterializedColumn] = []
+        self.materialized: list[MaterializedField] = []
 
     def operand(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
         """The reference ``agg`` aggregates: ``operand`` over the rows ``mask`` keeps."""
@@ -163,11 +163,11 @@ class OperandPolicy:
         return self.operand(operand, mask=mask, agg=agg)
 
     def is_list(self, operand: exp.Expr) -> bool:  # NOSONAR(S1172) — hook default
-        """Whether ``operand`` is a list-valued column."""
+        """Whether ``operand`` is a list-valued field."""
         return False
 
     def residual(self, node: exp.Column) -> str | None:  # NOSONAR(S1172) — hook default
-        """The formula text of a name allowed outside an aggregate (a measure), else ``None``."""
+        """The expression text of a name allowed outside an aggregate (a metric), else ``None``."""
         return None
 
 
@@ -176,7 +176,7 @@ def _parens(text: str, node: exp.Expr) -> str:
 
 
 class InlineOperands(OperandPolicy):
-    """OSI: operands written inline in formula syntax, else a hidden column on their single owning dataset."""
+    """OSI: operands written inline in expression syntax, else a hidden field on their single owning dataset."""
 
     def __init__(self, *, entity_name: str, owner_of: OwnerOf, ref_of: RefOf, name_taken: NameTaken,
                  target: str | None, is_list: IsList) -> None:
@@ -194,9 +194,9 @@ class InlineOperands(OperandPolicy):
         return isinstance(operand, exp.Column) and self._is_list(operand.table or None, operand.name)
 
     def param(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
-        """A parameter binds only a column: a bare one, else a materialized one."""
+        """A parameter binds only a field: a bare one, else a materialized one."""
         if mask is None and isinstance(operand, exp.Column):
-            return self._column_ref(operand.table or None, operand.name)
+            return self._field_ref(operand.table or None, operand.name)
         if mask is not None:
             operand = exp.Case(ifs=[exp.If(this=mask.copy(), true=operand.copy())])
         return self._materialize(operand)
@@ -207,7 +207,7 @@ class InlineOperands(OperandPolicy):
                 raise Unconvertible("FILTER predicate reads a dataset other than the aggregate's")
             operand = exp.Case(ifs=[exp.If(this=mask.copy(), true=operand.copy())])
         if isinstance(operand, exp.Column):
-            return self._column_ref(operand.table or None, operand.name)
+            return self._field_ref(operand.table or None, operand.name)
         try:
             text = self._inline(operand)
             parse_expr(f"count({text})")
@@ -215,56 +215,56 @@ class InlineOperands(OperandPolicy):
             return self._materialize(operand)
         return text
 
-    def _column_ref(self, qualifier: Optional[str], column: str) -> str:
-        owner = self.owner_of(qualifier or None, column)
+    def _field_ref(self, qualifier: Optional[str], field: str) -> str:
+        owner = self.owner_of(qualifier or None, field)
         if owner is None:
-            raise Unconvertible(f"cannot resolve owning dataset for column {column!r}")
-        ref = self.ref_of(owner, column)
+            raise Unconvertible(f"cannot resolve owning dataset for field {field!r}")
+        ref = self.ref_of(owner, field)
         if ref is None:
-            raise Unconvertible(f"column {column!r} on model {owner!r} is not reachable from the anchor")
+            raise Unconvertible(f"field {field!r} on dataset {owner!r} is not reachable from the anchor")
         return ref
 
     def _owners(self, node: exp.Expr) -> set[str]:
-        """Owning datasets of every column in ``node``; an unresolvable column fails."""
+        """Owning datasets of every field in ``node``; an unresolvable field fails."""
         owners = {self.owner_of(c.table or None, c.name) for c in node.find_all(exp.Column)}
         if None in owners:
-            raise Unconvertible("expression references a column that cannot be resolved")
+            raise Unconvertible("expression references a field that cannot be resolved")
         return {o for o in owners if o is not None}
 
     def _materialize(self, operand: exp.Expr) -> str:
-        """Create/reuse a hidden derived column for ``operand``; return its anchor-relative ref."""
+        """Create/reuse a hidden derived field for ``operand``; return its anchor-relative ref."""
         if operand.find(exp.AggFunc, exp.Window, exp.WithinGroup):
             raise Unconvertible("nested aggregate in aggregate operand")
         owners = self._owners(operand)
         if not owners:
-            raise Unconvertible("aggregate operand references no column")
+            raise Unconvertible("aggregate operand references no field")
         if len(owners) != 1:
             raise Unconvertible("aggregate operand spans multiple datasets and is not expressible inline")
         owner = owners.pop()
         operand_sql = operand.sql(dialect=self.target)
         name = self._dedup.get((owner, operand_sql))
         if name is None:
-            name = self._fresh_column_name(owner)
+            name = self._fresh_field_name(owner)
             self._dedup[(owner, operand_sql)] = name
-            self.materialized.append(MaterializedColumn(owning_model=owner, name=name, sql=operand_sql))
+            self.materialized.append(MaterializedField(owning_dataset=owner, name=name, sql=operand_sql))
         ref = self.ref_of(owner, name)
         if ref is None:
             raise Unconvertible("materialized operand is not reachable from the anchor")
         return ref
 
-    def _fresh_column_name(self, owner: str) -> str:
-        """A hidden-column name that collides with no existing name on ``owner``."""
+    def _fresh_field_name(self, owner: str) -> str:
+        """A hidden-field name that collides with no existing name on ``owner``."""
         while True:
             name = f"_{self.entity_name}_{self._counter}"
             self._counter += 1
             if not self.name_taken(owner, name):
                 return name
 
-    # ---- SQL AST -> formula syntax ----
+    # ---- SQL AST -> expression syntax ----
 
     def _inline(self, node: exp.Expr) -> str:  # NOSONAR(S3776) — one flat dispatch over SQL node kinds
         if isinstance(node, exp.Column):
-            return self._column_ref(node.table or None, node.name)
+            return self._field_ref(node.table or None, node.name)
         if isinstance(node, exp.Literal):
             return sql_string(node.this) if node.is_string else node.this
         if isinstance(node, exp.Null):
@@ -303,7 +303,7 @@ class InlineOperands(OperandPolicy):
                     f"{self._inline(false) if false is not None else 'None'})")
         if isinstance(node, exp.Func):
             return self._inline_func(node)
-        raise _NotInline(f"{type(node).__name__} has no formula form")
+        raise _NotInline(f"{type(node).__name__} has no expression form")
 
     def _inline_case(self, node: exp.Case) -> str:
         if node.this is not None:
@@ -326,7 +326,7 @@ class InlineOperands(OperandPolicy):
             return f"length({self._inline(values)})"
         name = (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
         if name not in SCALAR_PASSTHROUGH or name in _NOT_INLINE_FUNCS:
-            raise _NotInline(f"function {name!r} is not in the formula allowlist")
+            raise _NotInline(f"function {name!r} is not in the expression allowlist")
         args = _func_args(node=node, name=name)
         if check_scalar_arity(name=name, argc=len(args)) is not None:
             raise _NotInline(f"function {name!r} arity")
@@ -365,12 +365,12 @@ def dialect_refusal(name: str, *, dialect: SqlDialect | None) -> str | None:
     return None
 
 
-def formula_refusal(formula: str, *, dialect: SqlDialect | None) -> str | None:
-    """Why ``dialect`` cannot compute an aggregation or list function ``formula`` calls, else ``None``."""
+def expression_refusal(expression: str, *, dialect: SqlDialect | None) -> str | None:
+    """Why ``dialect`` cannot compute an aggregation or list function ``expression`` calls, else ``None``."""
     if dialect is None:
         return None
     try:
-        tree = parse_expr(formula)
+        tree = parse_expr(expression)
     except ValueError:
         return None  # not yet parseable (markers still in it); validated once resolved
     names = [n.agg if isinstance(n, AggCall) else n.name for n in walk_parsed(tree) if isinstance(n, (AggCall, ScalarCall))]
@@ -492,7 +492,7 @@ class _Translator:
         if isinstance(node, exp.Column) and not self._is_sentinel(node):
             return f"bare column {node.name!r} must appear inside an aggregation"
         if isinstance(node, exp.Literal) and node.is_string and not self.policy.sql_residual:
-            return "string literal is not expressible in a measure"
+            return "string literal is not expressible in a metric"
         if isinstance(node, exp.Func) and not isinstance(node, (exp.Count, exp.Case, exp.If)):
             if node.sql_name().lower() not in SCALAR_PASSTHROUGH:
                 return f"function {node.sql_name()!r} is not allowed"
@@ -520,13 +520,13 @@ class _Translator:
                 reason = self._residual_violation(node)
                 if reason:
                     raise Unconvertible(reason)
-            formula = self._substitute(new_root.sql(normalize_functions="lower"), ref_by_token)
+            expression = self._substitute(new_root.sql(normalize_functions="lower"), ref_by_token)
         except Unconvertible as exc:
             return self._fail(str(exc))
-        return ExprResult(ok=True, formula=formula, materialized=self.policy.materialized, warnings=self.warnings)
+        return ExprResult(ok=True, expression=expression, materialized=self.policy.materialized, warnings=self.warnings)
 
     def _residual_names(self, tree: exp.Expr) -> list[exp.Column]:
-        """Columns outside every aggregate that the policy reads as measures."""
+        """Fields outside every aggregate that the policy reads as metrics."""
         inside = {id(c) for agg in outermost_aggregates(tree) for c in agg.find_all(exp.Column)}
         return [c for c in tree.find_all(exp.Column)
                 if id(c) not in inside and self.policy.residual(c) is not None]
@@ -550,14 +550,14 @@ class _Translator:
         return out
 
     def _fail(self, reason: str) -> ExprResult:
-        return ExprResult(ok=False, formula=None, reason=reason, materialized=[], warnings=self.warnings)
+        return ExprResult(ok=False, expression=None, reason=reason, materialized=[], warnings=self.warnings)
 
 
 def convert_aggregates(
     expr: str | exp.Expr, *, policy: OperandPolicy, sql_dialect: SqlDialect | None = None,
     dialect: str | None = None,
 ) -> ExprResult:
-    """Convert a source SQL aggregation expression into a SLayer formula under ``policy``; ``sql_dialect`` is the
+    """Convert a source SQL aggregation expression into a SLayer expression under ``policy``; ``sql_dialect`` is the
     target's, whose refused aggregations fail."""
     translator = _Translator(policy=policy, sql_dialect=sql_dialect)
     if isinstance(expr, str):
@@ -568,8 +568,8 @@ def convert_aggregates(
     else:
         tree = expr.copy()
     result = translator.convert(tree)
-    if result.ok and result.formula is not None and (
-            refusal := formula_refusal(result.formula, dialect=sql_dialect)) is not None:
+    if result.ok and result.expression is not None and (
+            refusal := expression_refusal(result.expression, dialect=sql_dialect)) is not None:
         return translator._fail(refusal)
     return result
 
@@ -581,14 +581,14 @@ def convert_expression(
     owner_of: OwnerOf,
     ref_of: RefOf,
     sql_dialect: SqlDialect | None = None,
-    name_taken: NameTaken = lambda model, name: False,
+    name_taken: NameTaken = lambda dataset, name: False,
     target: str | None = None,
     is_list: IsList = lambda qualifier, column: False,
 ) -> ExprResult:
-    """Convert an OSI SQL aggregation expression into a SLayer formula, operands inline.
+    """Convert an OSI SQL aggregation expression into a SLayer expression, operands inline.
 
-    ``name_taken(owning_model, name)`` reserves hidden-column names; ``target``
-    is the sqlglot dialect hidden-column SQL is rendered in.
+    ``name_taken(owning_dataset, name)`` reserves hidden-field names; ``target``
+    is the sqlglot dialect hidden-field SQL is rendered in.
     """
     policy = InlineOperands(entity_name=entity_name, owner_of=owner_of, ref_of=ref_of, name_taken=name_taken,
                             target=target, is_list=is_list)

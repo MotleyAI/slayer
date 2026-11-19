@@ -111,8 +111,8 @@ async def test_every_operation_succeeds(named: tuple[DatasourceConfig, str]) -> 
     assert seen["profile"].version is not None
     assert seen["profile"].model_copy(update={"version": None}) == ServerProfile()
     assert seen["types"] == {
-        "id": ResultColumnType(type=DataType.INT, db_type="integer"),
-        "name": ResultColumnType(type=DataType.TEXT, db_type="text"),
+        "id": ResultColumnType(type=DataType.INTEGER, db_type="integer"),
+        "name": ResultColumnType(type=DataType.STRING, db_type="text"),
     }
     assert seen["rows"] == [{"name": "ada"}]
 
@@ -152,11 +152,11 @@ async def test_exact_numerics_are_typed_by_what_the_driver_reports(named: tuple[
         client.close()
     if driver == "asyncpg":
         assert types == {
-            "n0": ResultColumnType(type=DataType.DOUBLE, db_type="numeric"),
-            "n3": ResultColumnType(type=DataType.DOUBLE, db_type="numeric"),
+            "n0": ResultColumnType(type=DataType.FLOAT, db_type="numeric"),
+            "n3": ResultColumnType(type=DataType.FLOAT, db_type="numeric"),
         }
     else:
         assert types == {
-            "n0": ResultColumnType(type=DataType.INT, db_type="numeric(12,0)"),
-            "n3": ResultColumnType(type=DataType.DOUBLE, db_type="numeric(12,3)"),
+            "n0": ResultColumnType(type=DataType.INTEGER, db_type="numeric(12,0)"),
+            "n3": ResultColumnType(type=DataType.FLOAT, db_type="numeric(12,3)"),
         }

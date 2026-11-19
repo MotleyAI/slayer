@@ -1,8 +1,8 @@
-"""Sample-value profiling of ``Column.sampled`` / ``sampled_values`` / ``distinct_count``.
+"""Sample-value profiling of ``DatasetField.sampled`` / ``sampled_values`` / ``distinct_count``.
 
 :func:`ensure_samples_fresh` is the one owner every read path and forced refresh goes through.
-Categorical columns: top 50 values by frequency in one scan (overflow keeps the top 50, total
-unknown). Numeric/temporal columns: one batched min/max query. Failures are classified by a
+Categorical fields: top 50 values by frequency in one scan (overflow keeps the top 50, total
+unknown). Numeric/temporal fields: one batched min/max query. Failures are classified by a
 row-count probe plus a consecutive-failure breaker and cached per engine; under a session policy
 samples live only in the engine, never in storage.
 """
@@ -19,9 +19,10 @@ from weakref import WeakKeyDictionary
 
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel, is_identifier
+from slayer.core.enums import DataType, NUMERIC_DATATYPES, TEMPORAL_DATATYPES
+from slayer.core.models import DatasetField, SlayerDataset, is_identifier
 from slayer.core.query import SlayerQuery
+from slayer.engine.binding import range_read
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -30,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_CATEGORICAL_VALUES = 50
 _TEXT_SAMPLE_CAP = 20
-_CATEGORICAL_TYPES = (DataType.TEXT, DataType.BOOLEAN)
-_NUMERIC_TEMPORAL_TYPES = (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
+_CATEGORICAL_TYPES = (DataType.STRING, DataType.BOOLEAN)
+_NUMERIC_TEMPORAL_TYPES = NUMERIC_DATATYPES | TEMPORAL_DATATYPES
 _ALL_NULL = "all NULL"
 _TTL_SECONDS = 3600.0
 _BREAKER_THRESHOLD = 3
@@ -54,9 +55,9 @@ _NO_SAMPLE = _Sample()
 
 
 class ProfileOutcome(BaseModel):
-    """The input columns (refreshed where profiled, in input order) plus error strings."""
+    """The input fields (refreshed where profiled, in input order) plus error strings."""
 
-    columns: list[Column]
+    fields: list[DatasetField]
     errors: list[str] = Field(default_factory=list)
 
 
@@ -95,16 +96,16 @@ def _digest(payload: Any) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _column_fingerprint(column: Column) -> str:
-    return _digest(column.model_dump(mode="json", exclude=set(_SAMPLE_FIELDS)))
+def _field_fingerprint(field: DatasetField) -> str:
+    return _digest(field.model_dump(mode="json", exclude=set(_SAMPLE_FIELDS)))
 
 
-def _model_fingerprint(model: SlayerModel) -> str:
-    columns = sorted(
-        (c.model_dump(mode="json", exclude=set(_SAMPLE_FIELDS)) for c in model.columns),
+def _dataset_fingerprint(dataset: SlayerDataset) -> str:
+    fields = sorted(
+        (c.model_dump(mode="json", exclude=set(_SAMPLE_FIELDS)) for c in dataset.fields),
         key=lambda d: str(d.get("name")),
     )
-    return _digest({"model": model.model_dump(mode="json", exclude={"columns"}), "columns": columns})
+    return _digest({"dataset": dataset.model_dump(mode="json", exclude={"fields"}), "fields": fields})
 
 
 def _first_line(exc: BaseException) -> str:
@@ -112,59 +113,59 @@ def _first_line(exc: BaseException) -> str:
     return text.splitlines()[0] if text else type(exc).__name__
 
 
-def _profile_type(column: Column) -> DataType | None:
-    """The type a column is profiled as: a list's element type (its elements are sampled), else its own."""
-    return column.element_type if column.type is DataType.ARRAY else column.type
+def _profile_type(field: DatasetField) -> DataType | None:
+    """The type a field is profiled as: a list's element type (its elements are sampled), else its own."""
+    return field.element_type if field.datatype is DataType.ARRAY else field.datatype
 
 
-def _values_ref(column: Column) -> str:
-    """The reference whose values profile ``column``: a list's ``<column>.value``."""
-    return f"{column.name}.value" if column.type is DataType.ARRAY else column.name
+def _values_ref(field: DatasetField) -> str:
+    """The reference whose values profile ``field``: a list's ``<field>.value``."""
+    return f"{field.name}.value" if field.datatype is DataType.ARRAY else field.name
 
 
-def _is_sample_cached(column: Column, *, model: SlayerModel) -> bool:
-    """True when the persisted sample needs no re-profile; never-profiled columns count as cached."""
-    if not _is_profilable(column, model=model):
+def _is_sample_cached(field: DatasetField, *, dataset: SlayerDataset) -> bool:
+    """True when the persisted sample needs no re-profile; never-profiled fields count as cached."""
+    if not _is_profilable(field, dataset=dataset):
         return True
-    if _profile_type(column) in _CATEGORICAL_TYPES:
-        return column.sampled_values is not None
-    return column.sampled is not None
+    if _profile_type(field) in _CATEGORICAL_TYPES:
+        return field.sampled_values is not None
+    return field.sampled is not None
 
 
-def _is_profilable(column: Column, *, model: SlayerModel) -> bool:
-    kind = _profile_type(column)
+def _is_profilable(field: DatasetField, *, dataset: SlayerDataset) -> bool:
+    kind = _profile_type(field)
     return (
-        not column.hidden
-        and not is_identifier(column=column, columns=model.columns)
+        not field.hidden
+        and not is_identifier(field=field, fields=dataset.fields)
         and (kind in _CATEGORICAL_TYPES or kind in _NUMERIC_TEMPORAL_TYPES)
     )
 
 
-def _is_table_backed(model: SlayerModel) -> bool:
-    """Only ``sql_table`` models take part in forced refresh."""
-    return bool(model.sql_table) and not model.sql and not model.source_queries
+def _is_table_backed(dataset: SlayerDataset) -> bool:
+    """Only ``sql_table`` datasets take part in forced refresh."""
+    return bool(dataset.sql_table) and not dataset.sql and not dataset.source_queries
 
 
 async def _profile_categorical(
-    *, model: SlayerModel, column: Column, engine: SlayerQueryEngine,
+    *, dataset: SlayerDataset, field: DatasetField, engine: SlayerQueryEngine,
 ) -> _Sample:
     """Top values (a list's elements) by frequency (value asc tie-break) in one scan; raises on query failure."""
-    ref = _values_ref(column)
-    counted = f"count({column.name}.*)" if column.type is DataType.ARRAY else "count(*)"
+    ref = _values_ref(field)
+    counted = f"count({field.name}.*)" if field.datatype is DataType.ARRAY else "count(*)"
     q = SlayerQuery.model_validate({
-        "source_model": model.name,
+        "population": dataset.name,
         "dimensions": [ref],
-        "measures": [{"formula": counted, "name": _COUNT}],
+        "metrics": [{"metric": counted, "alias": _COUNT}],
         "order": [
-            {"column": _COUNT, "direction": "desc"},
-            {"column": ref, "direction": "asc"},
+            {"field": _COUNT, "direction": "desc"},
+            {"field": ref, "direction": "asc"},
         ],
         # +2 so one NULL row cannot push a non-overflow result over the cap.
         "limit": _MAX_CATEGORICAL_VALUES + 2,
     })
-    r = await engine.execute(query=q, data_source=model.data_source or None)
-    value_key = f"{model.name}.{ref}"
-    count_key = f"{model.name}.{_COUNT}"
+    r = await engine.execute(query=q, data_source=dataset.data_source or None)
+    value_key = f"{dataset.name}.{ref}"
+    count_key = f"{dataset.name}.{_COUNT}"
     pairs = [(row.get(value_key), row.get(count_key)) for row in r.data if row.get(value_key) is not None]
     pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
     values = [str(v) for v, _ in pairs]
@@ -181,38 +182,30 @@ async def _profile_categorical(
 
 
 async def _profile_numeric_temporal(
-    *, model: SlayerModel, columns: list[Column], engine: SlayerQueryEngine,
+    *, dataset: SlayerDataset, fields: list[DatasetField], engine: SlayerQueryEngine,
 ) -> list[_Sample]:
     """One batched min/max query (a list's over its elements); raises on query failure."""
-    # Untyped on purpose: a typed CAST coerces SQLite date strings to NUMERIC.
-    ext_columns = [
-        {"name": f"_slayer_range_{c.name}", "sql": c.sql or c.name} for c in columns if c.type is not DataType.ARRAY
+    metrics = [
+        {"metric": f"{agg}({_values_ref(c)})", "alias": f"_slayer_range_{c.name}_{agg}"}
+        for c in fields for agg in ("min", "max")
     ]
-    measures = [
-        {"formula": f"{agg}({_values_ref(c) if c.type is DataType.ARRAY else f'_slayer_range_{c.name}'})",
-         "name": f"_slayer_range_{c.name}_{agg}"}
-        for c in columns for agg in ("min", "max")
-    ]
-    q = SlayerQuery.model_validate({
-        "source_model": model.name,
-        "extensions": [{"source_name": model.name, "columns": ext_columns}],
-        "measures": measures,
-    })
-    r = await engine.execute(query=q, data_source=model.data_source or None)
+    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": metrics})
+    with range_read():
+        r = await engine.execute(query=q, data_source=dataset.data_source or None)
     row = r.data[0] if r.data else {}
     out: list[_Sample] = []
-    for c in columns:
-        mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
-        mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
+    for c in fields:
+        mn = row.get(f"{dataset.name}._slayer_range_{c.name}_min")
+        mx = row.get(f"{dataset.name}._slayer_range_{c.name}_max")
         out.append(_Sample(sampled=_ALL_NULL if mn is None and mx is None else f"{mn} .. {mx}"))
     return out
 
 
-async def _probe(*, model: SlayerModel, engine: SlayerQueryEngine) -> Exception | None:
-    """Row-count the model; the exception when it fails, else ``None``."""
-    q = SlayerQuery.model_validate({"source_model": model.name, "measures": [{"formula": "count(*)"}]})
+async def _probe(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> Exception | None:
+    """Row-count the dataset; the exception when it fails, else ``None``."""
+    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": ["count(*)"]})
     try:
-        await engine.execute(query=q, data_source=model.data_source or None)
+        await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception as exc:  # NOSONAR(S112) — the probe's failure IS the classification
         return exc
     return None
@@ -220,7 +213,7 @@ async def _probe(*, model: SlayerModel, engine: SlayerQueryEngine) -> Exception 
 
 class _Target(BaseModel):
     index: int
-    column: Column
+    field: DatasetField
     key: _Key
 
 
@@ -230,19 +223,19 @@ class _Run:
     def __init__(
         self,
         *,
-        model: SlayerModel,
+        dataset: SlayerDataset,
         engine: SlayerQueryEngine,
         storage: StorageBackend,
         state: _EngineProfileState,
-        model_key: _Key,
-        result: list[Column],
+        dataset_key: _Key,
+        result: list[DatasetField],
         pending: int,
     ) -> None:
-        self.model = model
+        self.dataset = dataset
         self.engine = engine
         self.storage = storage
         self.state = state
-        self.model_key = model_key
+        self.model_key = dataset_key
         self.result = result
         self.scoped = engine.policy is not None
         self.errors: list[str] = []
@@ -255,16 +248,16 @@ class _Run:
         return _clock() + _TTL_SECONDS
 
     async def run(self, targets: list[_Target]) -> None:
-        for t in (t for t in targets if _profile_type(t.column) in _CATEGORICAL_TYPES):
+        for t in (t for t in targets if _profile_type(t.field) in _CATEGORICAL_TYPES):
             if self.model_failed:
                 return
             try:
-                sample = await _profile_categorical(model=self.model, column=t.column, engine=self.engine)
+                sample = await _profile_categorical(dataset=self.dataset, field=t.field, engine=self.engine)
             except Exception as exc:  # NOSONAR(S112) — classified by _on_failure
                 await self._on_failure(target=t, exc=exc)
                 continue
             await self._on_success(target=t, sample=sample)
-        numeric = [t for t in targets if _profile_type(t.column) in _NUMERIC_TEMPORAL_TYPES]
+        numeric = [t for t in targets if _profile_type(t.field) in _NUMERIC_TEMPORAL_TYPES]
         if numeric and not self.model_failed:
             await self._run_numeric(numeric)
         if not self.model_failed:
@@ -273,16 +266,16 @@ class _Run:
     async def _run_numeric(self, targets: list[_Target]) -> None:
         try:
             samples = await _profile_numeric_temporal(
-                model=self.model, columns=[t.column for t in targets], engine=self.engine,
+                dataset=self.dataset, fields=[t.field for t in targets], engine=self.engine,
             )
-        except Exception as exc:  # NOSONAR(S112) — classified, then isolated per column
+        except Exception as exc:  # NOSONAR(S112) — classified, then isolated per field
             await self._on_failure(target=None, exc=exc)
             for t in targets:
                 if self.model_failed:
                     return
                 try:
                     [sample] = await _profile_numeric_temporal(
-                        model=self.model, columns=[t.column], engine=self.engine,
+                        dataset=self.dataset, fields=[t.field], engine=self.engine,
                     )
                 except Exception as col_exc:  # NOSONAR(S112) — classified by _on_failure
                     await self._on_failure(target=t, exc=col_exc)
@@ -294,37 +287,37 @@ class _Run:
 
     async def _on_failure(self, *, target: _Target | None, exc: Exception) -> None:
         if self.healthy is None:
-            probe_exc = await _probe(model=self.model, engine=self.engine)
+            probe_exc = await _probe(dataset=self.dataset, engine=self.engine)
             self.healthy = probe_exc is None
             if probe_exc is not None:
-                self._fail_model(exc=probe_exc)
+                self._fail_dataset(exc=probe_exc)
                 return
         if target is None:
             return
         self.streak.append((target, exc))
         if len(self.streak) >= _BREAKER_THRESHOLD:
-            self._fail_model(exc=exc)
+            self._fail_dataset(exc=exc)
 
-    def _fail_model(self, *, exc: Exception) -> None:
+    def _fail_dataset(self, *, exc: Exception) -> None:
         msg = _first_line(exc)
         self.model_failed = True
         self.streak.clear()
         self.state.failures[self.model_key] = _Entry(expires_at=self._expiry(), error=msg)
         logger.warning(
-            "sample profiling: model %s.%s unavailable (%d columns skipped): %s",
-            self.model.data_source, self.model.name, self.pending, msg,
+            "sample profiling: dataset %s.%s unavailable (%d fields skipped): %s",
+            self.dataset.data_source, self.dataset.name, self.pending, msg,
         )
-        self.errors.append(f"{self.model.name}: profiling unavailable: {msg}")
+        self.errors.append(f"{self.dataset.name}: profiling unavailable: {msg}")
 
     def _flush_streak(self) -> None:
         for target, exc in self.streak:
             msg = _first_line(exc)
             self.state.failures[target.key] = _Entry(expires_at=self._expiry(), error=msg)
             logger.warning(
-                "sample profiling: column %s.%s.%s failed: %s",
-                self.model.data_source, self.model.name, target.column.name, msg,
+                "sample profiling: field %s.%s.%s failed: %s",
+                self.dataset.data_source, self.dataset.name, target.field.name, msg,
             )
-            self.errors.append(f"{self.model.name}.{target.column.name}: {msg}")
+            self.errors.append(f"{self.dataset.name}.{target.field.name}: {msg}")
         self.streak.clear()
 
     async def _on_success(self, *, target: _Target, sample: _Sample) -> None:
@@ -332,100 +325,100 @@ class _Run:
         self.pending -= 1
         self.state.failures.pop(target.key, None)
         self.state.failures.pop(self.model_key, None)
-        self.result[target.index] = target.column.model_copy(update=sample.model_dump())
+        self.result[target.index] = target.field.model_copy(update=sample.model_dump())
         if self.scoped:
             self.state.samples[target.key] = _Entry(expires_at=self._expiry(), sample=sample)
             return
         try:
-            await self.storage.update_column_sampled(
-                data_source=self.model.data_source,
-                model_name=self.model.name,
-                column_name=target.column.name,
+            await self.storage.update_field_sampled(
+                data_source=self.dataset.data_source,
+                dataset_name=self.dataset.name,
+                field_name=target.field.name,
                 **sample.model_dump(),
             )
         except Exception as exc:  # NOSONAR(S112) — reported; the fresh value is still returned
             msg = _first_line(exc)
             logger.warning(
                 "sample profiling: failed to persist %s.%s.%s: %s",
-                self.model.data_source, self.model.name, target.column.name, msg,
+                self.dataset.data_source, self.dataset.name, target.field.name, msg,
             )
-            self.errors.append(f"{self.model.name}.{target.column.name} (persist): {msg}")
+            self.errors.append(f"{self.dataset.name}.{target.field.name} (persist): {msg}")
 
 
 def _served_from_cache(
     *,
     target: _Target,
-    model: SlayerModel,
+    dataset: SlayerDataset,
     state: _EngineProfileState,
-    result: list[Column],
+    result: list[DatasetField],
     now: float,
     scoped: bool,
 ) -> bool:
     """True when ``target`` needs no query; scoped sample hits are written into ``result``."""
-    c = target.column
+    c = target.field
     if scoped:
         hit = state.live(table=state.samples, key=target.key, now=now)
         if hit is not None and hit.sample is not None:
             result[target.index] = c.model_copy(update=hit.sample.model_dump())
             return True
-    elif _is_sample_cached(c, model=model):
+    elif _is_sample_cached(c, dataset=dataset):
         return True
     if state.live(table=state.failures, key=target.key, now=now) is not None:
-        logger.debug("sample profiling: %s.%s.%s skipped (cached failure)", model.data_source, model.name, c.name)
+        logger.debug("sample profiling: %s.%s.%s skipped (cached failure)", dataset.data_source, dataset.name, c.name)
         return True
     return False
 
 
 async def ensure_samples_fresh(
     *,
-    model: SlayerModel,
-    columns: list[Column],
+    dataset: SlayerDataset,
+    fields: list[DatasetField],
     engine: SlayerQueryEngine,
     storage: StorageBackend,
     force: bool = False,
 ) -> ProfileOutcome:
-    """Profile ``columns`` of ``model`` that need it; ``force`` ignores the sample and failure caches."""
+    """Profile ``fields`` of ``dataset`` that need it; ``force`` ignores the sample and failure caches."""
     scoped = engine.policy is not None
     state = _state_for(engine)
     now = _clock()
-    model_key: _Key = (model.data_source or "", model.name, _model_fingerprint(model))
+    dataset_key: _Key = (dataset.data_source or "", dataset.name, _dataset_fingerprint(dataset))
     # Under a policy, stored samples are never surfaced.
-    result = [c.model_copy(update=_NO_SAMPLE.model_dump()) for c in columns] if scoped else list(columns)
+    result = [c.model_copy(update=_NO_SAMPLE.model_dump()) for c in fields] if scoped else list(fields)
     targets = [
-        _Target(index=i, column=c, key=(*model_key, c.name, _column_fingerprint(c)))
-        for i, c in enumerate(columns) if _is_profilable(c, model=model)
+        _Target(index=i, field=c, key=(*dataset_key, c.name, _field_fingerprint(c)))
+        for i, c in enumerate(fields) if _is_profilable(c, dataset=dataset)
     ]
     if not force:
         targets = [
             t for t in targets
-            if not _served_from_cache(target=t, model=model, state=state, result=result, now=now, scoped=scoped)
+            if not _served_from_cache(target=t, dataset=dataset, state=state, result=result, now=now, scoped=scoped)
         ]
-        if targets and state.live(table=state.failures, key=model_key, now=now) is not None:
-            logger.debug("sample profiling: %s.%s skipped (cached model failure)", model.data_source, model.name)
-            return ProfileOutcome(columns=result)
+        if targets and state.live(table=state.failures, key=dataset_key, now=now) is not None:
+            logger.debug("sample profiling: %s.%s skipped (cached dataset failure)", dataset.data_source, dataset.name)
+            return ProfileOutcome(fields=result)
     if not targets:
-        return ProfileOutcome(columns=result)
+        return ProfileOutcome(fields=result)
     run = _Run(
-        model=model, engine=engine, storage=storage, state=state,
-        model_key=model_key, result=result, pending=len(targets),
+        dataset=dataset, engine=engine, storage=storage, state=state,
+        dataset_key=dataset_key, result=result, pending=len(targets),
     )
     await run.run(targets)
-    return ProfileOutcome(columns=run.result, errors=run.errors)
+    return ProfileOutcome(fields=run.result, errors=run.errors)
 
 
-async def refresh_table_backed_model_sampled(
+async def refresh_table_backed_dataset_sampled(
     *,
-    model: SlayerModel,
+    dataset: SlayerDataset,
     engine: SlayerQueryEngine,
     storage: StorageBackend,
-    only_columns: set[str] | None = None,
+    only_fields: set[str] | None = None,
 ) -> list[str]:
-    """Force-refresh samples of a table-backed model (others skipped); returns error strings."""
-    if not _is_table_backed(model):
+    """Force-refresh samples of a table-backed dataset (others skipped); returns error strings."""
+    if not _is_table_backed(dataset):
         return []
-    columns = [c for c in model.columns if only_columns is None or c.name in only_columns]
+    fields = [c for c in dataset.fields if only_fields is None or c.name in only_fields]
     outcome = await ensure_samples_fresh(
-        model=model, columns=columns, engine=engine, storage=storage, force=True,
+        dataset=dataset, fields=fields, engine=engine, storage=storage, force=True,
     )
     return outcome.errors
 
@@ -436,8 +429,8 @@ async def refresh_all_table_backed_sampled(
     storage: StorageBackend,
     data_source: str,
 ) -> list[str]:
-    """Force-refresh every table-backed model in ``data_source``; returns error strings."""
+    """Force-refresh every table-backed dataset in ``data_source``; returns error strings."""
     errors: list[str] = []
-    for model in DocumentLoadFailures().skip(await storage.load_models(data_source=data_source)):
-        errors.extend(await refresh_table_backed_model_sampled(model=model, engine=engine, storage=storage))
+    for dataset in DocumentLoadFailures().skip(await storage.load_datasets(data_source=data_source)):
+        errors.extend(await refresh_table_backed_dataset_sampled(dataset=dataset, engine=engine, storage=storage))
     return errors

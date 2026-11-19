@@ -17,11 +17,12 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    SlayerModel,
+    SlayerDataset,
 )
 from slayer.embeddings import client as embedding_client
+from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.search.service import SearchService
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -47,22 +48,22 @@ def stub_available(monkeypatch: pytest.MonkeyPatch) -> None:
 async def _seed_basic_corpus(storage: YAMLStorage) -> None:
     ds = DatasourceConfig(name="dsx", type="postgres", host="h", database="d")
     await storage.save_datasource(ds)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="dsx",
         description="orders fact table",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(
                 name="amount",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 description="purchase amount in cents",
             ),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
 
 # ---------------------------------------------------------------------------
@@ -144,13 +145,11 @@ async def test_question_with_embeddings_returns_entity(
 
     # Refresh embeddings for everything in the seeded datasource via the
     # retriever so the storage table is populated.
-    from slayer.search.retrievers.embeddings import EmbeddingRetriever
-
-    model = await storage.get_model("orders", data_source="dsx")
+    model = await storage.get_dataset("orders", data_source="dsx")
     assert model is not None
-    await EmbeddingRetriever(storage=storage).refresh_model_subtree(model)
+    await EmbeddingRetriever(storage=storage).refresh_dataset_subtree(model)
     await EmbeddingRetriever(storage=storage).refresh_datasource(
-        name="dsx", models=[model],
+        name="dsx", datasets=[model],
     )
 
     # Stub the query-side embedding: align with the "amount" column
@@ -202,12 +201,11 @@ async def test_entity_hits_now_carry_rrf_fused_score(
     monkeypatch.setattr(
         embedding_client, "embed_query", stub_embed_query,
     )
-    from slayer.search.retrievers.embeddings import EmbeddingRetriever
-    model = await storage.get_model("orders", data_source="dsx")
+    model = await storage.get_dataset("orders", data_source="dsx")
     assert model is not None
-    await EmbeddingRetriever(storage=storage).refresh_model_subtree(model)
+    await EmbeddingRetriever(storage=storage).refresh_dataset_subtree(model)
     await EmbeddingRetriever(storage=storage).refresh_datasource(
-        name="dsx", models=[model],
+        name="dsx", datasets=[model],
     )
 
     service = SearchService(storage=storage)
@@ -242,10 +240,9 @@ async def test_query_embed_failure_warns_and_continues(
         "slayer.search.retrievers.embeddings.embed_batch",
         stub_embed_batch,
     )
-    from slayer.search.retrievers.embeddings import EmbeddingRetriever
-    model = await storage.get_model("orders", data_source="dsx")
+    model = await storage.get_dataset("orders", data_source="dsx")
     assert model is not None
-    await EmbeddingRetriever(storage=storage).refresh_model_subtree(model)
+    await EmbeddingRetriever(storage=storage).refresh_dataset_subtree(model)
 
     async def failing_query(*_a, **_kw):  # NOSONAR(S7503) — stub matches embed_query async signature
         return None

@@ -1,0 +1,227 @@
+{
+ "source": "tests/_mcp_idiom_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 132,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 133,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 150,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 238,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 242,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 251,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 255,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 260,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 264,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 270,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 316,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 317,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 318,
+   "reason": "not fully literal"
+  }
+ ]
+}

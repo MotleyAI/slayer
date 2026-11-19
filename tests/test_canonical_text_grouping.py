@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.syntax import canonical_measure_text, parse_expr
+from slayer.core.syntax import canonical_metric_text, parse_expr
 
 #: Every operator level, associativity, unary chains, casts, FILTER and CASE-lowered iif.
 CORPUS = [
@@ -29,23 +29,23 @@ CORPUS = [
 @pytest.mark.parametrize("text", CORPUS)
 def test_round_trip(text: str) -> None:
     parsed = parse_expr(text)
-    assert parse_expr(canonical_measure_text(parsed)) == parsed, canonical_measure_text(parsed)
+    assert parse_expr(canonical_metric_text(parsed)) == parsed, canonical_metric_text(parsed)
 
 
 @pytest.mark.parametrize("text", CORPUS)
 def test_never_reads_as_a_comment(text: str) -> None:
-    rendered = canonical_measure_text(parse_expr(text))
+    rendered = canonical_metric_text(parse_expr(text))
     assert "--" not in rendered, rendered
     assert "/*" not in rendered, rendered
 
 
 def test_grouping_is_kept() -> None:
-    texts = [canonical_measure_text(parse_expr(t)) for t in ("(a + b) * c", "a + b * c", "a - (b - c)", "a - b - c")]
+    texts = [canonical_metric_text(parse_expr(t)) for t in ("(a + b) * c", "a + b * c", "a - (b - c)", "a - b - c")]
     assert len(set(texts)) == 4, texts
 
 
 def test_double_negation() -> None:
     parsed = parse_expr("-(-b)")
-    rendered = canonical_measure_text(parsed)
+    rendered = canonical_metric_text(parsed)
     assert "--" not in rendered, rendered
     assert parse_expr(rendered) == parsed

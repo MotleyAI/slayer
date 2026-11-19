@@ -16,7 +16,7 @@ async def engine(request):
 
 
 def _per_group(**extra):
-    return spine_query(measures=PER_GROUP, date_range=JAN_MAR, dimensions=["customers.region"], **extra)
+    return spine_query(metrics=PER_GROUP, date_range=JAN_MAR, dimensions=["customers.region"], **extra)
 
 
 class TestSpineFactorsOut:
@@ -26,23 +26,23 @@ class TestSpineFactorsOut:
         assert resp.population_inferred is True
 
     async def test_explicit_p_reported_not_inferred(self, engine) -> None:
-        resp = await engine.execute(_per_group(source_model="customers"))
+        resp = await engine.execute(_per_group(population="customers"))
         assert resp.population == "time_spine × customers"
         assert resp.population_inferred is False
 
     async def test_a_field_filter_still_participates(self, engine) -> None:
-        resp = await engine.execute(_per_group(filters=["orders.amount > 60"]))
+        resp = await engine.execute(_per_group(filter=["orders.amount > 60"]))
         assert resp.population == "time_spine × orders"
 
 
 class TestSpineOnly:
     async def test_unit_p_raises_no_inference_error(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=TWO_FACTS))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS))
         assert resp.population == "time_spine"
         assert resp.population_inferred is True
 
     async def test_named_spine_is_explicit(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=TWO_FACTS, source_model="time_spine"))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS, population="time_spine"))
         assert resp.population == "time_spine"
         assert resp.population_inferred is False
 

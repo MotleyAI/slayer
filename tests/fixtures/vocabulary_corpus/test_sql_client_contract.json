@@ -1,0 +1,27 @@
+{
+ "source": "tests/test_sql_client_contract.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

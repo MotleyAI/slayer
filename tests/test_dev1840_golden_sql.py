@@ -15,15 +15,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests._dev1840_fixtures import (
-    ModelMeasure,
     SPEND_BAND_170,
-    ambiguity_models,
-    dev1840_models,
+    ambiguity_datasets,
+    dev1840_datasets,
     q,
     tq,
 )
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
+from slayer.core.query import QueryMetric
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1840_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
@@ -31,74 +31,74 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
 ALLOWED_DELTAS: dict[str, str] = {}
 
 _MODEL_SETS = {
-    "default": lambda: dev1840_models(),
-    "weak": lambda: dev1840_models(strong_plans=False),
-    "rev": lambda: dev1840_models(declare_reverse=True),
-    "amb": ambiguity_models,
+    "default": lambda: dev1840_datasets(),
+    "weak": lambda: dev1840_datasets(strong_plans=False),
+    "rev": lambda: dev1840_datasets(declare_reverse=True),
+    "amb": ambiguity_datasets,
 }
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
-SM = ModelMeasure(formula="sum(agents.score)", name="sm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
+SM = QueryMetric(metric="sum(agents.score)", alias="sm")
 
 
 def _cases() -> dict:
     return {
         "exists/app_by_tier": {"models": "default", "query": q(
-            dimensions=["customers.tier"], measures=[M, CM],
-            filters=["channel = 'app'"])},
+            dimensions=["customers.tier"], metrics=[M, CM],
+            filter=["channel = 'app'"])},
         "exists/same_branch_two_conjuncts": {"models": "default", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["status = 'ok'", "channel = 'app'"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["status = 'ok'", "channel = 'app'"])},
         "exists/two_branches": {"models": "weak", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["channel = 'web'", "customers.plans.level = 'basic'"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["channel = 'web'", "customers.plans.level = 'basic'"])},
         "exists/composite_inverted_hop": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], measures=[M, RM],
-            filters=["channel = 'app'"])},
+            dimensions=["status"], metrics=[M, RM],
+            filter=["channel = 'app'"])},
         "exists/multi_hop_union_tree": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], measures=[M, RM],
-            filters=["channel = 'app'", "customers.tier = 'gold'"])},
+            dimensions=["status"], metrics=[M, RM],
+            filter=["channel = 'app'", "customers.tier = 'gold'"])},
         "exists/correlated_outer_ref": {"models": "default", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.spend > amount"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.spend > amount"])},
         "exists/forward_unproven_hop": {"models": "weak", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.plans.level = 'basic'"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.plans.level = 'basic'"])},
         "exists/derived_deps_cust_tier": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], measures=[CM],
-            filters=["cust_tier = 'gold'"])},
+            dimensions=["status"], metrics=[CM],
+            filter=["cust_tier = 'gold'"])},
         "exists/derived_1n_last_status": {"models": "rev", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.last_status = 'ok'"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.last_status = 'ok'"])},
         "exists/nested_band_producer": {"models": "default", "query": q(
-            dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
-            measures=[M], filters=["channel = 'app'"])},
+            dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
+            metrics=[M], filter=["channel = 'app'"])},
         "exists/declared_reverse": {"models": "rev", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["channel = 'app'"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["channel = 'app'"])},
         "exists/negated_cross_path": {"models": "default", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["NOT (channel = 'app')"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["NOT (channel = 'app')"])},
         "inline/safe_hop_regions": {"models": "default", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.regions.name = 'North'"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.regions.name = 'North'"])},
         "inline/strong_plans_basic": {"models": "default", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.plans.level = 'basic'"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.plans.level = 'basic'"])},
         "inline/composite_n1_root_local": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], measures=[M, RM],
-            filters=["stores.city = 'NYC'"])},
+            dimensions=["status"], metrics=[M, RM],
+            filter=["stores.city = 'NYC'"])},
         "excluded/mixed_or": {"models": "default", "query": q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.tier = 'gold' OR channel = 'app'"])},
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.tier = 'gold' OR channel = 'app'"])},
         "excluded/ambiguous_inversion": {"models": "amb", "query": tq(
-            measures=[SM], filters=["effort > 2"])},
+            metrics=[SM], filter=["effort > 2"])},
     }
 
 
@@ -106,7 +106,7 @@ async def _generate_one(case, dialect: str):
     models = _MODEL_SETS[case["models"]]()
     try:
         return await _engine_generate(
-            query=case["query"], model=models[0], extra_models=models[1:],
+            query=case["query"], dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract
@@ -131,7 +131,7 @@ def test_exists_cases_carry_an_exists(baseline) -> None:
         case_id = key.rsplit("::", 1)[0]
         if case_id == "excluded/ambiguous_inversion":
             assert isinstance(value, dict), f"{key} no longer fails closed"
-            assert value.get("error") == "AmbiguousJoinPathError", value
+            assert value.get("error") == "AmbiguousRelationshipPathError", value
             continue
         assert not isinstance(value, dict), f"{key} unexpectedly raised: {value}"
         assert "__regroup__" not in value, f"{key} leaked a placeholder"

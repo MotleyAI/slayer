@@ -1,0 +1,103 @@
+{
+ "source": "tests/test_heal_refinement_restatement.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "orders_n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "orders_n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "revenue",
+    "name": "r2"
+   },
+   "new": {
+    "expression": "revenue",
+    "name": "r2"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "revenue",
+      "label": "Rev"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "revenue",
+      "label": "Rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 14,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 19,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 20,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  }
+ ]
+}

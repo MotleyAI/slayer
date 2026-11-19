@@ -1,0 +1,38 @@
+{
+ "source": "tests/test_search_service_dispatch.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 219,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 221,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 249,
+   "reason": "not fully literal"
+  }
+ ]
+}

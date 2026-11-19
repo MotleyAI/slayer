@@ -17,7 +17,9 @@ import re
 import pytest
 
 from slayer.engine.compile.stages import _assert_attach_covers_producer_grain
-from tests._dev1824_fixtures import ModelMeasure, gen, month_td, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1824_fixtures import gen, month_td, q
 
 
 class TestCrossModelPartitionedStillGuarded:
@@ -30,9 +32,9 @@ class TestCrossModelPartitionedStillGuarded:
         # time dimension is a host column, unreachable from customers).
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, window='1y', partition_by=customers.tier)",
-                name="w",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='1y', partition_by=customers.tier)",
+                alias="w",
             )],
         )
         with pytest.raises(ValueError, match=r"attributable from"):
@@ -41,8 +43,8 @@ class TestCrossModelPartitionedStillGuarded:
     async def test_cross_model_first_last_plus_partition(self) -> None:
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula="last(customers.spend, partition_by=region)", name="l",
+            metrics=[QueryMetric(
+                metric="last(customers.spend, partition_by=region)", alias="l",
             )],
             to_many_handling="broadcast",
         )
@@ -57,8 +59,8 @@ class TestCrossModelPartitionedStillGuarded:
         # routes through the combined attach (executed values: dev1865 suite).
         query = q(
             dimensions=["customers.tier"],
-            filters=["sum(customers.spend, partition_by=customers.tier) > 100"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filter=["sum(customers.spend, partition_by=customers.tier) > 100"],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         sql = await gen(query)
         assert "__regroup__" not in sql
@@ -70,7 +72,7 @@ class TestMeasureGrainRulePreserved:
         # discovery; only ROW attaches may use finer-than-query partitions.
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount, partition_by=city)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount, partition_by=city)", alias="m")],
         )
         with pytest.raises(ValueError, match=r"not a query dimension"):
             await gen(query)
@@ -82,10 +84,10 @@ class TestMeasureGrainRulePreserved:
         # It must raise the clean "not a query dimension" error instead.
         band = "CASE WHEN sum(amount, partition_by=city) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="sum(amount, partition_by=city)", name="ct"),
+            dimensions=["region", {"field": band, "alias": "band"}],
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(amount, partition_by=city)", alias="ct"),
             ],
         )
         with pytest.raises(ValueError, match=r"not a query dimension"):
@@ -97,9 +99,9 @@ class TestMeasureGrainRulePreserved:
         # legal and must render cleanly (no combined join-back, no internal error).
         band = "CASE WHEN sum(amount, partition_by=city) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "band"}],
-            filters=["sum(amount, partition_by=city) > 100"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": band, "alias": "band"}],
+            filter=["sum(amount, partition_by=city) > 100"],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         sql = await gen(query)  # must not raise
         assert "__regroup__" not in sql
@@ -113,9 +115,9 @@ class TestDimensionGrainSelfContainment:
     async def test_transform_over_bare_aggregate_in_dimension(self) -> None:
         band = "CASE WHEN cumsum(sum(amount)) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "b"}],
+            dimensions=["region", {"field": band, "alias": "b"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -124,9 +126,9 @@ class TestDimensionGrainSelfContainment:
     async def test_bare_windowed_aggregate_in_dimension(self) -> None:
         band = "CASE WHEN sum(amount, window='1y') > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "b"}],
+            dimensions=["region", {"field": band, "alias": "b"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -135,8 +137,8 @@ class TestDimensionGrainSelfContainment:
     async def test_bare_first_last_in_dimension(self) -> None:
         band = "CASE WHEN last(amount) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "b"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", {"field": band, "alias": "b"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -148,8 +150,8 @@ class TestDimensionGrainSelfContainment:
         # tests/test_dev1839_union_dim_execution.py.
         band = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
         query = q(
-            dimensions=["region", "city", {"expression": band, "name": "rk"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["region", "city", {"field": band, "alias": "rk"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         sql = await gen(query)  # must not raise
         assert "__regroup__" not in sql

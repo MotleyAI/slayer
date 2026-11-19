@@ -13,18 +13,18 @@ from pydantic import ValidationError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import AggregationArgumentError, UnresolvableDimensionJoinError
+from slayer.core.errors import AggregationArgumentError, UnresolvableDimensionRelationshipError
 from slayer.core.models import (
-    Aggregation, AggregationParam, Column, ModelJoin, ModelMeasure, SlayerModel,
+    Aggregation, AggregationParam, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 from slayer.sql.sql_template import SqlTemplateError
 from slayer.storage.sqlite_conn import transaction
 from tests._dev1832_fixtures import (
     WAVG_AMOUNT_WEIGHT_QAMT,
     _seed_sqlite as seed_1832_sqlite,
-    dev1832_models,
+    dev1832_datasets,
     sales_q,
 )
 from tests._dev1900_fixtures import (
@@ -32,7 +32,7 @@ from tests._dev1900_fixtures import (
     _seed_duckdb as seed_1900_duckdb,
     _seed_sqlite as seed_1900_sqlite,
     bad_pop_vals,
-    dev1900_models,
+    dev1900_datasets,
     orders_q as orders_1900_q,
 )
 from tests._dev1910_fixtures import (
@@ -56,60 +56,60 @@ def _squash(sql: str) -> str:
     return re.sub(r"\s+", "", sql)
 
 
-def _orders(aggs: tuple[Aggregation, ...] = ()) -> SlayerModel:
-    return SlayerModel(
+def _orders(aggs: tuple[Aggregation, ...] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="price", sql="price", type=DataType.DOUBLE),
-            Column(name="discount", sql="discount", type=DataType.DOUBLE),
-            Column(name="netd", sql="price - discount", type=DataType.DOUBLE),
-            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
-            Column(name="q2", sql="quantity + 1"),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
+            DatasetField(name="discount", sql="discount", datatype=DataType.FLOAT),
+            DatasetField(name="netd", sql="price - discount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="q2", sql="quantity + 1"),
         ],
         aggregations=list(aggs),
     )
 
 
-def _q(formula: str) -> SlayerQuery:
-    return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula, name="m")])
+def _q(expression: str) -> SlayerQuery:
+    return SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression, alias="m")])
 
 
 async def _sql(
-    formula: str, *, dialect: str = "postgres", aggs: tuple[Aggregation, ...] = (), validate: bool = True,
+    expression: str, *, dialect: str = "postgres", aggs: tuple[Aggregation, ...] = (), validate: bool = True,
 ) -> str:
     # validate=False: a model stored before its save-time rule existed (still loads, still queried).
-    return await _engine_generate(query=_q(formula), model=_orders(aggs), dialect=dialect, validate=validate)
+    return await _engine_generate(query=_q(expression), dataset=_orders(aggs), dialect=dialect, validate=validate)
 
 
-async def _joined_sql(*, agg: Aggregation, formula: str, validate: bool = True) -> str:
-    customers = SlayerModel(
+async def _joined_sql(*, agg: Aggregation, expression: str, validate: bool = True) -> str:
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="weight", sql="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
         ],
     )
     host = _orders((agg,)).model_copy(
-        update={"joins": [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]},
+        update={"relationships": [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]},
     )
-    return await _engine_generate(query=_q(formula), model=host, extra_models=[customers], validate=validate)
+    return await _engine_generate(query=_q(expression), dataset=host, extra_datasets=[customers], validate=validate)
 
 
-async def _fails_as_its_comparison_twin(*, formula: str, twin: str, aggs: tuple[Aggregation, ...]) -> str:
+async def _fails_as_its_comparison_twin(*, expression: str, twin: str, aggs: tuple[Aggregation, ...]) -> str:
     """``formula`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
     with pytest.raises(ValueError) as twin_info:
         await _sql(twin, aggs=aggs)
     with pytest.raises(ValueError) as info:
-        await _sql(formula, aggs=aggs)
+        await _sql(expression, aggs=aggs)
     assert type(info.value) is type(twin_info.value), str(info.value)
     assert "==" not in str(info.value)
     return str(info.value)
 
 
-_SUMSQ = Aggregation(name="sumsq", formula="SUM({value} * {value})")
+_SUMSQ = Aggregation(name="sumsq", expression="SUM({value} * {value})")
 _SCALED = Aggregation(
-    name="scaled", formula="SUM({value}) / {scale}",
+    name="scaled", expression="SUM({value}) / {scale}",
     params=[AggregationParam(name="scale", sql="1")],
 )
 
@@ -203,7 +203,7 @@ class TestFormulaExecution:
     ])
     async def test_executes_to_oracle(self, dialect: str, formula: str, expected: float) -> None:
         async with seeded_exec_engine(
-            dialect=dialect, seed=_seed, models=[_orders((_SUMSQ, _SCALED))],
+            dialect=dialect, seed=_seed, datasets=[_orders((_SUMSQ, _SCALED))],
         ) as (engine, _db):
             resp = await engine.execute(_q(formula))
         assert resp.data[0]["orders.m"] == pytest.approx(expected)
@@ -211,37 +211,37 @@ class TestFormulaExecution:
 
 class TestPlaceholderRecognition:
     async def test_quoted_value_placeholder_is_rejected(self) -> None:
-        lbl = Aggregation(name="lbl", formula="MAX(CASE WHEN {value} > 0 THEN '{value}' END)")
+        lbl = Aggregation(name="lbl", expression="MAX(CASE WHEN {value} > 0 THEN '{value}' END)")
         with pytest.raises(SqlTemplateError, match=r"\{value\}"):
             await _sql("lbl(price)", aggs=(lbl,))
 
     async def test_whitespace_inside_braces(self) -> None:
-        spaced = Aggregation(name="s1", formula="SUM({ value })")
-        tight = Aggregation(name="s1", formula="SUM({value})")
+        spaced = Aggregation(name="s1", expression="SUM({ value })")
+        tight = Aggregation(name="s1", expression="SUM({value})")
         assert await _sql("s1(price)", aggs=(spaced,)) == await _sql("s1(price)", aggs=(tight,))
 
     async def test_whitespace_placeholder_kwarg_registers_its_join(self) -> None:
         query = "scaled(price, scale='customers.weight')"
         spaced = await _joined_sql(
-            agg=Aggregation(name="scaled", formula="SUM({value}) / MAX({ scale })"), formula=query,
+            agg=Aggregation(name="scaled", expression="SUM({value}) / MAX({ scale })"), expression=query,
         )
         assert spaced == await _joined_sql(
-            agg=Aggregation(name="scaled", formula="SUM({value}) / MAX({scale})"), formula=query,
+            agg=Aggregation(name="scaled", expression="SUM({value}) / MAX({scale})"), expression=query,
         )
         assert "JOIN customers" in spaced
 
     async def test_unused_param_default_registers_no_join(self) -> None:
         unused = Aggregation(
-            name="plain", formula="SUM({value})",
+            name="plain", expression="SUM({value})",
             params=[AggregationParam(name="w", sql="customers.weight")],
         )
-        assert "customers" not in await _joined_sql(agg=unused, formula="plain(price)", validate=False)
+        assert "customers" not in await _joined_sql(agg=unused, expression="plain(price)", validate=False)
 
     @pytest.mark.parametrize("declared", [Aggregation(name="corr"), _SUMSQ])
     async def test_formula_less_builtin_string_kwarg_registers_its_join(
         self, declared: Aggregation,
     ) -> None:
-        sql = await _joined_sql(agg=declared, formula="corr(price, other='customers.weight')")
+        sql = await _joined_sql(agg=declared, expression="corr(price, other='customers.weight')")
         assert "CORR(orders.price, customers.weight)" in sql
         assert "JOIN customers" in sql
 
@@ -249,17 +249,17 @@ class TestPlaceholderRecognition:
 class TestInvalidTemplates:
     @pytest.mark.parametrize("formula", ["SUM({value}", "SUM({t}.amount)"])
     async def test_invalid_formula_fails_naming_the_aggregation(self, formula: str) -> None:
-        bad = Aggregation(name="broken_agg", formula=formula)
+        bad = Aggregation(name="broken_agg", expression=formula)
         query = _q("broken_agg(price)")
         model = _orders((bad,))
         with pytest.raises(SqlTemplateError, match="broken_agg"):
-            await _engine_generate(query=query, model=model, validate=False)
+            await _engine_generate(query=query, dataset=model, validate=False)
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_unbound_placeholder_fails_naming_aggregation_and_placeholder(
         self, dialect: str,
     ) -> None:
-        missing = Aggregation(name="needs_scale", formula="SUM({value}) * {scale}")
+        missing = Aggregation(name="needs_scale", expression="SUM({value}) * {scale}")
         with pytest.raises(SqlTemplateError, match=r"needs_scale[\s\S]*scale|scale[\s\S]*needs_scale"):
             await _sql("needs_scale(price)", dialect=dialect, aggs=(missing,))
 
@@ -271,22 +271,22 @@ class TestInvalidTemplates:
     @pytest.mark.parametrize("name", ["custom_agg", "weighted_avg", "percentile"])
     def test_param_named_value_is_rejected(self, name: str) -> None:
         params = [AggregationParam(name="value", sql="1")]
-        with pytest.raises(ValidationError, match=rf"'{name}'.*may not be named 'value'.*aggregated column"):
-            Aggregation(name=name, formula="SUM({value})" if name == "custom_agg" else None, params=params)
+        with pytest.raises(ValidationError, match=rf"'{name}'.*may not be named 'value'.*aggregated field"):
+            Aggregation(name=name, expression="SUM({value})" if name == "custom_agg" else None, params=params)
 
     @pytest.mark.parametrize(("formula", "aggs"), [
         ("sumsq(price, value=0)", (_SUMSQ,)),
         ("sumsq(price, value=missing.path)", (_SUMSQ,)),
-        ("sum(price, value=0)", (Aggregation(name="sum", formula="SUM({value}) * 2"),)),
+        ("sum(price, value=0)", (Aggregation(name="sum", expression="SUM({value}) * 2"),)),
     ])
     async def test_value_kwarg_on_value_template_explains(
         self, formula: str, aggs: tuple[Aggregation, ...],
     ) -> None:
-        with pytest.raises(SqlTemplateError, match=r"may not be named 'value'.*aggregated column"):
+        with pytest.raises(SqlTemplateError, match=r"may not be named 'value'.*aggregated field"):
             await _sql(formula, aggs=aggs)
 
     async def test_dialect_only_formula_accepts_its_kwarg(self) -> None:
-        duck = Aggregation(name="dk", formula="SUM({value}) * {scale} // 2")  # `//`: DuckDB-only
+        duck = Aggregation(name="dk", expression="SUM({value}) * {scale} // 2")  # `//`: DuckDB-only
         sql = await _sql("dk(price, scale=2)", dialect="duckdb", aggs=(duck,))
         assert "SUM(orders.price) * 2 // 2" in sql
 
@@ -294,21 +294,21 @@ class TestInvalidTemplates:
         ("SUM(price, value=0)", "SUM(price, (value=0))", ()),
         ("percentile(price, p=0.5, value=0)", "percentile(price, p=0.5, (value=0))", ()),
         ("corr(price, other=quantity, foo=1)", "corr(price, other=quantity, (foo=1))", ()),
-        ("rows(price, value=1)", "rows(price, (value=1))", (Aggregation(name="rows", formula="COUNT(*)"),)),
+        ("rows(price, value=1)", "rows(price, (value=1))", (Aggregation(name="rows", expression="COUNT(*)"),)),
         ("scaled(price, scale=2, bogus=1)", "scaled(price, scale=2, (bogus=1))", (_SCALED,)),
         ("weighted_avg(price, weight=quantity, value=0)", "weighted_avg(price, weight=quantity, (value=0))", ()),
     ])
     async def test_non_parameter_name_is_a_comparison(
         self, formula: str, twin: str, aggs: tuple[Aggregation, ...],
     ) -> None:
-        message = await _fails_as_its_comparison_twin(formula=formula, twin=twin, aggs=aggs)
-        assert "aggregated column" not in message
+        message = await _fails_as_its_comparison_twin(expression=formula, twin=twin, aggs=aggs)
+        assert "aggregated field" not in message
 
     @pytest.mark.parametrize("name", ["custom_agg", "weighted_avg"])
     @pytest.mark.parametrize("formula", ["", "  "])
     def test_empty_formula_is_rejected(self, name: str, formula: str) -> None:
-        with pytest.raises(ValidationError, match=f"'{name}' has an empty formula"):
-            Aggregation(name=name, formula=formula)
+        with pytest.raises(ValidationError, match=f"'{name}' has an empty expression"):
+            Aggregation(name=name, expression=formula)
 
 
 async def _pct_sql(p: str | None = None, *, default: str | None = None) -> str:
@@ -382,15 +382,15 @@ class TestValueResolutionIsAst:
 
     def test_resolve_value_ast_returns_expression(self) -> None:
         spec = AggRenderSpec(
-            name="netd", sql="price - discount", model_name="orders", alias="orders.netd_sum",
-            aggregation="sum", agg_kwargs={}, column_type=DataType.DOUBLE,
+            name="netd", sql="price - discount", dataset_name="orders", alias="orders.netd_sum",
+            aggregation="sum", agg_kwargs={}, field_type=DataType.FLOAT,
         )
         out = SQLGenerator(dialect="postgres")._resolve_value_ast(spec)
         assert isinstance(out, Expression)
 
     @pytest.mark.parametrize("measure", [SPEND_WAVG_HOME, SPEND_WAVG_AMOUNT])
     async def test_picked_value_not_reparsed(
-        self, monkeypatch: pytest.MonkeyPatch, measure: ModelMeasure,
+        self, monkeypatch: pytest.MonkeyPatch, measure: DatasetMetric,
     ) -> None:
         seen: list[str] = []
         original = SQLGenerator._parse
@@ -401,7 +401,7 @@ class TestValueResolutionIsAst:
 
         monkeypatch.setattr(SQLGenerator, "_parse", _spy)
         async with seeded_exec_engine(
-            dialect="sqlite", seed=seed_1900_sqlite, models=dev1900_models(),
+            dialect="sqlite", seed=seed_1900_sqlite, datasets=dev1900_datasets(),
         ) as (engine, _db):
             resp = await engine.execute(_picked_q(measure), dry_run=True)
         assert resp.sql is not None
@@ -410,8 +410,8 @@ class TestValueResolutionIsAst:
         assert round_trips == [], round_trips
 
 
-def _picked_q(measure: ModelMeasure) -> SlayerQuery:
-    return orders_1900_q(dimensions=[BAD_POP], measures=[measure], to_many_handling="associate")
+def _picked_q(metric: DatasetMetric) -> SlayerQuery:
+    return orders_1900_q(dimensions=[BAD_POP], metrics=[metric], to_many_handling="associate")
 
 
 class TestPickedValueExecution:
@@ -421,46 +421,46 @@ class TestPickedValueExecution:
         (SPEND_WAVG_AMOUNT, SPEND_WAVG_AMOUNT_SOUTH),
     ])
     async def test_cross_model_picked_oracle(
-        self, dialect: str, measure: ModelMeasure, south: float,
+        self, dialect: str, measure: DatasetMetric, south: float,
     ) -> None:
         seed = seed_1900_duckdb if dialect == "duckdb" else seed_1900_sqlite
         async with seeded_exec_engine(
-            dialect=dialect, seed=seed, models=dev1900_models(),
+            dialect=dialect, seed=seed, datasets=dev1900_datasets(),
         ) as (engine, _db):
             resp = await engine.execute(_picked_q(measure))
         assert float(bad_pop_vals(resp, "orders.wa")[230.0]) == pytest.approx(south)
 
     async def test_filtered_weight_oracle(self) -> None:
         async with seeded_exec_engine(
-            dialect="sqlite", seed=seed_1832_sqlite, models=dev1832_models(),
+            dialect="sqlite", seed=seed_1832_sqlite, datasets=dev1832_datasets(),
         ) as (engine, _db):
-            resp = await engine.execute(sales_q(measures=[ModelMeasure(
-                formula="weighted_avg(amount, weight=q_amount)", name="m")]))
+            resp = await engine.execute(sales_q(metrics=[QueryMetric(
+                metric="weighted_avg(amount, weight=q_amount)", alias="m")]))
         assert resp.data[0]["sales.m"] == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
 
 
-_XOR = Aggregation(name="masked", formula="SUM({value}) # {mask}")
-_ARR = Aggregation(name="arr", formula="SUM({value}) * ARRAY[{scale}][1]")
+_XOR = Aggregation(name="masked", expression="SUM({value}) # {mask}")
+_ARR = Aggregation(name="arr", expression="SUM({value}) * ARRAY[{scale}][1]")
 _SUM_SCALE = Aggregation(
-    name="sum", formula="SUM({value}) * {scale}", params=[AggregationParam(name="scale", sql="2")],
+    name="sum", expression="SUM({value}) * {scale}", params=[AggregationParam(name="scale", sql="2")],
 )
 _WAVG_K = Aggregation(
-    name="weighted_avg", formula="SUM({value}) * {k}", params=[AggregationParam(name="k", sql="7")],
+    name="weighted_avg", expression="SUM({value}) * {k}", params=[AggregationParam(name="k", sql="7")],
 )
-_K_UNUSED = Aggregation(name="kx", formula="SUM({value}) * {k}", params=[
+_K_UNUSED = Aggregation(name="kx", expression="SUM({value}) * {k}", params=[
     AggregationParam(name="unused", sql="1"), AggregationParam(name="k", sql="2"),
 ])
 
 
-async def _windowed_sql(formula: str, agg: Aggregation) -> str:
-    model = _orders((agg,)).model_copy(update={"columns": [
-        *_orders().columns, Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP),
+async def _windowed_sql(expression: str, agg: Aggregation) -> str:
+    model = _orders((agg,)).model_copy(update={"fields": [
+        *_orders().fields, DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME),
     ]})
     query = SlayerQuery(
-        source_model="orders", measures=[ModelMeasure(formula=formula, name="m")],
-        time_dimensions=[TimeDimension(dimension="ordered_at", granularity=TimeGranularity.MONTH)],
+        population="orders", metrics=[QueryMetric(metric=expression, alias="m")],
+        time_dimensions=[TimeDimension(field="ordered_at", granularity=TimeGranularity.MONTH)],
     )
-    return " ".join((await _engine_generate(query=query, model=model)).split())
+    return " ".join((await _engine_generate(query=query, dataset=model)).split())
 
 
 class TestKwargNamesFollowTheRenderDialect:
@@ -477,7 +477,7 @@ class TestKwargNamesFollowTheRenderDialect:
             await _sql("masked(price, mask=3)", dialect="mysql", aggs=(_XOR,))
 
     async def test_untokenizable_formula_fails_before_arguments_bind(self) -> None:
-        bad = Aggregation(name="bad", formula="SUM({value}) + 'x")
+        bad = Aggregation(name="bad", expression="SUM({value}) + 'x")
         with pytest.raises(SqlTemplateError, match="Aggregation 'bad': cannot tokenize"):
             await _sql("bad(price, foo=missing.path)", aggs=(bad,), validate=False)
 
@@ -520,37 +520,37 @@ class TestArgumentNamesCheckedFirst:
 
     async def test_non_parameter_name_binds_as_a_comparison(self) -> None:
         message = await _fails_as_its_comparison_twin(
-            formula="scaled(price, bogus=missing.path)", twin="scaled(price, (bogus=missing.path))", aggs=(_SCALED,))
+            expression="scaled(price, bogus=missing.path)", twin="scaled(price, (bogus=missing.path))", aggs=(_SCALED,))
         assert "does not accept argument 'bogus'" not in message
 
     async def test_accepted_name_still_resolves_its_value(self) -> None:
-        with pytest.raises(UnresolvableDimensionJoinError, match="missing.path"):
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="missing.path"):
             await _sql("scaled(price, scale=missing.path)", aggs=(_SCALED,))
 
 
 _COUNT_K = Aggregation(
-    name="count", formula="COUNT({value}) * {k}", params=[AggregationParam(name="k", sql="7")],
+    name="count", expression="COUNT({value}) * {k}", params=[AggregationParam(name="k", sql="7")],
 )
 
 
-async def _star_sql(formula: str, *, filters: list[str] | None = None) -> str:
+async def _star_sql(expression: str, *, filters: list[str] | None = None) -> str:
     query = SlayerQuery(
-        source_model="orders", measures=[ModelMeasure(formula=formula, name="m")], filters=filters,
+        population="orders", metrics=[QueryMetric(metric=expression, alias="m")], filter=filters,
     )
-    return " ".join((await _engine_generate(query=query, model=_orders((_COUNT_K,)))).split())
+    return " ".join((await _engine_generate(query=query, dataset=_orders((_COUNT_K,)))).split())
 
 
-async def _associated_star_sql(formula: str) -> str:
-    customers = SlayerModel(
+async def _associated_star_sql(expression: str) -> str:
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test", aggregations=[_COUNT_K],
-        columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
     )
-    host = _orders().model_copy(update={"joins": [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]})
+    host = _orders().model_copy(update={"relationships": [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]})
     query = SlayerQuery(
-        source_model="orders", measures=[ModelMeasure(formula=formula, name="m")],
-        dimensions=[ColumnRef(name="quantity")], to_many_handling="associate",
+        population="orders", metrics=[QueryMetric(metric=expression, alias="m")],
+        dimensions=[QueryDimension(field="quantity")], to_many_handling="associate",
     )
-    return " ".join((await _engine_generate(query=query, model=host, extra_models=[customers])).split())
+    return " ".join((await _engine_generate(query=query, dataset=host, extra_datasets=[customers])).split())
 
 
 class TestCountStarOverride:

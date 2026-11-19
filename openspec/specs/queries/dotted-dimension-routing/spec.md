@@ -53,7 +53,7 @@ rules: each hop spelled by its edge name, else its target model, and resolving t
 A route crossing an unaddressable edge (an unnamed edge in a parallel set) is not executable and SHALL NOT be
 routed or suggested; when such a pair blocks every route, the rejection SHALL name the pair and the remedy to
 name its edges. A short-form target directly adjacent to the root via two or more edges SHALL keep
-failing as an ambiguous join hop (`AmbiguousJoinPathError`) — routing never applies to a hop that
+failing as an ambiguous join hop (`AmbiguousRelationshipPathError`) — routing never applies to a hop that
 resolves or fails closed.
 
 #### Scenario: Unnamed parallel pair on the only route is unroutable
@@ -61,7 +61,7 @@ resolves or fails closed.
 - THEN the reference is rejected with no suggested path, and the error names that pair and the remedy to name its edges
 
 #### Scenario: Adjacent parallel edges stay an ambiguous hop
-- WHEN the root itself has two named edges to the target and a reference names `Target.column` (dimension or saved measure)
+- WHEN the root itself has two named edges to the target and a reference names `Target.field` (dimension or saved measure)
 - THEN it fails with the ambiguous-join-hop error naming both edges, not a routing error, and schema-drift attributes the reference to nothing
 
 #### Scenario: A suggestion through a single named edge uses the edge name
@@ -70,7 +70,7 @@ resolves or fails closed.
 
 ### Requirement: Route-aware rejection of ambiguous and unreachable targets
 A short-form target that is ambiguous (two or more routes, not uniquely fan-out-free) or unreachable
-SHALL be rejected with `UnresolvableDimensionJoinError`. An ambiguous rejection SHALL carry a
+SHALL be rejected with `UnresolvableDimensionRelationshipError`. An ambiguous rejection SHALL carry a
 `suggested_path` when an executable full path exists (the shortest fan-out-free one if any, else the
 shortest executable full path); among equal-length candidates the suggestion SHALL be the one with fewer hops
 that are not provably to-one, then the lexicographically-smallest canonical token sequence, so it is
@@ -122,7 +122,7 @@ when every oriented hop is provably to-one.
 - THEN the order clause references the same column as the selected dimension
 
 #### Scenario: Inference and binding agree on a routed short form
-- WHEN a query without `source_model` uses a short-form dimension that inference resolved via a route
+- WHEN a query without `population` uses a short-form dimension that inference resolved via a route
   from the chosen population
 - THEN binding resolves the same short form through the same route, so the executed query matches the
   inference decision
@@ -167,7 +167,7 @@ unnamed edge, and every named edge spelled by its name). A fully valid path whos
 exist SHALL keep failing as an unknown reference, not as a routing failure.
 
 A reference whose leading qualifier is the query root's own name — a model's name, an extension's base
-model, an inline model's name, a stage's name in its own query list, or a spliced query-backed model's name
+model, a stage's name in its own query list, or a spliced query-backed model's name
 — SHALL resolve as the rest of the reference from that root (`orders.amount` ≡ `amount` from root
 `orders`), in every Mode-B position (dimensions, time dimensions, measures and aggregation arguments,
 filters, order, `main_time_dimension`, computed-dimension and expression time-dimension expressions) and
@@ -196,15 +196,15 @@ qualifier SHALL be read before any join hop or query-level alias, so it wins ove
 - **THEN** each equals its unqualified spelling (`tot * 2`, `sum(tot)`, `count(*)`)
 
 #### Scenario: Every root kind takes its own name as qualifier
-- **WHEN** a query rooted at an extension of `orders`, at an inline model named `ad_hoc`, or at a
-  query-backed model `qb` selects `orders.status`, `ad_hoc.status` or `qb.status` respectively
+- **WHEN** a query rooted at `orders` that extends `orders`, or at a query-backed model `qb`, selects
+  `orders.status` or `qb.status` respectively
 - **THEN** each equals its query selecting `status`
 
 #### Scenario: The root wins over an edge named like it
 - **WHEN** model `orders` declares a join to `customers` named `orders`, and a query rooted at `orders`
   selects `orders.status`
 - **THEN** it reads `orders`' own `status`, and the joined `customers` column is reached as
-  `orders.orders.<column>`
+  `orders.orders.<field>`
 
 #### Scenario: A root-qualified filter matches a selected dotted measure
 - **WHEN** a query rooted at `orders` selects the saved measure `customers.aov` and filters on
@@ -233,7 +233,7 @@ several columns' respellings SHALL fail as an unknown reference.
 
 #### Scenario: A query-backed model's consumer written against the old spelling keeps working
 - **WHEN** a query-backed model's query selects `customers.regions.rname`, and both a query on that model
-  and another model's `Column.sql` reference its column `customers__regions__rname`
+  and another model's `DatasetField.sql` reference its column `customers__regions__rname`
 - **THEN** both resolve to the canonical column with a `STALE_PATH_SPELLING` warning
 
 #### Scenario: An edge named later does not break an existing reference
@@ -249,22 +249,6 @@ several columns' respellings SHALL fail as an unknown reference.
 - **WHEN** a result is served from the cache for a query that uses a stale spelling after the canonical
   spelling populated the cache (or the reverse)
 - **THEN** the response carries exactly the requesting query's `STALE_PATH_SPELLING` warnings
-
-### Requirement: A joined stage's flattened columns are read by their flat names
-A stage's output column keeps its flat name when another query object joins the stage: a stage dimension
-`customers.name` (flat name `customers__name`) SHALL be read through a join onto stage `s` as `s.customers__name`,
-from a stored, an inline, or a sibling-stage root alike. The dotted spelling of a flattened column SHALL NOT bind to
-it.
-
-#### Scenario: A stored root reads a joined stage's flat column
-- **WHEN** stage `s` over `orders` selects `customers.name` and `n = count(*)`, and a query rooted at stored
-  `addresses` (or stored `regions`) joins `s` through a query extension and selects `s.customers__name`
-- **THEN** it executes on SQLite and DuckDB and returns stage `s`'s `customers.name` values under the result key
-  `<root>.s.customers__name`
-
-#### Scenario: An inline root named like a stored model reads a joined stage's flat column
-- **WHEN** an inline source named `customers` joins `s` through a query extension and selects `s.customers__name`
-- **THEN** it executes and reads `s`'s column, never a hop back to the root
 
 ### Requirement: A dotted spelling of a flattened column is refused with its flat name
 When a dotted reference's join walk fails — a hop token resolves from no preceding model in a chain of two or more
@@ -293,7 +277,7 @@ name that column first, ahead of the aggregate alternative.
 - **THEN** the error suggests `s.customers__name` and does not suggest `customers.name`
 
 #### Scenario: A hop back to the root is not reported as a circular join
-- **WHEN** an inline source named `customers` joins `s` through a query extension and selects `s.customers.name`
+- **WHEN** a query rooted at stored `customers` joins `s` through a query extension and selects `s.customers.name`
 - **THEN** it fails as an unknown reference suggesting `s.customers__name`, not as a circular join
 
 #### Scenario: The longest flat name wins
@@ -337,3 +321,19 @@ for it — a stage by its name in its query list — and SHALL NOT expose a mint
 #### Scenario: An unknown field of a stage source names the stage
 - **WHEN** a stage over `s` selects `nope`
 - **THEN** the error names `s` and its text contains no `__slayer_` identity
+
+### Requirement: A joined stage's flattened columns are read by their flat names from any root
+A stage's output column keeps its flat name when another query object joins the stage: a stage dimension
+`customers.name` (flat name `customers__name`) SHALL be read through a join onto stage `s` as `s.customers__name`,
+from a stored or a sibling-stage root alike. The dotted spelling of a flattened column SHALL NOT bind to
+it.
+
+#### Scenario: A stored root reads a joined stage's flat column
+- **WHEN** stage `s` over `orders` selects `customers.name` and `n = count(*)`, and a query rooted at stored
+  `addresses` (or stored `regions`) joins `s` through a query extension and selects `s.customers__name`
+- **THEN** it executes on SQLite and DuckDB and returns stage `s`'s `customers.name` values under the result key
+  `<root>.s.customers__name`
+
+#### Scenario: A root named like the flattened path reads a joined stage's flat column
+- **WHEN** a query rooted at stored `customers` joins `s` through a query extension and selects `s.customers__name`
+- **THEN** it executes and reads `s`'s column, never a hop back to the root

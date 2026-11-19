@@ -45,12 +45,17 @@ class TestPeriodLiterals:
         ("2025-Q1", D(2025, 1, 1), D(2025, 4, 1)),
         ("2025-03", D(2025, 3, 1), D(2025, 4, 1)),
         ("2025-W05", D(2025, 1, 27), D(2025, 2, 3)),
-        ("2025-03-15", D(2025, 3, 15), D(2025, 3, 16)),
         ("2020-W53", D(2020, 12, 28), D(2021, 1, 4)),
-        ("2024-02-29", D(2024, 2, 29), D(2024, 3, 1)),
     ])
     async def test_equality_is_half_open_range(self, engine, literal, start, end) -> None:
         assert await ids(engine, f"ts = '{literal}'") == ids_in(start, end)
+
+    @pytest.mark.parametrize(("literal", "start", "end"), [
+        ("2025-03-15", D(2025, 3, 15), D(2025, 3, 16)),
+        ("2024-02-29", D(2024, 2, 29), D(2024, 3, 1)),
+    ])
+    async def test_single_string_in_is_the_whole_day(self, engine, literal, start, end) -> None:
+        assert await ids(engine, f"ts in '{literal}'") == ids_in(start, end)
 
     @pytest.mark.parametrize("literal", ["2021-W53", "2025-02-29", "2025-13", "2025-Q5"])
     async def test_non_existent_period_rejected(self, engine, literal) -> None:
@@ -61,7 +66,7 @@ class TestPeriodLiterals:
 
 class TestUnparseable:
     @pytest.mark.parametrize("literal", ["last fortnight", "2025/01/01"])
-    async def test_rejected_before_any_sql(self, engine, monkeypatch, literal) -> None:
+    async def test_rejected_before_any_sql(self, engine, monkeypatch: pytest.MonkeyPatch, literal) -> None:
         calls: list[str] = []
         orig = SlayerSQLClient.execute
 
@@ -98,12 +103,16 @@ class TestComparisonTable:
     FOUR = {1, 2, 5, 6}
 
     @pytest.mark.parametrize(("filt", "expected"), [
-        ("ts <= '2024-12-31'", {1, 2, 5, 6}),
-        ("ts > '2024-01-01'", {5, 6}),
-        ("ts = '2024-01-01'", {1, 2}),
-        ("ts != '2024-01-01'", {5, 6}),
+        ("ts <= '2024-12-31'", {1, 2, 5}),
+        ("ts > '2024-01-01'", {2, 5, 6}),
+        ("ts = '2024-01-01'", {1}),
+        ("ts != '2024-01-01'", {2, 5, 6}),
+        ("ts BETWEEN '2024-01-01' AND '2024-12-31'", {1, 2, 5}),
+        ("ts NOT BETWEEN '2024-01-01' AND '2024-12-31'", {6}),
+        ("ts in '2024-12-31'", {5, 6}),
+        ("ts not in '2024-12-31'", {1, 2}),
     ])
-    async def test_date_only_bounds_cover_whole_days(self, engine, filt, expected) -> None:
+    async def test_date_only_bounds_are_midnight(self, engine, filt, expected) -> None:
         assert await ids(engine, filt) & self.FOUR == expected
 
     @pytest.mark.parametrize(("filt", "pred"), [
@@ -170,9 +179,9 @@ class TestSingleStringIn:
 class TestTemporalOperands:
     async def test_temporal_aggregate_in_measure_filter(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "dimensions": ["code"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
-            "filters": ["max(ts) >= 'last month'"],
+            "population": "ev", "dimensions": ["code"],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
+            "filter": ["max(ts) >= 'last month'"],
         }))
         latest = {c: max(ev_dt(i) for i in EV_TS if code_of(i) == c) for c in map(code_of, EV_TS)}
         expected = {c for c, t in latest.items() if t >= D(2026, 8, 1)}
@@ -185,16 +194,16 @@ class TestTemporalOperands:
     ])
     async def test_min_first_last_are_temporal(self, engine, filt, expected) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "dimensions": ["code"],
-            "measures": [{"formula": "count(*)", "name": "n"}], "filters": [filt],
+            "population": "ev", "dimensions": ["code"],
+            "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": [filt],
         }))
         assert {r["ev.code"] for r in resp.data} == expected
 
     async def test_temporal_aggregate_below_a_period(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "dimensions": ["code"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
-            "filters": ["max(ts) < '2024-06'"],
+            "population": "ev", "dimensions": ["code"],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
+            "filter": ["max(ts) < '2024-06'"],
         }))
         assert {r["ev.code"] for r in resp.data} == {"2025", "2025-Q1"}
 
@@ -207,8 +216,8 @@ class TestTemporalOperands:
 
     async def test_stage_column(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "daily", "measures": [{"formula": "sum(rev)", "name": "r"}],
-            "filters": ["ts = '2025-Q1'"],
+            "population": "daily", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
+            "filter": ["ts = '2025-Q1'"],
         }))
         assert resp.data[0]["daily.r"] == pytest.approx(float(sum(ids_in(D(2025, 1, 1), D(2025, 4, 1)))))
 
@@ -264,8 +273,8 @@ class TestTypingErrors:
 
     async def test_temporal_aggregate_with_partition(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "dimensions": ["id", "code"],
-            "filters": ["max(ts, partition_by=[code]) >= 'last month'"],
+            "population": "ev", "dimensions": ["id", "code"],
+            "filter": ["max(ts, partition_by=[code]) >= 'last month'"],
         }))
         assert {r["ev.id"] for r in resp.data} == {i for i in ALL if code_of(i) == "y"}
 
@@ -274,16 +283,19 @@ class TestTypingErrors:
 
 
 class TestDateOnlyTextStorage:
-    @pytest.mark.parametrize("filt", ["ts = '2025-03-01'", "ts >= '2025-03-01 00:00:00'"])
+    @pytest.mark.parametrize("filt", ["ts in '2025-03-01'", "ts >= '2025-03-01 00:00:00'"])
     async def test_date_only_text_matches_like_midnight(self, engine, filt) -> None:
-        assert await ids(engine, filt, model="mixed") == {1, 2, 4, 5, 6}
+        assert await ids(engine, filt, dataset="mixed") == {1, 2, 4, 5, 6}
+
+    async def test_date_only_equality_matches_midnight_text(self, engine) -> None:
+        assert await ids(engine, "ts = '2025-03-01'", dataset="mixed") == {1, 2}
 
     async def test_millisecond_resolution(self, engine) -> None:
-        assert await ids(engine, "ts >= '2025-03-01 10:00:00.250'", model="mixed") == {4, 6}
-        assert await ids(engine, "ts < '2025-03-01 10:00:00.250'", model="mixed") == {1, 2, 3, 5}
+        assert await ids(engine, "ts >= '2025-03-01 10:00:00.250'", dataset="mixed") == {4, 6}
+        assert await ids(engine, "ts < '2025-03-01 10:00:00.250'", dataset="mixed") == {1, 2, 3, 5}
 
     async def test_below_the_day(self, engine) -> None:
-        assert await ids(engine, "ts < '2025-03-01'", model="mixed") == {3}
+        assert await ids(engine, "ts < '2025-03-01'", dataset="mixed") == {3}
 
 
 class TestSqliteTimestampSpelling:
@@ -298,10 +310,10 @@ class TestSqliteTimestampSpelling:
     ])
     async def test_t_storage_matches_space_storage(self, sqlite_engine, filt) -> None:
         spaced = await ids(sqlite_engine, filt)
-        assert await ids(sqlite_engine, filt, model="ev_t") == spaced
+        assert await ids(sqlite_engine, filt, dataset="ev_t") == spaced
 
     async def test_t_storage_sub_day_bound(self, sqlite_engine) -> None:
-        assert await ids(sqlite_engine, "ts < '2025-03-01 10:00:00'", model="ev_t") & {12, 13} == {12}
+        assert await ids(sqlite_engine, "ts < '2025-03-01 10:00:00'", dataset="ev_t") & {12, 13} == {12}
 
 
 class TestGranularityCalls:
@@ -335,14 +347,14 @@ class TestGranularityCalls:
 
     async def test_count_distinct_months(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "measures": [{"formula": "count_distinct(date_trunc('month', ts))", "name": "m"}],
+            "population": "ev", "metrics": [{"metric": "count_distinct(date_trunc('month', ts))", "alias": "m"}],
         }))
         assert resp.data[0]["ev.m"] == len({(t.year, t.month) for t in map(ev_dt, EV_TS)})
 
     async def test_computed_dimension_groups_by_year_bucket(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "dimensions": [{"expression": "date_trunc('year', ts)", "name": "y"}],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "population": "ev", "dimensions": [{"field": "date_trunc('year', ts)", "alias": "y"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         }))
         got = {bucket_text(r["ev.y"])[:10]: r["ev.n"] for r in resp.data}
         assert got == {f"{y}-01-01": n for y, n in Counter(t.year for t in map(ev_dt, EV_TS)).items()}
@@ -362,18 +374,18 @@ class TestGranularityCalls:
         assert f"`{column}` is not one" in str(ei.value), str(ei.value)
 
     @pytest.mark.parametrize(("formula", "kind"), [
-        ("sum(date_trunc('month', ts))", "TIMESTAMP"),
-        ("avg(date_trunc('month', d))", "DATE"),
-        ("sum(date_add(ts, 1, 'day'))", "TIMESTAMP"),
+        ("sum(date_trunc('month', ts))", "DateTime"),
+        ("avg(date_trunc('month', d))", "Date"),
+        ("sum(date_add(ts, 1, 'day'))", "DateTime"),
     ])
     async def test_numeric_aggregation_of_temporal_expression_rejected(self, engine, formula, kind) -> None:
-        query = SlayerQuery.model_validate({"source_model": "ev", "measures": [{"formula": formula, "name": "m"}]})
+        query = SlayerQuery.model_validate({"population": "ev", "metrics": [{"metric": formula, "alias": "m"}]})
         with pytest.raises(ValueError, match=rf"requires a numeric value.*non-numeric \({kind}\)"):
             await engine.execute(query)
 
     async def test_non_temporal_operand_rejected_in_measure(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "ev", "measures": [{"formula": "count_distinct(date_trunc('month', code))", "name": "m"}],
+            "population": "ev", "metrics": [{"metric": "count_distinct(date_trunc('month', code))", "alias": "m"}],
         })
         with pytest.raises(DateOperandTypeError):
             await engine.execute(query)
@@ -401,7 +413,7 @@ class TestGranularityCalls:
 class TestDateFunctionGrammar:
     async def test_minute_precision_instant_in_a_date_position(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "dimensions": ["id", {"expression": "date_add('2024-01-31 10:15', 1, 'month')", "name": "v"}],
-            "filters": ["id = 1"],
+            "population": "ev", "dimensions": ["id", {"field": "date_add('2024-01-31 10:15', 1, 'month')", "alias": "v"}],
+            "filter": ["id = 1"],
         }))
         assert bucket_text(resp.data[0]["ev.v"]) == "2024-02-29 10:15:00"

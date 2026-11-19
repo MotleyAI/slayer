@@ -9,30 +9,30 @@ assert on RESULT DATA, not just generated SQL strings.
 """
 from slayer.storage.sqlite_conn import transaction
 import tempfile
+from typing import Optional
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import (
-    ColumnRef,
-    ModelExtension,
+    QueryDimension,
     SlayerQuery,
-    substitute_variables,
 )
 from slayer.engine.query_engine import (
     SlayerQueryEngine,
-    _render_probe_model,
-    _substitute_model_sql_surfaces,
+    _render_probe_dataset,
+    _substitute_dataset_sql_surfaces,
 )
-from slayer.inspect.model_render import render_model_inspection
+from slayer.inspect.dataset_render import render_dataset_inspection
 from slayer.sql.dialects import _ALL_DIALECTS, MysqlDialect, SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -69,7 +69,7 @@ def _seed_orders_db_at(db_path) -> None:
         cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", rows)
 
 
-async def _engine_with(*models: SlayerModel) -> tuple:
+async def _engine_with(*models: SlayerDataset) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a real SQLite datasource + YAML storage with the given models
     saved. Returns (engine, tmpdir_handle); caller keeps the tmpdir alive.
     """
@@ -81,7 +81,7 @@ async def _engine_with(*models: SlayerModel) -> tuple:
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
     for m in models:
-        await storage.save_model(m)
+        await storage.save_dataset(m)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -95,27 +95,27 @@ def _sum(resp, alias: str) -> float:
 # ---------------------------------------------------------------------------
 
 class TestModelFiltersSubstitution:
-    def _model(self, **kw) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self, **kw) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region = '{region}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
             **kw,
         )
 
     async def test_model_filter_var_filters_rows(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -124,11 +124,11 @@ class TestModelFiltersSubstitution:
             tmp.cleanup()
 
     async def test_model_filter_var_us(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"region": "US"},
             })
             resp = await engine.execute(q)
@@ -142,24 +142,24 @@ class TestModelFiltersSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestColumnSqlSubstitution:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
             ],
         )
 
     async def test_column_sql_var_scales(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(scaled)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(scaled)"}],
                 "variables": {"mult": 2},
             })
             resp = await engine.execute(q)
@@ -168,11 +168,11 @@ class TestColumnSqlSubstitution:
             tmp.cleanup()
 
     async def test_column_sql_var_identity(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(scaled)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(scaled)"}],
                 "variables": {"mult": 1},
             })
             resp = await engine.execute(q)
@@ -186,29 +186,29 @@ class TestColumnSqlSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestColumnFilterSubstitution:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(
                     name="region_amount",
                     sql="amount",
                     filter="region = '{region}'",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
         )
 
     async def test_column_filter_var_windowed_sum(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(region_amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(region_amount)"}],
                 "variables": {"region": "US"},
             })
             resp = await engine.execute(q)
@@ -223,28 +223,28 @@ class TestColumnFilterSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestModelSqlSubstitution:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="floored",
             data_source="ds",
             sql=(
                 "SELECT id, region, amount, {floor} AS floor_val "
                 "FROM orders WHERE amount >= {floor}"
             ),
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="floor_val", sql="floor_val", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="floor_val", sql="floor_val", datatype=DataType.FLOAT),
             ],
         )
 
     async def test_model_sql_var_where(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "floored",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "floored",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"floor": 100},
             })
             resp = await engine.execute(q)
@@ -254,11 +254,11 @@ class TestModelSqlSubstitution:
             tmp.cleanup()
 
     async def test_model_sql_var_projected_scalar(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery(
-                source_model="floored",
-                dimensions=[ColumnRef(name="floor_val")],
+                population="floored",
+                dimensions=[QueryDimension(field="floor_val")],
                 variables={"floor": 100},
             )
             resp = await engine.execute(q)
@@ -273,35 +273,35 @@ class TestModelSqlSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestPrecedence:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region = '{region}'"],
             query_variables={"region": "US"},  # lowest-priority default
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
 
     async def test_model_default_used_when_nothing_supplied(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 160.0  # US default
         finally:
             tmp.cleanup()
 
     async def test_query_variables_override_model_default(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -310,11 +310,11 @@ class TestPrecedence:
             tmp.cleanup()
 
     async def test_runtime_kwarg_overrides_all(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q, variables={"region": "CA"})
@@ -328,26 +328,26 @@ class TestPrecedence:
 # ---------------------------------------------------------------------------
 
 class TestMissingVariable:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region = '{region}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
 
     async def test_undefined_var_raises_on_execute(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             # Non-empty var set (so the guard runs) but lacking 'region'.
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
@@ -356,11 +356,11 @@ class TestMissingVariable:
             tmp.cleanup()
 
     async def test_undefined_var_raises_on_dry_run(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
@@ -382,7 +382,7 @@ _TRICKY_ROWS = [
 ]
 
 
-async def _engine_with_tricky_status(model: SlayerModel) -> tuple:
+async def _engine_with_tricky_status(dataset: SlayerDataset) -> tuple:
     tmp = tempfile.TemporaryDirectory()
     db_path = f"{tmp.name}/tricky.db"
     with transaction(db_path) as conn:
@@ -398,7 +398,7 @@ async def _engine_with_tricky_status(model: SlayerModel) -> tuple:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_model(model)
+    await storage.save_dataset(dataset)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -412,22 +412,22 @@ class TestEscapingEndToEnd:
         self, value: str, expected: float
     ) -> None:
         # Mode-A: SlayerModel.filters.
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
             filters=["status = '{v}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "t",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)
@@ -437,22 +437,22 @@ class TestEscapingEndToEnd:
 
     async def test_backslash_value_sqlite_roundtrip(self) -> None:
         """A backslash in a string value round-trips through SQLite."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status = '{v}'"],
+                "population": "t",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["status = '{v}'"],
                 "variables": {"v": "a\\b"},
             })
             resp = await engine.execute(q)
@@ -465,23 +465,23 @@ class TestEscapingEndToEnd:
     async def test_mode_b_query_filter_matches_only_its_row(
         self, value: str, expected: float
     ) -> None:
-        # Mode-B: SlayerQuery.filters bind the value as a literal; quote values round-trip.
-        model = SlayerModel(
+        # Mode-B: SlayerQuery.filter bind the value as a literal; quote values round-trip.
+        model = SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status = '{v}'"],
+                "population": "t",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["status = '{v}'"],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)
@@ -492,22 +492,22 @@ class TestEscapingEndToEnd:
 
 class TestEscaping:
     async def test_single_quote_value_escaped_and_matches(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["status = '{status}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"status": "O'Brien"},
             })
             resp = await engine.execute(q)
@@ -525,18 +525,18 @@ class TestBraceLiterals:
     async def test_no_variable_model_brace_literal_untouched(self) -> None:
         """A model that uses NO variables must be left untouched, so a raw
         brace literal (Postgres-array-style) survives to the DB verbatim."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="j", sql="'{1,2,3}'", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="j", sql="'{1,2,3}'", datatype=DataType.STRING),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
-            q = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="j")])
+            q = SlayerQuery(population="orders", dimensions=[QueryDimension(field="j")])
             resp = await engine.execute(q)
             assert {row["orders.j"] for row in resp.data} == {"{1,2,3}"}
         finally:
@@ -553,21 +553,21 @@ class TestBraceLiterals:
         so SUM is NULL; the point is that it executes cleanly (literal), and a
         subsequent query that DOES supply a variable would raise on a missing
         one (covered by TestMissingVariable)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["status = '{status}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             resp = await engine.execute(
-                SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+                SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
             )
             # No raise (literal, not a missing-variable error); no row has the
             # literal status '{status}', so the aggregate is NULL.
@@ -577,24 +577,24 @@ class TestBraceLiterals:
 
     async def test_escaped_braces_render_single_alongside_var(self) -> None:
         """{{tag}} escapes to a literal {tag} while {floor} substitutes."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="floored",
             data_source="ds",
             sql=(
                 "SELECT id, amount, '{{tag}}' AS tag_val "
                 "FROM orders WHERE amount >= {floor}"
             ),
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="tag_val", sql="tag_val", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="tag_val", sql="tag_val", datatype=DataType.STRING),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             q = SlayerQuery(
-                source_model="floored",
-                dimensions=[ColumnRef(name="tag_val")],
+                population="floored",
+                dimensions=[QueryDimension(field="tag_val")],
                 variables={"floor": 100},
             )
             resp = await engine.execute(q)
@@ -609,28 +609,28 @@ class TestBraceLiterals:
 # ---------------------------------------------------------------------------
 
 class TestCrossModelConsistency:
-    def _models(self) -> list[SlayerModel]:
+    def _datasets(self) -> list[SlayerDataset]:
         # No declared reverse join: the orders → customers edge traverses both ways.
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["amount >= {floor}"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
-            joins=[{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
+            relationships=[{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}],
         )
         return [customers, orders]
 
@@ -655,8 +655,8 @@ class TestCrossModelConsistency:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
         )
-        for m in self._models():
-            await storage.save_model(m)
+        for m in self._datasets():
+            await storage.save_dataset(m)
         return SlayerQueryEngine(storage=storage), tmp
 
     async def test_source_model_filter_var_applies_to_reroot(self) -> None:
@@ -665,10 +665,10 @@ class TestCrossModelConsistency:
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
-                source_model="orders",
-                measures=[
-                    {"formula": "sum(amount)"},
-                    {"formula": "count(customers.id)"},
+                population="orders",
+                metrics=[
+                    {"metric": "sum(amount)"},
+                    {"metric": "count(customers.id)"},
                 ],
                 variables={"floor": 100},
             )
@@ -684,10 +684,10 @@ class TestCrossModelConsistency:
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
-                source_model="orders",
-                measures=[
-                    {"formula": "sum(amount)"},
-                    {"formula": "count(customers.id)"},
+                population="orders",
+                metrics=[
+                    {"metric": "sum(amount)"},
+                    {"metric": "count(customers.id)"},
                 ],
                 variables={"floor": 100},
             )
@@ -713,27 +713,27 @@ class TestDeferredScope:
         the enclosing query's variable does
         not reach it, so the stray {var} surfaces an error rather than being
         silently filled. Stable boundary pin (holds before AND after)."""
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
                 # join-target Column.sql var — not substituted → unsupported
-                Column(name="scaled", sql="id * {mult}", type=DataType.DOUBLE),
+                DatasetField(name="scaled", sql="id * {mult}", datatype=DataType.FLOAT),
             ],
         )
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
-            joins=[{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
+            relationships=[{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}],
         )
         tmp = tempfile.TemporaryDirectory()
         db_path = f"{tmp.name}/orders.db"
@@ -751,13 +751,13 @@ class TestDeferredScope:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
         )
-        await storage.save_model(customers)
-        await storage.save_model(orders)
+        await storage.save_dataset(customers)
+        await storage.save_dataset(orders)
         engine = SlayerQueryEngine(storage=storage)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(customers.scaled)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(customers.scaled)"}],
                 "variables": {"mult": 2},
             })
             # The failure must be about the stray, unsubstituted {mult}: it is
@@ -779,19 +779,21 @@ class TestDeferredScope:
 class TestInspectShowsTemplate:
     async def test_inspect_model_shows_literal_var(self) -> None:
 
-        model = SlayerModel(
+        model = SlayerDataset(
             name="floored",
             data_source="ds",
             sql="SELECT id, amount FROM orders WHERE amount >= {floor}",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
-            out = await render_model_inspection(
-                model=await engine.storage.get_model("floored"),
+            stored = await engine.storage.get_dataset("floored")
+            assert stored is not None
+            out = await render_dataset_inspection(
+                dataset=stored,
                 storage=engine.storage,
                 engine=None,
                 show_sql=True,
@@ -802,129 +804,107 @@ class TestInspectShowsTemplate:
 
 
 # ---------------------------------------------------------------------------
-# 11. Unit: hardened substitute_variables (escaping, scalar-only)
+# 11. Unit: variable binding through the engine entry (scalar values)
 # ---------------------------------------------------------------------------
 
-class TestSubstituteVariablesHardened:
-    def test_sql_mode_string_value_doubles_single_quote(self) -> None:
+def _bind(*, template: str, variables: dict, dialect=None) -> str:
+    """``template`` as a model filter, bound by the engine entry; returns the bound filter."""
+    model = SlayerDataset(name="m", sql_table="t", data_source="ds", filters=[template])
+    out = _substitute_dataset_sql_surfaces(
+        dataset=model, variables=variables, dialect=dialect or SqliteDialect()
+    )
+    return out.filters[0]
 
-        # Mode-A (sqlglot-parsed) surfaces double the single quote. Standard
-        # (non-backslash) dialect regime.
-        result = substitute_variables(
-            filter_str="status = '{v}'", variables={"v": "O'Brien"},
-            backslash_escapes=False,
-        )
-        assert result == "status = 'O''Brien'"
+
+def _col(dataset: SlayerDataset, name: str) -> DatasetField:
+    col = dataset.get_field(name)
+    assert col is not None, name
+    return col
+
+
+def _literal(node: exp.Expr):
+    """Python value of a parsed literal node."""
+    if isinstance(node, exp.Boolean):
+        return node.this
+    assert isinstance(node, exp.Literal), repr(node)
+    if node.is_string:
+        return node.this
+    return int(node.this) if node.this.isdigit() else float(node.this)
+
+
+def _parse(text: Optional[str], *, dialect=None) -> exp.Expr:
+    assert text is not None
+    return sqlglot.parse_one(text, dialect=(dialect or SqliteDialect()).sqlglot_name)
+
+
+def _literals(text: Optional[str], *, dialect=None) -> list:
+    """Values of every literal in ``text`` parsed in ``dialect``."""
+    return [_literal(n) for n in _parse(text, dialect=dialect).find_all(exp.Literal, exp.Boolean)]
+
+
+def _in_values(text: Optional[str], *, dialect=None) -> list:
+    """Values of the ``IN`` list in ``text``; every element must be a literal."""
+    in_node = _parse(text, dialect=dialect).find(exp.In)
+    assert in_node is not None, text
+    return [_literal(n) for n in in_node.expressions]
+
+
+class TestSubstituteVariablesHardened:
+    def test_sql_mode_string_value_with_single_quote(self) -> None:
+        bound = _bind(template="status = '{v}'", variables={"v": "O'Brien"})
+        assert _literals(bound) == ["O'Brien"]
 
     def test_sql_mode_string_value_without_quote_unchanged(self) -> None:
+        bound = _bind(template="status = '{v}'", variables={"v": "active"})
+        assert _literals(bound) == ["active"]
 
-        result = substitute_variables(
-            filter_str="status = '{v}'", variables={"v": "active"},
-            backslash_escapes=False,
-        )
-        assert result == "status = 'active'"
+    def test_sql_mode_backslash_standard_dialect(self) -> None:
+        # On a standard dialect backslash is ordinary.
+        bound = _bind(template="path = '{v}'", variables={"v": r"a\b"})
+        assert _literals(bound) == [r"a\b"]
 
-    def test_sql_mode_backslash_untouched_standard_dialect(self) -> None:
+    def test_sql_mode_newline(self) -> None:
+        bound = _bind(template="note = '{v}'", variables={"v": "a\nb"})
+        assert _literals(bound) == ["a\nb"]
 
-        # On a standard dialect backslash is ordinary; only ' is special.
-        result = substitute_variables(
-            filter_str="path = '{v}'", variables={"v": r"a\b"},
-            backslash_escapes=False,
-        )
-        assert result == r"path = 'a\b'"
+    def test_number_value_bare(self) -> None:
+        assert _literals(_bind(template="amount > {n}", variables={"n": 100})) == [100]
 
-    def test_sql_mode_newline_left_raw(self) -> None:
-
-        # SQL string literals permit raw newlines; only the single quote is special.
-        result = substitute_variables(
-            filter_str="note = '{v}'", variables={"v": "a\nb"},
-            backslash_escapes=False,
-        )
-        assert result == "note = 'a\nb'"
-
-    def test_number_value_not_escaped(self) -> None:
-
-        assert (
-            substitute_variables(
-                filter_str="amount > {n}", variables={"n": 100},
-                backslash_escapes=False,
-            )
-            == "amount > 100"
-        )
-
-    def test_float_value_not_escaped(self) -> None:
-
-        assert (
-            substitute_variables(
-                filter_str="rate < {n}", variables={"n": 0.05},
-                backslash_escapes=False,
-            )
-            == "rate < 0.05"
-        )
+    def test_float_value_bare(self) -> None:
+        assert _literals(_bind(template="rate < {n}", variables={"n": 0.05})) == [0.05]
 
     def test_bool_value_accepted(self) -> None:
-
-        # bool is an int subclass; kept accepted (renders True/False).
-        assert (
-            substitute_variables(
-                filter_str="flag = {v}", variables={"v": True},
-                backslash_escapes=False,
-            )
-            == "flag = True"
-        )
+        bound = _bind(template="flag = {v}", variables={"v": True})
+        node = _parse(bound).expression
+        assert isinstance(node, exp.Boolean), bound
+        assert node.this is True, bound
 
     def test_nan_value_raises(self) -> None:
-
         nan = float("nan")
         with pytest.raises(ValueError, match="finite"):
-            substitute_variables(
-                filter_str="x = {v}", variables={"v": nan},
-                backslash_escapes=False,
-            )
+            _bind(template="x = {v}", variables={"v": nan})
 
     def test_inf_value_raises(self) -> None:
-
         inf = float("inf")
         with pytest.raises(ValueError, match="finite"):
-            substitute_variables(
-                filter_str="x = {v}", variables={"v": inf},
-                backslash_escapes=False,
-            )
+            _bind(template="x = {v}", variables={"v": inf})
         neg_inf = float("-inf")
         with pytest.raises(ValueError, match="finite"):
-            substitute_variables(
-                filter_str="x = {v}", variables={"v": neg_inf},
-                backslash_escapes=False,
-            )
+            _bind(template="x = {v}", variables={"v": neg_inf})
 
     def test_dict_value_raises(self) -> None:
-
-        # A dict is neither scalar nor list/tuple → terminal ValueError naming list/tuple.
+        # A dict is neither scalar nor list/tuple.
         with pytest.raises(
             ValueError, match="must be a string, number, or list/tuple"
         ):
-            substitute_variables(
-                filter_str="x = '{v}'", variables={"v": {"a": 1}},
-                backslash_escapes=False,
-            )
+            _bind(template="x = '{v}'", variables={"v": {"a": 1}})
 
     def test_set_value_raises(self) -> None:
-
-        # A set is unordered → deliberately NOT accepted (only list/tuple), and
-        # falls through to the same terminal message.
+        # A set is unordered: only list/tuple are lists.
         with pytest.raises(
             ValueError, match="must be a string, number, or list/tuple"
         ):
-            substitute_variables(
-                filter_str="x IN ({v})", variables={"v": {1, 2}},
-                backslash_escapes=False,
-            )
-
-    def test_escape_regime_parameter_is_gone(self) -> None:
-        with pytest.raises(TypeError):
-            substitute_variables(
-                filter_str="x = {v}", variables={"v": 1}, escape="sql", backslash_escapes=False,  # pyright: ignore[reportCallIssue]  # the removed parameter must fail
-            )
+            _bind(template="x IN ({v})", variables={"v": {1, 2}})
 
 
 # ---------------------------------------------------------------------------
@@ -933,120 +913,117 @@ class TestSubstituteVariablesHardened:
 
 class TestSubstituteHelperScope:
     def test_only_mode_a_surfaces_substituted(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE r = '{region}'",
             filters=["a >= {floor}"],
-            columns=[
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
-                Column(
+            fields=[
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(
                     name="flt",
                     sql="amount",
                     filter="r = '{region}'",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
                 # Hidden column is still a Mode-A surface — it IS substituted
                 # (the helper iterates all columns, visible or not).
-                Column(
-                    name="hid", sql="amount * {mult}", type=DataType.DOUBLE, hidden=True
+                DatasetField(
+                    name="hid", sql="amount * {mult}", datatype=DataType.FLOAT, hidden=True
                 ),
             ],
             # Saved measure formula: substituted under the Mode-B regime.
-            measures=[ModelMeasure(name="rev", formula="sum(amount) + {mult}")],
-            # Aggregation.formula uses its OWN {expr}/{param} fill mechanism —
+            metrics=[DatasetMetric(name="rev", expression="sum(amount) + {mult}")],
+            # Aggregation.expression uses its OWN {expr}/{param} fill mechanism —
             # a query-variable pass must never touch it.
-            aggregations=[Aggregation(name="agg", formula="SUM({expr}) * {mult}")],
+            aggregations=[Aggregation(name="agg", expression="SUM({expr}) * {mult}")],
         )
-        out = _substitute_model_sql_surfaces(
-            model=model, variables={"region": "US", "floor": 5, "mult": 2},
+        out = _substitute_dataset_sql_surfaces(
+            dataset=model, variables={"region": "US", "floor": 5, "mult": 2},
             dialect=SqliteDialect(),
         )
         # The four Mode-A surfaces are substituted (hidden column included):
-        assert out.sql == "SELECT * FROM t WHERE r = 'US'"
-        assert out.filters == ["a >= 5"]
-        assert out.get_column("scaled").sql == "amount * 2"
-        assert out.get_column("flt").filter == "r = 'US'"
-        assert out.get_column("hid").sql == "amount * 2"
-        # Saved measure formulas substitute (Mode-B regime); Aggregation.formula never does:
-        assert out.measures[0].formula == "sum(amount) + 2"
-        assert out.aggregations[0].formula == "SUM({expr}) * {mult}"
+        assert _literals(out.sql) == ["US"]
+        assert len(out.filters) == 1
+        assert _literals(out.filters[0]) == [5]
+        assert _literals(_col(out, "scaled").sql) == [2]
+        assert _literals(_col(out, "flt").filter) == ["US"]
+        assert _literals(_col(out, "hid").sql) == [2]
+        # Saved measure formulas substitute (Mode-B regime); Aggregation.expression never does:
+        assert _literals(out.metrics[0].expression) == [2]
+        assert out.aggregations[0].expression == "SUM({expr}) * {mult}"
         # Input model is NOT mutated — every Mode-A surface stays templated:
         assert model.sql == "SELECT * FROM t WHERE r = '{region}'"
         assert model.filters == ["a >= {floor}"]
-        assert model.get_column("scaled").sql == "amount * {mult}"
-        assert model.get_column("flt").filter == "r = '{region}'"
-        assert model.get_column("hid").sql == "amount * {mult}"
+        assert model.get_field("scaled").sql == "amount * {mult}"
+        assert model.get_field("flt").filter == "r = '{region}'"
+        assert model.get_field("hid").sql == "amount * {mult}"
 
     def test_empty_variables_is_noop(self) -> None:
 
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="ds",
-            columns=[Column(name="j", sql="json_extract(x, '$.a')", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="j", sql="json_extract(x, '$.a')", datatype=DataType.FLOAT)],
         )
-        out = _substitute_model_sql_surfaces(
-            model=model, variables={}, dialect=SqliteDialect()
+        out = _substitute_dataset_sql_surfaces(
+            dataset=model, variables={}, dialect=SqliteDialect()
         )
-        assert out.get_column("j").sql == "json_extract(x, '$.a')"
+        assert _parse(_col(out, "j").sql) == _parse("json_extract(x, '$.a')")
 
     def test_list_value_substituted_on_all_four_mode_a_surfaces(self) -> None:
-        """A single list variable rendered into each of the four Mode-A
-        surfaces — SlayerModel.sql, SlayerModel.filters, Column.sql,
-        Column.filter — proving every surface routes list values through
-        ``_render_variable_value`` (all comma-joined, auto-quoted, sql-escape)."""
+        """One list variable bound into each of the four Mode-A surfaces."""
 
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE region IN ({regions})",
             filters=["region IN ({regions})"],
-            columns=[
-                Column(name="in_flag", sql="region IN ({regions})", type=DataType.BOOLEAN),
-                Column(
+            fields=[
+                DatasetField(name="in_flag", sql="region IN ({regions})", datatype=DataType.BOOLEAN),
+                DatasetField(
                     name="amt",
                     sql="amount",
                     filter="region IN ({regions})",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
         )
-        out = _substitute_model_sql_surfaces(
-            model=model, variables={"regions": ["US", "CA"]}, dialect=SqliteDialect()
+        out = _substitute_dataset_sql_surfaces(
+            dataset=model, variables={"regions": ["US", "CA"]}, dialect=SqliteDialect()
         )
-        rendered = "region IN ('US', 'CA')"
-        assert out.sql == f"SELECT * FROM t WHERE {rendered}"
-        assert out.filters == [rendered]
-        assert out.get_column("in_flag").sql == rendered
-        assert out.get_column("amt").filter == rendered
-
+        assert _in_values(out.sql) == ["US", "CA"]
+        assert len(out.filters) == 1
+        assert _in_values(out.filters[0]) == ["US", "CA"]
+        assert _in_values(_col(out, "in_flag").sql) == ["US", "CA"]
+        assert _in_values(_col(out, "amt").filter) == ["US", "CA"]
 
 # ---------------------------------------------------------------------------
 # 13. Regression: query-level (Mode-B) filter substitution + unified escaping
 # ---------------------------------------------------------------------------
 
 class TestQueryFilterRegression:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
 
     async def test_query_filter_var_unchanged_for_quote_free(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region = '{region}'"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["region = '{region}'"],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -1055,12 +1032,12 @@ class TestQueryFilterRegression:
             tmp.cleanup()
 
     async def test_query_filter_var_now_escaped_for_quote_value(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status = '{status}'"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["status = '{status}'"],
                 "variables": {"status": "O'Brien"},
             })
             resp = await engine.execute(q)
@@ -1070,46 +1047,7 @@ class TestQueryFilterRegression:
 
 
 # ---------------------------------------------------------------------------
-# 14. ModelExtension direct source is on the source lineage → substituted
-# ---------------------------------------------------------------------------
-
-class TestModelExtensionDirectSource:
-    async def test_model_extension_column_sql_var_substituted(self) -> None:
-        """A ModelExtension used as the direct source resolves to a template
-        model (source_model_origin is None), so its extra Column.sql {var} IS
-        substituted."""
-        base = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            ],
-        )
-        engine, tmp = await _engine_with(base)
-        try:
-            ext = ModelExtension(
-                source_name="orders",
-                columns=[
-                    Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE)
-                ],
-            )
-            q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "extensions": [ext],
-                "measures": [{"formula": "sum(scaled)"}],
-                "variables": {"mult": 2},
-            })
-            resp = await engine.execute(q)
-            assert _sum(resp, "orders.scaled_sum") == 1470.0  # 735 * 2
-        finally:
-            tmp.cleanup()
-
-
-# ---------------------------------------------------------------------------
-# 15. Cached-model immutability across repeated executes with different values
+# 14. Cached-model immutability across repeated executes with different values
 # ---------------------------------------------------------------------------
 
 class TestModelImmutabilityAcrossExecutes:
@@ -1118,30 +1056,30 @@ class TestModelImmutabilityAcrossExecutes:
         yields different results (proving per-call substitution) AND the stored
         model still holds the literal {var} template afterwards (no mutation of
         the shared cached object)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region = '{region}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             r_eu = await engine.execute(
                 SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"metric": "sum(amount)"}],
                     "variables": {"region": "EU"},
                 })
             )
             r_ca = await engine.execute(
                 SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"metric": "sum(amount)"}],
                     "variables": {"region": "CA"},
                 })
             )
@@ -1151,41 +1089,42 @@ class TestModelImmutabilityAcrossExecutes:
             # a subsequent missing-var call raises cleanly. Build the query
             # outside the block so only execute() can throw inside it.
             missing_var_q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
                 await engine.execute(missing_var_q)
             # The stored model is untouched — reloading shows the template.
-            reloaded = await engine.storage.get_model("orders")
+            reloaded = await engine.storage.get_dataset("orders")
+            assert reloaded is not None
             assert reloaded.filters == ["region = '{region}'"]
         finally:
             tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------
-# 16. Missing-variable raises on each Mode-A surface (not just model.filters)
+# 15. Missing-variable raises on each Mode-A surface (not just model.filters)
 # ---------------------------------------------------------------------------
 
 class TestMissingVariablePerSurface:
     async def test_missing_var_in_column_sql_raises(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             # Non-empty var set (guard runs) but lacking 'mult'.
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(scaled)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(scaled)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'mult'"):
@@ -1194,20 +1133,20 @@ class TestMissingVariablePerSurface:
             tmp.cleanup()
 
     async def test_missing_var_in_model_sql_raises(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="floored",
             data_source="ds",
             sql="SELECT id, amount FROM orders WHERE amount >= {floor}",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "floored",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "floored",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'floor'"):
@@ -1217,7 +1156,7 @@ class TestMissingVariablePerSurface:
 
 
 # ---------------------------------------------------------------------------
-# 17. get_result_column_types: defaults-only Mode-A substitution (D3)
+# 16. get_result_column_types: defaults-only Mode-A substitution (D3)
 # ---------------------------------------------------------------------------
 
 class TestGetResultColumnTypesDefaults:
@@ -1225,36 +1164,36 @@ class TestGetResultColumnTypesDefaults:
         """A Mode-A {var} column with a complete model default resolves at the
         type-probe path (get_result_column_types), returning real types instead of the
         {} degradation."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             query_variables={"mult": 2},
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             types = await engine.get_result_column_types("orders")
-            assert types["scaled"].type in (DataType.INT, DataType.DOUBLE)
-            assert types["amount"].type in (DataType.INT, DataType.DOUBLE)
+            assert types["scaled"].type in (DataType.INTEGER, DataType.FLOAT)
+            assert types["amount"].type in (DataType.INTEGER, DataType.FLOAT)
         finally:
             tmp.cleanup()
 
     async def test_undefaulted_var_degrades_to_empty(self) -> None:
         """No default for the {var} → probe cannot render → graceful {} (the
         pre-existing degradation is preserved, not a raise)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1268,16 +1207,16 @@ class TestGetResultColumnTypesDefaults:
         """Two placeholders, only one defaulted → substitution activates and
         raises on the missing one, but that must stay inside the probe's
         graceful-failure boundary so the public result is still {} (F1)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             query_variables={"mult": 2},  # 'floor' intentionally missing
             filters=["amount >= {floor}"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1291,96 +1230,67 @@ class TestGetResultColumnTypesDefaults:
         """A Mode-A ``IN ({var})`` filter with a LIST default in
         ``query_variables`` renders cleanly at the type-probe path, so the probe
         returns real column types instead of the ``{}`` degradation."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             query_variables={"regions": ["US", "CA"]},
             filters=["region IN ({regions})"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             types = await engine.get_result_column_types("orders")
-            assert types["amount"].type in (DataType.INT, DataType.DOUBLE)
-            assert types["region"].type == DataType.TEXT
+            assert types["amount"].type in (DataType.INTEGER, DataType.FLOAT)
+            assert types["region"].type == DataType.STRING
         finally:
             tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------
-# 18. Unit: list/tuple variable rendering (IN-list pushdown)
+# 17. Unit: list/tuple variable rendering (IN-list pushdown)
 # ---------------------------------------------------------------------------
 
 
 class TestListValueRenderingSql:
-    """List rendering: comma-joined, strings auto-quoted and
-    single-quote-doubled, numbers/bools bare. Template shape is ``IN ({var})``
-    — the author writes the parens, NOT the per-element quotes."""
+    """A list binds as the whole ``IN`` list; template shape is ``IN ({var})``."""
 
-    def test_sql_list_strings_auto_quoted(self) -> None:
+    def test_sql_list_strings(self) -> None:
+        bound = _bind(template="region IN ({v})", variables={"v": ["US", "CA"]})
+        assert _in_values(bound) == ["US", "CA"]
 
-        result = substitute_variables(
-            filter_str="region IN ({v})",
-            variables={"v": ["US", "CA"]},
-            backslash_escapes=False,
-        )
-        assert result == "region IN ('US', 'CA')"
-
-    def test_sql_list_embedded_quote_doubled(self) -> None:
-
-        # Per-element the same sql escaping as scalars: ' → ''.
-        result = substitute_variables(
-            filter_str="name IN ({v})",
-            variables={"v": ["A", "O'Brien", 3]},
-            backslash_escapes=False,
-        )
-        assert result == "name IN ('A', 'O''Brien', 3)"
+    def test_sql_list_embedded_quote(self) -> None:
+        bound = _bind(template="name IN ({v})", variables={"v": ["A", "O'Brien", 3]})
+        assert _in_values(bound) == ["A", "O'Brien", 3]
 
     def test_sql_list_numbers_and_bools_bare(self) -> None:
-
-        result = substitute_variables(
-            filter_str="x IN ({v})",
-            variables={"v": [1, 2.5, True, False]},
-            backslash_escapes=False,
-        )
-        assert result == "x IN (1, 2.5, True, False)"
+        bound = _bind(template="x IN ({v})", variables={"v": [1, 2.5, True, False]})
+        assert _in_values(bound) == [1, 2.5, True, False]
+        in_node = _parse(bound).find(exp.In)
+        assert in_node is not None
+        assert [isinstance(n, exp.Boolean) for n in in_node.expressions] == [
+            False, False, True, True,
+        ]
 
     def test_sql_single_element_list(self) -> None:
-
-        result = substitute_variables(
-            filter_str="region IN ({v})",
-            variables={"v": ["EU"]},
-            backslash_escapes=False,
-        )
-        assert result == "region IN ('EU')"
+        bound = _bind(template="region IN ({v})", variables={"v": ["EU"]})
+        assert _in_values(bound) == ["EU"]
 
     def test_sql_tuple_accepted_same_as_list(self) -> None:
-
-        from_list = substitute_variables(
-            filter_str="x IN ({v})", variables={"v": ["A", "B"]},
-            backslash_escapes=False,
-        )
-        from_tuple = substitute_variables(
-            filter_str="x IN ({v})", variables={"v": ("A", "B")},
-            backslash_escapes=False,
-        )
-        assert from_list == from_tuple == "x IN ('A', 'B')"
+        from_list = _bind(template="x IN ({v})", variables={"v": ["A", "B"]})
+        from_tuple = _bind(template="x IN ({v})", variables={"v": ("A", "B")})
+        assert _in_values(from_list) == _in_values(from_tuple) == ["A", "B"]
 
     def test_sql_injection_element_stays_inside_literal(self) -> None:
-
-        # A classic breakout attempt: the closing quote is doubled so the whole
-        # payload stays a single string literal inside the IN list.
-        result = substitute_variables(
-            filter_str="region IN ({v})",
-            variables={"v": ["x') OR ('1'='1"]},
-            backslash_escapes=False,
-        )
-        assert result == "region IN ('x'') OR (''1''=''1')"
+        # A classic breakout attempt stays one string literal inside the IN list.
+        payload = "x') OR ('1'='1"
+        bound = _bind(template="region IN ({v})", variables={"v": [payload]})
+        assert _in_values(bound) == [payload]
+        assert _parse(bound).find(exp.Or) is None
 
 
 class TestListValueRenderingErrors:
@@ -1389,11 +1299,7 @@ class TestListValueRenderingErrors:
         # IN () is invalid SQL; the message names the variable, says "empty", and
         # points at the sentinel-default idiom for "no filter".
         with pytest.raises(ValueError, match="regions") as exc:
-            substitute_variables(
-                filter_str="region IN ({regions})",
-                variables={"regions": []},
-                backslash_escapes=False,
-            )
+            _bind(template="region IN ({regions})", variables={"regions": []})
         msg = str(exc.value).lower()
         assert "empty" in msg
         # The sentinel-default hint is a required contract, pinned by
@@ -1403,84 +1309,68 @@ class TestListValueRenderingErrors:
     def test_empty_tuple_raises(self) -> None:
 
         with pytest.raises(ValueError, match="regions") as exc:
-            substitute_variables(
-                filter_str="region IN ({regions})",
-                variables={"regions": ()},
-                backslash_escapes=False,
-            )
+            _bind(template="region IN ({regions})", variables={"regions": ()})
         assert "empty" in str(exc.value).lower()
 
     def test_nested_list_element_raises(self) -> None:
 
-        # ``element`` in the match pins the PER-ELEMENT validation path (a valid
-        # list with one bad element), not the whole-value type rejection; and the
-        # variable name must appear so the author can locate it.
+        # ``element`` pins the per-element validation path; the variable must be named.
         with pytest.raises(ValueError, match="element") as exc:
-            substitute_variables(
-                filter_str="region IN ({regions})",
+            _bind(
+                template="region IN ({regions})",
                 variables={"regions": ["A", ["B", "C"]]},
-                backslash_escapes=False,
             )
         assert "regions" in str(exc.value)
 
     def test_none_element_raises(self) -> None:
 
         with pytest.raises(ValueError, match="element") as exc:
-            substitute_variables(
-                filter_str="region IN ({regions})",
-                variables={"regions": ["A", None]},
-                backslash_escapes=False,
-            )
+            _bind(template="region IN ({regions})", variables={"regions": ["A", None]})
         assert "regions" in str(exc.value)
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_float_element_raises(self, bad: float) -> None:
 
         with pytest.raises(ValueError, match="finite") as exc:
-            substitute_variables(
-                filter_str="x IN ({v})",
-                variables={"v": [1.0, bad]},
-                backslash_escapes=False,
-            )
+            _bind(template="x IN ({v})", variables={"v": [1.0, bad]})
         assert "v" in str(exc.value)
 
     def test_dict_element_raises(self) -> None:
 
         with pytest.raises(ValueError, match="element") as exc:
-            substitute_variables(
-                filter_str="region IN ({regions})",
+            _bind(
+                template="region IN ({regions})",
                 variables={"regions": ["A", {"b": 1}]},
-                backslash_escapes=False,
             )
         assert "regions" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
-# 19. End-to-end Mode-A: WHERE region IN ({regions}) with a list variable
+# 18. End-to-end Mode-A: WHERE region IN ({regions}) with a list variable
 # ---------------------------------------------------------------------------
 
 
 class TestListModeAEndToEnd:
-    def _model(self, **kw) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self, **kw) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region IN ({regions})"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
             **kw,
         )
 
     async def test_runtime_list_filters_rows(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"regions": ["US", "CA"]},
             })
             resp = await engine.execute(q)
@@ -1490,11 +1380,11 @@ class TestListModeAEndToEnd:
             tmp.cleanup()
 
     async def test_single_element_list(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"regions": ["EU"]},
             })
             resp = await engine.execute(q)
@@ -1504,10 +1394,10 @@ class TestListModeAEndToEnd:
 
     async def test_list_default_used_when_kwarg_absent(self) -> None:
         engine, tmp = await _engine_with(
-            self._model(query_variables={"regions": ["EU", "CA"]})
+            self._dataset(query_variables={"regions": ["EU", "CA"]})
         )
         try:
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
             resp = await engine.execute(q)
             # EU=275, CA=300 → 575.
             assert _sum(resp, "orders.amount_sum") == 575.0
@@ -1517,12 +1407,12 @@ class TestListModeAEndToEnd:
     async def test_query_variables_list_overrides_model_default_list(self) -> None:
         # Middle precedence layer: model_defaults < query.variables (no runtime).
         engine, tmp = await _engine_with(
-            self._model(query_variables={"regions": ["EU", "CA"]})
+            self._dataset(query_variables={"regions": ["EU", "CA"]})
         )
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"regions": ["US"]},
             })
             resp = await engine.execute(q)
@@ -1533,10 +1423,10 @@ class TestListModeAEndToEnd:
 
     async def test_runtime_list_overrides_default_list(self) -> None:
         engine, tmp = await _engine_with(
-            self._model(query_variables={"regions": ["EU", "CA"]})
+            self._dataset(query_variables={"regions": ["EU", "CA"]})
         )
         try:
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
             resp = await engine.execute(q, variables={"regions": ["US"]})
             # Runtime ['US'] wins over default ['EU','CA'] → 160.
             assert _sum(resp, "orders.amount_sum") == 160.0
@@ -1544,11 +1434,11 @@ class TestListModeAEndToEnd:
             tmp.cleanup()
 
     async def test_injection_element_matches_no_rows(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"regions": ["x') OR ('1'='1"]},
             })
             resp = await engine.execute(q)
@@ -1561,31 +1451,31 @@ class TestListModeAEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# 20. End-to-end Mode-B: query filter "region in ({regions})" with a list
+# 19. End-to-end Mode-B: query filter "region in ({regions})" with a list
 # ---------------------------------------------------------------------------
 
 
 class TestListModeBEndToEnd:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
 
     async def test_query_filter_list_in(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region in ({regions})"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["region in ({regions})"],
                 "variables": {"regions": ["US", "CA"]},
             })
             resp = await engine.execute(q)
@@ -1594,14 +1484,14 @@ class TestListModeBEndToEnd:
             tmp.cleanup()
 
     async def test_query_filter_single_element_list(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             # The trailing-comma render (('EU',)) is what keeps a 1-element list
             # a tuple through the Python-AST parser rather than a bare string.
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region in ({regions})"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["region in ({regions})"],
                 "variables": {"regions": ["EU"]},
             })
             resp = await engine.execute(q)
@@ -1610,12 +1500,12 @@ class TestListModeBEndToEnd:
             tmp.cleanup()
 
     async def test_query_filter_not_in_list(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region not in ({regions})"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["region not in ({regions})"],
                 "variables": {"regions": ["US"]},
             })
             resp = await engine.execute(q)
@@ -1627,12 +1517,12 @@ class TestListModeBEndToEnd:
     async def test_runtime_list_overrides_query_level_list(self) -> None:
         # Mode-B filters read query.variables, which merges runtime kwarg over
         # the query-level dict (runtime wins) — verify that merge with lists.
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region in ({regions})"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["region in ({regions})"],
                 "variables": {"regions": ["EU", "CA"]},
             })
             resp = await engine.execute(q, variables={"regions": ["US"]})
@@ -1643,12 +1533,12 @@ class TestListModeBEndToEnd:
     async def test_query_filter_list_escaping_matches_only_its_row(self) -> None:
         # Mode-B escaping through the real parse+compile+SQLite pipeline: a
         # quote-bearing element must round-trip so it matches only its own row.
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status in ({statuses})"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["status in ({statuses})"],
                 "variables": {"statuses": ["O'Brien"]},
             })
             resp = await engine.execute(q)
@@ -1663,143 +1553,75 @@ class TestListModeBEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# 19. SQL regime is dialect-aware: backslash_escapes flag (Gap 1)
+# 20. Values round-trip on standard and backslash-escaping dialects
 # ---------------------------------------------------------------------------
 
 class TestSqlModeBackslashEscaping:
-    """``backslash_escapes=`` selects the escaping regime.
+    """The bound literal's value is the original on SQLite (standard) and MySQL
+    (backslash escapes)."""
 
-    - False (standard: SQLite/Postgres/DuckDB/…): backslash is an ordinary
-      char, ONLY the single quote is doubled (``'`` → ``''``).
-    - True (backslash dialects: MySQL/ClickHouse/Snowflake/…): backslash is an
-      escape char, so it is doubled FIRST (``\\`` → ``\\\\``) and the single
-      quote is backslash-escaped (``'`` → ``\\'``). The double quote is left
-      untouched (inside a single-quoted literal it is an ordinary char on every
-      dialect, and ``\\"`` is not a recognised escape on 6 of the 7).
-    """
+    def test_standard_regime_quote_and_backslash(self) -> None:
+        bound = _bind(template="p = '{v}'", variables={"v": "a\\'b"})
+        assert _literals(bound) == ["a\\'b"]
 
-    def test_standard_regime_doubles_quote_leaves_backslash(self) -> None:
-        result = substitute_variables(
-            filter_str="p = '{v}'", variables={"v": "a\\'b"},
-            backslash_escapes=False,
-        )
-        # a \ ' b  →  double the quote only; backslash untouched.
-        assert result == "p = 'a\\''b'"
+    def test_backslash_regime_quote_and_backslash(self) -> None:
+        d = MysqlDialect()
+        bound = _bind(template="p = '{v}'", variables={"v": "a\\'b"}, dialect=d)
+        assert _literals(bound, dialect=d) == ["a\\'b"]
 
-    def test_backslash_regime_doubles_backslash_and_escapes_quote(self) -> None:
-        result = substitute_variables(
-            filter_str="p = '{v}'", variables={"v": "a\\'b"},
-            backslash_escapes=True,
-        )
-        # a \ ' b  →  \\ (doubled backslash) + \' (escaped quote).
-        assert result == "p = 'a\\\\\\'b'"
+    def test_backslash_regime_lone_backslash(self) -> None:
+        d = MysqlDialect()
+        bound = _bind(template="p = '{v}'", variables={"v": "a\\b"}, dialect=d)
+        assert _literals(bound, dialect=d) == ["a\\b"]
 
-    def test_backslash_regime_lone_backslash_doubled(self) -> None:
-        result = substitute_variables(
-            filter_str="p = '{v}'", variables={"v": "a\\b"},
-            backslash_escapes=True,
-        )
-        assert result == "p = 'a\\\\b'"
-
-    def test_backslash_regime_trailing_backslash_doubled(self) -> None:
-        # The classic breakout: a trailing backslash must not eat the closing
-        # quote — it is doubled so the literal stays closed.
-        result = substitute_variables(
-            filter_str="p = '{v}'", variables={"v": "abc\\"},
-            backslash_escapes=True,
-        )
-        assert result == "p = 'abc\\\\'"
+    def test_backslash_regime_trailing_backslash(self) -> None:
+        # A trailing backslash must not eat the closing quote.
+        d = MysqlDialect()
+        bound = _bind(template="p = '{v}'", variables={"v": "abc\\"}, dialect=d)
+        assert _literals(bound, dialect=d) == ["abc\\"]
 
     def test_backslash_regime_single_quote_only(self) -> None:
-        result = substitute_variables(
-            filter_str="p = '{v}'", variables={"v": "O'Brien"},
-            backslash_escapes=True,
-        )
-        assert result == "p = 'O\\'Brien'"
+        d = MysqlDialect()
+        bound = _bind(template="p = '{v}'", variables={"v": "O'Brien"}, dialect=d)
+        assert _literals(bound, dialect=d) == ["O'Brien"]
 
-    def test_backslash_regime_double_quote_untouched(self) -> None:
-        # Inside a single-quoted literal a bare double quote is an ordinary
-        # char; escaping it (\") would CORRUPT the value on 6 of 7 backslash
-        # dialects (only MySQL treats \" as " there). So it stays as-is.
-        result = substitute_variables(
-            filter_str="p = '{v}'", variables={"v": 'say "hi"'},
-            backslash_escapes=True,
-        )
-        assert result == 'p = \'say "hi"\''
+    def test_backslash_regime_double_quote(self) -> None:
+        d = MysqlDialect()
+        bound = _bind(template="p = '{v}'", variables={"v": 'say "hi"'}, dialect=d)
+        assert _literals(bound, dialect=d) == ['say "hi"']
 
     def test_backslash_regime_plain_value_unchanged(self) -> None:
-        result = substitute_variables(
-            filter_str="p = '{v}'", variables={"v": "active"},
-            backslash_escapes=True,
-        )
-        assert result == "p = 'active'"
+        d = MysqlDialect()
+        bound = _bind(template="p = '{v}'", variables={"v": "active"}, dialect=d)
+        assert _literals(bound, dialect=d) == ["active"]
 
     def test_number_passthrough_both_regimes(self) -> None:
-        for be in (True, False):
-            assert substitute_variables(
-                filter_str="x > {n}", variables={"n": 100},
-                backslash_escapes=be,
-            ) == "x > 100"
+        for d in (MysqlDialect(), SqliteDialect()):
+            bound = _bind(template="x > {n}", variables={"n": 100}, dialect=d)
+            assert _literals(bound, dialect=d) == [100]
 
-    def test_backslash_regime_list_elements_escaped(self) -> None:
-        # List rendering must compose with the backslash regime:
-        # each string element is auto-quoted AND backslash-escaped.
-        result = substitute_variables(
-            filter_str="p IN ({v})", variables={"v": ["a\\b", "O'Brien"]},
-            backslash_escapes=True,
-        )
-        assert result == "p IN ('a\\\\b', 'O\\'Brien')"
+    def test_backslash_regime_list_elements(self) -> None:
+        d = MysqlDialect()
+        bound = _bind(template="p IN ({v})", variables={"v": ["a\\b", "O'Brien"]}, dialect=d)
+        assert _in_values(bound, dialect=d) == ["a\\b", "O'Brien"]
 
-    def test_backslash_regime_list_elements_standard(self) -> None:
-        # Same list under the standard regime: quote-doubled, backslash raw.
-        result = substitute_variables(
-            filter_str="p IN ({v})", variables={"v": ["a\\b", "O'Brien"]},
-            backslash_escapes=False,
-        )
-        assert result == "p IN ('a\\b', 'O''Brien')"
+    def test_standard_regime_list_elements(self) -> None:
+        bound = _bind(template="p IN ({v})", variables={"v": ["a\\b", "O'Brien"]})
+        assert _in_values(bound) == ["a\\b", "O'Brien"]
 
 
 # ---------------------------------------------------------------------------
-# 20. Fail-closed: the backslash_escapes signal is required
-# ---------------------------------------------------------------------------
-
-class TestSqlModeFailClosed:
-    """A security-flavoured property (correct escaping) must not silently
-    default. ``backslash_escapes`` must be specified —
-    a new/overlooked SQL call site that forgets it FAILS instead of
-    under-escaping on MySQL/ClickHouse."""
-
-    def test_sql_without_backslash_escapes_raises(self) -> None:
-        with pytest.raises(ValueError, match="backslash_escapes"):
-            substitute_variables(
-                filter_str="p = '{v}'", variables={"v": "x"}
-            )
-
-    def test_sql_without_flag_raises_even_for_number(self) -> None:
-        # The guard fires regardless of value type —
-        # so no caller can partially bypass it by happening to pass a number.
-        with pytest.raises(ValueError, match="backslash_escapes"):
-            substitute_variables(
-                filter_str="x > {n}", variables={"n": 1}
-            )
-
-
-# ---------------------------------------------------------------------------
-# 21. SQL regime leaves control chars raw
+# 21. Control chars round-trip
 # ---------------------------------------------------------------------------
 
 class TestSqlModeControlChars:
-    def test_sql_mode_leaves_control_chars_raw(self) -> None:
-        # SQL literals accept raw newlines and sqlglot re-emits them, so sql mode must NOT encode control chars.
-        result = substitute_variables(
-            filter_str="p = '{v}'", variables={"v": "a\nb"},
-            backslash_escapes=False,
-        )
-        assert result == "p = 'a\nb'"
+    def test_sql_mode_control_chars_roundtrip(self) -> None:
+        bound = _bind(template="p = '{v}'", variables={"v": "a\nb"})
+        assert _literals(bound) == ["a\nb"]
 
 
 # ---------------------------------------------------------------------------
-# 22. Dialect matrix: escaping round-trips through the parser sqlglot uses
+# 22. Dialect matrix: bound values round-trip through the parser sqlglot uses
 # ---------------------------------------------------------------------------
 
 _MATRIX_VALUES = [
@@ -1815,21 +1637,14 @@ _MATRIX_VALUES = [
     "plain",                # nothing special
 ]
 
-# (dialect, value) pairs — the escaping regime flag is read from the dialect's
-# own ``backslash_escapes_strings`` property AT TEST TIME (not here), so this
-# module still imports cleanly before the property is implemented.
 _MATRIX = [
     (d, v) for d in _ALL_DIALECTS for v in _MATRIX_VALUES
 ]
 
 
 class TestEscapingRegimeDialectMatrix:
-    """For every dialect, the sql-escaped literal produced by
-    ``substitute_variables`` — using the regime the dialect's OWN
-    ``backslash_escapes_strings`` selects — must round-trip through sqlglot's
-    parser for that dialect (the exact parser SLayer feeds the substituted
-    Mode-A SQL to), AND survive a parse → emit → re-parse cycle. This is the
-    core correctness guarantee that the derived flag matches the parser."""
+    """For every dialect, the literal bound by the engine entry parses back to the
+    original value in that dialect, and survives a parse → emit → re-parse cycle."""
 
     @pytest.mark.parametrize(
         "dialect,value",
@@ -1839,62 +1654,54 @@ class TestEscapingRegimeDialectMatrix:
     def test_sql_literal_roundtrips_through_dialect_parser(
         self, dialect, value: str
     ) -> None:
-        literal = substitute_variables(
-            filter_str="'{v}'", variables={"v": value},
-            backslash_escapes=dialect.backslash_escapes_strings,
-        )
-        parsed = sqlglot.parse_one(literal, dialect=dialect.sqlglot_name)
-        assert parsed.this == value, (dialect.sqlglot_name, repr(literal))
+        bound = _bind(template="p = '{v}'", variables={"v": value}, dialect=dialect)
+        assert _literals(bound, dialect=dialect) == [value], (dialect.sqlglot_name, repr(bound))
         # parse → emit → re-parse must preserve the value too.
-        reparsed = sqlglot.parse_one(
-            parsed.sql(dialect=dialect.sqlglot_name), dialect=dialect.sqlglot_name
-        )
-        assert reparsed.this == value, (dialect.sqlglot_name, "roundtrip")
+        emitted = _parse(bound, dialect=dialect).sql(dialect=dialect.sqlglot_name)
+        assert _literals(emitted, dialect=dialect) == [value], (dialect.sqlglot_name, "roundtrip")
 
     def test_matrix_covers_all_14_dialects(self) -> None:
         assert len({d.sqlglot_name for d, _ in _MATRIX}) == 14
 
 
 # ---------------------------------------------------------------------------
-# 23. Engine threading: the resolved dialect reaches the sql escaping
+# 23. Engine threading: the resolved dialect reaches the binding
 # ---------------------------------------------------------------------------
 
 class TestSubstituteModelSqlSurfacesDialect:
-    """``_substitute_model_sql_surfaces`` requires a dialect and derives the
-    escaping regime from it (fail-closed — no caller can under-escape by
-    forgetting a bool)."""
+    """``_substitute_model_sql_surfaces`` requires a dialect and binds for it."""
 
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE r = '{region}'",
-            columns=[Column(name="a", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="a", sql="amount", datatype=DataType.FLOAT)],
         )
 
-    def test_backslash_dialect_escapes_value(self) -> None:
+    def test_backslash_dialect_value_roundtrips(self) -> None:
 
-        out = _substitute_model_sql_surfaces(
-            model=self._model(), variables={"region": "a\\'b"},
-            dialect=MysqlDialect(),
+        d = MysqlDialect()
+        out = _substitute_dataset_sql_surfaces(
+            dataset=self._dataset(), variables={"region": "a\\'b"}, dialect=d,
         )
-        assert out.sql == "SELECT * FROM t WHERE r = 'a\\\\\\'b'"
+        assert _literals(out.sql, dialect=d) == ["a\\'b"]
 
-    def test_standard_dialect_doubles_quote_only(self) -> None:
+    def test_standard_dialect_value_roundtrips(self) -> None:
 
-        out = _substitute_model_sql_surfaces(
-            model=self._model(), variables={"region": "a\\'b"},
+        out = _substitute_dataset_sql_surfaces(
+            dataset=self._dataset(), variables={"region": "a\\'b"},
             dialect=SqliteDialect(),
         )
-        assert out.sql == "SELECT * FROM t WHERE r = 'a\\''b'"
+        assert _literals(out.sql) == ["a\\'b"]
 
     def test_dialect_is_required(self) -> None:
 
         # Build the model outside the raises-block so only the call under test
         # (missing the required `dialect`) can raise (Sonar S5778).
-        model = self._model()
+        model = self._dataset()
         with pytest.raises(TypeError):
-            _substitute_model_sql_surfaces(model=model, variables={"region": "x"})
+            _substitute_dataset_sql_surfaces(dataset=model, variables={"region": "x"})
 
 
 def _status_literal_from_sql(sql: str, dialect_name: str):
@@ -1928,23 +1735,23 @@ class TestEngineDialectThreadingEndToEnd:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type=ds_type, database=db_path)
         )
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["status = '{v}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"v": value},
             })
             result = await engine.execute(q, dry_run=True)
@@ -1972,39 +1779,40 @@ class TestProbeModelDialectThreading:
     """``_render_probe_model`` threads the dialect into the Mode-A surfaces it
     renders from the model's own defaults."""
 
-    def _template_model(self) -> SlayerModel:
-        return SlayerModel(
+    def _template_dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE r = '{region}'",
             query_variables={"region": "a\\'b"},
-            columns=[Column(name="a", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="a", sql="amount", datatype=DataType.FLOAT)],
         )
 
     def test_probe_uses_backslash_dialect(self) -> None:
 
-        out = _render_probe_model(self._template_model(), dialect=MysqlDialect())
-        assert out.sql == "SELECT * FROM t WHERE r = 'a\\\\\\'b'"
+        d = MysqlDialect()
+        out = _render_probe_dataset(self._template_dataset(), dialect=d)
+        assert _literals(out.sql, dialect=d) == ["a\\'b"]
 
     def test_probe_uses_standard_dialect(self) -> None:
 
-        out = _render_probe_model(self._template_model(), dialect=SqliteDialect())
-        assert out.sql == "SELECT * FROM t WHERE r = 'a\\''b'"
+        out = _render_probe_dataset(self._template_dataset(), dialect=SqliteDialect())
+        assert _literals(out.sql) == ["a\\'b"]
 
     def test_probe_dialect_required(self) -> None:
 
         # Build the model outside the raises-block so only the call under test
         # (missing the required `dialect`) can raise (Sonar S5778).
-        model = self._template_model()
+        model = self._template_dataset()
         with pytest.raises(TypeError):
-            _render_probe_model(model)
+            _render_probe_dataset(model)
 
 
 # ---------------------------------------------------------------------------
 # 24. Mode-B end-to-end: control-char values round-trip through the parser
 # ---------------------------------------------------------------------------
 
-async def _engine_with_ctrl_status(model: SlayerModel) -> tuple:
+async def _engine_with_ctrl_status(dataset: SlayerDataset) -> tuple:
     """Seed a table whose status column carries control-char values, so a
     Mode-B (python-escaped) query filter can be shown to match end-to-end."""
     tmp = tempfile.TemporaryDirectory()
@@ -2022,7 +1830,7 @@ async def _engine_with_ctrl_status(model: SlayerModel) -> tuple:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_model(model)
+    await storage.save_dataset(dataset)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -2031,15 +1839,15 @@ class TestModeBControlCharsEndToEnd:
     a Mode-B query filter must parse (no ast.parse SyntaxError) and match ONLY
     its row through the real SQLite pipeline."""
 
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
 
@@ -2050,12 +1858,12 @@ class TestModeBControlCharsEndToEnd:
     async def test_control_char_value_matches_only_its_row(
         self, value: str, expected: float
     ) -> None:
-        engine, tmp = await _engine_with_ctrl_status(self._model())
+        engine, tmp = await _engine_with_ctrl_status(self._dataset())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status = '{v}'"],
+                "population": "t",
+                "metrics": [{"metric": "sum(amount)"}],
+                "filter": ["status = '{v}'"],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)

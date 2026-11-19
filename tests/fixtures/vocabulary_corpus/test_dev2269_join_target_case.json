@@ -1,0 +1,137 @@
+{
+ "source": "tests/test_dev2269_join_target_case.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     {
+      "dimension": "time_spine.timestamp",
+      "granularity": "month",
+      "date_range": [
+       "2024-01-01",
+       "2024-03-31"
+      ]
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(ev.amount)",
+      "name": "s"
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     {
+      "field": "time_spine.timestamp",
+      "granularity": "month",
+      "date_range": [
+       "2024-01-01",
+       "2024-03-31"
+      ]
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(ev.amount)",
+      "alias": "s"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  }
+ ]
+}

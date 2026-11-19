@@ -27,11 +27,11 @@ Exports one datasource's SLayer models as an Ossie (OSI) semantic-model document
 
 ### Requirement: Model subset
 
-With `--models`, only the named models SHALL be exported. A relationship, metric, or SLayer-only entity that needs a model outside the subset SHALL be reported with a workaround naming the model to add.
+With `--datasets`, only the named models SHALL be exported. A relationship, metric, or SLayer-only entity that needs a model outside the subset SHALL be reported with a workaround naming the model to add.
 
 #### Scenario: Join to an excluded model
-- **WHEN** `orders` joins `customers` and the export runs with `--models orders`
-- **THEN** the document holds dataset `orders` and no relationship to `customers`, and the report names the join and suggests adding `customers` to `--models`
+- **WHEN** `orders` joins `customers` and the export runs with `--datasets orders`
+- **THEN** the document holds dataset `orders` and no relationship to `customers`, and the report names the join and suggests adding `customers` to `--datasets`
 
 ### Requirement: Dataset sources
 
@@ -155,7 +155,7 @@ A field expression SHALL be written as portable `sql` only when reading its port
 
 ### Requirement: SLayer-only content travels in a SLAYER extension
 
-Unless extensions are disabled, every exported entity SHALL carry exactly one custom extension with `vendor_name: SLAYER`, whose `data` is a versioned JSON payload holding only what Ossie has no place for: a join's type, name, cardinality and declaring models; a measure's formula, model, name, label, type and metadata; a column's hidden flag, format, granularity, allowed aggregations, metadata, and its type and value/filter split; a model's hidden flag, access tags, default time dimension, metadata, custom aggregations, source structure (table or SQL plus row filters, or saved queries plus variables), and its SLayer-only columns and measures. SLayer-only columns are those reading joined models. SLayer-only measures are those not exportable as metrics: transforms, ranked `first`/`last`, windowed or partitioned aggregates, aggregates reading several models, and measures whose route to a model is ambiguous. Each payload SHALL carry a fingerprint of the Ossie content it was exported with. Custom extensions of other vendors recorded on an imported entity SHALL be re-emitted unchanged after validation against the schema's extension shape; a malformed one SHALL be reported and omitted.
+Unless extensions are disabled, every exported entity SHALL carry exactly one `nonportable_extensions` entry with `vendor_name: SLAYER`, whose `data` is a versioned payload object holding only what Ossie has no place for: a join's type, name, cardinality and declaring models; a measure's formula, model, name, label, type and metadata; a column's hidden flag, format, granularity, allowed aggregations, metadata, and its type and value/filter split; a model's hidden flag, access tags, default time dimension, metadata, custom aggregations, source structure (table or SQL plus row filters, or saved queries plus variables), and its SLayer-only columns and measures. SLayer-only columns are those reading joined models. SLayer-only measures are those not exportable as metrics: transforms, ranked `first`/`last`, windowed or partitioned aggregates, aggregates reading several models, and measures whose route to a model is ambiguous. Each payload SHALL carry a fingerprint of the Ossie content it was exported with. Non-portable extensions of other vendors recorded on an imported entity or document, including on models stored before SLayer recorded them as objects, SHALL be re-emitted under `nonportable_extensions` with their `data` object unchanged, whether or not extensions are disabled, after validation against the schema's extension shape; one whose `data` is not a JSON-representable object SHALL be reported and omitted. No exported document SHALL carry the key `custom_extensions`.
 
 #### Scenario: Transform measure
 - **WHEN** `orders` has the measure `revenue_growth: change_pct(revenue)`
@@ -170,8 +170,16 @@ Unless extensions are disabled, every exported entity SHALL carry exactly one cu
 - **THEN** dataset `orders` has no field `segment`, and its extension carries the column
 
 #### Scenario: Foreign extension preserved
-- **WHEN** an imported field carried a custom extension `{vendor_name: ACME, data: "{\"k\": 1}"}`
-- **THEN** the exported field carries that extension with `data` unchanged, next to its `SLAYER` extension
+- **WHEN** an imported field carried a non-portable extension `{vendor_name: ACME, data: {k: 1}}`
+- **THEN** the exported field carries that extension with `data` unchanged, next to its `SLAYER` extension, and the document validates against the vendored schema
+
+#### Scenario: Document-level foreign extension
+- **WHEN** the exported models were imported from a document whose root carried `{vendor_name: DBT, data: {project_name: shop}}`, and the export runs with and without extensions
+- **THEN** both exported documents carry that entry at their root and validate against the vendored schema
+
+#### Scenario: Model stored before the shape change
+- **WHEN** a model stored by SLayer 1.8 records a field's foreign extension as `{vendor_name: ACME, data: '{"k": 1}'}` and another as `{vendor_name: ACME, data: 'not json'}`
+- **THEN** the exported field carries the first with `data: {k: 1}`, omits the second, and the report names the second as malformed
 
 ### Requirement: Exporting without extensions
 
@@ -204,3 +212,30 @@ Importing an exported document with `import-osi` into the same datasource SHALL 
 #### Scenario: Formula restored
 - **WHEN** a model with measure `aov: revenue / n` is exported and re-imported
 - **THEN** the re-imported measure's formula is `revenue / n`
+
+### Requirement: YAML export quotes strings other loaders would retype
+
+A YAML export SHALL quote every string scalar that a YAML 1.1 or a YAML 1.2 core-schema loader would read as anything other than that string (a number in any sign, case, exponent, octal or hex spelling, a boolean, null, a date or timestamp, infinity or NaN), wherever it occurs in the document, so that every such loader reads back the same strings.
+
+#### Scenario: Retypable strings round-trip
+- **WHEN** a column's metadata recorded in its `SLAYER` payload holds the strings `1e3`, `1E3`, `+1e3`, `-1.5E+3`, `0o17`, `0x1F`, `.Inf`, `NULL`, `yes`, `010` and `2024-01-01`, and the export is written as YAML
+- **THEN** a YAML 1.1 loader and a YAML 1.2 core-schema loader both read each value back as the same string
+
+### Requirement: Instant comparisons export as standard SQL
+
+A comparison of a temporal value with an instant — a date-time literal or a date-only literal, which is the instant at its midnight — SHALL export inside a metric as a standard-SQL comparison with the same operator and literal, so the metric is not dropped as SLayer-only on that account. A comparison with a period literal other than a date-only one, a single-string `in` / `not in`, or a relative token SHALL remain SLayer-only. Querying the re-imported metric SHALL return the value of the original measure.
+
+#### Scenario: Date-only bound in a filtered measure
+
+- **WHEN** `ev` has the measure `early: count(*) FILTER (WHERE ts <= '2024-04-10')` over rows at `2024-03-05 08:00` and `2024-04-10 09:30`
+- **THEN** dataset `ev` has the metric `early` whose `sql` compares `ts <= '2024-04-10'`, and the re-imported measure returns 1, as the original does
+
+#### Scenario: Date-time bound
+
+- **WHEN** a measure is `count(*) FILTER (WHERE ts > '2024-04-10 09:00:00')`
+- **THEN** it exports as a metric with that comparison
+
+#### Scenario: Period and relative comparisons stay SLayer-only
+
+- **WHEN** measures are `count(*) FILTER (WHERE ts in '2024-04-10')`, `count(*) FILTER (WHERE ts = '2025-Q1')` and `count(*) FILTER (WHERE ts >= 'last month')`, exported without extensions
+- **THEN** none is exported as a metric, and each is reported as SLayer-only

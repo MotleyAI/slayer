@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_mode_b_comments.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = 'paid' -- r = {region}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = 'paid' -- r = {region}"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  }
+ ]
+}

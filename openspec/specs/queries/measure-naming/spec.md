@@ -58,7 +58,7 @@ and SQL aliases byte-identical to their existing convention.
 
 #### Scenario: Explicit name wins
 
-- **WHEN** a measure is `{"formula": "sum(logo_churn) / sum(logo_bop)", "name": "churn_ratio"}` on model `mart`
+- **WHEN** a measure is `{"metric": "sum(logo_churn) / sum(logo_bop)", "alias": "churn_ratio"}` on model `mart`
 - **THEN** its result key is `mart.churn_ratio`
 
 #### Scenario: Plain aggregate references unchanged
@@ -69,7 +69,7 @@ and SQL aliases byte-identical to their existing convention.
 #### Scenario: Saved measure reference unchanged
 
 - **WHEN** a model saves measure `aov` and a query references it as the unnamed formula `aov`
-- **THEN** its result key is `<model>.aov`
+- **THEN** its result key is `<dataset>.aov`
 
 ### Requirement: Derived keys are dialect-uniform and emitted aliases dialect-valid
 
@@ -106,12 +106,12 @@ identical formulas SHALL merge into one result column.
 
 #### Scenario: Identical formulas with conflicting metadata
 
-- **WHEN** the same unnamed formula appears twice with a different explicit `type` or `label`
+- **WHEN** the same unnamed formula appears twice with a different explicit `datatype` or `label`
 - **THEN** the query fails with an error suggesting a rename (set `name`)
 
 ### Requirement: Raw-formula references resolve to the derived column
 
-A `filters` or `order` entry referencing an unnamed formula measure by its raw
+A `filter` or `order` entry referencing an unnamed formula measure by its raw
 formula text SHALL resolve to that measure's result column.
 
 #### Scenario: Order by raw formula text
@@ -129,7 +129,7 @@ name given. Importers SHALL import such measures like any other. Custom aggregat
 transform-name reservation.
 
 #### Scenario: Query measure named change
-- **WHEN** a monthly query on `orders` measures `{"formula": "change(sum(amount))", "name": "change"}`
+- **WHEN** a monthly query on `orders` measures `{"metric": "change(sum(amount))", "alias": "change"}`
 - **THEN** the result key is `orders.change`, and its rows and SQL equal those of the same query naming the measure `chg` with `chg` replaced by `change`
 
 #### Scenario: The name is referenceable

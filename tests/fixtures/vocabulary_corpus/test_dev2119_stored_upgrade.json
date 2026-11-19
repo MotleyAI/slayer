@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_dev2119_stored_upgrade.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_q",
+    "dimensions": [
+     "customers__signed_up_at"
+    ],
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_q",
+    "dimensions": [
+     "customers__signed_up_at"
+    ],
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 110,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 163,
+   "reason": "unclassifiable"
+  }
+ ]
+}

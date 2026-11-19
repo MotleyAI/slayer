@@ -1,0 +1,62 @@
+{
+ "source": "tests/test_osi_export_metrics.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "customer_discount"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "customer_discount"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "region_code",
+      "id"
+     ]
+    ],
+    "name": "referrer",
+    "cardinality": null
+   },
+   "new": {
+    "to": "customers",
+    "name": "referrer",
+    "cardinality": null,
+    "from_columns": [
+     "region_code"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "trimmed_sum",
+    "formula": "SUM(CASE WHEN {value} < 15 THEN {value} END)"
+   },
+   "new": {
+    "name": "trimmed_sum",
+    "expression": "SUM(CASE WHEN {value} < 15 THEN {value} END)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 182,
+   "reason": "not fully literal"
+  }
+ ]
+}

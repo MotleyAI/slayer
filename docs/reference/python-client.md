@@ -18,8 +18,8 @@ from slayer.client.slayer_client import SlayerClient
 client = SlayerClient(url="http://localhost:5143")
 
 query = {
-    "source_model": "orders",
-    "measures": ["count(*)", "sum(order_total)"],
+    "population": "orders",
+    "metrics": ["count(*)", "sum(order_total)"],
     "dimensions": ["status"],
     "limit": 10,
 }
@@ -57,27 +57,27 @@ Pass `client_factory=` to run every database access through your own client — 
 - A **dict** — a single query.
 - A **`SlayerQuery`** instance.
 - A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/queries.md#query-lists).
-- A **string** — runs the backing query of a query-backed model by name.
+- A **string** — runs the backing query of a query-backed dataset by name.
 
 Each also takes `variables=` — runtime values for `{placeholders}`, overriding saved defaults.
 
 ```python
 # Multi-stage DAG
 client.query_sync([
-    {"name": "by_customer", "source_model": "orders", "measures": [{"formula": "sum(order_total)"}], "dimensions": [{"name": "customer_id"}]},
-    {"source_model": "by_customer", "measures": [{"formula": "avg(order_total_sum)"}]},
+    {"name": "by_customer", "population": "orders", "metrics": ["sum(order_total)"], "dimensions": ["customer_id"]},
+    {"population": "by_customer", "metrics": ["avg(order_total_sum)"]},
 ])
 
-# Run-by-name (query-backed model), optionally refined
+# Run-by-name (query-backed dataset), optionally refined
 client.query_sync("rev_by_region")
 client.query_sync("rev_by_region", refine={"dimensions": ["status"]})
 client.query_sync("rev_by_status", variables={"status": "refunded"})
 
 # Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
 client.query_sync({
-    "source_model": "orders",
+    "population": "orders",
     "dimensions": ["status", "order_total"],
-    "filters": ["order_total > 100"],
+    "filter": ["order_total > 100"],
     "limit": 100,
     "distinct_dimension_values": False,
 })
@@ -86,14 +86,14 @@ client.query_sync({
 ### Other Methods
 
 ```python
-# List models
-models = client.list_models()
+# List datasets
+datasets = client.list_datasets()
 
-# Get model definition
-model = client.get_model("orders")
+# Get dataset definition
+dataset = client.get_dataset("orders")
 
-# Create a model
-client.create_model({"name": "orders", "sql_table": "public.orders", ...})
+# Create a dataset
+client.create_dataset({"name": "orders", "sql_table": "public.orders", ...})
 
 # List datasources
 datasources = client.list_datasources()
@@ -104,32 +104,32 @@ client.create_datasource({"name": "mydb", "type": "postgres", ...})
 
 ### Inspect
 
-`inspect` / `inspect_sync` is a point lookup: the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`model` grouped by datasource, or `datasource`); other kinds raise. Subsumes `models_summary` / `list_datasources`.
+`inspect` / `inspect_sync` is a point lookup: the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`dataset` grouped by datasource, or `datasource`); other kinds raise. Subsumes `datasets_summary` / `list_datasources`.
 
 ```python
-# Compact default: schema skeleton for a model (column / measure / aggregation
-# names + joins, zero DB calls); description-only for the other kinds.
-print(client.inspect_sync(reference="jaffle_shop.orders", entity_type="model"))
+# Compact default: schema skeleton for a dataset (field / metric / aggregation
+# names + relationships, zero DB calls); description-only for the other kinds.
+print(client.inspect_sync(reference="jaffle_shop.orders", entity_type="dataset"))
 
-# Collection: all models grouped by datasource (one terse line per model).
-print(client.inspect_sync(reference=None, entity_type="model"))
+# Collection: all datasets grouped by datasource (one terse line per dataset).
+print(client.inspect_sync(reference=None, entity_type="dataset"))
 
-# Full render of one column (compact=False); join paths resolve to the owner.
+# Full render of one field (compact=False); relationship paths resolve to the owner.
 print(client.inspect_sync(
-    reference="jaffle_shop.orders.stores.regions.name", entity_type="column",
+    reference="jaffle_shop.orders.stores.regions.name", entity_type="field",
     compact=False,
 ))
 
-# Batch: several same-kind columns in one round-trip.
+# Batch: several same-kind fields in one round-trip.
 print(client.inspect_sync(
     reference=["jaffle_shop.orders.order_total", "jaffle_shop.orders.customer_id"],
-    entity_type="column", compact=False,
+    entity_type="field", compact=False,
 ))
 
-# async form:  await client.inspect(reference="jaffle_shop.orders", entity_type="model")
+# async form:  await client.inspect(reference="jaffle_shop.orders", entity_type="dataset")
 ```
 
-`entity_type` is required (`datasource` / `model` / `column` / `measure` / `aggregation` / `memory`) and asserts the resolved kind. The model-only `num_rows` / `show_sql` / `sections` apply for `entity_type="model"`; `descriptions_max_chars` applies to every kind. `format="json"` returns a JSON string instead of Markdown.
+`entity_type` is required (`datasource` / `dataset` / `field` / `metric` / `aggregation` / `memory`) and asserts the resolved kind. The dataset-only `num_rows` / `show_sql` / `sections` apply for `entity_type="dataset"`; `descriptions_max_chars` applies to every kind. `format="json"` returns a JSON string instead of Markdown.
 
 ### Memories + Semantic Search
 
@@ -149,10 +149,10 @@ run_sync(client.save_memory(
 run_sync(client.save_memory(
     learning="Top customers by lifetime spend",
     linked_entities={
-        "source_model": "orders",
-        "measures": [{"formula": "sum(order_total)", "name": "lifetime_spend"}],
+        "population": "orders",
+        "metrics": [{"metric": "sum(order_total)", "alias": "lifetime_spend"}],
         "dimensions": ["customers.name"],
-        "order": [{"column": "lifetime_spend", "direction": "desc"}],
+        "order": [{"field": "lifetime_spend", "direction": "desc"}],
         "limit": 5,
     },
     id="kb.top-customers",
@@ -190,9 +190,9 @@ async def search(
 ) -> SearchResponse: ...
 ```
 
-`cypher_filter` accepts full openCypher when the `advanced_search` extra is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; mutation clauses rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter — anything richer raises with an install hint.
+`cypher_filter` accepts full openCypher when the `advanced_search` extra is installed (LadybugDB property graph with `Memory` / `Datasource` / `Dataset` / `DatasetField` / `Metric` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `RELATIONSHIPS` edges; mutation clauses rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter — anything richer raises with an install hint.
 
-`SearchResponse` carries a single flat ranked list. Each `SearchHit` has `kind` (`"memory"` / `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"`), `id`, `score`, `text`, `matched_entities`, and `query` (the attached `SlayerQuery` for query-bearing memories, else `None`). Unresolved input tokens land in `SearchResponse.warnings` instead of raising. Column hits include the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale column profiles are refreshed lazily inside `search()`.
+`SearchResponse` carries a single flat ranked list. Each `SearchHit` has `kind` (`"memory"` / `"datasource"` / `"dataset"` / `"field"` / `"metric"` / `"aggregation"`), `id`, `score`, `text`, `matched_entities`, and `query` (the attached `SlayerQuery` for query-bearing memories, else `None`). Unresolved input tokens land in `SearchResponse.warnings` instead of raising. Field hits include the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow fields are marked `50+ distinct` in the text snapshot); stale field profiles are refreshed lazily inside `search()`.
 
 ## Direct Engine Access
 
@@ -208,7 +208,7 @@ engine = SlayerQueryEngine(storage=storage)
 result = engine.execute(query=query)
 # result.data      — list of row dicts
 # result.columns   — list of column names
-# result.attributes — ResponseAttributes with .dimensions and .measures dicts (column → FieldMetadata)
+# result.attributes — ResponseAttributes with .dimensions and .metrics dicts (column → FieldMetadata)
 #
 # client.query() returns SlayerResponse with all fields above
 # client.sql(query) returns just the generated SQL string

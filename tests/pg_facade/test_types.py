@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
 from slayer.pg_facade import types as t
@@ -29,12 +29,12 @@ from slayer.pg_facade.protocol import (
 @pytest.mark.parametrize(
     "dt_,oid",
     [
-        (DataType.TEXT, OID_TEXT),
-        (DataType.INT, OID_INT8),
-        (DataType.DOUBLE, OID_FLOAT8),
+        (DataType.STRING, OID_TEXT),
+        (DataType.INTEGER, OID_INT8),
+        (DataType.FLOAT, OID_FLOAT8),
         (DataType.BOOLEAN, OID_BOOL),
         (DataType.DATE, OID_DATE),
-        (DataType.TIMESTAMP, OID_TIMESTAMP),
+        (DataType.DATETIME, OID_TIMESTAMP),
     ],
 )
 def test_datatype_to_oid(dt_, oid) -> None:
@@ -49,14 +49,14 @@ def test_query_result_oid_overridden_by_cast() -> None:
     """End-to-end: a CAST(<DATE col> AS TIMESTAMP) translation
     yields a projection_types entry that maps to OID_TIMESTAMP, not the
     column's declared OID_DATE."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="delivered_at", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="delivered_at", datatype=DataType.DATE),
         ],
     )
-    catalog = build_catalog(models_by_datasource={"jaffle": [orders]})
+    catalog = build_catalog(datasets_by_datasource={"jaffle": [orders]})
 
     # Baseline: bare projection → OID_DATE.
     bare = translate(sql="SELECT delivered_at FROM orders", catalog=catalog)

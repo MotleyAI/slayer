@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1838_fixtures import (
-    ModelMeasure,
     OrderItem,
-    dev1838_models,
+    dev1838_datasets,
     month_td,
     q,
 )
@@ -31,39 +32,39 @@ def _cases() -> dict:
     return {
         "fuse/plain_hidden_order": q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
-            order=[OrderItem.model_validate({"column": "avg(amount)", "direction": "desc"})],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            order=[OrderItem.model_validate({"field": "avg(amount)", "direction": "desc"})],
         ),
         "fuse/post_filter_on_transform": q(
             dimensions=["status"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="cumsum(sum(amount))", name="x"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="cumsum(sum(amount))", alias="x"),
             ],
-            filters=["cumsum(sum(amount)) > 50"],
+            filter=["cumsum(sum(amount)) > 50"],
         ),
         "fuse/multi_alias": q(
             dimensions=["status"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m1"),
-                ModelMeasure(formula="sum(amount)", name="m2"),
+            metrics=[
+                QueryMetric(metric="sum(amount)", alias="m1"),
+                QueryMetric(metric="sum(amount)", alias="m2"),
             ],
         ),
         "fuse/dim_only_dedup": q(dimensions=["region", "city"]),
         "fuse/scalar_local": q(
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         ),
         "fuse/scalar_cm_spine": q(
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm")],
         ),
     }
 
 
 async def _generate_one(query, dialect: str):
-    models = dev1838_models()
+    models = dev1838_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

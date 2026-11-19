@@ -18,19 +18,19 @@ import pytest
 from tests._dev1892_fixtures import assert_ref_free
 from tests._dev1900_fixtures import (
     AMOUNT_SUM,
-    ModelMeasure,
     POP_FILTER_DERIVED_ASSOC,
     POP_FILTER_STRUCTURAL_ASSOC,
     TO_ONE_FILTER_AMOUNT,
     cust_q,
     make_exec_engine,
     orders_q,
-    unparseable_derived_models,
+    unparseable_derived_datasets,
 )
+from slayer.core.query import QueryMetric
 
 MODES = ["broadcast", "associate", "error"]
-SPEND_SUM_LOCAL = ModelMeasure(formula="sum(spend)", name="w")   # local on customers
-ORDERS_AMOUNT_PRODUCER = ModelMeasure(formula="sum(orders.amount)", name="oa")  # cross-model producer
+SPEND_SUM_LOCAL = QueryMetric(metric="sum(spend)", alias="w")   # local on customers
+ORDERS_AMOUNT_PRODUCER = QueryMetric(metric="sum(orders.amount)", alias="oa")  # cross-model producer
 
 #: producer-only orders.amount:sum over ok orders = 82 (EXISTS pushdown, no guard).
 PRODUCER_ONLY_AMOUNT = 82.0
@@ -44,7 +44,7 @@ async def engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_engine(request):
-    async for e in make_exec_engine(request, models=unparseable_derived_models()):
+    async for e in make_exec_engine(request, datasets=unparseable_derived_datasets()):
         yield e
 
 
@@ -54,7 +54,7 @@ class TestFanningPopulationFilterRestrictsByAssociation:
         """Rooted at customers, filtered on orders.status across the 1:N
         customers→orders hop, with the local spend:sum: 420, each once."""
         resp = await engine.execute(cust_q(
-            measures=[SPEND_SUM_LOCAL], filters=["orders.status = 'ok'"],
+            metrics=[SPEND_SUM_LOCAL], filter=["orders.status = 'ok'"],
             to_many_handling=mode))
         assert float(resp.data[0]["customers.w"]) == pytest.approx(
             POP_FILTER_STRUCTURAL_ASSOC)
@@ -64,7 +64,7 @@ class TestFanningPopulationFilterRestrictsByAssociation:
         """Rooted at orders, filtered on the derived regions.bad_pop across the
         1:N regions→region_events hop, with the local amount:sum: 120."""
         resp = await engine.execute(orders_q(
-            measures=[AMOUNT_SUM], filters=["customers.regions.bad_pop > 0"],
+            metrics=[AMOUNT_SUM], filter=["customers.regions.bad_pop > 0"],
             to_many_handling=mode))
         assert float(resp.data[0]["orders.amt"]) == pytest.approx(
             POP_FILTER_DERIVED_ASSOC)
@@ -76,7 +76,7 @@ class TestFanningPopulationFilterRestrictsByAssociation:
         association, so tiers gold and silver survive without fanning."""
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
-            filters=["orders.status = 'ok'", "sum(spend) > 1"],
+            filter=["orders.status = 'ok'", "sum(spend) > 1"],
             to_many_handling=mode))
         assert {r["customers.tier"] for r in resp.data} == {"gold", "silver"}
 
@@ -87,7 +87,7 @@ class TestUnanalyzableStillFailsClosed:
         """A filter on a derived column no dialect can analyse fails closed with a
         typed error, never routed as if it crossed nothing."""
         q = orders_q(
-            measures=[AMOUNT_SUM], filters=["customers.regions.unparseable > 0"],
+            metrics=[AMOUNT_SUM], filter=["customers.regions.unparseable > 0"],
             to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
@@ -99,17 +99,17 @@ class TestUnanalyzableStillFailsClosed:
 class TestToOneFilterStaysInline:
     async def test_to_one_filter_executes(self, engine):
         resp = await engine.execute(orders_q(
-            measures=[AMOUNT_SUM], filters=["customers.tier = 'gold'"]))
+            metrics=[AMOUNT_SUM], filter=["customers.tier = 'gold'"]))
         assert float(resp.data[0]["orders.amt"]) == pytest.approx(TO_ONE_FILTER_AMOUNT)
 
 
 class TestUnaffectedShapes:
     async def test_dimension_only_query_unaffected(self, engine):
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filters=["orders.status = 'ok'"]))
+            dimensions=["tier"], filter=["orders.status = 'ok'"]))
         assert {r["customers.tier"] for r in resp.data} == {"gold", "silver"}
 
     async def test_producer_only_query_unaffected(self, engine):
         resp = await engine.execute(cust_q(
-            measures=[ORDERS_AMOUNT_PRODUCER], filters=["orders.status = 'ok'"]))
+            metrics=[ORDERS_AMOUNT_PRODUCER], filter=["orders.status = 'ok'"]))
         assert float(resp.data[0]["customers.oa"]) == pytest.approx(PRODUCER_ONLY_AMOUNT)

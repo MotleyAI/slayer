@@ -11,7 +11,7 @@ docker compose up -d
 
 This starts:
 - **Postgres** (port 5433) with sample e-commerce data
-- **SLayer API** (port 5143) with auto-ingested models
+- **SLayer API** (port 5143) with auto-ingested datasets
 
 ## Try It
 
@@ -19,23 +19,23 @@ This starts:
 # Health check
 curl http://localhost:5143/health
 
-# List models
-curl http://localhost:5143/models
+# List datasets
+curl http://localhost:5143/datasets
 
 # Query: orders by status
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}'
+  -d '{"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}'
 
-# Query: orders by product category (rollup join)
+# Query: orders by product category (rollup relationship)
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["products.category"]}'
+  -d '{"population": "orders", "metrics": ["count(*)"], "dimensions": ["products.category"]}'
 
 # Query: orders by region (transitive rollup)
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["regions.name"]}'
+  -d '{"population": "orders", "metrics": ["count(*)"], "dimensions": ["regions.name"]}'
 ```
 
 ## Verify

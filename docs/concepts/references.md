@@ -6,36 +6,36 @@ SLayer has two distinct expression layers and the rules for what each one accept
 
 | Mode | Fields | Parser | Accepts | Rejects |
 |---|---|---|---|---|
-| **A — SQL** | `Column.sql`, `Column.filter`, each entry of `SlayerModel.filters` | sqlglot | Any valid SQL expression for the underlying dialect — function calls (`json_extract`, `coalesce`, `nullif`, `lower`, `length`, …), arithmetic, `CASE WHEN`, string literals, comparison and boolean operators in SQL spelling (`=`, `<>`, `IS NULL`, `AND`, `OR`, `NOT`, `IN`, `LIKE`). Bare names and dotted join paths (`customers.regions.name`). | Aggregations (`sum(revenue)`); SLayer transform calls (`cumsum`, `change`, `rank`, …); references to `ModelMeasure` formulas; raw `OVER (...)` window functions inside `Column.filter` / `SlayerModel.filters` (allowed only in `Column.sql`); the legacy `__`-delimited split-alias qualifier (`customers__regions.name`) — now a hard error (`LegacyDunderAliasError`). |
-| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | SQL-compatible grammar | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `sum(customers.revenue)`); aggregations (`sum(revenue)`, `count(*)`, `percentile(price, p=0.9)`, parametric forms), including row-level expression sources over the model and its to-one joins (`sum(amount - customers.discount)`); transform calls (`cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region, direction='desc')`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); SQL forms — `CASE`, `CAST` / `TRY_CAST` / `::`, `BETWEEN`, `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE` / `IS [NOT] FALSE` (NULL is neither), `[NOT] LIKE` / `ILIKE`, the regex operators `~` / `~*` / `!~` / `!~*`, the JSON arrows `->` / `->>`, `EXTRACT`, `POSITION`, `SUBSTRING … FROM … FOR`, `INTERVAL` / `DATE` / `TIMESTAMP` literals, `CURRENT_DATE`, `FILTER (WHERE …)`, plus the `like(value, pattern)` / `ilike(value, pattern)` scalars; the [portable function library](#the-portable-function-library) (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), the conditional `iif(cond, then, else)`, math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`, `div`, `pi`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `cbrt`), scalar min/max (`greatest`, `least`), strings (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr` / `strpos`, `length`, `concat`, `left`, `right`, `starts_with`, `ends_with`, `contains`, `lpad`, `rpad`, `reverse`, `repeat`, `split_part`, `concat_ws`, `chr`, `ascii`), regex (`regexp_like`, `regexp_extract`, `regexp_replace`), JSON (`json_value` and its aliases `json_extract`, `json_extract_scalar`, `json_extract_path_text`, `jsonb_extract_path_text`), [lists](#lists) (`contains` and `length` over a list, `contains_any`, `contains_all`, the array literal `['a', 'b']`), `like`, and [date functions](#date-and-time-functions) (`date_part`, `date_diff`, `date_add`, `date_trunc`, `current_date`, `now`), each with a declared argument count that is validated (`coalesce`, `concat`, `concat_ws`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders supplying literal values. | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that library (`initcap`, `to_date`, `strftime`, JSON builders, …), and any library call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below); `\|` (use `\|\|`), `//` (use `div(a, b)` or `floor(a / b)`), `TRIM(BOTH \| LEADING \| TRAILING …)` (use `trim` / `ltrim` / `rtrim`), two-argument scalar `min` / `max` (use `least` / `greatest`), `SIMILAR TO`, `REGEXP` / `RLIKE` (use `~`), a bare `->` (end the chain with `->>`), `TIME '…'` literals. |
+| **A — SQL** | `DatasetField.sql`, `DatasetField.filter`, each entry of `SlayerDataset.filters` | sqlglot | Any valid SQL expression for the underlying dialect — function calls (`json_extract`, `coalesce`, `nullif`, `lower`, `length`, …), arithmetic, `CASE WHEN`, string literals, comparison and boolean operators in SQL spelling (`=`, `<>`, `IS NULL`, `AND`, `OR`, `NOT`, `IN`, `LIKE`). Bare names and dotted relationship paths (`customers.regions.name`). | Aggregations (`sum(revenue)`); SLayer transform calls (`cumsum`, `change`, `rank`, …); references to `DatasetMetric` expressions; raw `OVER (...)` window functions inside `DatasetField.filter` / `SlayerDataset.filters` (allowed only in `DatasetField.sql`); the legacy `__`-delimited split-alias qualifier (`customers__regions.name`) — now a hard error (`LegacyDunderAliasError`). |
+| **B — DSL** | `DatasetMetric.expression`, `SlayerQuery.metrics`, `SlayerQuery.filter`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | SQL-compatible grammar | Bare names that resolve to a `DatasetField` or `DatasetMetric` on the dataset; single-dot dotted paths through relationships (`customers.regions.name`, `sum(customers.revenue)`); aggregations (`sum(revenue)`, `count(*)`, `percentile(price, p=0.9)`, parametric forms), including row-level expression sources over the dataset and its to-one relationships (`sum(amount - customers.discount)`); transform calls (`cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region, direction='desc')`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); SQL forms — `CASE`, `CAST` / `TRY_CAST` / `::`, `BETWEEN`, `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE` / `IS [NOT] FALSE` (NULL is neither), `[NOT] LIKE` / `ILIKE`, the regex operators `~` / `~*` / `!~` / `!~*`, the JSON arrows `->` / `->>`, `EXTRACT`, `POSITION`, `SUBSTRING … FROM … FOR`, `INTERVAL` / `DATE` / `TIMESTAMP` literals, `CURRENT_DATE`, `FILTER (WHERE …)`, plus the `like(value, pattern)` / `ilike(value, pattern)` scalars; the [portable function library](#the-portable-function-library) (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), the conditional `iif(cond, then, else)`, math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`, `div`, `pi`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `cbrt`), scalar min/max (`greatest`, `least`), strings (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr` / `strpos`, `length`, `concat`, `left`, `right`, `starts_with`, `ends_with`, `contains`, `lpad`, `rpad`, `reverse`, `repeat`, `split_part`, `concat_ws`, `chr`, `ascii`), regex (`regexp_like`, `regexp_extract`, `regexp_replace`), JSON (`json_value` and its aliases `json_extract`, `json_extract_scalar`, `json_extract_path_text`, `jsonb_extract_path_text`), [lists](#lists) (`contains` and `length` over a list, `contains_any`, `contains_all`, the array literal `['a', 'b']`), `like`, and [date functions](#date-and-time-functions) (`date_part`, `date_diff`, `date_add`, `date_trunc`, `current_date`, `now`), each with a declared argument count that is validated (`coalesce`, `concat`, `concat_ws`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders supplying literal values. | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that library (`initcap`, `to_date`, `strftime`, JSON builders, …), and any library call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a DatasetField / DatasetMetric / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below); `\|` (use `\|\|`), `//` (use `div(a, b)` or `floor(a / b)`), `TRIM(BOTH \| LEADING \| TRAILING …)` (use `trim` / `ltrim` / `rtrim`), two-argument scalar `min` / `max` (use `least` / `greatest`), `SIMILAR TO`, `REGEXP` / `RLIKE` (use `~`), a bare `->` (end the chain with `->>`), `TIME '…'` literals. |
 
 ## Identifier resolution
 
-### SQL mode (`Column.sql`, `Column.filter`, `SlayerModel.filters`)
+### SQL mode (`DatasetField.sql`, `DatasetField.filter`, `SlayerDataset.filters`)
 
-* A bare identifier `col` resolves to the column named `col` on the underlying table or SQL of this model.
-* A join path is written with **dots**: `a.b.c.col` walks `model → a → b → c` and resolves the leaf column `col` on the final model. Dots separate join hops; the leaf column follows the final dot. The generated SQL emits this walk with a `__`-delimited internal table alias (`LEFT JOIN … AS a__b__c`), but that spelling is an emitted-SQL detail you never write. A `__` token in a qualifier is treated as part of **one exact name**, never split into a hop walk — `customers__region.label` means "the directly-joined model literally named `customers__region`, column `label`". The legacy `__`-delimited split-alias input form (`customers__regions.name` meant as a `customers → regions` walk) is a hard error (`LegacyDunderAliasError`), not auto-converted. The flattened form `a__b__c__col` appears only inside virtual-model column names produced by the query-backed model wrap (see below).
-* A path segment resolves as an incident **edge name first, then a neighbour model name**, and traverses the edge in **either direction** (any declared join is reachable in reverse — see [Bidirectional traversal](models.md#bidirectional-traversal)); a hop spanned by two or more edges fails closed unless an edge-name segment disambiguates it. A named edge's hop is canonically spelled by its edge name, so result keys use it whichever spelling is typed.
+* A bare identifier `col` resolves to the column named `col` on the underlying table or SQL of this dataset.
+* A relationship path is written with **dots**: `a.b.c.col` walks `dataset → a → b → c` and resolves the leaf field `col` on the final dataset. Dots separate relationship hops; the leaf field follows the final dot. The generated SQL emits this walk with a `__`-delimited internal table alias (`LEFT JOIN … AS a__b__c`), but that spelling is an emitted-SQL detail you never write. A `__` token in a qualifier is treated as part of **one exact name**, never split into a hop walk — `customers__region.label` means "the directly-joined dataset literally named `customers__region`, field `label`". The legacy `__`-delimited split-alias input form (`customers__regions.name` meant as a `customers → regions` walk) is a hard error (`LegacyDunderAliasError`), not auto-converted. The flattened form `a__b__c__col` appears only inside virtual-dataset column names produced by the query-backed dataset wrap (see below).
+* A path segment resolves as an incident **edge name first, then a neighbour dataset name**, and traverses the edge in **either direction** (any declared relationship is reachable in reverse — see [Bidirectional traversal](models.md#bidirectional-traversal)); a hop spanned by two or more edges fails closed unless an edge-name segment disambiguates it. A named edge's hop is canonically spelled by its edge name, so result keys use it whichever spelling is typed.
 * Single-dot `t.col` is a literal `<table>.<column>` SQL reference (sqlglot's normal behavior).
 * Multi-dot input (`a.b.c`) stays dotted through to resolution — there is no `__` rewrite (the old dotted→`__` normalization is retired).
-* Other derived columns of the same model (or of a joined model via a dotted join path) are recursively expanded so chains like `A.ratio = "A.bar / B.foo_normalized"` (where `B.foo_normalized` is itself derived) work.
-* A subquery in a Mode-A surface (`col IN (SELECT … FROM other)`, a scalar `= (SELECT … LIMIT 1)`) must be **self-contained**: its own columns bind against the subquery's own `FROM`, never against this model — reference resolution does not reach in to re-qualify them. Correlating back to the outer model is **not** supported (an outer reference inside the subquery is a scope leak, flagged by the scope-closure check SLayer runs over generated SQL under `SLAYER_VALIDATE_SCOPES`).
-* `ModelMeasure` names are not visible from SQL mode — saved measures are DSL-only.
-* `{variable}` placeholders are substituted into these Mode-A surfaces from the merged variable set (raise-on-missing once any variable is in play; a fully variable-free execution leaves braces as literals; Mode-A- and dialect-aware string escaping, so quoted values round-trip on backslash-escaping backends like MySQL/ClickHouse). See [Variables in model SQL](models.md#variables-in-model-sql).
+* Other derived fields of the same dataset (or of a joined dataset via a dotted relationship path) are recursively expanded so chains like `A.ratio = "A.bar / B.foo_normalized"` (where `B.foo_normalized` is itself derived) work.
+* A subquery in a Mode-A surface (`col IN (SELECT … FROM other)`, a scalar `= (SELECT … LIMIT 1)`) must be **self-contained**: its own columns bind against the subquery's own `FROM`, never against this dataset — reference resolution does not reach in to re-qualify them. Correlating back to the outer dataset is **not** supported (an outer reference inside the subquery is a scope leak, flagged by the scope-closure check SLayer runs over generated SQL under `SLAYER_VALIDATE_SCOPES`).
+* `DatasetMetric` names are not visible from SQL mode — saved metrics are DSL-only.
+* `{variable}` placeholders are substituted into these Mode-A surfaces from the merged variable set (raise-on-missing once any variable is in play; a fully variable-free execution leaves braces as literals; Mode-A- and dialect-aware string escaping, so quoted values round-trip on backslash-escaping backends like MySQL/ClickHouse). See [Variables in dataset SQL](models.md#variables-in-dataset-sql).
 
-### DSL mode (queries + `ModelMeasure.formula`)
+### DSL mode (queries + `DatasetMetric.expression`)
 
-* A bare name must resolve to a `Column`, a `ModelMeasure`, or a custom `Aggregation` defined on the model. Filters additionally accept query-level measure / transform / expression aliases, and synthesised canonical agg names like `revenue_sum`.
-* `{variable}` placeholders bind literal values in every Mode-B expression — measures, filters, computed and time dimensions, `date_range` bounds, order and saved measure formulas.
-* A single-dot dotted path walks the join graph: `customers.regions.name` traverses `model → customers → regions` and resolves `name` on the regions model. Multi-hop is supported. Each segment resolves as an incident **edge name first, then a neighbour model name**, in **either direction** ([bidirectional traversal](models.md#bidirectional-traversal)); an ambiguous hop (parallel edges, no edge-name segment) fails closed naming the candidates.
-* A reference may start with the query root's own name — a model, or a stage by its name in the query list (`sum(orders.amount)` from `orders` is `sum(amount)`); the root wins over a join spelled the same.
-* A **short form** naming only the target model and column (`regions.name`) auto-routes to its full path when the target is reached by exactly one route — or, among several, exactly one fan-out-free route — surfacing under that full routed path; an ambiguous or unreachable target is rejected (`UnresolvableDimensionJoinError`) with a suggested path, and a broken explicit chain is never silently repaired.
-* Aggregations: `<agg>(<col>)` (e.g. `sum(revenue)`), `count(*)`, `<agg>(<col>, <args>)` (e.g. `weighted_avg(price, weight=quantity)`), and `<agg>(<dotted.path>)` for cross-model aggregations — see [Aggregation syntax](#aggregation-syntax).
+* A bare name must resolve to a `DatasetField`, a `DatasetMetric`, or a custom `Aggregation` defined on the dataset. Filters additionally accept query-level metric / transform / expression aliases, and synthesised canonical agg names like `revenue_sum`.
+* `{variable}` placeholders bind literal values in every Mode-B expression — metrics, filters, computed and time dimensions, `date_range` bounds, order and saved metric expressions.
+* A single-dot dotted path walks the relationship graph: `customers.regions.name` traverses `dataset → customers → regions` and resolves `name` on the regions dataset. Multi-hop is supported. Each segment resolves as an incident **edge name first, then a neighbour dataset name**, in **either direction** ([bidirectional traversal](models.md#bidirectional-traversal)); an ambiguous hop (parallel edges, no edge-name segment) fails closed naming the candidates.
+* A reference may start with the query root's own name — a dataset, or a stage by its name in the query list (`sum(orders.amount)` from `orders` is `sum(amount)`); the root wins over a relationship spelled the same.
+* A **short form** naming only the target dataset and field (`regions.name`) auto-routes to its full path when the target is reached by exactly one route — or, among several, exactly one fan-out-free route — surfacing under that full routed path; an ambiguous or unreachable target is rejected (`UnresolvableDimensionRelationshipError`) with a suggested path, and a broken explicit chain is never silently repaired.
+* Aggregations: `<agg>(<col>)` (e.g. `sum(revenue)`), `count(*)`, `<agg>(<col>, <args>)` (e.g. `weighted_avg(price, weight=quantity)`), and `<agg>(<dotted.path>)` for cross-dataset aggregations — see [Aggregation syntax](#aggregation-syntax).
 * Transform calls wrap aggregated refs: `cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region, direction='desc')`, `change(sum(customers.revenue))`, etc.
-* A `__` token in a name is matched by **exact name**, not split into a join walk — write a single-dot DSL path (`customers.region`) for a join. Only the reserved `__slayer_` prefix is rejected.
+* A `__` token in a name is matched by **exact name**, not split into a relationship walk — write a single-dot DSL path (`customers.region`) for a relationship. Only the reserved `__slayer_` prefix is rejected.
 * Strings are single-quoted with `''` for an embedded quote and a backslash is an ordinary character (`'O''Brien'`, `'C:\temp'`), while a double-quoted name is an identifier (`sum("order total")`, `customers."Region"`) with `""` for an embedded double quote; an unresolved double-quoted name gets a hint to single-quote a string.
-* A bare name matches in any case and a double-quoted one exactly; when two declared names differ only in case, the exact spelling wins and any other spelling is an error naming both (`"Revenue"` / `"revenue"` pick one). Keywords and function, aggregation and transform names match in any case (`SUM(amount)` is `sum(amount)`), and `agg` is reserved: it is never a function or an aggregation name, though a column or measure may be named `agg`.
-* Inside an aggregation or transform call, `name = value` is a keyword argument when `name` is one of the call's parameters (`weighted_avg(amount, weight = qty)`, `time_shift(x, periods = -1)`) and a comparison otherwise (`sum(status = 'paid')` counts the paid rows); parenthesise or double-quote the left side to compare a column named like a parameter (`sum((weight = 1))`), and a scalar function's arguments are always values (`iif(status = 'paid', 1, 0)`).
+* A bare name matches in any case and a double-quoted one exactly; when two declared names differ only in case, the exact spelling wins and any other spelling is an error naming both (`"Revenue"` / `"revenue"` pick one). Keywords and function, aggregation and transform names match in any case (`SUM(amount)` is `sum(amount)`), and `agg` is reserved: it is never a function or an aggregation name, though a field or metric may be named `agg`.
+* Inside an aggregation or transform call, `name = value` is a keyword argument when `name` is one of the call's parameters (`weighted_avg(amount, weight = qty)`, `time_shift(x, periods = -1)`) and a comparison otherwise (`sum(status = 'paid')` counts the paid rows); parenthesise or double-quote the left side to compare a field named like a parameter (`sum((weight = 1))`), and a scalar function's arguments are always values (`iif(status = 'paid', 1, 0)`).
 * A syntax error reports its column (`syntax error at column 12`), and a malformed `CASE` names the missing keyword (`THEN`, `END`).
 * `CAST(x AS type)` and `x::type` are the database's own cast of the type you write, while `TRY_CAST(x AS type)` yields NULL for an input it cannot convert, except that Postgres older than 16 (or of unknown version) gets a plain `CAST` and MariaDB and a MySQL server reporting a version before 8.0 refuse `TRY_CAST` to a number at plan time.
 * A cast's type follows its target's name — integer names INT, `DECIMAL` / `NUMERIC` / float names DOUBLE, character names TEXT, `BOOLEAN`, `DATE`, timestamp names TIMESTAMP, anything else UNKNOWN — and type parameters and chained casts are kept as written (`CAST(x AS DECIMAL(10,2))`, `x::INT::TEXT`), while a type the database cannot express (`MONEY` on DuckDB) is a plan-time `CastTypeError`.
@@ -51,12 +51,12 @@ An aggregation is written `agg(col)` or `agg(col, args)` — for example
 `sum(revenue)`, `percentile(price, p=0.9)`, `sum(revenue, window='90d')`,
 `sum(amount, partition_by=city)`, `last(balance, updated_at)`,
 `weighted_avg(price, weight=quantity)`, `my_custom_agg(price)`. `*` counts
-rows: `count(*)`, `count(customers.*)`, and a bare column counts non-null
+rows: `count(*)`, `count(customers.*)`, and a bare field counts non-null
 values: `count(customers.regions.name)`. This holds in **every** position that
-accepts aggregations (query measures, filters, order, model measures, model
-extensions, inline models, multi-stage formulas, computed-dimension
+accepts aggregations (query metrics, filters, order, dataset metrics, dataset
+extensions, multi-stage expressions, computed-dimension
 expressions, transform and arithmetic operands) and for **every** aggregation
-— builtin, aliased (`countD(x)` = `count_distinct(x)`), and model-defined
+— builtin, aliased (`countD(x)` = `count_distinct(x)`), and dataset-defined
 custom aggregations. Declared parameters may be passed positionally in
 declaration order — `percentile(price, 0.9)` means `p=0.9` (`first`/`last`
 keep their positional ranking key instead). An aggregation that declares no
@@ -64,61 +64,61 @@ parameters takes no positional value at all, and `first`/`last` at most one —
 their ranking key, a row-level expression (`last(balance, updated_at)`,
 `last(balance, CAST(updated_at AS DATE))`), never a literal or a nested aggregate.
 
-Naming and matching read the parse tree, not the text: a measure declared
-`{"formula": "sum(revenue)", "name": "rev"}` is matched by a filter written
+Naming and matching read the parse tree, not the text: a metric declared
+`{"metric": "sum(revenue)", "alias": "rev"}` is matched by a filter written
 `sum(revenue) > 100`, and the result key is `revenue_sum` either way.
 
 Disambiguation rules:
 
 * `first` / `last` are both aggregations and transforms: a call whose first
   argument resolves to a row-level value is the aggregation (`last(balance)`),
-  one whose argument resolves to aggregated values — including a saved measure —
+  one whose argument resolves to aggregated values — including a saved metric —
   is the transform (`last(sum(revenue))`, `last(rev)`).
 * An unknown call name whose first argument is aggregatable defers to binding
   — custom aggregations resolve there, and genuinely unknown names get the
   "Unknown function" error.
 * Scalar-allowlist names always stay scalar calls (`round(price)` is the
   scalar); a custom aggregation may not shadow a scalar-function name
-  (rejected at model validation).
+  (rejected at dataset validation).
 * SQL's `DISTINCT` keyword is accepted only as `count(distinct user_id)`, which
   means `count_distinct(user_id)`.
-* Mode-A surfaces are unchanged — `SUM(amount)` inside `Column.sql` stays raw
+* Mode-A surfaces are unchanged — `SUM(amount)` inside `DatasetField.sql` stays raw
   SQL.
 
-An aggregation also accepts a row-level **expression** over its model and its to-one joins as its value —
+An aggregation also accepts a row-level **expression** over its dataset and its to-one relationships as its value —
 `sum(amount - cost)`, `sum(amount - customers.discount)`. See [Expression aggregation](formulas.md#expression-aggregation).
 
 ## `__` in identifiers
 
-`__` is a legal character in model / query / column / measure names, matched by **exact name**. A model can be named `customers__region`, and a Mode-A qualifier `customers__region.label` binds to that exact directly-joined model — it is never split into a `customers → region` walk. Dots are the only join-hop separator, so there is no ambiguity between a multi-token name and a join path.
+`__` is a legal character in dataset / query / field / metric names, matched by **exact name**. A dataset can be named `customers__region`, and a Mode-A qualifier `customers__region.label` binds to that exact directly-joined dataset — it is never split into a `customers → region` walk. Dots are the only relationship-hop separator, so there is no ambiguity between a multi-token name and a relationship path.
 
-The one reserved spelling is the **`__slayer_` prefix**: model / column / measure names and Mode-B tokens beginning with `__slayer_` are rejected, since that namespace is reserved for SLayer-internal identifiers.
+The one reserved spelling is the **`__slayer_` prefix**: dataset / field / metric names and Mode-B tokens beginning with `__slayer_` are rejected, since that namespace is reserved for SLayer-internal identifiers.
 
-The query-backed model wrap (`_expand_query_backed_model`, via `flat_name` in `slayer/sql/naming.py`) still flattens joined-model columns into virtual-model column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table. A downstream stage references such a column by that exact flattened name; strict resolution at binding time raises `ReferenceError` for any bare name that doesn't resolve to a `Column` / `ModelMeasure` / custom aggregation / canonical agg alias / query-level alias on the source model.
+The query-backed dataset wrap (`_expand_query_backed_dataset`, via `flat_name` in `slayer/sql/naming.py`) still flattens joined-dataset fields into virtual-dataset column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table. A downstream stage references such a column by that exact flattened name; strict resolution at binding time raises `ReferenceError` for any bare name that doesn't resolve to a `DatasetField` / `DatasetMetric` / custom aggregation / canonical agg alias / query-level alias on the source dataset.
 
 ## Reference-resolution rules at a glance
 
-1. **Model-side filters** (`Column.filter`, `SlayerModel.filters`) use a sqlglot-based SQL-mode parser, so they accept arbitrary SQL function calls (`json_extract`, `coalesce`, `CASE WHEN`, …) — matching the spec that "models are the boundary that lifts raw SQL tables into the SLayer DSL".
+1. **Dataset-side filters** (`DatasetField.filter`, `SlayerDataset.filters`) use a sqlglot-based SQL-mode parser, so they accept arbitrary SQL function calls (`json_extract`, `coalesce`, `CASE WHEN`, …) — matching the spec that "datasets are the boundary that lifts raw SQL tables into the SLayer DSL".
 
-2. **Query-side filters** strict-resolve at enrichment time: any bare name that isn't a `Column` / `ModelMeasure` / custom aggregation / query alias / canonical-agg synthesis raises a clear error.
+2. **Query-side filters** strict-resolve at enrichment time: any bare name that isn't a `DatasetField` / `DatasetMetric` / custom aggregation / query alias / canonical-agg synthesis raises a clear error.
 
-3. **No predicate promotion.** A query filter that names a windowed `Column` raises with a suggestion to use a rank-family transform (`rank` / `percent_rank` / `dense_rank` / `ntile`) or a multi-stage `source_queries` model. The rank-family transforms cover top-N filtering in pure DSL.
+3. **No predicate promotion.** A query filter that names a windowed `DatasetField` raises with a suggestion to use a rank-family transform (`rank` / `percent_rank` / `dense_rank` / `ntile`) or a multi-stage `source_queries` dataset. The rank-family transforms cover top-N filtering in pure DSL.
 
-4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; join walks live in the binder (`slayer/engine/binding.py`), which resolves each hop against the resolved source bundle.
+4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; relationship walks live in the binder (`slayer/engine/binding.py`), which resolves each hop against the resolved source bundle.
 
 ## Examples — accepted and rejected
 
-### `Column.filter` (SQL mode)
+### `DatasetField.filter` (SQL mode)
 
-Accepted at `Column` construction:
+Accepted at `DatasetField` construction:
 
 ```json
-{"name": "active_amount", "sql": "amount", "filter": "json_extract(metadata, '$.active') = 1", "type": "DOUBLE"}
-{"name": "amt", "sql": "amount", "filter": "CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1", "type": "DOUBLE"}
-{"name": "amt", "sql": "amount", "filter": "customers.regions.name = 'US'", "type": "DOUBLE"}
+{"name": "active_amount", "sql": "amount", "filter": "json_extract(metadata, '$.active') = 1", "datatype": "Float"}
+{"name": "amt", "sql": "amount", "filter": "CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1", "datatype": "Float"}
+{"name": "amt", "sql": "amount", "filter": "customers.regions.name = 'US'", "datatype": "Float"}
 ```
 
-Rejected at `Column` construction:
+Rejected at `DatasetField` construction:
 
 ```json
 {"name": "x", "sql": "amount", "filter": "sum(revenue) > 100"}        // DSL aggregation
@@ -126,61 +126,61 @@ Rejected at `Column` construction:
 {"name": "x", "sql": "amount", "filter": "row_number() over (...)"}  // raw OVER
 ```
 
-### `SlayerQuery.filters` (DSL mode)
+### `SlayerQuery.filter` (DSL mode)
 
 Accepted at `SlayerQuery` construction:
 
 ```json
-{"source_model": "orders", "filters": ["sum(revenue) > 100"]}
-{"source_model": "orders", "filters": ["change(sum(revenue)) > 0"]}
-{"source_model": "orders", "filters": ["customers.region = 'EU'"]}
-{"source_model": "orders", "filters": ["status = '{val}'"], "variables": {"val": "active"}}
+{"population": "orders", "filter": ["sum(revenue) > 100"]}
+{"population": "orders", "filter": ["change(sum(revenue)) > 0"]}
+{"population": "orders", "filter": ["customers.region = 'EU'"]}
+{"population": "orders", "filter": ["status = '{val}'"], "variables": {"val": "active"}}
 ```
 
 Rejected at `SlayerQuery` construction:
 
 <!-- docs-guard: skip -->
 ```json
-{"source_model": "orders", "filters": ["row_number() over (...)"]}    // raw OVER
+{"population": "orders", "filter": ["row_number() over (...)"]}    // raw OVER
 ```
 
 Rejected at enrichment:
 
 ```json
-{"source_model": "orders", "dimensions": ["id"], "filters": ["initcap(name) = 'Ada'"]}
+{"population": "orders", "dimensions": ["id"], "filter": ["initcap(name) = 'Ada'"]}
 // ↑ UnknownFunctionError: raw SQL function calls outside the library in DSL mode
 
-{"source_model": "orders", "dimensions": ["id"], "filters": ["unknown_col > 0"]}
-// ↑ ReferenceError: 'unknown_col' is not a Column / ModelMeasure on 'orders'
+{"population": "orders", "dimensions": ["id"], "filter": ["unknown_col > 0"]}
+// ↑ ReferenceError: 'unknown_col' is not a DatasetField / DatasetMetric on 'orders'
 
-{"source_model": "orders", "dimensions": ["id"], "filters": ["customers__region = 'EU'"]}
-// ↑ ReferenceError: no Column / ModelMeasure named 'customers__region' on 'orders'
-//   (`__` is matched by exact name, not split — for the join write dotted: 'customers.region')
+{"population": "orders", "dimensions": ["id"], "filter": ["customers__region = 'EU'"]}
+// ↑ ReferenceError: no DatasetField / DatasetMetric named 'customers__region' on 'orders'
+//   (`__` is matched by exact name, not split — for the relationship write dotted: 'customers.region')
 ```
 
-### `ModelMeasure.formula` (DSL mode)
+### `DatasetMetric.expression` (DSL mode)
 
 Accepted at construction:
 
 ```json
-{"name": "aov", "formula": "sum(revenue) / count(*)"}
-{"name": "cust_rev", "formula": "sum(customers.revenue)"}     // cross-model dotted path
-{"name": "resale", "formula": "customers.aov"}               // another model's SAVED measure
-{"name": "growth", "formula": "change(sum(revenue))"}         // transform on agg ref
+{"name": "aov", "expression": "sum(revenue) / count(*)"}
+{"name": "cust_rev", "expression": "sum(customers.revenue)"}     // cross-dataset dotted path
+{"name": "resale", "expression": "customers.aov"}               // another dataset's SAVED metric
+{"name": "growth", "expression": "change(sum(revenue))"}         // transform on agg ref
 ```
 
-Rejected at enrichment (when the formula is evaluated against a model):
+Rejected at enrichment (when the expression is evaluated against a dataset):
 
 ```json
-{"name": "bad", "formula": "initcap(name)"}                  // raw SQL fn
+{"name": "bad", "expression": "initcap(name)"}                  // raw SQL fn
 ```
 
-A bare `aov` or dotted `customers.aov` reuses a saved measure by expanding its formula inline, but only inside a measure formula or computed-dimension expression — see [Reusing another model's saved measure](models.md#reusing-another-models-saved-measure-customersaov).
+A bare `aov` or dotted `customers.aov` reuses a saved metric by expanding its expression inline, but only inside a metric expression or computed-dimension expression — see [Reusing another dataset's saved metric](models.md#reusing-another-datasets-saved-metric-customersaov).
 
 ## Scalar functions and dialect semantics
 
 The allowlisted scalars are rendered as typed SQL and then translated to each
-backend's own spelling, so one formula stays correct across dialects rather
+backend's own spelling, so one expression stays correct across dialects rather
 than being passed through verbatim. `length(x)` counts trailing spaces on SQL Server too (`LEN(CAST(x AS NVARCHAR(MAX)) + 'x') - 1`),
 `substr(x, 1, 5)` emits `SUBSTRING(x FROM 1 FOR 5)` on Postgres, and
 `ifnull(x, 0)` emits `COALESCE(x, 0)` on backends without `IFNULL`.
@@ -195,7 +195,7 @@ Five consequences worth knowing:
   behaviour:
 
     ```json
-    {"filters": ["concat(ifnull(first_name, ''), ifnull(last_name, '')) = 'AdaLovelace'"]}
+    {"filter": ["concat(ifnull(first_name, ''), ifnull(last_name, '')) = 'AdaLovelace'"]}
     ```
 
 * **`greatest` / `least` ignore `NULL` arguments on every backend** (NULL only when every argument is NULL); on SQL Server they need 2022 or later.
@@ -220,7 +220,7 @@ Five consequences worth knowing:
   differs across backends.
 
 * **Aliases render identically to their canonical spelling.** `ceiling` is
-  `ceil` and `substring` is `substr`; both spellings are accepted so a formula
+  `ceil` and `substring` is `substr`; both spellings are accepted so an expression
   written against either SQL convention binds, and both emit the target's own
   form.
 
@@ -228,7 +228,7 @@ Five consequences worth knowing:
 
 Every library function, operator and pattern language means the same on SQLite, Postgres, DuckDB, MySQL, ClickHouse, SQL Server, Trino, Snowflake and BigQuery — Postgres's value where databases disagree — and is verified on each of them; any other database runs only the functions it translates and refuses the rest at plan time ([support table](../database-support.md#portable-library-support)).
 
-* **Out-of-domain arguments yield `NULL`** (`asin(2)` over a column, `div(a, 0)`, a surrogate `chr`, `ln` / `log10` / `log2` / `log` of a value ≤ 0 or to a base ≤ 0 or 1, `sqrt` of a negative, `pow` / `power` of a negative base to a non-integer exponent or of 0 to a negative one), and a literal one is a plan-time error; an overflowing result (`exp(1000)`) is the database's own (infinity or an error).
+* **Out-of-domain arguments yield `NULL`** (`asin(2)` over a field, `div(a, 0)`, a surrogate `chr`, `ln` / `log10` / `log2` / `log` of a value ≤ 0 or to a base ≤ 0 or 1, `sqrt` of a negative, `pow` / `power` of a negative base to a non-integer exponent or of 0 to a negative one), and a literal one is a plan-time error; an overflowing result (`exp(1000)`) is the database's own (infinity or an error).
 * **Strings count characters, not bytes**; `left` / `right` with a negative count drop characters from the other end, `lpad` / `rpad` truncate, `split_part`'s index is a non-zero integer literal (negative from the end, `''` past it), `concat_ws` skips `NULL`s, `chr` / `ascii` speak Unicode code points; `div` truncates toward zero.
 * **`starts_with`, `ends_with`, `contains`, `strpos`, `replace` and `split_part`'s delimiter match literally**, case- and accent-sensitively whatever the column's collation, unlike `=` and `LIKE` ([string matching](#string-matching)).
 * **A version-gated function fails at plan time** when the server reports an older version: regex needs SQL Server 2025 and MySQL 8.0, `greatest` / `least` SQL Server 2022, `json_value` MySQL 8.0.21, numeric `TRY_CAST` MySQL 8.0; JSON reads and `TRY_CAST` return `NULL` on malformed input only on Postgres 16+.
@@ -258,7 +258,7 @@ Arithmetic on TEXT is typed DOUBLE, a `CAST` you write is never rewritten (it fa
 
 ### Lists
 
-Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` (the number of distinct elements) read only its non-NULL elements and are `NULL` only for a `NULL` argument, and an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context). [Database support](../database-support.md) names the databases that run lists.
+Over a [list field](queries.md#list-fields) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` (the number of distinct elements) read only its non-NULL elements and are `NULL` only for a `NULL` argument, and an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context). [Database support](../database-support.md) names the databases that run lists.
 
 ## Date and time functions
 
@@ -278,10 +278,10 @@ case-insensitively):
 
 ```json
 {
-  "source_model": "orders",
-  "dimensions": [{"expression": "date_part('day_of_week', created_at)", "name": "dow"}],
-  "measures": [{"formula": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "name": "age_days"}],
-  "filters": ["created_at >= date_add(current_date(), -30, 'day')"]
+  "population": "orders",
+  "dimensions": [{"field": "date_part('day_of_week', created_at)", "alias": "dow"}],
+  "metrics": [{"metric": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "alias": "age_days"}],
+  "filter": ["created_at >= date_add(current_date(), -30, 'day')"]
 }
 ```
 
@@ -299,11 +299,11 @@ case-insensitively):
 * **`interval` spelling.** `ts + interval(n, unit)`, `interval(n, unit) + ts` and
   `ts - interval(n, unit)` are exactly `date_add` (chains apply left to right), an `INTERVAL '…'`
   literal included; `interval` anywhere else is rejected.
-* **Typed operands.** Date operands must be DATE / TIMESTAMP: a column declared with that
-  `type`, `min`/`max`/`first`/`last` of one, a date function, the clock, an ISO literal, a
+* **Typed operands.** Date operands must be DATE / TIMESTAMP: a field declared with that
+  `datatype`, `min`/`max`/`first`/`last` of one, a date function, the clock, an ISO literal, a
   `DATE '…'` / `TIMESTAMP '…'` literal, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, or
   `coalesce` / `ifnull` / `nullif` / `greatest` / `least` / `iif` / `CASE` over those. Anything else
-  (a TEXT column, arithmetic, a number) is a type error — declare the column's `type`.
+  (a TEXT field, arithmetic, a number) is a type error — declare the field's `datatype`.
 * **ISO literals.** In a date position `'2024-01-31'` is a DATE and an [instant](time.md#time-points)
   (`'2024-01-31 10:00'`, with a space or `T`) a TIMESTAMP; `{variable}` placeholders work there.
   Elsewhere a string compared with a temporal operand is a [time point](time.md#time-points).
@@ -324,12 +324,12 @@ returns an empty result instead of "everything except 'a'".
 Test for null separately:
 
 ```json
-{"filters": ["status not in ('new', 'old')", "status is not null"]}
+{"filter": ["status not in ('new', 'old')", "status is not null"]}
 ```
 
 ## See also
 
-* [Models](models.md) — `Column.sql`, `Column.filter`, model-level filters
+* [Datasets](models.md) — `DatasetField.sql`, `DatasetField.filter`, dataset-level filters
 * [Queries](queries.md) — `SlayerQuery` field semantics
-* [Formulas](formulas.md) — DSL grammar and transforms
-* [Joins](models.md#joins) — dotted join paths in model SQL (generated SQL uses `__` internal aliases)
+* [Expressions](formulas.md) — DSL grammar and transforms
+* [Relationships](models.md#relationships) — dotted relationship paths in dataset SQL (generated SQL uses `__` internal aliases)

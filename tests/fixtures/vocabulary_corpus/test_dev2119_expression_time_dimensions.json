@@ -1,0 +1,60 @@
+{
+ "source": "tests/test_dev2119_expression_time_dimensions.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "id",
+     "shipped_at",
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "id",
+     "shipped_at",
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 224,
+   "reason": "not fully literal"
+  }
+ ]
+}

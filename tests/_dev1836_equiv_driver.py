@@ -33,7 +33,7 @@ if sys.argv and sys.argv[0].endswith("_dev1836_equiv_driver.py") and len(sys.arg
 
 from slayer.async_utils import run_sync  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.core.enums import DataType  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
-from slayer.core.models import DatasourceConfig, SlayerModel  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.engine.query_engine import SlayerQueryEngine  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 
@@ -48,17 +48,17 @@ MODULES = {
 }
 
 _SQLITE_TYPE = {
-    DataType.INT: "INTEGER", DataType.DOUBLE: "REAL", DataType.BOOLEAN: "INTEGER",
-    DataType.TEXT: "TEXT", DataType.DATE: "TEXT", DataType.TIMESTAMP: "TEXT",
-    DataType.UNKNOWN: "TEXT",
+    DataType.INTEGER: "INTEGER", DataType.FLOAT: "REAL", DataType.BOOLEAN: "INTEGER",
+    DataType.STRING: "TEXT", DataType.DATE: "TEXT", DataType.DATETIME: "TEXT",
+    DataType.OPAQUE: "TEXT",
 }
 
 
-def _physical_columns(model: SlayerModel):
+def _physical_columns(dataset: SlayerDataset) -> list[DatasetField]:
     """Only bare/identity columns are real table columns; a ``sql`` expression
     (derived/filtered) or a filter-bearing column is computed by the query."""
-    out = []
-    for c in model.columns:
+    out: list[DatasetField] = []
+    for c in dataset.fields:
         sql = getattr(c, "sql", None)
         if getattr(c, "filter", None) is not None:
             # a filtered column's PHYSICAL backing (its sql) is a separate col;
@@ -70,55 +70,56 @@ def _physical_columns(model: SlayerModel):
 
 
 def _rand_value(dtype, rng: random.Random):
-    if dtype == DataType.INT:
+    if dtype == DataType.INTEGER:
         return rng.randint(0, 50)
-    if dtype in (DataType.DOUBLE,):
+    if dtype in (DataType.FLOAT,):
         return round(rng.uniform(0, 100), 2)
     if dtype == DataType.BOOLEAN:
         return rng.choice([0, 1])
-    if dtype in (DataType.DATE, DataType.TIMESTAMP):
+    if dtype in (DataType.DATE, DataType.DATETIME):
         m = rng.randint(1, 3)
         d = rng.randint(1, 28)
         return f"2024-{m:02d}-{d:02d}" + ("" if dtype == DataType.DATE else " 00:00:00")
     return rng.choice(["a", "b", "c", "web", "app", "ok", "hold", None])
 
 
-def _topo(models):
-    by = {m.name: m for m in models}
-    seen, out = set(), []
+def _topo(datasets: list[SlayerDataset]) -> list[SlayerDataset]:
+    by = {m.name: m for m in datasets}
+    seen: set[str] = set()
+    out: list[SlayerDataset] = []
 
-    def visit(m):
+    def visit(m: SlayerDataset) -> None:
         if m.name in seen:
             return
         seen.add(m.name)
-        for j in m.joins:
-            if j.target_model in by:
-                visit(by[j.target_model])
+        for j in m.relationships:
+            if j.to in by:
+                visit(by[j.to])
         out.append(m)
 
-    for m in models:
+    for m in datasets:
         visit(m)
     return out
 
 
-def seed_sqlite(models, db_path, *, seed=20240501, n_rows=9):
+def seed_sqlite(datasets: list[SlayerDataset], db_path: str, *, seed: int = 20240501, n_rows: int = 9) -> None:
     rng = random.Random(seed)
     with transaction(db_path) as con:
         pk_values: dict[str, dict[str, list]] = {}
-        for m in _topo(models):
+        for m in _topo(datasets):
             if not m.sql_table:
                 continue
             cols = _physical_columns(m)
             if not cols:
                 continue
-            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.type, "TEXT")}' for c in cols)
+            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.datatype, "TEXT")}' for c in cols)
             con.execute(f'CREATE TABLE "{m.sql_table}" ({coldefs})')
             colnames = {c.name for c in cols}
             # FK columns: source-side join cols sample from the target's target-col values.
             fk: dict[str, list] = {}
-            for j in m.joins:
-                for src_col, tgt_col in j.join_pairs:
-                    vals = pk_values.get(j.target_model, {}).get(tgt_col)
+            for j in m.relationships:
+                for src_col, tgt_col in j.column_pairs:
+                    vals = pk_values.get(j.to, {}).get(tgt_col)
                     if vals and src_col in colnames:
                         fk[src_col] = vals
             rows = []
@@ -129,9 +130,9 @@ def seed_sqlite(models, db_path, *, seed=20240501, n_rows=9):
                         # repetition -> fan-out; plus an occasional orphan NULL.
                         row[c.name] = rng.choice(fk[c.name] + fk[c.name] + [None])
                     elif c.primary_key or c.unique:
-                        row[c.name] = (i + 1) if c.type == DataType.INT else f"{c.name[:3]}{i + 1}"
+                        row[c.name] = (i + 1) if c.datatype == DataType.INTEGER else f"{c.name[:3]}{i + 1}"
                     else:
-                        row[c.name] = _rand_value(c.type, rng)
+                        row[c.name] = _rand_value(c.datatype, rng)
                 rows.append(row)
             placeholders = ", ".join("?" for _ in cols)
             con.executemany(
@@ -153,28 +154,28 @@ def _canon_rows(rows):
     return sorted([str(x) for x in out])
 
 
-def _build_engine(models, db_path, store_dir):
+def _build_engine(datasets, db_path, store_dir):
     storage = YAMLStorage(base_dir=store_dir)
     run_sync(storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path)))
     # some fixtures use data_source "test"; force it consistently
-    for m in models:
+    for m in datasets:
         m = m.model_copy(update={"data_source": "test"})
-        run_sync(storage.save_model(m, _validate=False))
+        run_sync(storage.save_dataset(m, _validate=False))
     return SlayerQueryEngine(storage=storage)
 
 
-def _get_models(fixtures_mod, models_fn):
+def _get_datasets(fixtures_mod, datasets_fn):
     if fixtures_mod is None:
         gm = importlib.import_module("tests.test_dev1745_golden_sql")
         return [gm._orders(), gm._customers(), gm._regions()]
     fm = importlib.import_module(fixtures_mod)
-    return list(getattr(fm, models_fn)())
+    return list(getattr(fm, datasets_fn)())
 
 
-def run_module(module_name, fixtures_mod, models_fn, tmp):
+def run_module(module_name, fixtures_mod, datasets_fn, tmp):
     mod = importlib.import_module(module_name)
     cases = mod._cases()
-    models = _get_models(fixtures_mod, models_fn)
+    models = _get_datasets(fixtures_mod, datasets_fn)
     db_path = os.path.join(tmp, module_name.split(".")[-1] + ".sqlite")
     if not os.path.exists(db_path):
         seed_sqlite(models, db_path)

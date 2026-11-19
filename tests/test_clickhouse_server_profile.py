@@ -51,7 +51,7 @@ def _within(seconds: float, fn: Callable[[], object]) -> None:
 
 
 class TestProfileContents:
-    def test_full_profile_on_25_8(self, monkeypatch) -> None:
+    def test_full_profile_on_25_8(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=1, correlated=True)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -60,7 +60,7 @@ class TestProfileContents:
         assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL]
 
     @pytest.mark.parametrize("version", ["24.8.14.10459", "25.3.1.1"])
-    def test_no_correlated_statement_below_25_4(self, monkeypatch, version: str) -> None:
+    def test_no_correlated_statement_below_25_4(self, monkeypatch: pytest.MonkeyPatch, version: str) -> None:
         fake = FakeClickHouse(version=version, readonly=1)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -70,7 +70,7 @@ class TestProfileContents:
         assert fake.statements() == [PROFILE_SQL]
 
     @pytest.mark.parametrize(("version", "parsed"), [("25.4.1.1", (25, 4, 1)), ("26.1.2.3", (26, 1, 2))])
-    def test_correlated_statement_from_25_4(self, monkeypatch, version: str, parsed: tuple[int, int]) -> None:
+    def test_correlated_statement_from_25_4(self, monkeypatch: pytest.MonkeyPatch, version: str, parsed: tuple[int, int]) -> None:
         fake = FakeClickHouse(version=version, readonly=1, correlated=False)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -78,7 +78,7 @@ class TestProfileContents:
         assert profile == ServerProfile(version=parsed, readonly=1, correlated_subqueries=False)
         assert fake.correlated_checks() == 1
 
-    def test_profile_probes_carry_no_timeout_setting(self, monkeypatch) -> None:
+    def test_profile_probes_carry_no_timeout_setting(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1")
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -96,7 +96,7 @@ class TestProfileContents:
 
 
 class TestCorrelatedProbeFailure:
-    def test_field_unknown_and_timeout_still_applies(self, monkeypatch) -> None:
+    def test_field_unknown_and_timeout_still_applies(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=0, fail_correlated=True)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -113,7 +113,7 @@ class TestCorrelatedProbeFailure:
 
 
 class TestBaseProbeFailure:
-    def test_propagates_and_is_not_cached(self, monkeypatch) -> None:
+    def test_propagates_and_is_not_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(fail_permission=True)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -125,7 +125,7 @@ class TestBaseProbeFailure:
 
 
 class TestOneFillPerEngine:
-    def test_execution_fill_reused_by_server_profile(self, monkeypatch) -> None:
+    def test_execution_fill_reused_by_server_profile(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=1, correlated=True)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -134,7 +134,7 @@ class TestOneFillPerEngine:
         assert profile == ServerProfile(version=(25, 8, 3), readonly=1, correlated_subqueries=True)
         assert (fake.permission_checks(), fake.correlated_checks()) == (1, 1)
 
-    def test_server_profile_fill_reused_by_execution(self, monkeypatch) -> None:
+    def test_server_profile_fill_reused_by_execution(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=1, correlated=True)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -147,7 +147,7 @@ class TestOneFillPerEngine:
         assert CH_TIMEOUT_KEY not in fake.params_for("SELECT 1")[0]
         assert (fake.permission_checks(), fake.correlated_checks()) == (1, 1)
 
-    def test_concurrent_threads_fill_once(self, monkeypatch) -> None:
+    def test_concurrent_threads_fill_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=1, correlated=True, permission_delay=0.05)
         errors: list[BaseException] = []
         barrier = threading.Barrier(8, timeout=10)
@@ -176,7 +176,7 @@ class TestOneFillPerEngine:
 
 
 class TestNoReentry:
-    def test_sync_execution_fill_does_not_deadlock(self, monkeypatch) -> None:
+    def test_sync_execution_fill_does_not_deadlock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=0, correlated=False)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -184,7 +184,7 @@ class TestNoReentry:
             _within(10, lambda: client.execute_sync("SELECT 1", timeout_seconds=30))
         assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL, "SELECT 1"]
 
-    def test_async_execution_fill_does_not_deadlock(self, monkeypatch) -> None:
+    def test_async_execution_fill_does_not_deadlock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=0, correlated=False)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -192,7 +192,7 @@ class TestNoReentry:
             _within(10, lambda: asyncio.run(client.execute("SELECT 1", timeout_seconds=30)))
         assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL, "SELECT 1"]
 
-    def test_server_profile_fill_does_not_deadlock(self, monkeypatch) -> None:
+    def test_server_profile_fill_does_not_deadlock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=0, correlated=False)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)

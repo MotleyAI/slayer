@@ -1,0 +1,48 @@
+{
+ "source": "tests/test_dev1847_nesting.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  }
+ ]
+}

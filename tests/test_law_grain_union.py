@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._law_harness import (
-    ModelMeasure,
     OPERAND_GRAIN,
     canon,
     execute_shape,
@@ -114,9 +115,9 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
     resp = await exec_engine.execute(q(
         dimensions=["region", "city"],
         time_dimensions=month_td(),
-        measures=[ModelMeasure(
-            formula="sum(amount, partition_by=region) + sum(amount, partition_by=city)",
-            name="x",
+        metrics=[QueryMetric(
+            metric="sum(amount, partition_by=region) + sum(amount, partition_by=city)",
+            alias="x",
         )],
     ))
     grain_keys = {

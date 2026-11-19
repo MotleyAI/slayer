@@ -15,7 +15,7 @@ Each part of a stored `sql_table` SHALL denote: a quoted part, exactly its text;
 
 #### Scenario: A schema whose name holds a dot
 - **WHEN** a model's `sql_table` is `"sales.v2".orders` and that table exists with the model's columns
-- **THEN** a query on the model returns that table's rows, and `validate_models` reports no drift for it
+- **THEN** a query on the model returns that table's rows, and `validate_datasets` reports no drift for it
 
 ### Requirement: Every writer stores a table name that reads back as its live table
 

@@ -12,19 +12,19 @@ import pytest
 
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
+    FieldKey,
     TransformKey,
     reroot_value_key,
     substitute_value_keys,
 )
 from slayer.core.keys import Grain
 
-_COL_A = ColumnKey(leaf="a")
-_COL_B = ColumnKey(leaf="b")
+_COL_A = FieldKey(leaf="a")
+_COL_B = FieldKey(leaf="b")
 
 
 def _agg(**kw) -> AggregateKey:
-    return AggregateKey(source=ColumnKey(leaf="amount"), agg="sum", **kw)
+    return AggregateKey(source=FieldKey(leaf="amount"), agg="sum", **kw)
 
 
 class TestLocusRename:
@@ -69,14 +69,14 @@ class TestGrainTypedPartitionKeys:
 
 class TestTraversalLaw:
     def test_reroot_preserves_the_grain_type(self) -> None:
-        part = ColumnKey(path=("customers",), leaf="tier")
+        part = FieldKey(path=("customers",), leaf="tier")
         key = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="spend"), agg="sum",
+            source=FieldKey(path=("customers",), leaf="spend"), agg="sum",
             partition_keys=Grain.of({part}),
         )
         rerooted = reroot_value_key(key, target_path=("customers",))
         assert isinstance(rerooted.partition_keys, Grain)
-        assert rerooted.partition_keys == Grain.of({ColumnKey(leaf="tier")})
+        assert rerooted.partition_keys == Grain.of({FieldKey(leaf="tier")})
 
     def test_substitute_preserves_the_grain_type(self) -> None:
         key = _agg(partition_keys=Grain.of({_COL_A}))

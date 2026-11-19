@@ -1,0 +1,70 @@
+{
+ "source": "tests/test_search_writeback.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 200,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 227,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 230,
+   "reason": "not fully literal"
+  }
+ ]
+}

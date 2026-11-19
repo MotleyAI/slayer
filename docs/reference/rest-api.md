@@ -33,8 +33,8 @@ POST /query
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
-    "source_model": "orders",
-    "measures": ["count(*)"],
+    "population": "orders",
+    "metrics": ["count(*)"],
     "dimensions": ["status"],
     "limit": 10
   }'
@@ -57,7 +57,7 @@ Response:
 
 Cell values use SLayer's one JSON encoding: a list is a JSON array, a decimal a number with its exact digits, a
 UUID its string, bytes `\x` + lowercase hex, an interval an ISO-8601 duration and NaN / ±Infinity `null`;
-`"distinct_dimension_values": false` returns one row per record, list columns included.
+`"distinct_dimension_values": false` returns one row per record, list fields included.
 
 `warnings` carries advisories about the query itself; it is `[]` for a clean
 query. Every entry has a `kind` discriminator — switch on it rather than on the
@@ -66,14 +66,16 @@ presence of a field:
 | `kind` | Meaning | Extra fields |
 | -- | -- | -- |
 | `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location`, `rule_doc_url` (nullable) |
+| `deprecated_input` | A deprecated input form was converted to its replacement ([Upgrading to 2.0](../upgrading/2.0.md)) | `old`, `new`, `removal` |
+| `deprecated_spelling` | A deprecated expression spelling was read as its canonical twin ([Upgrading to 2.0](../upgrading/2.0.md)) | `spelling`, `written`, `canonical`, `removal` |
 
 The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, and `variables`. Notable optional fields:
 
 - `whole_periods_only` (bool) — snap time bounds to bucket boundaries; see [Time](../concepts/time.md#whole_periods_only).
-- `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`.
-- `to_many_handling` (str, optional) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): omitted (per-cell value over the distinct associated rows, broadcasting with a warning where association is unsupported), `associate` (the same, refusing the unsupported), `broadcast` (repeat the safe-grain value and warn), or `error` (refuse). Rejected on run-by-name bodies (`{"name": ...}`) — declare it on the stored query instead; the retired `strict` flag is rejected with this remedy.
+- `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any metric reference in `metrics` / `filter` / `order`.
+- `to_many_handling` (str, optional) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-dataset-metrics): omitted (per-cell value over the distinct associated rows, broadcasting with a warning where association is unsupported), `associate` (the same, refusing the unsupported), `broadcast` (repeat the safe-grain value and warn), or `error` (refuse). Rejected at the top level of run-by-name bodies (`{"name": ...}`) — put it in `refine` instead.
 
-Run-by-name bodies (`{"name": ...}`) run a query-backed model's stored query and allow only `name`, `variables`, `dry_run`, `explain` and `refine`; query clauses go inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/queries.md#refining-a-saved-query)).
+Run-by-name bodies (`{"name": ...}`) run a query-backed dataset's stored query and allow only `name`, `variables`, `dry_run`, `explain` and `refine`; query clauses go inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/queries.md#refining-a-saved-query)).
 
 ```bash
 curl -X POST http://localhost:5143/query \
@@ -83,44 +85,46 @@ curl -X POST http://localhost:5143/query \
 
 Multi-stage DAG bodies use `{"queries": [...]}` — each stage in the list honours its own `distinct_dimension_values`.
 
-### Models
+### Datasets
 
 ```
-GET    /models              # List all models
-GET    /models/{name}       # Get model definition
-POST   /models              # Create a model
-PUT    /models/{name}       # Update a model
-DELETE /models/{name}       # Delete a model
+GET    /datasets              # List all datasets
+GET    /datasets/{name}       # Get dataset definition
+POST   /datasets              # Create a dataset
+PUT    /datasets/{name}       # Update a dataset
+DELETE /datasets/{name}       # Delete a dataset
 ```
 
 ```bash
-# List models
-curl http://localhost:5143/models
+# List datasets
+curl http://localhost:5143/datasets
 
-# Get model definition (hidden dimensions/measures excluded)
-curl http://localhost:5143/models/orders
+# Get dataset definition (hidden fields/metrics excluded)
+curl http://localhost:5143/datasets/orders
 
-# Create a model
-curl -X POST http://localhost:5143/models \
+# Create a dataset
+curl -X POST http://localhost:5143/datasets \
   -H "Content-Type: application/json" \
   -d '{"name": "orders", "sql_table": "public.orders", "data_source": "mydb", ...}'
 
-# Create a query-backed model
-curl -X POST http://localhost:5143/models \
+# Create a query-backed dataset
+curl -X POST http://localhost:5143/datasets \
   -H "Content-Type: application/json" \
   -d '{
     "name": "monthly_revenue",
     "data_source": "mydb",
     "source_queries": [{
-      "source_model": "orders",
-      "measures": ["sum(order_total)"],
-      "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
+      "population": "orders",
+      "metrics": ["sum(order_total)"],
+      "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
     }],
     "query_variables": {"region": "US"}
   }'
 ```
 
-A query-backed model's `columns` are generated at save, so supplying them returns 400.
+`POST /datasets` and `PUT /datasets/{name}` return `{"status": "created" | "updated", "name": ..., "warnings": [...]}`; `warnings` holds the same `kind`-tagged entries as a query response, here `deprecated_input`, `deprecated_spelling` and `narrowed_access` (the saved dataset reads tagged datasets whose access tags do not cover its own: `data_source`, `dataset`, `narrowed_by`).
+
+A query-backed dataset's `fields` are generated at save, so supplying them returns 400.
 
 ### Datasources
 
@@ -146,15 +150,15 @@ GET /datasources/priority   # {"priority": [...]}, most preferred first
 PUT /datasources/priority   # body {"priority": [...]}; [] clears it
 ```
 
-A bare model name that exists in several datasources resolves to the first listed datasource that has it; a name in the list that is not a registered datasource returns 400.
+A bare dataset name that exists in several datasources resolves to the first listed datasource that has it; a name in the list that is not a registered datasource returns 400.
 
-### Validate models
+### Validate datasets
 
-`POST /validate-models` with body `{"data_source": null}` (or a datasource name) diffs the stored models against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype` and `narrowed_access` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
+`POST /validate-datasets` with body `{"data_source": null}` (or a datasource name) diffs the stored datasets against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype` and `narrowed_access` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
 
-### Recommend a root model
+### Recommend a population
 
-`POST /recommend-root-model` with body `{"items": [...], "data_source": null, "root_hint": null}` returns the recommended query root and each item's reference path from it; unresolvable, wrong-kind or cross-datasource items return 400. See [Choosing a root model](../concepts/queries.md#choosing-a-root-model).
+`POST /recommend-population` with body `{"items": [...], "data_source": null, "root_hint": null}` returns the recommended query root and each item's reference path from it; unresolvable, wrong-kind or cross-datasource items return 400. See [Choosing a root dataset](../concepts/queries.md#choosing-a-root-dataset).
 
 ### Ingestion
 
@@ -168,7 +172,7 @@ curl -X POST http://localhost:5143/ingest \
   -d '{"datasource": "my_postgres", "schema_name": "public"}'
 ```
 
-The response is the ingest result (`additions`, `to_delete`, `errors`, `skipped`, `objects`, `skipped_schemas`, `broken_dependents`, …); `key_read_failures` lists each key read that failed (table `location`, `read`, `error`); a re-ingest that reads the key fills it, unless a stored column with a key column's name reads something else. A 200 response:
+The response is the ingest result (`additions`, `to_delete`, `errors`, `skipped`, `objects`, `skipped_schemas`, `broken_dependents`, …); `key_read_failures` lists each key read that failed (table `location`, `read`, `error`); a re-ingest that reads the key fills it, unless a stored field with a key column's name reads something else. A 200 response:
 
 ```json
 {
@@ -190,13 +194,13 @@ When `errors` is non-empty the status is 422 and the same result sits under `det
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `reference` | str \| array[str] \| null | Canonical id (`mydb.orders.amount`), bare name, join path (`orders.customers.region` → resolved to the owning model), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. **A list is a homogeneous-kind batch**: one `entity_type` for every id; `result` is one block per id in input order (a `## <canonical>` header per block in markdown, a JSON-array string under `format="json"`). Per-id resolution errors are isolated; a non-string member returns HTTP 422. **`null` / omitted (or `[]`) is the collection view**: lists the whole kind at `entity_type` — `model` (all models grouped by datasource) or `datasource` (all datasources); other kinds return HTTP 400. `compact` toggles verbosity; the JSON `result` is a `{"entity_type", "collection": true, "datasources": [...], "warnings": []}` envelope string. Subsumes `models_summary` / `list_datasources`. |
-| `entity_type` | str | **Required.** One of `datasource`, `model`, `column`, `measure`, `aggregation`, `memory`. Disambiguates the 3-part canonical collision (a name shared by, e.g., a column and an aggregation) and asserts the kind — a mismatch returns HTTP 400. |
-| `compact` | bool | Default `true`. Description-only for column / measure / aggregation / datasource / memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does); a cheap schema **skeleton** (column / measure / aggregation names + join targets, zero DB calls) for `model`. `false` returns the full render, and a per-model skeleton for each visible model for `datasource`. |
+| `reference` | str \| array[str] \| null | Canonical id (`mydb.orders.amount`), bare name, relationship path (`orders.customers.region` → resolved to the owning dataset), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. **A list is a homogeneous-kind batch**: one `entity_type` for every id; `result` is one block per id in input order (a `## <canonical>` header per block in markdown, a JSON-array string under `format="json"`). Per-id resolution errors are isolated; a non-string member returns HTTP 422. **`null` / omitted (or `[]`) is the collection view**: lists the whole kind at `entity_type` — `dataset` (all datasets grouped by datasource) or `datasource` (all datasources); other kinds return HTTP 400. `compact` toggles verbosity; the JSON `result` is a `{"entity_type", "collection": true, "datasources": [...], "warnings": []}` envelope string. Subsumes `datasets_summary` / `list_datasources`. |
+| `entity_type` | str | **Required.** One of `datasource`, `dataset`, `field`, `metric`, `aggregation`, `memory`. Disambiguates the 3-part canonical collision (a name shared by, e.g., a field and an aggregation) and asserts the kind — a mismatch returns HTTP 400. |
+| `compact` | bool | Default `true`. Description-only for field / metric / aggregation / datasource / memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does); a cheap schema **skeleton** (field / metric / aggregation names + relationship targets, zero DB calls) for `dataset`. `false` returns the full render, and a per-dataset skeleton for each visible dataset for `datasource`. |
 | `format` | str | `"markdown"` (default) or `"json"`. |
-| `num_rows` | int | Sample-data rows for `entity_type="model"`. Ignored (with a warning) for other kinds. Default `3`. |
-| `show_sql` | bool | Include generated SQL for `entity_type="model"`. Ignored (with a warning) for datasource / memory; a silent no-op for column / measure / aggregation. |
-| `sections` | array[str] | Section subset for `entity_type="model"` (`columns` / `measures` / `aggregations` / `joins` / `samples` / `learnings`). Ignored (with a warning) for other kinds. |
+| `num_rows` | int | Sample-data rows for `entity_type="dataset"`. Ignored (with a warning) for other kinds. Default `3`. |
+| `show_sql` | bool | Include generated SQL for `entity_type="dataset"`. Ignored (with a warning) for datasource / memory; a silent no-op for field / metric / aggregation. |
+| `sections` | array[str] | Section subset for `entity_type="dataset"` (`fields` / `metrics` / `aggregations` / `relationships` / `samples` / `learnings`). Ignored (with a warning) for other kinds. |
 | `descriptions_max_chars` | int | Truncate every description field to this many characters (must be `>= 0`). Applies to every kind. |
 
 Renders hidden entities (deliberate escape hatch). Unknown fields are rejected (HTTP 422); a bad `entity_type` / `format`, a negative `descriptions_max_chars`, or an unresolvable reference returns HTTP 400.
@@ -204,13 +208,13 @@ Renders hidden entities (deliberate escape hatch). Unknown fields are rejected (
 ```bash
 curl -X POST http://localhost:5143/inspect \
   -H "Content-Type: application/json" \
-  -d '{"reference": "jaffle_shop.orders", "entity_type": "model"}'
+  -d '{"reference": "jaffle_shop.orders", "entity_type": "dataset"}'
 ```
 
 The response is always `{"result": <string>}` — the rendered Markdown (or, with `format="json"`, a JSON string):
 
 ```json
-{"result": "# `orders`\nOne row per placed order.\nColumns: id, order_total, ...\nMeasures: ...\nAggregations: _(none)_\nJoins to: stores"}
+{"result": "# `orders`\nOne row per placed order.\nFields: id, order_total, ...\nMetrics: ...\nAggregations: _(none)_\nRelationships to: stores"}
 ```
 
 ### Memories + Semantic Search
@@ -228,10 +232,10 @@ DELETE /memories/{id}         # Delete a memory (cascade-strips memory:<id> refs
 | Field | Type | Description |
 |-------|------|-------------|
 | `entities` | array[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …). Aggregation suffixes are stripped (`sum(revenue)` → `mydb.orders.revenue`). Drives the BM25 channel. Unresolved tokens emit warnings rather than errors. |
-| `query` | object | Inline SLayer query; its `source_model` / dimensions / measures / time dims / filters are walked for canonical entities. |
+| `query` | object | Inline SLayer query; its `population` / dimensions / metrics / time dims / filter are walked for canonical entities. |
 | `question` | str | Free-text question. Drives the Tantivy channel and (when available) the embedding channel. |
 | `datasource` | str | Pre-narrows every channel to ids rooted at the named datasource. Unknown name → HTTP 400. |
-| `cypher_filter` | str | Graph pre-filter applied to all three channels. Full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; read-only — mutation clauses rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter; anything richer returns HTTP 400 with an install hint. |
+| `cypher_filter` | str | Graph pre-filter applied to all three channels. Full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Dataset` / `DatasetField` / `Metric` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `RELATIONSHIPS` edges; read-only — mutation clauses rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter; anything richer returns HTTP 400 with an install hint. |
 | `max_results` | int | Applied **after** RRF fusion and after the `cypher_filter` allowlist. Default `10`. |
 
 ```bash
@@ -249,15 +253,15 @@ Response (`SearchResponse`):
 {
   "results": [
     {"kind": "memory",  "id": "42", "score": 0.13, "text": "Brooklyn switched POS in late 2024 …", "matched_entities": [], "query": null},
-    {"kind": "column",  "id": "jaffle_shop.orders.order_total", "score": 0.11, "text": "...\nSample values: [\"100.00\", \"42.50\", …]", "matched_entities": [], "query": null},
-    {"kind": "model",   "id": "jaffle_shop.stores", "score": 0.09, "text": "...", "matched_entities": [], "query": null}
+    {"kind": "field",   "id": "jaffle_shop.orders.order_total", "score": 0.11, "text": "...\nSample values: [\"100.00\", \"42.50\", …]", "matched_entities": [], "query": null},
+    {"kind": "dataset", "id": "jaffle_shop.stores", "score": 0.09, "text": "...", "matched_entities": [], "query": null}
   ],
   "resolved_input_entities": [],
   "warnings": []
 }
 ```
 
-`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Column hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale profiles are refreshed lazily inside `/search`.
+`kind` is one of `"memory"`, `"datasource"`, `"dataset"`, `"field"`, `"metric"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Field hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded; overflow fields are marked `50+ distinct` in the text snapshot); stale profiles are refreshed lazily inside `/search`.
 
 **`POST /memories` body:**
 

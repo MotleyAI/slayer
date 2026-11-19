@@ -1,20 +1,20 @@
-version: 19
+version: 26
 name: orders
 sql_table: orders
 source_kind: table
 query_variables: {}
 data_source: jaffle_shop
-columns:
+fields:
 - name: id
   sql: id
-  type: TEXT
+  datatype: String
   primary_key: true
   unique: false
   label: Order ID
   hidden: false
 - name: customer_id
   sql: customer_id
-  type: TEXT
+  datatype: String
   primary_key: false
   unique: false
   description: Customer who placed the order.
@@ -22,7 +22,7 @@ columns:
   hidden: false
 - name: ordered_at
   sql: ordered_at
-  type: DATE
+  datatype: Date
   primary_key: false
   unique: false
   description: When the order was placed.
@@ -30,7 +30,7 @@ columns:
   hidden: false
 - name: store_id
   sql: store_id
-  type: TEXT
+  datatype: String
   primary_key: false
   unique: false
   description: Store where the order was placed.
@@ -38,7 +38,7 @@ columns:
   hidden: false
 - name: subtotal
   sql: subtotal
-  type: DOUBLE
+  datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
@@ -51,7 +51,7 @@ columns:
     symbol: $
 - name: tax_paid
   sql: tax_paid
-  type: DOUBLE
+  datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
@@ -64,7 +64,7 @@ columns:
     symbol: $
 - name: order_total
   sql: order_total
-  type: DOUBLE
+  datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
@@ -77,7 +77,7 @@ columns:
     symbol: $
 - name: status
   sql: status
-  type: TEXT
+  datatype: String
   primary_key: false
   unique: false
   description: 'Order status: completed, refunded or cancelled. Refunded and cancelled
@@ -86,73 +86,75 @@ columns:
   hidden: false
 - name: item_skus
   sql: item_skus
-  type: ARRAY
-  element_type: TEXT
+  datatype: Array
+  element_type: String
   db_type: VARCHAR[]
   primary_key: false
   unique: false
   description: The SKU of each item on the order, one entry per unit (repeats kept).
   label: Item SKUs
   hidden: false
-measures:
-- formula: sum(order_total)
+metrics:
+- expression: sum(order_total)
   name: total_revenue
   label: Total Revenue
   description: Gross sales including tax, in dollars.
-  type: DOUBLE
-- formula: sum(subtotal)
+  datatype: Float
+- expression: sum(subtotal)
   name: net_sales
   label: Net Sales (pre-tax)
   description: Sales before tax, in dollars.
-  type: DOUBLE
-- formula: sum(tax_paid)
+  datatype: Float
+- expression: sum(tax_paid)
   name: tax_collected
   label: Tax Collected
   description: Total tax collected, in dollars.
-  type: DOUBLE
-- formula: count(id)
+  datatype: Float
+- expression: count(id)
   name: order_count
   label: Orders
   description: Number of orders.
-  type: INT
-- formula: count_distinct(customer_id)
+  datatype: Integer
+- expression: count_distinct(customer_id)
   name: unique_customers
   label: Unique Customers
   description: Distinct customers who ordered.
-  type: INT
-- formula: sum(order_total) / nullif(count(id), 0)
+  datatype: Integer
+- expression: sum(order_total) / nullif(count(id), 0)
   name: avg_order_value
   label: Average Order Value
   description: Revenue per order, in dollars.
-  type: DOUBLE
-- formula: sum(tax_paid) / nullif(sum(subtotal), 0)
+  datatype: Float
+- expression: sum(tax_paid) / nullif(sum(subtotal), 0)
   name: effective_tax_rate
   label: Effective Tax Rate
   description: Tax collected as a share of net sales.
-  type: DOUBLE
-- formula: weighted_avg(order_total)
+  datatype: Float
+- expression: weighted_avg(order_total)
   name: sales_weighted_aov
   label: Sales-Weighted Avg Order
   description: Average order total weighted by subtotal (larger orders weigh more),
     in dollars.
-  type: DOUBLE
+  datatype: Float
 aggregations:
 - name: weighted_avg
   params:
   - name: weight
     sql: subtotal
   description: Weighted average defaulting the weight to order subtotal.
-joins:
-- target_model: customers
-  join_pairs:
-  - - customer_id
-    - id
+relationships:
+- to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - id
   join_type: left
   cardinality: many_to_one
-- target_model: stores
-  join_pairs:
-  - - store_id
-    - id
+- to: stores
+  from_columns:
+  - store_id
+  to_columns:
+  - id
   join_type: left
   cardinality: many_to_one
 filters: []

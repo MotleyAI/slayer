@@ -6,14 +6,14 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.join_walker import edges_between
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.relationship_walker import edges_between
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.models import DbtEntity, DbtProject, DbtSemanticModel
-from slayer.facade.catalog import FacadeJoin, build_catalog, _facade_join_from
-from slayer.facade.translator import translate
+from slayer.facade.catalog import FacadeRelationship, build_catalog, _facade_relationship_from
+from slayer.facade.translator import QueryResult, translate
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.parser import parse_osi_path
 from slayer.database.client import SlayerSQLClient
@@ -74,8 +74,8 @@ class TestDbtEntities:
         )
         reg = EntityRegistry()
         reg.build([orders, customers])
-        joins = reg.resolve_joins_for_model(orders)
-        assert joins[0].cardinality is JoinCardinality.MANY_TO_ONE
+        joins = reg.resolve_relationships_for_model(orders)
+        assert joins[0].cardinality is RelationshipCardinality.MANY_TO_ONE
 
     def test_peer_shared_unique_is_one_to_one(self) -> None:
         a = DbtSemanticModel(
@@ -86,9 +86,9 @@ class TestDbtEntities:
         )
         reg = EntityRegistry()
         reg.build([a, b])
-        joins = reg.resolve_joins_for_model(a)
-        peer = next(j for j in joins if j.target_model == "b")
-        assert peer.cardinality is JoinCardinality.ONE_TO_ONE
+        joins = reg.resolve_relationships_for_model(a)
+        peer = next(j for j in joins if j.to == "b")
+        assert peer.cardinality is RelationshipCardinality.ONE_TO_ONE
 
 
 # ---------------------------------------------------------------------------
@@ -101,9 +101,9 @@ class TestDbtConverterMirror:
         result = DbtToSlayerConverter(
             project=_foreign_primary_project(), data_source="test_db"
         ).convert()
-        orders = next(m for m in result.models if m.name == "orders")
-        fwd = next(j for j in orders.joins if j.target_model == "customers")
-        assert fwd.cardinality is JoinCardinality.MANY_TO_ONE
+        orders = next(m for m in result.datasets if m.name == "orders")
+        fwd = next(j for j in orders.relationships if j.to == "customers")
+        assert fwd.cardinality is RelationshipCardinality.MANY_TO_ONE
 
     def test_reverse_orientation_inverts_to_one_to_many(self) -> None:
         # DEV-1853 divergences.md class (d): dbt mirroring is retired — no
@@ -112,11 +112,11 @@ class TestDbtConverterMirror:
         result = DbtToSlayerConverter(
             project=_foreign_primary_project(), data_source="test_db"
         ).convert()
-        customers = next(m for m in result.models if m.name == "customers")
-        orders = next(m for m in result.models if m.name == "orders")
-        assert not any(j.target_model == "orders" for j in customers.joins)
+        customers = next(m for m in result.datasets if m.name == "customers")
+        orders = next(m for m in result.datasets if m.name == "orders")
+        assert not any(j.to == "orders" for j in customers.relationships)
         rev = edges_between(source=customers, target=orders)[0]
-        assert rev.cardinality is JoinCardinality.ONE_TO_MANY
+        assert rev.cardinality is RelationshipCardinality.ONE_TO_MANY
 
     def test_peer_edge_declared_once_stays_one_to_one(self) -> None:
         project = DbtProject(
@@ -134,17 +134,17 @@ class TestDbtConverterMirror:
             ]
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
-        claim = next(m for m in result.models if m.name == "claim")
-        cov = next(m for m in result.models if m.name == "claim_coverage")
+        claim = next(m for m in result.datasets if m.name == "claim")
+        cov = next(m for m in result.datasets if m.name == "claim_coverage")
         assert (
-            next(j for j in claim.joins if j.target_model == "claim_coverage").cardinality
-            is JoinCardinality.ONE_TO_ONE
+            next(j for j in claim.relationships if j.to == "claim_coverage").cardinality
+            is RelationshipCardinality.ONE_TO_ONE
         )
         # DEV-1853: the larger-named peer declares nothing; the inverted
         # orientation stays one_to_one.
-        assert not any(j.target_model == "claim" for j in cov.joins)
+        assert not any(j.to == "claim" for j in cov.relationships)
         rev = edges_between(source=cov, target=claim)[0]
-        assert rev.cardinality is JoinCardinality.ONE_TO_ONE
+        assert rev.cardinality is RelationshipCardinality.ONE_TO_ONE
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +174,9 @@ class TestOsi:
         converter = OsiToSlayerConverter(documents=[doc], data_source="testds")
         await converter.collect_metadata(client=osi_client)
         result = converter.convert()
-        orders = {m.name: m for m in result.models}["orders"]
-        cust_join = next(j for j in orders.joins if j.target_model == "customers")
-        assert cust_join.cardinality is JoinCardinality.MANY_TO_ONE
+        orders = {m.name: m for m in result.datasets}["orders"]
+        cust_join = next(j for j in orders.relationships if j.to == "customers")
+        assert cust_join.cardinality is RelationshipCardinality.MANY_TO_ONE
 
 
 # ---------------------------------------------------------------------------
@@ -186,47 +186,47 @@ class TestOsi:
 
 class TestFacade:
     def test_facade_join_model_accepts_cardinality(self) -> None:
-        fj = FacadeJoin(
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-            cardinality=JoinCardinality.ONE_TO_ONE,
+        fj = FacadeRelationship(
+            to="customers",
+            column_pairs=[("customer_id", "id")],
+            cardinality=RelationshipCardinality.ONE_TO_ONE,
         )
-        assert fj.cardinality is JoinCardinality.ONE_TO_ONE
+        assert fj.cardinality is RelationshipCardinality.ONE_TO_ONE
 
     def test_facade_join_from_carries_cardinality(self) -> None:
-        j = ModelJoin(
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-            cardinality=JoinCardinality.MANY_TO_ONE,
+        j = DatasetRelationship(
+            to="customers",
+            from_columns=["customer_id"], to_columns=["id"],
+            cardinality=RelationshipCardinality.MANY_TO_ONE,
         )
-        fj = _facade_join_from(join=j)
-        assert fj.cardinality is JoinCardinality.MANY_TO_ONE
+        fj = _facade_relationship_from(relationship=j)
+        assert fj.cardinality is RelationshipCardinality.MANY_TO_ONE
 
 
 def _dyn_catalog():
     """orders (no configured join) + stores — forces the dynamic-join path."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="store_id", type=DataType.INT),
-            Column(name="revenue", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
         ],
-        joins=[],
+        relationships=[],
     )
-    stores = SlayerModel(
+    stores = SlayerDataset(
         name="stores",
         data_source="jaffle",
         sql_table="stores",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="tax_rate", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="tax_rate", datatype=DataType.FLOAT),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, stores]})
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, stores]})
 
 
 def _metabase_join_sql(on_clause: str) -> str:
@@ -246,40 +246,46 @@ class TestFacadeDynamicJoin:
         # ON joins to stores.id (the PK) -> target is unique -> many_to_one.
         sql = _metabase_join_sql('"public"."orders"."store_id" = "Stores"."id"')
         result = translate(sql=sql, catalog=_dyn_catalog(), dialect="postgres")
+        assert isinstance(result, QueryResult)
+        assert result.query.extensions is not None
         ext = result.query.extensions[0]
-        assert ext.joins[0].cardinality is JoinCardinality.MANY_TO_ONE
+        assert ext.relationships is not None
+        assert ext.relationships[0].cardinality is RelationshipCardinality.MANY_TO_ONE
 
     def test_dynamic_join_none_when_target_not_unique(self) -> None:
         # ON joins to stores.tax_rate (not PK/unique) -> undetermined -> None.
         sql = _metabase_join_sql('"public"."orders"."store_id" = "Stores"."tax_rate"')
         result = translate(sql=sql, catalog=_dyn_catalog(), dialect="postgres")
+        assert isinstance(result, QueryResult)
+        assert result.query.extensions is not None
         ext = result.query.extensions[0]
-        assert ext.joins[0].cardinality is None
+        assert ext.relationships is not None
+        assert ext.relationships[0].cardinality is None
 
     def test_dynamic_join_none_for_composite_pk_member(self) -> None:
         """Joining ONE member of a composite PK does not make the target unique."""
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             data_source="jaffle",
             sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="store_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="store_id", datatype=DataType.INTEGER),
             ],
-            joins=[],
+            relationships=[],
         )
         # Composite PK (id, region) — neither column is unique on its own.
-        stores = SlayerModel(
+        stores = SlayerDataset(
             name="stores",
             data_source="jaffle",
             sql_table="stores",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         )
-        catalog = build_catalog(models_by_datasource={"jaffle": [orders, stores]})
+        catalog = build_catalog(datasets_by_datasource={"jaffle": [orders, stores]})
         sql = (
             'SELECT "Stores"."name" AS "Stores__name" '
             'FROM "public"."orders" '
@@ -289,32 +295,35 @@ class TestFacadeDynamicJoin:
             'ON "public"."orders"."store_id" = "Stores"."id"'
         )
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
+        assert isinstance(result, QueryResult)
+        assert result.query.extensions is not None
         ext = result.query.extensions[0]
-        assert ext.joins[0].cardinality is None
+        assert ext.relationships is not None
+        assert ext.relationships[0].cardinality is None
 
     def test_dynamic_join_many_to_one_for_non_pk_unique_target(self) -> None:
         """A non-PK column flagged ``unique`` is a solo uniqueness claim."""
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             data_source="jaffle",
             sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="store_code", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="store_code", datatype=DataType.STRING),
             ],
-            joins=[],
+            relationships=[],
         )
-        stores = SlayerModel(
+        stores = SlayerDataset(
             name="stores",
             data_source="jaffle",
             sql_table="stores",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="code", type=DataType.TEXT, unique=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="code", datatype=DataType.STRING, unique=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         )
-        catalog = build_catalog(models_by_datasource={"jaffle": [orders, stores]})
+        catalog = build_catalog(datasets_by_datasource={"jaffle": [orders, stores]})
         sql = (
             'SELECT "Stores"."name" AS "Stores__name" '
             'FROM "public"."orders" '
@@ -324,5 +333,8 @@ class TestFacadeDynamicJoin:
             'ON "public"."orders"."store_code" = "Stores"."code"'
         )
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
+        assert isinstance(result, QueryResult)
+        assert result.query.extensions is not None
         ext = result.query.extensions[0]
-        assert ext.joins[0].cardinality is JoinCardinality.MANY_TO_ONE
+        assert ext.relationships is not None
+        assert ext.relationships[0].cardinality is RelationshipCardinality.MANY_TO_ONE

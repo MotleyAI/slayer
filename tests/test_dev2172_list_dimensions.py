@@ -27,19 +27,19 @@ class TestRawRows:
 
     async def test_list_valued_expression_projected_per_record(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute(query(dimensions=["id", {"name": "s", "expression": "skills"}],
+            resp = await engine.execute(query(dimensions=["id", {"alias": "s", "field": "skills"}],
                                               distinct_dimension_values=False))
         assert _lists(resp.data, key="contractors.id", value="contractors.s") == SKILLS
 
     async def test_identical_keyless_rows_stay_two_rows(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute({"source_model": "twins", "dimensions": ["name", "skills"],
+            resp = await engine.execute({"population": "twins", "dimensions": ["name", "skills"],
                                          "distinct_dimension_values": False})
         assert [list(r["twins.skills"]) for r in resp.data] == [["go"], ["go"]]
 
     async def test_list_through_a_to_one_join(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute({"source_model": "assignments", "dimensions": ["id", "contractors.skills"],
+            resp = await engine.execute({"population": "assignments", "dimensions": ["id", "contractors.skills"],
                                          "distinct_dimension_values": False})
         assert _lists(resp.data, key="assignments.id", value="assignments.contractors.skills") == {
             a: SKILLS.get(c) for a, c in ASSIGNMENTS}
@@ -47,7 +47,7 @@ class TestRawRows:
     @pytest.mark.parametrize("distinct", [False, True])
     async def test_ordering_by_a_list_is_refused(self, distinct: bool) -> None:
         body = query(dimensions=["id"], distinct_dimension_values=distinct,
-                     order=[{"column": "skills", "direction": "asc"}])
+                     order=[{"field": "skills", "direction": "asc"}])
         async with list_engine() as engine:
             with pytest.raises(ListTypeError, match="list"):
                 await engine.execute(body)
@@ -56,7 +56,7 @@ class TestRawRows:
 class TestGrouping:
     async def test_computed_dimension_checks_keep_their_precedence(self) -> None:
         """A raw-rows computed dimension holding an aggregation is refused for that, before any list rule."""
-        body = query(dimensions=["id", {"name": "s", "expression": "iif(count(*) > 1, skills, required)"}],
+        body = query(dimensions=["id", {"alias": "s", "field": "iif(count(*) > 1, skills, required)"}],
                      distinct_dimension_values=False)
         async with list_engine() as engine:
             with pytest.raises(SlayerError, match="distinct_dimension_values") as caught:

@@ -9,13 +9,13 @@ import re
 import pytest
 
 from slayer.core.errors import DistinctDimensionValuesError
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev1740_fixtures import gen, month_td
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -24,10 +24,10 @@ class TestPartitionByRequired:
         q = _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
-                 "name": "band"},
+                {"field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
+                 "alias": "band"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
@@ -45,10 +45,10 @@ class TestAggregateReferencingDimGenerates:
         q = _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
-                               "THEN 1 ELSE 0 END", "name": "band"},
+                {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
+                               "THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
         )
         sql = await gen(q)
         assert "_cm_" in sql
@@ -61,11 +61,11 @@ class TestDeferredShapesRaiseDev1824:
         q = _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
-                 "name": "x"},
+                {"field": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
+                 "alias": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
         )
         with pytest.raises(ValueError) as ei:
             await gen(q)
@@ -79,11 +79,11 @@ class TestDeferredShapesRaiseDev1824:
         q = _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(amount, window='90d', partition_by=city) "
-                               "> 5000 THEN 1 ELSE 0 END", "name": "x"},
+                {"field": "CASE WHEN sum(amount, window='90d', partition_by=city) "
+                               "> 5000 THEN 1 ELSE 0 END", "alias": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -98,10 +98,10 @@ class TestDeferredShapesRaiseDev1824:
         q = _q(
             dimensions=[
                 "region",
-                {"expression": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
-                               "THEN 1 ELSE 0 END", "name": "x"},
+                {"field": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
+                               "THEN 1 ELSE 0 END", "alias": "x"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -110,8 +110,8 @@ class TestDistinctDimensionValuesRejection:
     async def test_aggregate_dim_rejected_in_raw_rows_mode(self) -> None:
         q = _q(
             dimensions=[
-                {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
-                               "THEN 1 ELSE 0 END", "name": "band"},
+                {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
+                               "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             distinct_dimension_values=False,
         )

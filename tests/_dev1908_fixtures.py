@@ -16,16 +16,16 @@ from typing import AsyncIterator, List, Optional
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, DatasetExtension, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -33,7 +33,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
 
 from tests import _dev1900_fixtures
-from tests._dev1900_fixtures import dev1900_models
+from tests._dev1900_fixtures import dev1900_datasets
 from tests._dev1840_fixtures import (
     _CUSTOMERS_ROWS,
     _ORDERS_ROWS,
@@ -58,98 +58,98 @@ _ORDER_SHIP_REGION = [
 ]
 
 
-def _by_name(models: List[SlayerModel], name: str) -> SlayerModel:
-    return next(m for m in models if m.name == name)
+def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def countries_model() -> SlayerModel:
+def countries_dataset() -> SlayerDataset:
     """``countries`` + the aggregations whose defaults name a model on the path
     to them (``regions``, ``regions.customers``, …) — each cancels."""
-    return SlayerModel(
+    return SlayerDataset(
         name="countries", data_source="test", sql_table="countries",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="gdp", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="gdp", datatype=DataType.FLOAT),
         ],
         aggregations=[
             # Single cancel: regions is one hop back on the path.
-            Aggregation(name="wsum_region_pop", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum_region_pop", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight", sql="regions.pop")]),
-            Aggregation(name="wsum_region_pop_expr", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum_region_pop_expr", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight", sql="regions.pop * 1")]),
             # Double cancel: regions.customers walks two back to customers.
-            Aggregation(name="wsum_cust_spend2", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum_cust_spend2", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight",
                                                  sql="regions.customers.spend")]),
-            Aggregation(name="wsum_cust_spend2_expr", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum_cust_spend2_expr", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight",
                                                  sql="regions.customers.spend * 1")]),
             # Cancel then forward: regions.customers cancels, plans hops on.
-            Aggregation(name="wsum_plan_fee", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum_plan_fee", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight",
                                                  sql="regions.customers.plans.fee")]),
             # Cancel then FANNING hop: homes at region_events, like its explicit twin.
-            Aggregation(name="wsum_fan", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum_fan", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight",
                                                  sql="regions.region_events.value")]),
             # Two defaults in two frames: regions.pop and regions.customers.plans.fee.
-            Aggregation(name="wsum_two", formula="SUM({value} * {w1} * {w2})",
+            Aggregation(name="wsum_two", expression="SUM({value} * {w1} * {w2})",
                         params=[AggregationParam(name="w1", sql="regions.pop"),
                                 AggregationParam(name="w2",
                                                  sql="regions.customers.plans.fee")]),
             # D3: first token cancels (regions), then `plans` misses (not a hop from
             # regions) — fails closed, never re-anchored at the root.
-            Aggregation(name="wsum_cancel_miss", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum_cancel_miss", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight", sql="regions.plans.fee")]),
         ],
     )
 
 
-def dev1908_models() -> List[SlayerModel]:
+def dev1908_datasets() -> List[SlayerDataset]:
     """DEV-1900 graph + ``regions → countries`` and the cancellation
     aggregations. Host first (orders)."""
-    models = dev1900_models()
+    models = dev1900_datasets()
 
     regions = _by_name(models, "regions")
-    regions.columns.append(Column(name="country_id", type=DataType.INT))
-    regions.joins.append(ModelJoin(
-        target_model="countries", join_pairs=[["country_id", "id"]],
-        cardinality=JoinCardinality.MANY_TO_ONE))
+    regions.fields.append(DatasetField(name="country_id", datatype=DataType.INTEGER))
+    regions.relationships.append(DatasetRelationship(
+        to="countries", from_columns=["country_id"], to_columns=["id"],
+        cardinality=RelationshipCardinality.MANY_TO_ONE))
     # Cancel then forward from a regions-declared default: customers.plans.fee.
     regions.aggregations.append(Aggregation(
-        name="wsum_cust_plan_fee", formula="SUM({value} * {weight})",
+        name="wsum_cust_plan_fee", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="customers.plans.fee")]))
     # Reverse hop to a dataset NOT on the path (regions-rooted): stays refused.
     regions.aggregations.append(Aggregation(
-        name="wsum_cust_spend", formula="SUM({value} * {weight})",
+        name="wsum_cust_spend", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="customers.spend")]))
 
     region_events = _by_name(models, "region_events")
     # Homes above the source over a to-one reverse hop: regions.pop.
     region_events.aggregations.append(Aggregation(
-        name="wsum_rp", formula="SUM({value} * {weight})",
+        name="wsum_rp", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.pop")]))
 
     orders = _by_name(models, "orders")
-    orders.columns.append(Column(name="ship_region_id", type=DataType.INT))
-    orders.columns.append(Column(name="cost", type=DataType.DOUBLE, sql="amount * 2"))
+    orders.fields.append(DatasetField(name="ship_region_id", datatype=DataType.INTEGER))
+    orders.fields.append(DatasetField(name="cost", datatype=DataType.FLOAT, sql="amount * 2"))
     orders.aggregations.extend([
         # Owner at the root consumes its own name once (degenerate cancel-to-self).
-        Aggregation(name="wself", formula="SUM({value} * {weight})",
+        Aggregation(name="wself", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="orders.cost")]),
-        Aggregation(name="wself_expr", formula="SUM({value} * {weight})",
+        Aggregation(name="wself_expr", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="orders.cost * 1")]),
         # Second-order outer with a root-frame expression default (D8 kernel door).
-        Aggregation(name="wavg_pop_expr", formula="SUM({value} * {weight})",
+        Aggregation(name="wavg_pop_expr", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight",
                                              sql="customers.regions.pop * 1")]),
         # A non-join qualifier default → fails closed at typing.
-        Aggregation(name="wnowhere", formula="SUM({value} * {weight})",
+        Aggregation(name="wnowhere", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="nowhere.col")]),
     ])
 
-    models.append(countries_model())
+    models.append(countries_dataset())
     return models
 
 
@@ -188,7 +188,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture (DEV-1943 door)."""
     dialect = request.param
@@ -197,7 +197,7 @@ async def make_exec_engine(
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
         dialect=dialect, seed=seed,
-        models=models if models is not None else dev1908_models(),
+        datasets=datasets if datasets is not None else dev1908_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -206,26 +206,26 @@ async def make_exec_engine(
 # Query shorthands.
 # --------------------------------------------------------------------------- #
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def bundle1908() -> ResolvedSourceBundle:
-    models = dev1908_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    models = dev1908_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
 def signup_month_td() -> List[TimeDimension]:
     return [TimeDimension(
-        dimension="customers.signup_at",
+        field="customers.signup_at",
         granularity=TimeGranularity.MONTH)]
 
 
-def ship_region_extension() -> ModelExtension:
+def ship_region_extension() -> DatasetExtension:
     """orders inline-extended with a named ``ship_region`` join to regions."""
-    return ModelExtension(source_name="orders", joins=[
-        ModelJoin(target_model="regions", join_pairs=[["ship_region_id", "id"]],
-                  name="ship_region", cardinality=JoinCardinality.MANY_TO_ONE)])
+    return DatasetExtension(dataset="orders", relationships=[
+        DatasetRelationship(to="regions", from_columns=["ship_region_id"], to_columns=["id"],
+                  name="ship_region", cardinality=RelationshipCardinality.MANY_TO_ONE)])
 
 
 # --------------------------------------------------------------------------- #
@@ -357,10 +357,10 @@ ORACLE_LITERALS = {
 }
 
 __all__ = [
-    "Aggregation", "AggregationParam", "Column", "ModelExtension", "ModelJoin",
-    "ModelMeasure", "SlayerModel", "SlayerQuery", "JoinCardinality",
-    "ColumnRef", "TimeDimension", "TimeGranularity",
-    "dev1908_models", "countries_model", "make_exec_engine",
+    "Aggregation", "AggregationParam", "DatasetField", "DatasetExtension", "DatasetRelationship",
+    "DatasetMetric", "SlayerDataset", "SlayerQuery", "RelationshipCardinality",
+    "FieldRef", "TimeDimension", "TimeGranularity",
+    "dev1908_datasets", "countries_dataset", "make_exec_engine",
     "orders_q", "bundle1908", "signup_month_td", "ship_region_extension",
     "rows_by", "month_key",
     "derive_oracles", "ORACLE_LITERALS",

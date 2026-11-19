@@ -15,7 +15,7 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.query import SlayerQuery
 
-from tests._consecutive_periods_calendar_fixtures import calendar_models, orders_query
+from tests._consecutive_periods_calendar_fixtures import calendar_datasets, orders_query
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -34,27 +34,27 @@ _STREAK = "consecutive_periods(sum(amount) > 100)"
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
-        "cp/month": orders_query(formula=_STREAK),
-        "cp/grouped": orders_query(formula=_STREAK, dimensions=["customer_id"], filters=[]),
-        "cp/quarter": orders_query(formula=_STREAK, granularity="quarter"),
-        "cp/week_sunday": orders_query(formula=_STREAK, granularity="week_sunday"),
-        "cp/hour": orders_query(formula=_STREAK, granularity="hour"),
+        "cp/month": orders_query(expression=_STREAK),
+        "cp/grouped": orders_query(expression=_STREAK, dimensions=["customer_id"], filters=[]),
+        "cp/quarter": orders_query(expression=_STREAK, granularity="quarter"),
+        "cp/week_sunday": orders_query(expression=_STREAK, granularity="week_sunday"),
+        "cp/hour": orders_query(expression=_STREAK, granularity="hour"),
         "cp/date_range": orders_query(
-            formula=_STREAK, date_range=["2025-02-01", "2025-06-30"]),
+            expression=_STREAK, date_range=["2025-02-01", "2025-06-30"]),
         "cp/over_change": orders_query(
-            formula="consecutive_periods(change(sum(amount)) > 0)"),
-        "cp/over_lag": orders_query(formula="consecutive_periods(lag(sum(amount)) > 100)"),
-        "cp/under_lag": orders_query(formula=f"lag({_STREAK})"),
-        "ts/hour": orders_query(formula="time_shift(sum(amount), -1)", granularity="hour"),
+            expression="consecutive_periods(change(sum(amount)) > 0)"),
+        "cp/over_lag": orders_query(expression="consecutive_periods(lag(sum(amount)) > 100)"),
+        "cp/under_lag": orders_query(expression=f"lag({_STREAK})"),
+        "ts/hour": orders_query(expression="time_shift(sum(amount), -1)", granularity="hour"),
     }
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
     """Emitted SQL, or a structured record of the raised error."""
-    models = calendar_models()
+    models = calendar_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

@@ -1,0 +1,414 @@
+{
+ "source": "tests/test_dev2102_schema_drift.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "net",
+    "formula": "sum(amount - tax)"
+   },
+   "new": {
+    "name": "net",
+    "expression": "sum(amount - tax)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "buyer_ref",
+      "id"
+     ]
+    ],
+    "name": "buyer"
+   },
+   "new": {
+    "to": "customers",
+    "name": "buyer",
+    "from_columns": [
+     "buyer_ref"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "net",
+    "name": "n"
+   },
+   "new": {
+    "expression": "net",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "paid",
+    "formula": "sum(iif(status = 'paid', amount, 0))"
+   },
+   "new": {
+    "name": "paid",
+    "expression": "sum(iif(status = 'paid', amount, 0))"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "paid",
+    "name": "p"
+   },
+   "new": {
+    "expression": "paid",
+    "name": "p"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "taxes",
+    "formula": "sum(tax)"
+   },
+   "new": {
+    "name": "taxes",
+    "expression": "sum(tax)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "taxes"
+   },
+   "new": {
+    "metric": "taxes"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "status",
+      "code"
+     ]
+    ],
+    "name": "by_code"
+   },
+   "new": {
+    "to": "customers",
+    "name": "by_code",
+    "from_columns": [
+     "status"
+    ],
+    "to_columns": [
+     "code"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "gross",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "gross",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "gross",
+    "name": "g"
+   },
+   "new": {
+    "expression": "gross",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "buyers"
+   },
+   "new": {
+    "metric": "buyers"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s",
+    "source_model": "orders",
+    "dimensions": [
+     "buyer_ref"
+    ]
+   },
+   "new": {
+    "name": "s",
+    "population": "orders",
+    "dimensions": [
+     "buyer_ref"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "latest",
+    "formula": "max(last_order.amount)"
+   },
+   "new": {
+    "name": "latest",
+    "expression": "max(last_order.amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customer.latest",
+    "name": "l"
+   },
+   "new": {
+    "expression": "customer.latest",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 12,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 13,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 14,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 15,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 16,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 17,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 184,
+   "reason": "not fully literal"
+  }
+ ]
+}

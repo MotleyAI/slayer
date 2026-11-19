@@ -40,43 +40,44 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
 # Models — orders (host) → customers; customers → orders is the inverted
 # fan-out orientation (DEV-1853) the probes cross.
 # --------------------------------------------------------------------------- #
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
         aggregations=[
             # Custom aggregation with literal defaults (lo=0, hi=1000).
             Aggregation(
                 name="trimmed_mean",
-                formula="AVG(CASE WHEN {value} BETWEEN {lo} AND {hi} THEN {value} END)",
+                expression="AVG(CASE WHEN {value} BETWEEN {lo} AND {hi} THEN {value} END)",
                 params=[
                     AggregationParam(name="lo", sql="0"),
                     AggregationParam(name="hi", sql="1000"),
@@ -86,58 +87,58 @@ def orders_model() -> SlayerModel:
     )
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="discount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
         ],
         aggregations=[
             # Custom aggregation whose definition default names a target column.
             Aggregation(
-                name="disc_spend", formula="SUM({value} * {d})",
+                name="disc_spend", expression="SUM({value} * {d})",
                 params=[AggregationParam(name="d", sql="discount")],
             ),
             # A custom agg on customers whose param can be overridden by a root
             # (orders) column, widening the home above the source (def-owner test).
             Aggregation(
-                name="wprod", formula="SUM({value} * {w})",
+                name="wprod", expression="SUM({value} * {w})",
                 params=[AggregationParam(name="w", sql="1")],
             ),
         ],
     )
 
 
-def dev1915_models() -> List[SlayerModel]:
+def dev1915_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model()]
+    return [orders_dataset(), customers_dataset()]
 
 
 # --------------------------------------------------------------------------- #
 # Query shorthands.
 # --------------------------------------------------------------------------- #
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def month_td(column: str = "created_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=column,
+        field=column,
         granularity=TimeGranularity.MONTH,
     )]
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb",
               validate: bool = False) -> str:
-    models = dev1915_models()
+    models = dev1915_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
@@ -254,7 +255,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1915_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1915_datasets()) as (engine, _db):
         yield engine
 
 
@@ -272,7 +273,7 @@ def rows_by(resp, *keys) -> dict:
     return out
 
 
-def by_month(resp, value_key: str) -> dict:
+def by_month(resp: SlayerResponse, value_key: str) -> dict:
     """``{month: value}`` for a single windowed measure grouped by the time bucket."""
     time_key = next(k for k in resp.columns if k.endswith("created_at")
                     or k.endswith("signup_at"))
@@ -285,7 +286,7 @@ def broadcast_warnings(resp) -> list:
 
 
 __all__ = [
-    "orders_model", "customers_model", "dev1915_models",
+    "orders_dataset", "customers_dataset", "dev1915_datasets",
     "q", "gen", "month_td", "month_key", "rows_by", "by_month",
     "broadcast_warnings",
     "make_exec_engine",
@@ -299,7 +300,7 @@ __all__ = [
     "CM_COUNT_1Y", "CM_LAST_1Y", "DISC_SPEND_1Y",
     "EMPTY_MONTHS", "FILTER_COUNT_GE3_MONTHS", "ORDER_MAX_DESC_MONTHS",
     "_ORDERS_ROWS", "_CUSTOMERS_ROWS",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension",
-    "TimeGranularity", "ModelJoin", "Column", "SlayerModel", "DataType",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension",
+    "TimeGranularity", "DatasetRelationship", "DatasetField", "SlayerDataset", "DataType",
     "Aggregation", "AggregationParam",
 ]

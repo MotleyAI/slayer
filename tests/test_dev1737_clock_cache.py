@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.cache import CacheConfig, QueryCache
 from slayer.database.client import SlayerSQLClient
-from tests._dev1737_fixtures import exec_engine, scenario_models, scenario_tables
+from tests._dev1737_fixtures import exec_engine, scenario_datasets, scenario_tables
+from slayer.engine.query_engine import SlayerQueryEngine
 
 CLOCK_FILTER = "created_at >= date_add(current_date(), -30, 'day')"
 
@@ -26,12 +27,12 @@ class _Clock:
 @pytest.fixture
 async def engine():
     tables = scenario_tables(today=datetime.now(timezone.utc).date())
-    async with exec_engine("sqlite", tables=tables, models=scenario_models()) as eng:
+    async with exec_engine("sqlite", tables=tables, datasets=scenario_datasets()) as eng:
         yield eng
 
 
 @pytest.fixture
-def data_calls(monkeypatch) -> list[str]:
+def data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     orig = SlayerSQLClient.execute
 
@@ -45,7 +46,7 @@ def data_calls(monkeypatch) -> list[str]:
 
 def _q(filters: list[str], **kw) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}], "filters": filters, **kw,
+        "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": filters, **kw,
     })
 
 
@@ -57,9 +58,9 @@ class TestClockBypass:
     @pytest.mark.parametrize("query", [
         _q([CLOCK_FILTER]),
         _q(["created_at <= now()"]),
-        _q([], dimensions=[{"expression": "date_diff('day', created_at, now())", "name": "age"}]),
+        _q([], dimensions=[{"field": "date_diff('day', created_at, now())", "alias": "age"}]),
         SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [{"formula": "max(date_diff('day', created_at, current_date()))", "name": "m"}],
+            "population": "orders", "metrics": [{"metric": "max(date_diff('day', created_at, current_date()))", "alias": "m"}],
         }),
     ])
     async def test_root_clock_query_never_cached(self, engine, data_calls, query) -> None:
@@ -70,10 +71,10 @@ class TestClockBypass:
 
     async def test_clock_inside_a_stage_never_cached(self, engine, data_calls) -> None:
         inner = SlayerQuery.model_validate({
-            "name": "recent_orders", "source_model": "orders", "dimensions": ["status"],
-            "measures": [{"formula": "count(*)", "name": "n"}], "filters": ["created_at <= now()"],
+            "name": "recent_orders", "population": "orders", "dimensions": ["status"],
+            "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["created_at <= now()"],
         })
-        outer = SlayerQuery.model_validate({"source_model": "recent_orders", "measures": ["sum(n)"]})
+        outer = SlayerQuery.model_validate({"population": "recent_orders", "metrics": ["sum(n)"]})
         await engine.execute([inner, outer], cache=True)
         await engine.execute([inner, outer], cache=True)
         assert len(_data(data_calls)) == 2
@@ -87,16 +88,16 @@ class TestClockBypass:
         assert engine.cache_size == 1
         assert first.data == second.data
 
-    async def test_refresh_does_not_repopulate_a_clock_query(self, engine) -> None:
+    async def test_refresh_does_not_repopulate_a_clock_query(self, engine: SlayerQueryEngine) -> None:
         clock = _Clock()
         engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clock)
-        plain = {"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "count(*)", "name": "n"}]}
-        await engine.create_model_from_query(query=plain, name="obs")
+        plain = {"population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]}
+        await engine.create_dataset_from_query(query=plain, name="obs")
         await engine.execute("obs", cache=True)
         assert engine.cache_size == 1
 
-        await engine.save_model(SlayerModel(name="obs", source_queries=[SlayerQuery.model_validate({
-            **plain, "filters": ["created_at <= now()"],
+        await engine.save_dataset(SlayerDataset(name="obs", source_queries=[SlayerQuery.model_validate({
+            **plain, "filter": ["created_at <= now()"],
         })]))
         clock.t += 200
         await engine.refresh()

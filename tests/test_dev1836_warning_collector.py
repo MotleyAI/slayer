@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 from slayer.engine.query_engine import (
     _collect_broadcast_warnings,
 )
@@ -17,7 +17,6 @@ from slayer.engine.query_engine import (
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
-    ModelMeasure,
     SPEND_BAND,
     SPEND_BY_BAND,
     broadcast_warnings,
@@ -33,9 +32,9 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-POP = ModelMeasure(formula="sum(customers.regions.pop)", name="pop")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 
 
 #: Outside the conjunct pushdown scope for EVERY producer root here (the OR mixes
@@ -54,10 +53,10 @@ class TestPushedFilterEntryIdentity:
     ):
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["customers.tier"], measures=[M, CM, POP],
-            filters=[_EXCLUDED_APP],
+            dimensions=["customers.tier"], metrics=[M, CM, POP],
+            filter=[_EXCLUDED_APP],
         ))
-        assert sorted((w.measure, w.filter_text) for w in pushed_filter_infos(resp)) == [
+        assert sorted((w.metric, w.filter_text) for w in pushed_filter_infos(resp)) == [
             ("cm", _EXCLUDED_APP), ("pop", _EXCLUDED_APP),
         ]
 
@@ -67,13 +66,13 @@ class TestPushedFilterEntryIdentity:
         metric counts the customers with an app order (c1, c3), unfanned."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, CM],
-            filters=[_EXCLUDED_APP],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
+            metrics=[M, CM],
+            filter=[_EXCLUDED_APP],
         ))
         pushed = pushed_filter_infos(resp)
         assert {w.filter_text for w in pushed} == {_EXCLUDED_APP}
-        assert len({w.measure for w in pushed}) == 2, pushed
+        assert len({w.metric for w in pushed}) == 2, pushed
         by = rows_by(resp, "orders.sband")
         # Spine: app orders only (o2, o4, o5 — all gold customers → band hi).
         assert set(by) == {("hi",)}
@@ -89,13 +88,13 @@ class TestPushedFilterEntryIdentity:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "expression": ("CASE WHEN sum(customers.regions.pop, "
+                "field": ("CASE WHEN sum(customers.regions.pop, "
                                "partition_by=customers.regions.name) > 150 "
                                "THEN 'hi' ELSE 'lo' END"),
-                "name": "pband",
+                "alias": "pband",
             }],
-            measures=[M],
-            filters=["customers.tier = 'gold' OR customers.regions.name = '__none__'"],
+            metrics=[M],
+            filter=["customers.tier = 'gold' OR customers.regions.name = '__none__'"],
         ))
         (pushed,) = pushed_filter_infos(resp)
         assert "tier" in pushed.filter_text
@@ -112,14 +111,14 @@ class TestBroadcastDedup:
         roles (measure, filter, order) and pop in one — two warnings total."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], measures=[M, CM, POP],
-            filters=["sum(customers.spend) > 0"],
-            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
+            dimensions=["status"], metrics=[M, CM, POP],
+            filter=["sum(customers.spend) > 0"],
+            order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
             to_many_handling="broadcast",
         ))
         warnings = broadcast_warnings(resp)
         assert len(warnings) == 2
-        named = {w.measure for w in warnings}
+        named = {w.metric for w in warnings}
         assert any("cm" in name for name in named), named
         assert any("pop" in name for name in named), named
 
@@ -128,8 +127,8 @@ class TestBroadcastDedup:
         computed dimension's producer chain must not shadow the outer one."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}, "status"],
-            measures=[M, CM],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}, "status"],
+            metrics=[M, CM],
             to_many_handling="broadcast",
         ))
         # status is unattributable for cm → one broadcast for cm; the band
@@ -137,7 +136,7 @@ class TestBroadcastDedup:
         warnings = broadcast_warnings(resp)
         assert len(warnings) == 1
         (w,) = warnings
-        assert "cm" in w.measure
+        assert "cm" in w.metric
         dims = {d.dimension for d in w.dimensions}
         assert any("status" in d for d in dims), dims
         assert not any("sband" in d for d in dims), dims
@@ -146,8 +145,8 @@ class TestBroadcastDedup:
         """Anchor for the nested case: without status, nothing broadcasts."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, CM],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
+            metrics=[M, CM],
         ))
         assert broadcast_warnings(resp) == []
         by = rows_by(resp, "orders.sband")
@@ -163,7 +162,7 @@ class TestBroadcastDedup:
 def _attach(**overrides):
     empty = SimpleNamespace(regroup_attach_plans=[], cross_model_aggregate_plans=[])
     base = dict(
-        broadcast_measure=None, broadcast_dimensions=[], association_unsupported=None, producer_plan=empty,
+        broadcast_metric=None, broadcast_dimensions=[], association_unsupported=None, producer_plan=empty,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -183,10 +182,10 @@ class TestCollectorIdentityUnits:
         """D6 identity is per stage: same-labeled aggregates in different DAG
         stages are distinct — dimensions must not union across stages."""
         stage_one = _planned([_attach(
-            broadcast_measure="orders.cm", broadcast_dimensions=[("d1", "r1")],
+            broadcast_metric="orders.cm", broadcast_dimensions=[("d1", "r1")],
         )])
         stage_two = _planned([_attach(
-            broadcast_measure="orders.cm", broadcast_dimensions=[("d2", "r2")],
+            broadcast_metric="orders.cm", broadcast_dimensions=[("d2", "r2")],
         )])
         out = _collect_broadcast_warnings(
             planned_list=[stage_one, stage_two],
@@ -200,9 +199,9 @@ class TestCollectorIdentityUnits:
 
     def test_same_stage_same_measure_still_unions_dimensions(self):
         plans = _planned([
-            _attach(broadcast_measure="orders.cm",
+            _attach(broadcast_metric="orders.cm",
                     broadcast_dimensions=[("d1", "r1")]),
-            _attach(broadcast_measure="orders.cm",
+            _attach(broadcast_metric="orders.cm",
                     broadcast_dimensions=[("d1", "r1"), ("d2", "r2")]),
         ])
         (w,) = _collect_broadcast_warnings(
@@ -213,7 +212,7 @@ class TestCollectorIdentityUnits:
     def test_broadcast_human_message_names_location_and_reasons(self):
         (w,) = _collect_broadcast_warnings(
             planned_list=[_planned([_attach(
-                broadcast_measure="orders.cm",
+                broadcast_metric="orders.cm",
                 broadcast_dimensions=[("status", "crosses an unproven join hop to x")],
             )])],
             stages=[SimpleNamespace(name=None)],

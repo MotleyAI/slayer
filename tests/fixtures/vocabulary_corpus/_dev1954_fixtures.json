@@ -1,0 +1,64 @@
+{
+ "source": "tests/_dev1954_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "tot_spend",
+    "formula": "sum(spend)"
+   },
+   "new": {
+    "name": "tot_spend",
+    "expression": "sum(spend)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "maxpop",
+    "formula": "max(pop)"
+   },
+   "new": {
+    "name": "maxpop",
+    "expression": "max(pop)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rp",
+    "formula": "max(customers.regions.pop)"
+   },
+   "new": {
+    "name": "rp",
+    "expression": "max(customers.regions.pop)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  }
+ ]
+}

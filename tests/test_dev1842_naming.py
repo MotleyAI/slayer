@@ -17,37 +17,38 @@ inherited ones, compared against the hand-expanded twin.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import AsyncIterator
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1842_fixtures import dev1842_models, make_exec_engine, q
+from tests._dev1842_fixtures import dev1842_datasets, make_exec_engine, q
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_backend(request):
+async def exec_backend(request: pytest.FixtureRequest) -> AsyncIterator[tuple[str, SlayerQueryEngine]]:
     async for engine in make_exec_engine(request):
         yield request.param, engine
 
 
 class TestImplicitAndExplicitName:
-    async def test_implicit_name_is_the_dotted_path(self, exec_backend) -> None:
+    async def test_implicit_name_is_the_dotted_path(self, exec_backend: tuple[str, SlayerQueryEngine]) -> None:
         """Unnamed ``customers.aov`` → result key ``orders.customers.aov``."""
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=["customers.tier"],
-                                      measures=[{"formula": "customers.aov"}]))
+                                      metrics=[{"metric": "customers.aov"}]))
         assert "orders.customers.aov" in resp.columns
 
-    async def test_explicit_name_overrides_the_implicit_key(self, exec_backend) -> None:
+    async def test_explicit_name_overrides_the_implicit_key(self, exec_backend: tuple[str, SlayerQueryEngine]) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.aov", "name": "myaov"}]))
+            metrics=[{"metric": "customers.aov", "alias": "myaov"}]))
         assert "orders.myaov" in resp.columns
         assert "orders.customers.aov" not in resp.columns
 
@@ -57,53 +58,53 @@ class TestTypeAndFormatInheritance:
     query-backed model whose backing stage selects it — identically to its
     hand-expanded twin."""
 
-    async def _virtual_column(self, measure_spec, col_name: str):
+    async def _virtual_column(self, metric_spec, col_name: str):
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(
                 DatasourceConfig(name="test", type="sqlite", database=":memory:")
             )
-            for m in dev1842_models():
-                await storage.save_model(m, _validate=False)
+            for m in dev1842_datasets():
+                await storage.save_dataset(m, _validate=False)
             engine = SlayerQueryEngine(storage=storage)
-            qb = SlayerModel(
+            qb = SlayerDataset(
                 name="qb_typed", data_source="test",
                 source_queries=[SlayerQuery(
-                    source_model="orders",
+                    population="orders",
                     dimensions=["status"],
-                    measures=[measure_spec],
+                    metrics=[metric_spec],
                 )],
             )
-            saved = await engine.save_model(qb)
-            return next(c for c in saved.columns if c.name == col_name)
+            saved = await engine.save_dataset(qb)
+            return next(c for c in saved.fields if c.name == col_name)
 
     async def test_saved_type_is_inherited(self) -> None:
         """``customers.typed_aov`` declares ``type=DOUBLE``; the virtual column
         carries it."""
         col = await self._virtual_column(
-            ModelMeasure(formula="customers.typed_aov", name="ta"), "ta")
-        assert col.type == DataType.DOUBLE
+            QueryMetric(metric="customers.typed_aov", alias="ta"), "ta")
+        assert col.datatype == DataType.FLOAT
 
     async def test_query_level_type_overrides_saved_type(self) -> None:
         col = await self._virtual_column(
-            ModelMeasure(formula="customers.typed_aov", name="ti", type=DataType.INT),
+            QueryMetric(metric="customers.typed_aov", alias="ti", datatype=DataType.INTEGER),
             "ti")
-        assert col.type == DataType.INT
+        assert col.datatype == DataType.INTEGER
 
     async def test_inferred_type_matches_hand_expanded(self) -> None:
         """``customers.aov`` (no declared type) infers the SAME type as the
         hand-expanded ``sum(customers.spend) / count(customers.*)``."""
         dotted = await self._virtual_column(
-            ModelMeasure(formula="customers.aov", name="af"), "af")
+            QueryMetric(metric="customers.aov", alias="af"), "af")
         hand = await self._virtual_column(
-            ModelMeasure(formula="sum(customers.spend) / count(customers.*)", name="af"),
+            QueryMetric(metric="sum(customers.spend) / count(customers.*)", alias="af"),
             "af")
-        assert dotted.type == hand.type
+        assert dotted.datatype == hand.datatype
 
     async def test_format_matches_hand_expanded(self) -> None:
         dotted = await self._virtual_column(
-            ModelMeasure(formula="customers.aov", name="af"), "af")
+            QueryMetric(metric="customers.aov", alias="af"), "af")
         hand = await self._virtual_column(
-            ModelMeasure(formula="sum(customers.spend) / count(customers.*)", name="af"),
+            QueryMetric(metric="sum(customers.spend) / count(customers.*)", alias="af"),
             "af")
         assert dotted.format == hand.format

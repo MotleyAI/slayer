@@ -13,10 +13,10 @@ import duckdb
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
@@ -97,12 +97,12 @@ def offline(corpus: Corpus, *, backend: str, tmp: Path, monkeypatch: pytest.Monk
     return storage
 
 
-async def load_all(corpus: Corpus, storage: StorageBackend) -> tuple[list[SlayerModel], list]:
-    identities = await storage._list_all_model_identities()
+async def load_all(corpus: Corpus, storage: StorageBackend) -> tuple[list[SlayerDataset], list]:
+    identities = await storage._list_all_dataset_identities()
     assert {ds for ds, _ in identities} == set(corpus.datasources)
     models = []
     for ds, name in sorted(identities):
-        model = await storage.get_model(name, data_source=ds)
+        model = await storage.get_dataset(name, data_source=ds)
         assert model is not None, (ds, name)
         models.append(model)
     memories = [await storage.get_memory(mid) for mid in corpus.memory_ids]
@@ -121,7 +121,7 @@ def rows(resp, *, ordered: bool) -> list[dict]:
     return out if ordered else sorted(out, key=lambda r: json.dumps(r, sort_keys=True))
 
 
-async def execute(corpus: Corpus, storage: StorageBackend, key: str) -> Any:
+async def execute(corpus: Corpus, storage: StorageBackend, key: str) -> SlayerResponse:
     """The response to the recorded query ``key`` (a memory's stored query for ``memory:<id>``)."""
     spec = corpus.expected[key]
     if key.startswith(MEMORY_PREFIX):
@@ -191,10 +191,10 @@ class OnlineChecks:
         resp = await execute(self.corpus, online_store, key)
         assert sorted(c.rsplit(".", 1)[-1] for c in resp.columns) == sorted(self.corpus.expected[key]["rows"][0])
 
-    async def test_every_model_resaves(self, online_store):
+    async def test_every_model_resaves(self, online_store: StorageBackend):
         models, _ = await load_all(self.corpus, online_store)
         for model in models:
-            await online_store.save_model(model)
+            await online_store.save_dataset(model)
 
     async def test_datasource_reingests(self, online_store, data_source):
         await reingest(self.corpus, online_store, data_source)
@@ -206,7 +206,7 @@ class OfflineChecks:
     corpus: ClassVar[Corpus]
 
     @pytest.fixture(params=["yaml", "sqlite"])
-    def offline_store(self, request, tmp_path, monkeypatch) -> StorageBackend:
+    def offline_store(self, request, tmp_path, monkeypatch: pytest.MonkeyPatch) -> StorageBackend:
         return offline(self.corpus, backend=request.param, tmp=tmp_path, monkeypatch=monkeypatch)
 
     async def test_every_document_loads_without_a_connection(self, offline_store):

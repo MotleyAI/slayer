@@ -1,0 +1,76 @@
+{
+ "source": "tests/test_dev1901_default_equivalence.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.hr.rname"
+    ],
+    "measures": [
+     {
+      "formula": "wpop(amount)",
+      "name": "a"
+     },
+     {
+      "formula": "wpop(amount, weight=customers.hr.pop)",
+      "name": "b"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.hr.rname"
+    ],
+    "metrics": [
+     {
+      "metric": "wpop(amount)",
+      "alias": "a"
+     },
+     {
+      "metric": "wpop(amount, weight=customers.hr.pop)",
+      "alias": "b"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 53,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 236,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 237,
+   "reason": "not fully literal"
+  }
+ ]
+}

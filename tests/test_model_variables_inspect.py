@@ -6,32 +6,32 @@ bump), so an agent can learn the query contract without reading the SQL.
 """
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import extract_model_variables
-from slayer.inspect.model_render import (
-    model_skeleton_fields,
-    render_model_skeleton,
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
+from slayer.core.query import extract_dataset_variables
+from slayer.inspect.dataset_render import (
+    dataset_skeleton_fields,
+    render_dataset_skeleton,
 )
 
 
-def _model() -> SlayerModel:
-    return SlayerModel(
+def _dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="rr",
         sql="SELECT '{d_from}' AS d FROM t WHERE 1=1 "
             "AND {? brand IN ({brand}) ?} AND {? mkt IN ({market}) ?}",
         data_source="ds",
-        columns=[Column(name="d", sql="d", type=DataType.TIMESTAMP)],
+        fields=[DatasetField(name="d", sql="d", datatype=DataType.DATETIME)],
     )
 
 
 def test_skeleton_fields_carry_variables():
-    fields = model_skeleton_fields(model=_model())
+    fields = dataset_skeleton_fields(dataset=_dataset())
     assert fields["variables"]["required"] == ["d_from"]
     assert fields["variables"]["optional"] == ["brand", "market"]
 
 
 def test_skeleton_render_lists_variables_line():
-    out = render_model_skeleton(model=_model())
+    out = render_dataset_skeleton(dataset=_dataset())
     assert "Variables:" in out
     assert "d_from" in out
     assert "brand" in out
@@ -39,39 +39,39 @@ def test_skeleton_render_lists_variables_line():
 
 
 def test_skeleton_render_omits_variables_line_when_none():
-    plain = SlayerModel(
+    plain = SlayerDataset(
         name="m", sql_table="t", data_source="ds",
-        columns=[Column(name="a", sql="a", type=DataType.TEXT)],
+        fields=[DatasetField(name="a", sql="a", datatype=DataType.STRING)],
     )
-    out = render_model_skeleton(model=plain)
+    out = render_dataset_skeleton(dataset=plain)
     assert "Variables:" not in out
 
 
 def test_variables_are_derived_not_persisted_no_schema_bump():
     # Discoverability is structural: no new persisted SlayerModel field, so the
     # serialized schema version is unchanged and no `variables` key is stored.
-    model = _model()
+    model = _dataset()
     dumped = model.model_dump()
     assert "variables" not in dumped
-    assert dumped["version"] == SlayerModel.model_fields["version"].default
+    assert dumped["version"] == SlayerDataset.model_fields["version"].default
 
 
-def _measure_model(**kw) -> SlayerModel:
-    return SlayerModel(
+def _metric_dataset(**kw) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
-        measures=[ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
+        fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+        metrics=[DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         **kw,
     )
 
 
 def test_saved_measure_placeholder_required():
-    assert extract_model_variables(_measure_model()).required == ["k"]
-    assert model_skeleton_fields(model=_measure_model())["variables"]["required"] == ["k"]
+    assert extract_dataset_variables(_metric_dataset()).required == ["k"]
+    assert dataset_skeleton_fields(dataset=_metric_dataset())["variables"]["required"] == ["k"]
 
 
 def test_defaulted_saved_measure_placeholder_optional():
-    model = _measure_model(query_variables={"k": 2})
-    variables = extract_model_variables(model)
+    model = _metric_dataset(query_variables={"k": 2})
+    variables = extract_dataset_variables(model)
     assert variables.required == []
     assert variables.optional == ["k"]

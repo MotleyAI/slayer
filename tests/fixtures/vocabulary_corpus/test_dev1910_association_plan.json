@@ -1,0 +1,33 @@
+{
+ "source": "tests/test_dev1910_association_plan.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.pop)",
+    "name": "rp"
+   },
+   "new": {
+    "expression": "sum(customers.regions.pop)",
+    "name": "rp"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  }
+ ]
+}

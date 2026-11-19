@@ -1,8 +1,8 @@
 # models/column-definitions Specification
 
 ## Purpose
-Defines when a derived column's definition — its `Column.sql` expression or its
-`Column.filter` value mask — is well-formed with respect to the join hops it
+Defines when a derived column's definition — its `DatasetField.sql` expression or its
+`DatasetField.filter` value mask — is well-formed with respect to the join hops it
 crosses from its declaring model, and how a malformed definition is reported at
 model save time.
 
@@ -10,7 +10,7 @@ model save time.
 
 ### Requirement: A derived column may reference only provably to-one targets
 
-A derived `Column.sql` or `Column.filter` reference SHALL be a function of its
+A derived `DatasetField.sql` or `DatasetField.filter` reference SHALL be a function of its
 declaring model's row. When such a reference's join path from the declaring
 model provably crosses a fanning hop — a hop that is not provably many-to-one
 and whose declared cardinality in its traversal orientation is `one_to_many` or
@@ -88,7 +88,7 @@ refusing it as unresolvable.
 - **THEN** the save is rejected with the circular-definition error, not the fanning error
 
 #### Scenario: the engine's save door rejects the same definition identically
-- **WHEN** the `regions.customers.spend` definition is saved through the engine's `save_model`
+- **WHEN** the `regions.customers.spend` definition is saved through the engine's `save_dataset`
 - **THEN** the save is rejected with the same circular-definition error, naming the same column, model, reference, revisited model, hop and remedy
 
 #### Scenario: the engine's save door attributes a revisit inside a referenced column on another model to that column
@@ -101,7 +101,7 @@ refusing it as unresolvable.
 
 ### Requirement: Unproven references are accepted with a save-time warning and a query-time backstop
 
-When a derived `Column.sql` / `Column.filter` reference's path crosses a hop
+When a derived `DatasetField.sql` / `DatasetField.filter` reference's path crosses a hop
 that is neither provably many-to-one nor provably fanning — an undeclared hop,
 or a hop whose only proof is that its reverse orientation covers the source's
 unique key — the model save SHALL succeed and SHALL emit a warning naming the
@@ -135,7 +135,7 @@ backstop). A reference whose target model is not loaded or does not resolve SHAL
 
 #### Scenario: a default_time_dimension across an unproven hop is refused when it ranks a first/last
 - **WHEN** a model's `default_time_dimension` names a saved derived column across an unproven hop and a query selects `last(amount)` on that model with no explicit ranking column, temporal dimension or time dimension
-- **THEN** the query fails closed with the input-safety error naming the column and the hop, exactly as the explicit `last(amount, <column>)` spelling does
+- **THEN** the query fails closed with the input-safety error naming the column and the hop, exactly as the explicit `last(amount, <field>)` spelling does
 
 ### Requirement: A stored circular definition is refused at query time
 
@@ -212,7 +212,7 @@ still be refused with the circular error.
 
 ### Requirement: An ambiguous hop in a definition is rejected at save time
 When a model is saved through the storage backend or through the engine, a reference in its own derived
-`Column.sql`, `Column.filter` or model filters whose join path from the declaring model crosses a hop spanned
+`DatasetField.sql`, `DatasetField.filter` or model filters whose join path from the declaring model crosses a hop spanned
 by two or more edges that the token does not disambiguate SHALL be rejected with an error naming the
 column (or the model filter), its declaring model, the complete reference as spelled, and every candidate
 edge, plus the remedy to spell the hop by an edge name. Ambiguity and revisits are judged in path order, and
@@ -236,7 +236,7 @@ SHALL reach the same verdict.
 
 ### Requirement: An edge-set change warns about the definitions it breaks
 When a save changes a model's join edges relative to its stored version, every other model's derived
-`Column.sql`, `Column.filter` and model filter in the datasource whose reference resolved before the save and
+`DatasetField.sql`, `DatasetField.filter` and model filter in the datasource whose reference resolved before the save and
 no longer resolves after it — because a hop became ambiguous or an edge it crossed was removed or renamed —
 SHALL produce one warning naming that model, its column or model filter, the reference, the affected pair,
 and the remedy. The save SHALL succeed. A save that does not change the model's join edges SHALL NOT
@@ -255,3 +255,15 @@ re-examine other models.
 #### Scenario: An unchanged edge set re-examines nothing
 - **WHEN** `orders` is saved with only a column change
 - **THEN** no other model's definitions are re-examined and no dependent warning is raised
+
+### Requirement: Column.sql is one expression
+
+A column's `sql` SHALL parse as exactly one SQL expression. Text that is a statement — `SELECT …`, `WITH …`, a data-modifying or DDL statement, a command — or more than one statement SHALL be rejected when the column is constructed, with a typed error naming the column. A parenthesised scalar subquery inside an expression SHALL remain accepted.
+
+#### Scenario: Statements are rejected at construction
+- **WHEN** a column is constructed with `sql` `SELECT pw FROM secrets`, `WITH x AS (SELECT 1) SELECT * FROM x`, `amount; DROP TABLE t` or `DELETE FROM t`
+- **THEN** construction fails with the typed error naming the column
+
+#### Scenario: Expressions are accepted
+- **WHEN** a column is constructed with `sql` `amount * 2`, `CASE WHEN status = 'SELECT' THEN 1 END`, `amount -- SELECT` or `(SELECT max(x) FROM t)`
+- **THEN** it is constructed

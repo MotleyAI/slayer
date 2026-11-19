@@ -39,7 +39,7 @@
     "slayer": {
      "verdict": "yes",
      "how": "<code>sum(revenue, partition_by=region)</code>",
-     "caveat": "<code>partition_by=[]</code> gives the grand total; takes lists, dotted join paths and time buckets."
+     "caveat": "<code>partition_by=[]</code> gives the grand total; takes lists, dotted relationship paths and time buckets."
     },
     "malloy": {
      "verdict": "yes",
@@ -794,7 +794,7 @@
     "slayer": {
      "verdict": "yes",
      "how": "<code>avg(customers.score)</code>",
-     "caveat": "Each aggregate computed at its own model; unproven to-one dimensions are associated with a warning."
+     "caveat": "Each aggregate computed at its own dataset; unproven to-one dimensions are associated with a warning."
     },
     "malloy": {
      "verdict": "yes",
@@ -1488,7 +1488,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>\"filters\": [\"tier = 'bronze' or orders.status = 'ok'\"]</code>",
+     "how": "<code>\"filter\": [\"tier = 'bronze' or orders.status = 'ok'\"]</code>",
      "caveat": "Pushed down as <code>EXISTS</code>; each customer once. <code>orders.id is null</code> = \"no orders\"."
     },
     "malloy": {
@@ -1912,7 +1912,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>\"order\": [{\"column\": \"sum(amount)\", \"direction\": \"desc\"}]</code>"
+     "how": "<code>\"order\": [{\"field\": \"sum(amount)\", \"direction\": \"desc\"}]</code>"
     },
     "malloy": {
      "verdict": "partial",
@@ -2098,7 +2098,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "text": "Named stages form a dependency graph; save as a query-backed model; re-bucket at equal or coarser grain."
+     "text": "Named stages form a dependency graph; save as a query-backed dataset; re-bucket at equal or coarser grain."
     },
     "malloy": {
      "verdict": "yes",
@@ -2188,7 +2188,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>\"source_model\": {\"source_name\": \"orders\", \"columns\": [...], \"joins\": [...]}</code>"
+     "how": "<code>\"population\": {\"dataset\": \"orders\", \"fields\": [...], \"relationships\": [...]}</code>"
     },
     "malloy": {
      "verdict": "yes",
@@ -2360,7 +2360,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "text": "Typed error; <code>Column.granularity</code> set on query-backed models (probe-verified)."
+     "text": "Typed error; <code>DatasetField.granularity</code> set on query-backed datasets (probe-verified)."
     },
     "malloy": {
      "verdict": "no",
@@ -2693,7 +2693,7 @@
     "slayer": {
      "verdict": "partial",
      "how": "<code>count_distinct(tags.value)</code> · <code>contains(tags, 'vip')</code>",
-     "caveat": "List columns aggregate fan-out-safe beside parent aggregates (Q27); struct columns are opaque."
+     "caveat": "List fields aggregate fan-out-safe beside parent aggregates (Q27); struct fields are opaque."
     },
     "malloy": {
      "verdict": "yes",
@@ -2725,7 +2725,7 @@
     "slayer": {
      "verdict": "yes",
      "how": "<code>query(\"monthly_rev\", refine={\"dimensions\": [\"customers.tier\"]})</code>",
-     "caveat": "Dimensions, measures, filters, order and limit merge into the saved query's final stage; a conflicting redefinition is a typed error (verified)."
+     "caveat": "Dimensions, metrics, filters, order and limit merge into the saved query's final stage; a conflicting redefinition is a typed error (verified)."
     },
     "malloy": {
      "verdict": "yes",
@@ -2861,7 +2861,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "text": "The reading follows where the inputs live (all verified): <code>avg(customers.credit)</code> is per customer, even as a measure declared on orders; an orders filter keeps customers with orders; an orders-side column (<code>credit: customers.credit</code>, in a model extension) reads per order."
+     "text": "The reading follows where the inputs live (all verified): <code>avg(customers.credit)</code> is per customer, even as a metric declared on orders; an orders filter keeps customers with orders; an orders-side field (<code>credit: customers.credit</code>, in a dataset extension) reads per order."
     },
     "malloy": {
      "verdict": "yes",
@@ -2927,7 +2927,7 @@
     "slayer": {
      "verdict": "yes",
      "how": "<code>count(events.id) / count(*)</code> from <code>customers</code>",
-     "caveat": "Computed over events' own rows and repeated on every row with an <code>unrelated_dataset</code> warning; a spine time dimension buckets it per period, warning-free when it is the only dimension; grouping by an events column is a typed error (verified)."
+     "caveat": "Computed over events' own rows and repeated on every row with an <code>unrelated_dataset</code> warning; a spine time dimension buckets it per period, warning-free when it is the only dimension; grouping by an events field is a typed error (verified)."
     },
     "malloy": {
      "verdict": "partial",
@@ -3437,7 +3437,7 @@
    "cells": {
     "slayer": {
      "verdict": "partial",
-     "text": "Sampled top values per column feed search."
+     "text": "Sampled top values per field feed search."
     },
     "malloy": {
      "verdict": "yes",
@@ -3499,7 +3499,7 @@
    "cells": {
     "slayer": {
      "verdict": "partial",
-     "text": "SQL models and columns; a Postgres-wire facade accepting a SQL subset.",
+     "text": "SQL datasets and fields; a Postgres-wire facade accepting a SQL subset.",
      "caveat": "No full SQL over semantic queries."
     },
     "malloy": {
@@ -3624,7 +3624,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "text": "Facade models over named join edges; <code>hidden</code> keeps the models behind them out of listings (verified)."
+     "text": "Facade datasets over named relationships; <code>hidden</code> keeps the datasets behind them out of listings (verified)."
     },
     "malloy": {
      "verdict": "yes",
@@ -3793,7 +3793,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>\"measures\": [\"sum(orders.amount)\", \"sum(returns.amount)\"]</code> from <code>customers</code>"
+     "how": "<code>\"metrics\": [\"sum(orders.amount)\", \"sum(returns.amount)\"]</code> from <code>customers</code>"
     },
     "malloy": {
      "verdict": "yes",
@@ -3834,7 +3834,7 @@
     "slayer": {
      "verdict": "yes",
      "how": "One Trino datasource; <code>sql_table: postgresql.public.customers</code> joins <code>mysql.shop.orders</code>",
-     "caveat": "Verified live against Postgres and MySQL catalogs. Models on two SLayer datasources still can't meet in one query."
+     "caveat": "Verified live against Postgres and MySQL catalogs. Datasets on two SLayer datasources still can't meet in one query."
     },
     "malloy": {
      "verdict": "yes",
@@ -3907,7 +3907,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "text": "Join edges traversed both ways, with dotted multi-hop paths inferred."
+     "text": "Relationships traversed both ways, with dotted multi-hop paths inferred."
     },
     "malloy": {
      "verdict": "partial",
@@ -3939,8 +3939,8 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>\"time_dimensions\": [{\"dimension\": \"time_spine.timestamp\", \"granularity\": \"month\", \"date_range\": [...]}]</code>",
-     "caveat": "A built-in spine each model joins through its own date column; per group too; two equally short routes fail loudly (verified)."
+     "how": "<code>\"time_dimensions\": [{\"field\": \"time_spine.timestamp\", \"granularity\": \"month\", \"date_range\": [...]}]</code>",
+     "caveat": "A built-in spine each dataset joins through its own date field; per group too; two equally short routes fail loudly (verified)."
     },
     "malloy": {
      "verdict": "partial",
@@ -4201,7 +4201,7 @@
     "slayer": {
      "verdict": "yes",
      "how": "<code>slayer mcp</code> (stdio) · <code>slayer serve</code> (SSE)",
-     "caveat": "Datasource, ingestion, model-editing, query, search and memory tools, plus built-in help; from an empty store to an answer over MCP alone (probe-verified)."
+     "caveat": "Datasource, ingestion, dataset-editing, query, search and memory tools, plus built-in help; from an empty store to an answer over MCP alone (probe-verified)."
     },
     "malloy": {
      "verdict": "yes",
@@ -4247,7 +4247,7 @@
     "slayer": {
      "verdict": "yes",
      "how": "<code>save_memory(learning=\"status 'bad' marks a cancelled order\", linked_entities=[\"orders.status\"])</code>",
-     "caveat": "A note, or a vetted example query, tied to models and columns; <code>search</code> and <code>inspect</code> return it with them (probe-verified)."
+     "caveat": "A note, or a vetted example query, tied to datasets and fields; <code>search</code> and <code>inspect</code> return it with them (probe-verified)."
     },
     "malloy": {
      "verdict": "no",
@@ -4295,7 +4295,7 @@
     "slayer": {
      "verdict": "yes",
      "how": "<code>search(question=\"which city does a customer live in\")</code>",
-     "caveat": "One ranked list of models, columns, measures and memories: stemmed full text, entity overlap, optional embeddings, plus a graph filter (probe-verified without embeddings)."
+     "caveat": "One ranked list of datasets, fields, metrics and memories: stemmed full text, entity overlap, optional embeddings, plus a graph filter (probe-verified without embeddings)."
     },
     "malloy": {
      "verdict": "yes",
@@ -4340,8 +4340,8 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>ingest_datasource_models(datasource_name=\"shop\")</code> · <code>slayer serve --ingest-on-startup</code>",
-     "caveat": "Foreign keys become joins and comments descriptions; join cardinality from the keys. Re-runs add without overwriting (probe-verified)."
+     "how": "<code>ingest_datasource(datasource_name=\"shop\")</code> · <code>slayer serve --ingest-on-startup</code>",
+     "caveat": "Foreign keys become relationships and comments descriptions; relationship cardinality from the keys. Re-runs add without overwriting (probe-verified)."
     },
     "malloy": {
      "verdict": "partial",
@@ -4383,7 +4383,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>edit_model(model_name=\"orders\", measures=[{\"name\": \"aov\", \"formula\": \"sum(amount) / count(*)\"}])</code>",
+     "how": "<code>edit_dataset(dataset_name=\"orders\", metrics=[{\"name\": \"aov\", \"expression\": \"sum(amount) / count(*)\"}])</code>",
      "caveat": "Over MCP, REST, CLI or Python; the next query sees it (probe-verified)."
     },
     "malloy": {
@@ -4428,8 +4428,8 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>validate_models</code> · <code>SchemaDriftError</code>",
-     "caveat": "A failing query names the drifted model; <code>validate_models</code> returns the <code>edit_model</code> call that fixes it; re-ingestion keeps hand edits (probe-verified)."
+     "how": "<code>validate_datasets</code> · <code>SchemaDriftError</code>",
+     "caveat": "A failing query names the drifted dataset; <code>validate_datasets</code> returns the <code>edit_dataset</code> call that fixes it; re-ingestion keeps hand edits (probe-verified)."
     },
     "malloy": {
      "verdict": "partial",

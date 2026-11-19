@@ -1,0 +1,60 @@
+{
+ "source": "tests/test_dev1883_order_keys.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "date_trunc('month', created_at)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "date_trunc('month', created_at)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "date_trunc('month', created_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "date_trunc('month', created_at)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 16,
+   "reason": "unclassifiable"
+  }
+ ]
+}

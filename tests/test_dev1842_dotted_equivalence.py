@@ -35,16 +35,16 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-def _needs_time(formula: str) -> bool:
+def _needs_time(expression: str) -> bool:
     # The transform pair's DOTTED spelling (``customers.spend_run``) hides its
     # cumsum behind the measure name, so match the pair as well as the literal.
-    return "cumsum" in formula or formula in TRANSFORM_PAIR
+    return "cumsum" in expression or expression in TRANSFORM_PAIR
 
 
-def _measure_query(spelling: str):
+def _metric_query(spelling: str):
     return q(
         dimensions=["customers.tier"],
-        measures=[{"formula": spelling, "name": "x"}],
+        metrics=[{"metric": spelling, "alias": "x"}],
         time_dimensions=month_td() if _needs_time(spelling) else None,
     )
 
@@ -64,8 +64,8 @@ class TestSqlByteEquality:
     @pytest.mark.parametrize("label", list(ALL_PAIRS))
     async def test_dotted_sql_equals_hand_expanded(self, label) -> None:
         dotted, hand = ALL_PAIRS[label]
-        dotted_sql = await gen(_measure_query(dotted))
-        hand_sql = await gen(_measure_query(hand))
+        dotted_sql = await gen(_metric_query(dotted))
+        hand_sql = await gen(_metric_query(hand))
         assert dotted_sql == hand_sql
 
 
@@ -74,8 +74,8 @@ class TestExecutedValueEquality:
     async def test_dotted_values_equal_hand_expanded(self, label, exec_backend) -> None:
         _, engine = exec_backend
         dotted, hand = ALL_PAIRS[label]
-        dotted_resp = await engine.execute(_measure_query(dotted))
-        hand_resp = await engine.execute(_measure_query(hand))
+        dotted_resp = await engine.execute(_metric_query(dotted))
+        hand_resp = await engine.execute(_metric_query(hand))
         assert _canon(dotted_resp) == _canon(hand_resp)
         # The measure actually projected a value (not an all-NULL degenerate).
         assert any(r.get("orders.x") is not None for r in dotted_resp.data)
@@ -97,7 +97,7 @@ class TestExecutedValuesAgainstOracles:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.pop_total", "name": "x"}],
+            metrics=[{"metric": "customers.pop_total", "alias": "x"}],
             to_many_handling="broadcast"))
         for row in resp.data:
             _approx(row["orders.x"], POP_TOTAL)
@@ -106,7 +106,7 @@ class TestExecutedValuesAgainstOracles:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.spend_by_tier", "name": "x"}]))
+            metrics=[{"metric": "customers.spend_by_tier", "alias": "x"}]))
         by = rows_by(resp, "orders.customers.tier")
         for tier, expected in SPEND_BY_TIER.items():
             _approx(by[(tier,)]["orders.x"], expected)
@@ -116,7 +116,7 @@ class TestExecutedValuesAgainstOracles:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.regions.name"],
-            measures=[{"formula": "customers.gold_spend_total", "name": "x"}]))
+            metrics=[{"metric": "customers.gold_spend_total", "alias": "x"}]))
         by = rows_by(resp, "orders.customers.regions.name")
         for name, expected in GOLD_SPEND_BY_REGION.items():
             _approx(by[(name,)]["orders.x"], expected)
@@ -132,8 +132,8 @@ class TestComputedDimensionSource:
 
     def _dim_query(self, expr: str):
         return q(
-            dimensions=[{"expression": expr, "name": "band"}],
-            measures=[{"formula": "sum(amount)", "name": "a"}],
+            dimensions=[{"field": expr, "alias": "band"}],
+            metrics=[{"metric": "sum(amount)", "alias": "a"}],
         )
 
     async def test_computed_dimension_sql_equals_hand(self) -> None:
@@ -156,11 +156,11 @@ class TestUnsafeInputParity:
     @pytest.mark.parametrize("label", list(PARITY_ERROR_PAIRS))
     async def test_dotted_inherits_unproven_hop_rejection(self, label) -> None:
         dotted, hand = PARITY_ERROR_PAIRS[label]
-        hand_query = _measure_query(hand)
-        dotted_query = _measure_query(dotted)
+        hand_query = _metric_query(hand)
+        dotted_query = _metric_query(dotted)
         with pytest.raises(ValueError) as hand_err:
             await gen(hand_query)
-        assert "unproven join hop" in str(hand_err.value)
+        assert "unproven relationship hop" in str(hand_err.value)
         with pytest.raises(ValueError) as dotted_err:
             await gen(dotted_query)
-        assert "unproven join hop" in str(dotted_err.value)
+        assert "unproven relationship hop" in str(dotted_err.value)

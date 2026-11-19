@@ -1,0 +1,34 @@
+{
+ "source": "tests/test_dev1871_broadcast_coherence_assert.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 17,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 20,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 21,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  }
+ ]
+}

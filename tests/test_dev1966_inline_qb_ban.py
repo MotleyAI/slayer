@@ -1,6 +1,6 @@
-"""An inline ``SlayerModel`` carrying ``source_queries`` is rejected as a ``source_model``.
+"""An inline ``SlayerModel`` is rejected as a ``source_model``, with or without ``source_queries``.
 
-Spec: openspec …/specs/queries/multi-stage — "Inline query-backed sources are rejected".
+Spec: queries/population › A population is named, and typed at construction.
 """
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ import yaml
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
-from slayer.core.models import SlayerModel
+from slayer.core.errors import StoredDocumentLoadError
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -22,9 +23,10 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1966_fixtures import (
     CUST_REV,
     dev1966_engine,
+    ext_m,
     m,
     query,
-    rev_by_status_model,
+    rev_by_status_dataset,
     rows_by,
 )
 
@@ -32,11 +34,11 @@ INLINE_QB: Dict[str, Any] = {
     "name": "iqb",
     "data_source": "test",
     "source_queries": [{
-        "source_model": "orders", "dimensions": ["status"],
-        "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        "population": "orders", "dimensions": ["status"],
+        "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
     }],
 }
-OUTER: Dict[str, Any] = {"dimensions": ["status"], "measures": [{"formula": "sum(rev)", "name": "t"}]}
+OUTER: Dict[str, Any] = {"dimensions": ["status"], "metrics": [{"metric": "sum(rev)", "alias": "t"}]}
 
 
 def _assert_ban(exc: BaseException, name: str = "iqb") -> None:
@@ -53,89 +55,89 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 class TestConstructionRejects:
     def test_object_form(self) -> None:
-        inline = SlayerModel.model_validate(INLINE_QB)
+        inline = SlayerDataset.model_validate(INLINE_QB)
         with pytest.raises(ValueError) as exc:
-            SlayerQuery(source_model=inline, **OUTER)
+            SlayerQuery(population=inline, **OUTER)  # pyright: ignore[reportArgumentType]  # the removed form must fail
         _assert_ban(exc.value)
 
     def test_dict_form(self) -> None:
         with pytest.raises(ValueError) as exc:
-            SlayerQuery.model_validate({"source_model": INLINE_QB, **OUTER})
+            SlayerQuery.model_validate({"population": INLINE_QB, **OUTER})
         _assert_ban(exc.value)
 
     def test_inside_a_stored_models_stages(self) -> None:
         with pytest.raises(ValueError) as exc:
-            SlayerModel.model_validate({
+            SlayerDataset.model_validate({
                 "name": "outer", "data_source": "test",
-                "source_queries": [{"source_model": INLINE_QB, **OUTER}],
+                "source_queries": [{"population": INLINE_QB, **OUTER}],
             })
         _assert_ban(exc.value)
 
     def test_inside_a_runtime_list_stage(self) -> None:
         with pytest.raises(ValueError) as exc:
-            SlayerQuery.model_validate({"name": "n", "source_model": INLINE_QB, **OUTER})
+            SlayerQuery.model_validate({"name": "n", "population": INLINE_QB, **OUTER})
         _assert_ban(exc.value)
 
     def test_rest_responds_422(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(storage=YAMLStorage(base_dir=tmp)))
-            resp = client.post("/query", json={"source_model": INLINE_QB, **OUTER, "dry_run": True})
+            resp = client.post("/query", json={"population": INLINE_QB, **OUTER, "dry_run": True})
         assert resp.status_code == 422, resp.text
         _assert_ban(AssertionError(resp.text))
 
 
 class TestStoredModelsReject:
-    async def test_create_model_from_query(self, engine) -> None:
+    async def test_create_model_from_query(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(ValueError) as exc:
-            await engine.create_model_from_query(
-                query={"source_model": INLINE_QB, **OUTER}, name="wrapper")
+            await engine.create_dataset_from_query(
+                query={"population": INLINE_QB, **OUTER}, name="wrapper")
         _assert_ban(exc.value)
 
     async def test_loading_a_persisted_model_containing_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
-            await storage.save_model(rev_by_status_model(), _validate=False)
-            path = storage._model_path("test", "rev_by_status")
+            await storage.save_dataset(rev_by_status_dataset(), _validate=False)
+            path = storage._dataset_path("test", "rev_by_status")
             with open(path) as fh:
                 raw = yaml.safe_load(fh)
-            raw["source_queries"][0]["source_model"] = INLINE_QB
+            raw["source_queries"][0]["population"] = INLINE_QB
             with open(path, "w") as fh:
                 yaml.safe_dump(raw, fh)
             reloaded = YAMLStorage(base_dir=tmp)
-            with pytest.raises(ValueError) as exc:
-                await reloaded.get_model("rev_by_status", data_source="test")
-        _assert_ban(exc.value)
+            with pytest.raises(StoredDocumentLoadError, match="(?i)inline") as exc:
+                await reloaded.get_dataset("rev_by_status", data_source="test")
+        assert "rev_by_status" in str(exc.value)
 
 
-class TestOtherInlineSourcesAccepted:
-    async def test_inline_table_backed(self, engine) -> None:
+class TestOtherInlineSourcesRejected:
+    def test_inline_table_backed(self) -> None:
         inline = {
             "name": "orders_inline", "data_source": "test", "sql_table": "orders",
-            "columns": [{"name": "id", "type": "INT", "primary_key": True},
-                        {"name": "customer_id", "type": "INT"},
-                        {"name": "amount", "type": "DOUBLE"}],
+            "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
+                        {"name": "customer_id", "datatype": "Integer"},
+                        {"name": "amount", "datatype": "Float"}],
         }
-        resp = await engine.execute(query(
-            source_model=inline, dimensions=["customer_id"], measures=[m("sum(amount)", "a")]))
-        assert rows_by(resp.data, key="orders_inline.customer_id", value="orders_inline.a") == CUST_REV
+        measures = [m("sum(amount)", "a")]
+        with pytest.raises(ValueError, match="(?i)inline"):
+            query(population=inline, dimensions=["customer_id"], metrics=measures)
 
-    async def test_inline_sql_backed(self, engine) -> None:
+    def test_inline_sql_backed(self) -> None:
         inline = {
             "name": "orders_sql", "data_source": "test",
             "sql": "SELECT id, customer_id, amount FROM orders",
-            "columns": [{"name": "id", "type": "INT", "primary_key": True},
-                        {"name": "customer_id", "type": "INT"},
-                        {"name": "amount", "type": "DOUBLE"}],
+            "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
+                        {"name": "customer_id", "datatype": "Integer"},
+                        {"name": "amount", "datatype": "Float"}],
         }
-        resp = await engine.execute(query(
-            source_model=inline, dimensions=["customer_id"], measures=[m("sum(amount)", "a")]))
-        assert rows_by(resp.data, key="orders_sql.customer_id", value="orders_sql.a") == CUST_REV
+        measures = [m("sum(amount)", "a")]
+        with pytest.raises(ValueError, match="(?i)inline"):
+            query(population=inline, dimensions=["customer_id"], metrics=measures)
 
+
+class TestExtensionsAccepted:
     async def test_extension_over_a_stored_query_backed_model(self, engine) -> None:
-        ext = {"source_name": "cust_rev",
-               "columns": [{"name": "rev2", "sql": "rev * 2", "type": "DOUBLE"}]}
+        ext = {"dataset": "cust_rev", "metrics": [ext_m("sum(rev * 2)", "r2")]}
         resp = await engine.execute(query(
-            source_model="cust_rev", extensions=[ext], dimensions=["customer_id"],
-            measures=[m("sum(rev2)", "r2")]))
+            population="cust_rev", extensions=[ext], dimensions=["customer_id"], metrics=["r2"]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {
             c: 2 * v for c, v in CUST_REV.items()}

@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlglot
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.facade.catalog import build_catalog
 from slayer.facade.info_schema import (
     SUPPORTED_INFO_SCHEMA_TABLES,
@@ -27,31 +27,31 @@ def _names(batch: RowBatch) -> list[str]:
 
 
 def _demo_catalog():
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE, description="revenue cents"),
-            Column(name="status", type=DataType.TEXT, label="Status"),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT, description="revenue cents"),
+            DatasetField(name="status", datatype=DataType.STRING, label="Status"),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
-        measures=[
-            ModelMeasure(name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE),
+        metrics=[
+            DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers",
         data_source="jaffle",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
 
 
 def test_supported_tables_set() -> None:
@@ -232,4 +232,4 @@ def test_metrics_batch_data_type_column_is_text() -> None:
     batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
     assert isinstance(batch, RowBatch)
     by_col = {c.name: c.type for c in batch.columns}
-    assert by_col["data_type"] == DataType.TEXT
+    assert by_col["data_type"] == DataType.STRING
