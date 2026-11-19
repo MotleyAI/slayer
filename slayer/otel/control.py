@@ -182,7 +182,7 @@ def _send_test_span() -> tuple[bool | None, str]:
     # The exporter counts a redirect as delivered without following it; the test calls it a failure.
     session = Session()
     session.hooks["response"].append(_refuse_redirect)
-    exporter = OTLPSpanExporter(timeout=TEST_TIMEOUT_SECONDS, session=session)
+    exporter = OTLPSpanExporter(endpoint=settings.endpoint("traces"), timeout=TEST_TIMEOUT_SECONDS, session=session)
     logs.hide_export_text()
     try:
         result = exporter.export([span])  # pyright: ignore[reportArgumentType]
