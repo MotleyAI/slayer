@@ -271,3 +271,11 @@ class TestDeclaredEdgesWin:
             await engine.execute(stages)
         resp = await engine.execute([stage, over("inv", dimensions=["billing.name"], metric="sum(amt)")])
         assert by(resp, key="billing.name", value="total") == INVOICE_TOTAL_BY_BILLING
+
+    @pytest.mark.parametrize("roles", [("billing", "shipping"), ("shipping", "billing")])
+    async def test_one_source_edge_on_two_key_mappings_is_two_edges(self, engine, roles: tuple[str, str]) -> None:
+        stage = q(name="inv", population="invoices", dimensions=[f"{r}.region_id" for r in roles],
+                  metrics=[m("sum(total)", "amt")])
+        stages = [stage, over("inv", dimensions=["regions.name"], metric="sum(amt)")]
+        with pytest.raises(AmbiguousRelationshipPathError):
+            await engine.execute(stages)

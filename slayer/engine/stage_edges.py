@@ -104,6 +104,7 @@ def inherited_edges(
     if root is None:
         return ()
     positions, columns = _positions(fields)
+    equal = _equal_columns(positions=positions, columns=columns)
     out: List[InheritedEdge] = []
     seen: set = set()
     with unobserved():
@@ -113,10 +114,36 @@ def inherited_edges(
                 continue
             for edge in neighbors(dataset=dataset, datasets_by_name=datasets_by_name):
                 inherited = _inherit(edge, at=key, columns=columns, grain=grain, datasets_by_name=datasets_by_name)
-                if inherited is not None and inherited.origin not in seen:
-                    seen.add(inherited.origin)
+                if inherited is None:
+                    continue
+                # One source edge is inherited once per key mapping; mappings the joins equate are one mapping.
+                mapping = (inherited.origin, tuple(equal.get(c, c) for c in inherited.from_columns))
+                if mapping not in seen:
+                    seen.add(mapping)
                     out.append(inherited)
     return tuple(out)
+
+
+def _equal_columns(
+    *, positions: Mapping[_Position, Tuple[OrientedRelationship, ...]], columns: Mapping[_Position, Mapping[str, str]],
+) -> Dict[str, str]:
+    """Each stage column's representative among the columns the pass-through joins equate."""
+    parent: Dict[str, str] = {}
+
+    def find(c: str) -> str:
+        while parent.get(c, c) != c:
+            c = parent[c]
+        return c
+
+    for key, path in positions.items():
+        if not path:
+            continue
+        here, there = columns.get(key, {}), columns.get(key[:-1], {})
+        for s, t in path[-1].column_pairs:
+            if s in there and t in here:
+                a, b = sorted((find(there[s]), find(here[t])))
+                parent[b] = a
+    return {c: find(c) for c in parent}
 
 
 def _positions(

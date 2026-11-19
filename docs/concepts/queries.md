@@ -923,7 +923,7 @@ A grouped stage is unique on its dimensions, so a relationship onto a sibling st
 ]
 ```
 
-An inherited edge keeps its name, its target and (for a stored relationship) its join type; its stage side is one-to-one exactly when the stage's grain is covered by the key, so `per_customer` above is one-to-one with `customers`. A relationship the consuming query declares on the stage wins over an inherited one: an identical one is applied once, a same-named one on other keys replaces it, and differently named edges on the same keys stay parallel.
+An inherited edge keeps its name, its target and (for a stored relationship) its join type; its stage side is "one" exactly when the stage's grain is covered by the key, and its target side keeps the source edge's arity, so `per_customer` above is one-to-one with `customers`. A relationship the consuming query declares on the stage wins over an inherited one: an identical one is applied once, a same-named one on other keys replaces it, and differently named edges on the same keys stay parallel.
 
 **Order doesn't matter for runtime lists.** Stages can be submitted in any order — the engine auto-sorts them topologically so every stage appears after the siblings it references. The **last entry** of the input list is always the entry point / DAG root (its result is what's returned); only the non-final entries are reordered. Cycles and self-references are rejected with a clear error naming the offending stages. A non-final stage may not reference the root (the root must be the dependency sink). Stages that aren't reachable from the root are accepted as utility sub-queries — they're silently dropped from the emitted SQL.
 

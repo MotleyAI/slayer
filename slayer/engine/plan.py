@@ -146,7 +146,7 @@ def _stage_scope_and_bundle_unframed(
     sb = stage_bundle_with_siblings(
         bundle=bundle, source_dataset=source, sibling_schemas=named, data_source=data_source,
     )
-    return DatasetScope(population=source), sb
+    return DatasetScope(population=sb.population), sb
 
 
 class _Splice(BaseModel):

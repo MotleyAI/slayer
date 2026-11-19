@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy.exc import DatabaseError, OperationalError
 
 from slayer.core.enums import DataType, NUMERIC_DATATYPES
+from slayer.core.errors import SlayerError
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, neighbors
 from slayer.core.models import DatasetField, RelationshipOrigin, SlayerDataset, field_type_text, is_identifier
@@ -618,10 +619,13 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     # Informs the sample query's avg vs count_distinct choice.
     metric_types: dict[str, ResultColumnType] = {}
     if engine is not None and "samples" in included_set:
-        metric_types = await engine.get_result_column_types(
-            dataset_name=dataset.name,
-            data_source=dataset.data_source or None,
-        )
+        try:
+            metric_types = await engine.get_result_column_types(
+                dataset_name=dataset.name,
+                data_source=dataset.data_source or None,
+            )
+        except (SlayerError, ValueError):
+            pass  # an unplannable dataset still renders; the profile reports its error
 
     visible_fields = [c for c in dataset.fields if not c.hidden]
     if "fields" in included_set:
@@ -742,6 +746,8 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         out_sections.append(
             f"## Relationships ({len(hops)} — names only)\n\n{csv}"
         )
+    if inherited_error is not None and "relationships" in included_set:
+        out_sections.append(f"> Inherited relationships could not be derived: {inherited_error}")
 
     sample_sql: str | None = None
     sample_data: dict[str, Any] | None = None

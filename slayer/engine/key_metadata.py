@@ -187,8 +187,12 @@ def metric_key_type(
     if date_type is not None:
         return date_type
     name = _local_aggregate_source_name(key)
-    if name is None or not isinstance(key, AggregateKey):
+    if not isinstance(key, AggregateKey):
         return None
+    if name is None:
+        # A cross-dataset source's metadata is lifted by response_meta; a count is an integer over any source.
+        counted = classify_aggregation(metric_name=None, aggregation=key.agg, source_type=None)
+        return DataType.INTEGER if counted is AggregationValueClass.COUNT else None
     return aggregation_result_type(
         metric_name=name, aggregation=key.agg,
         source_type=aggregation_source_type(key.source, field_type=_dataset_types(dataset=dataset, bundle=bundle)),

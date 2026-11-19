@@ -12,6 +12,7 @@ markdown/skeleton helpers live in ``slayer.inspect.dataset_render``.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from slayer.core.relationship_walker import addressable_token, neighbors
@@ -61,17 +62,49 @@ def _relationship_targets(
     return sorted(tokens) + [f"{t} (ambiguous: name the edges)" for t in sorted(ambiguous)]
 
 
-async def with_relationships_as_read(datasets: list[SlayerDataset], engine: Any) -> list[SlayerDataset]:
-    """``datasets`` with each query-backed one's inherited edges merged in (none without an ``engine``)."""
+async def with_relationships_as_read(
+    datasets: list[SlayerDataset], engine: Any,
+) -> tuple[list[SlayerDataset], dict[str, str]]:
+    """``datasets`` with each query-backed one's inherited edges merged in (none without an ``engine``), and why
+    a dataset's could not be derived, by dataset name."""
     if engine is None:
-        return datasets
+        return datasets, {}
     out: list[SlayerDataset] = []
+    errors: dict[str, str] = {}
     for m in datasets:
         if m.source_queries:
-            relationships, _ = await engine.relationships_as_read(m)
+            relationships, error = await engine.relationships_as_read(m)
             m = m.model_copy(update={"relationships": relationships})
+            if error is not None:
+                errors[m.name] = error
         out.append(m)
-    return out
+    return out, errors
+
+
+def _inherited_payload(m: SlayerDataset, errors: Mapping[str, str]) -> dict[str, Any]:
+    """A query-backed dataset's inherited edges with their source edges, and why they could not be derived."""
+    if not m.source_queries:
+        return {}
+    return {
+        "inherited_relationships": [
+            {"name": j.name, "to": j.to,
+             "inherited_from": {"dataset": o.dataset_spelling, "relationship": o.relationship}}
+            for j in m.relationships if (o := j.inherited_from) is not None
+        ],
+        "inherited_relationships_error": errors.get(m.name),
+    }
+
+
+def _inherited_lines(m: SlayerDataset, errors: Mapping[str, str]) -> list[str]:
+    """Markdown twin of ``_inherited_payload``."""
+    if not m.source_queries:
+        return []
+    listed = [f"`{j.name or j.to}` (inherited from `{o.dataset_spelling}.{o.relationship}`)"
+              for j in m.relationships if (o := j.inherited_from) is not None]
+    lines = [f"Inherited relationships: {', '.join(listed)}"] if listed else []
+    if m.name in errors:
+        lines.append(f"Inherited relationships unavailable: {errors[m.name]}")
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +119,7 @@ def render_datasets_summary(
     fmt: str,
     compact: bool,
     descriptions_max_chars: int | None = None,
+    inherited_errors: Mapping[str, str] | None = None,
 ) -> str:
     """Render a datasource's (already hidden-filtered + name-sorted) datasets.
 
@@ -103,14 +137,15 @@ def render_datasets_summary(
             )
         return f"Datasource '{datasource_name}' has no datasets."
     desc = _desc_fn(descriptions_max_chars)
+    errors = inherited_errors or {}
     if fmt == "json":
         return _datasets_summary_json(
             datasource_name=datasource_name, datasets=datasets, compact=compact,
-            desc=desc,
+            desc=desc, errors=errors,
         )
     return _datasets_summary_markdown(
         datasource_name=datasource_name, datasets=datasets, compact=compact,
-        desc=desc,
+        desc=desc, errors=errors,
     )
 
 
@@ -121,7 +156,7 @@ def _desc_fn(descriptions_max_chars: int | None):
 
 
 def _datasets_summary_json(
-    *, datasource_name: str, datasets: list[SlayerDataset], compact: bool, desc,
+    *, datasource_name: str, datasets: list[SlayerDataset], compact: bool, desc, errors: Mapping[str, str],
 ) -> str:
     if compact:
         dataset_payload = [
@@ -131,6 +166,7 @@ def _datasets_summary_json(
                 "field_count": _visible_field_count(m),
                 "metric_names": [mm.name for mm in m.metrics],
                 "relationships_to": _relationship_targets(m, datasets),
+                **_inherited_payload(m, errors),
             }
             for m in datasets
         ]
@@ -157,6 +193,7 @@ def _datasets_summary_json(
                     for mm in m.metrics
                 ],
                 "relationships_to": _relationship_targets(m, datasets),
+                **_inherited_payload(m, errors),
             }
             for m in datasets
         ]
@@ -171,7 +208,7 @@ def _datasets_summary_json(
 
 
 def _datasets_summary_markdown(
-    *, datasource_name: str, datasets: list[SlayerDataset], compact: bool, desc,
+    *, datasource_name: str, datasets: list[SlayerDataset], compact: bool, desc, errors: Mapping[str, str],
 ) -> str:
     sections: list[str] = [
         f"# Datasource: `{datasource_name}` — {len(datasets)} dataset(s)"
@@ -188,6 +225,7 @@ def _datasets_summary_markdown(
             _append_verbose_dataset_lines(
                 dataset_lines=dataset_lines, m=m, desc=desc, all_datasets=datasets,
             )
+        dataset_lines.extend(_inherited_lines(m, errors))
         sections.append("\n".join(dataset_lines))
     return "\n\n".join(sections)
 
@@ -215,23 +253,23 @@ def _append_verbose_dataset_lines(
         {"name": c.name, "datatype": field_type_text(c), "description": desc(c.description)}
         for c in m.fields if not c.hidden
     ]
-    dataset_lines.append(f"**Fields ({len(col_rows)}):**")
-    dataset_lines.append("")
-    dataset_lines.append(
-        _markdown_table(rows=col_rows, fields=["name", "datatype", "description"])
-    )
-    dataset_lines.append("")
+    dataset_lines.extend([
+        f"**Fields ({len(col_rows)}):**",
+        "",
+        _markdown_table(rows=col_rows, fields=["name", "datatype", "description"]),
+        "",
+    ])
 
     metric_rows = [
         {"name": mm.name, "expression": mm.expression, "description": desc(mm.description)}
         for mm in m.metrics
     ]
-    dataset_lines.append(f"**Metrics ({len(metric_rows)}):**")
-    dataset_lines.append("")
-    dataset_lines.append(
-        _markdown_table(rows=metric_rows, fields=["name", "expression", "description"])
-    )
-    dataset_lines.append("")
+    dataset_lines.extend([
+        f"**Metrics ({len(metric_rows)}):**",
+        "",
+        _markdown_table(rows=metric_rows, fields=["name", "expression", "description"]),
+        "",
+    ])
 
     targets = _relationship_targets(m, all_datasets)
     if targets:
@@ -255,17 +293,19 @@ def render_dataset_oneliner_index(
     groups: list[DatasetGroup],
     fmt: str,
     warnings: list[str],
+    inherited_errors: Mapping[str, Mapping[str, str]] | None = None,
 ) -> str:
     """The compact=True dataset collection: one terse line per dataset, grouped by
     datasource. Deliberately terser than ``datasets_summary`` (scales to large
     catalogs)."""
+    errors = inherited_errors or {}
     if fmt == "json":
-        return _oneliner_index_json(groups=groups, warnings=warnings)
-    return _oneliner_index_markdown(groups=groups, warnings=warnings)
+        return _oneliner_index_json(groups=groups, warnings=warnings, errors=errors)
+    return _oneliner_index_markdown(groups=groups, warnings=warnings, errors=errors)
 
 
 def _oneliner_index_json(
-    *, groups: list[DatasetGroup], warnings: list[str],
+    *, groups: list[DatasetGroup], warnings: list[str], errors: Mapping[str, Mapping[str, str]],
 ) -> str:
     entries: list[dict[str, Any]] = []
     for ds, datasets in groups:
@@ -282,6 +322,7 @@ def _oneliner_index_json(
                     "name": m.name,
                     "field_count": _visible_field_count(m),
                     "relationships_to": _relationship_targets(m, datasets),
+                    **_inherited_payload(m, errors.get(ds, {})),
                 }
                 for m in datasets
             ],
@@ -295,7 +336,7 @@ def _oneliner_index_json(
 
 
 def _oneliner_index_markdown(
-    *, groups: list[DatasetGroup], warnings: list[str],
+    *, groups: list[DatasetGroup], warnings: list[str], errors: Mapping[str, Mapping[str, str]],
 ) -> str:
     blocks: list[str] = []
     for ds, datasets in groups:
@@ -312,6 +353,7 @@ def _oneliner_index_markdown(
                 f"- `{m.name}` ({_visible_field_count(m)} fields; "
                 f"relationships: {relationships_str})"
             )
+            lines.extend(f"  - {line}" for line in _inherited_lines(m, errors.get(ds, {})))
         blocks.append("\n".join(lines))
     body = "\n\n".join(blocks)
     if warnings:

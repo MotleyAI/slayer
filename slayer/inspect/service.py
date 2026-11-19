@@ -355,24 +355,28 @@ class InspectService:
 
         # Build per-DS groups; ``datasets is None`` marks an invalid-config DS.
         groups: list[tuple[str, list[SlayerDataset] | None]] = []
+        inherited_errors: dict[str, dict[str, str]] = {}
         for ds in ds_names:
             try:
                 await self._storage.get_datasource(ds)
             except Exception:  # noqa: BLE001 — invalid config: mark + continue
                 groups.append((ds, None))
                 continue
-            groups.append((ds, await with_relationships_as_read(await self._load_visible_datasets(ds), self._engine)))
+            datasets, inherited_errors[ds] = await with_relationships_as_read(
+                await self._load_visible_datasets(ds), self._engine,
+            )
+            groups.append((ds, datasets))
 
         if compact:
             return render_dataset_oneliner_index(
-                groups=groups, fmt=fmt, warnings=[],
+                groups=groups, fmt=fmt, warnings=[], inherited_errors=inherited_errors,
             )
         if fmt == "json":
             return self._collection_dataset_verbose_json(
-                groups=groups, descriptions_max_chars=descriptions_max_chars,
+                groups=groups, descriptions_max_chars=descriptions_max_chars, inherited_errors=inherited_errors,
             )
         return self._collection_dataset_verbose_markdown(
-            groups=groups, descriptions_max_chars=descriptions_max_chars,
+            groups=groups, descriptions_max_chars=descriptions_max_chars, inherited_errors=inherited_errors,
         )
 
     @staticmethod
@@ -380,6 +384,7 @@ class InspectService:
         *,
         groups: list[tuple[str, list[SlayerDataset] | None]],
         descriptions_max_chars: int | None,
+        inherited_errors: dict[str, dict[str, str]],
     ) -> str:
         entries: list[dict[str, Any]] = []
         for ds, datasets in groups:
@@ -391,6 +396,7 @@ class InspectService:
                 entries.append(json.loads(render_datasets_summary(
                     datasource_name=ds, datasets=datasets, fmt="json",
                     compact=False, descriptions_max_chars=descriptions_max_chars,
+                    inherited_errors=inherited_errors.get(ds),
                 )))
         return json.dumps({
             "entity_type": "dataset",
@@ -404,6 +410,7 @@ class InspectService:
         *,
         groups: list[tuple[str, list[SlayerDataset] | None]],
         descriptions_max_chars: int | None,
+        inherited_errors: dict[str, dict[str, str]],
     ) -> str:
         blocks: list[str] = []
         for ds, datasets in groups:
@@ -413,6 +420,7 @@ class InspectService:
             blocks.append(render_datasets_summary(
                 datasource_name=ds, datasets=datasets, fmt="markdown",
                 compact=False, descriptions_max_chars=descriptions_max_chars,
+                inherited_errors=inherited_errors.get(ds),
             ))
         return BLOCK_SEP.join(blocks)
 

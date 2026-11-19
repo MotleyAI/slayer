@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from slayer.api.server import create_app
 from slayer.cli import _run_inspect
 from slayer.core.errors import UnrelatedDatasetError
-from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.models import DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -33,11 +33,13 @@ from tests._dev2219_fixtures import (
     REVENUE_BY_REGION,
     base_datasets,
     by,
+    customers,
     join,
     m,
     over,
     per_customer,
     shop,
+    with_datasets,
 )
 
 
@@ -81,6 +83,16 @@ class TestExecution:
         assert by(resp, key="customers.region", value="total") == REVENUE_BY_REGION
 
     @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_reverse_declaration_absorbs_the_inherited_edge(self, dialect: str) -> None:
+        back = customers()
+        back = back.model_copy(update={"relationships": [*back.relationships, DatasetRelationship(
+            to="customer_revenue", from_columns=["id"], to_columns=["customer_id"])]})
+        async with shop(dialect, with_datasets(back)) as engine:
+            await engine.save_dataset(_saved())
+            resp = await engine.execute(over("customer_revenue", dimensions=["customers.region"]))
+        assert by(resp, key="customers.region", value="total") == REVENUE_BY_REGION
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_ordinary_stage_hides_a_source_edge_whose_key_it_drops(self, dialect: str) -> None:
         stage = per_customer(dimensions=["status"])
         async with shop(dialect) as engine:
@@ -113,6 +125,9 @@ async def _seed(storage: YAMLStorage) -> None:
     await storage.save_dataset(_raw_saved("needs_var", {
         "population": "orders", "dimensions": ["customer_id"], "metrics": [m("sum(amount)", "revenue")],
         "filter": ["amount > {threshold_var}"]}))
+    await storage.save_dataset(_raw_saved("stale_key", {
+        "population": "orders", "dimensions": ["customer_id"], "metrics": [m("sum(amount)", "revenue")]},
+        relationships=[join("customers", [("stale_col", "id")])]))
     await storage.save_dataset(SlayerDataset.model_validate({
         "name": "stage_cycle", "data_source": DS,
         "source_queries": [{"name": "a", "population": "b", "dimensions": ["customer_id"]},
@@ -153,7 +168,7 @@ def _check_absorbed(payload: dict) -> None:
 
 
 _FAILURE_TOKENS = {_CYCLE[0]: _CYCLE[0], "bad_key": "nope_column", "needs_var": "threshold_var",
-                   "stage_cycle": "Cycle in query list"}
+                   "stage_cycle": "Cycle in query list", "stale_key": "stale_col"}
 
 
 def _check_failure(payload: dict, name: str) -> None:
@@ -231,6 +246,53 @@ class TestInspectMcp:
         payload = json.loads(blocks[0].text)
         (entry,) = [d for d in payload["datasets"] if d["name"] == "customer_revenue"]
         assert "customers" in entry["relationships_to"]
+
+    @pytest.mark.parametrize("compact", [True, False])
+    async def test_the_summary_names_each_inherited_edges_source(self, mcp_server, compact: bool) -> None:
+        payload = await _summary(mcp_server, compact=compact)
+        (entry,) = [d for d in payload["datasets"] if d["name"] == "customer_revenue"]
+        assert entry["inherited_relationships"] == [
+            {"name": None, "to": "customers", "inherited_from": {"dataset": "orders", "relationship": "customers"}}]
+        assert entry["inherited_relationships_error"] is None
+
+    async def test_the_summary_carries_a_planning_error(self, mcp_server) -> None:
+        payload = await _summary(mcp_server, compact=True)
+        (entry,) = [d for d in payload["datasets"] if d["name"] == "needs_var"]
+        assert entry["inherited_relationships"] == []
+        assert "threshold_var" in entry["inherited_relationships_error"]
+
+    async def test_the_markdown_summary_carries_provenance_and_errors(self, mcp_server) -> None:
+        blocks, _ = await mcp_server.call_tool(name="datasets_summary",
+                                               arguments={"datasource_name": DS, "format": "markdown"})
+        lines = blocks[0].text.splitlines()
+        (listed,) = [line for line in lines if line.startswith("Inherited relationships:")]
+        assert "`orders.customers`" in listed
+        assert any(line.startswith("Inherited relationships unavailable:") and "threshold_var" in line
+                   for line in lines)
+
+    async def test_the_compact_collection_carries_provenance_and_errors(self, mcp_server) -> None:
+        blocks, _ = await mcp_server.call_tool(name="inspect", arguments={
+            "entity_type": "dataset", "compact": True, "format": "json"})
+        (group,) = [g for g in json.loads(blocks[0].text)["datasources"] if g["data_source"] == DS]
+        entries = {d["name"]: d for d in group["datasets"]}
+        assert entries["customer_revenue"]["inherited_relationships"][0]["inherited_from"] == {
+            "dataset": "orders", "relationship": "customers"}
+        assert "threshold_var" in entries["needs_var"]["inherited_relationships_error"]
+
+    async def test_markdown_inspection_carries_a_planning_error(self, mcp_server) -> None:
+        out = await _mcp(mcp_server, "needs_var", format="markdown")
+        (line,) = [x for x in out.splitlines() if "Inherited relationships could not be derived" in x]
+        assert "threshold_var" in line
+
+    async def test_a_profiling_failure_does_not_hide_the_relationships(self, mcp_server) -> None:
+        payload = json.loads(await _mcp(mcp_server, _CYCLE[0], sections=["relationships", "samples"]))
+        _check_failure(payload, _CYCLE[0])
+
+
+async def _summary(server: Any, *, compact: bool) -> dict:
+    blocks, _ = await server.call_tool(name="datasets_summary",
+                                       arguments={"datasource_name": DS, "format": "json", "compact": compact})
+    return json.loads(blocks[0].text)
 
 
 class TestInspectRest:

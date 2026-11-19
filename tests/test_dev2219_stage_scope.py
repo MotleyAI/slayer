@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.errors import (
     PopulationInferenceError,
     UnknownReferenceError,
@@ -81,6 +82,15 @@ class TestEdgeLessStage:
         async with shop("duckdb") as engine:
             resp = await engine.execute([stage, root])
         assert {r["s.sts.value"]: r["s.n"] for r in resp.data} == {"ok": 5, "new": 2}
+
+    async def test_a_count_over_a_list_element_is_an_integer_field(self) -> None:
+        pytest.importorskip("duckdb")
+        stages = [q(name="s", population="orders", dimensions=["status"], metrics=[m("collect(id)", "items")]),
+                  q(population="s", dimensions=["status"], metrics=[m("count(items.value)", "c")])]
+        async with shop("duckdb") as engine:
+            ds = await engine.create_dataset_from_query(stages, name="counted", save=False)
+        (counted,) = [f for f in ds.fields if f.name == "c"]
+        assert counted.datatype is DataType.INTEGER
 
     async def test_an_unknown_list_element_field_leaks_no_minted_identity(self) -> None:
         pytest.importorskip("duckdb")
