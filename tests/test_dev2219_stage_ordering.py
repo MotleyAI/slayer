@@ -173,3 +173,22 @@ class TestEdgeAwareExtractor:
         async with shop(dialect) as engine:
             resp = await engine.execute([a, sibling, root])
         assert [float(v) for v in resp.data[0].values()] == [7.0]
+
+
+class TestExpressionReadErrors:
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_an_expression_self_reference_is_rejected_by_its_name(self, dialect: str) -> None:
+        a = q(name="a", population="orders", dimensions=["status"], metrics=[m("count(*)", "n"), m("max(a.n)", "x")])
+        stages: list[SlayerQuery | dict] = [a, q(population="a", metrics=[m("sum(n)", "t")])]
+        async with shop(dialect) as engine:
+            with pytest.raises(ValueError, match="Stage 'a' references itself"):
+                await engine.execute(stages)
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_an_expression_cycle_names_the_stages_as_written(self, dialect: str) -> None:
+        b = q(name="b", population="orders", dimensions=["status"], metrics=[m("max(c.n)", "x")])
+        c = q(name="c", population="customers", dimensions=["tier"], metrics=[m("count(*)", "n"), m("max(b.x)", "y")])
+        stages: list[SlayerQuery | dict] = [b, c, q(population="b", metrics=[m("sum(x)", "t")])]
+        async with shop(dialect) as engine:
+            with pytest.raises(ValueError, match=r"stages \['b', 'c'\]"):
+                await engine.execute(stages)

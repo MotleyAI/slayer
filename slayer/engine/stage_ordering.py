@@ -40,7 +40,7 @@ def stage_sibling_reads(
             continue  # a relationship path, not a sibling reference
         for head in parts[:-1]:
             hit = match_name(name=head, declared=written, quoted=False)
-            if hit is not None and written[hit] != query.name:
+            if hit is not None:
                 found.add(written[hit])
     return {f for f in found if f is not None}
 
@@ -172,17 +172,17 @@ def _validate_query_list_invariants(
         if q.name and q.name in stage_sibling_reads(query=q, siblings={q.name} | sibling_names, displays=displays,
                                                     population_edges=population_edges(q, datasets_by_name), expressions=expressions):
             raise ValueError(
-                f"Stage '{q.name}' references itself — self-references "
+                f"Stage '{_spelled(q.name, displays)}' references itself — self-references "
                 f"are not allowed."
             )
     if root.name:
         referrers = sorted(
-            q.name for q in rest if root.name in stage_sibling_reads(
+            _spelled(q.name, displays) for q in rest if root.name in stage_sibling_reads(
                 query=q, siblings={root.name}, displays=displays, population_edges=population_edges(q, datasets_by_name), expressions=expressions)
         )
         if referrers:
             raise ValueError(
-                f"The final entry '{root.name}' is the DAG root and must "
+                f"The final entry '{_spelled(root.name, displays)}' is the DAG root and must "
                 f"not be referenced by other stages. Referenced by: "
                 f"{referrers}."
             )
@@ -206,9 +206,15 @@ def _build_dependency_graph(
     return in_degree, dependents
 
 
+def _spelled(name: str, displays: Mapping[str, StageDisplay]) -> str:
+    """A stage's name as its query list writes it, never its minted identity."""
+    return displays[name].name if name in displays else name
+
+
 def _kahn_sort(
     in_degree: Dict[str, int],
     dependents: Dict[str, List[str]],
+    displays: Mapping[str, StageDisplay],
 ) -> List[str]:
     """Topologically sort by Kahn's algorithm. Cycle → ``ValueError``.
 
@@ -226,7 +232,7 @@ def _kahn_sort(
                 unlocked.append(dep)
         frontier.extend(sorted(unlocked))
     if len(sorted_names) < len(in_degree):
-        cycle = sorted(set(in_degree) - set(sorted_names))
+        cycle = sorted(_spelled(n, displays) for n in set(in_degree) - set(sorted_names))
         raise ValueError(
             f"Cycle in query list: stages {cycle} form a cyclic "
             f"dependency. The reference graph must be acyclic."
@@ -261,7 +267,7 @@ def topologically_order_stages(
     datasets = datasets_by_name or {}
     _validate_query_list_invariants(queries, rest, root, sibling_names, displays or {}, datasets, expressions)
     in_degree, dependents = _build_dependency_graph(rest_by_name, sibling_names, displays or {}, datasets, expressions)
-    sorted_names = _kahn_sort(in_degree, dependents)
+    sorted_names = _kahn_sort(in_degree, dependents, displays or {})
     return [rest_by_name[n] for n in sorted_names] + [root]
 
 
