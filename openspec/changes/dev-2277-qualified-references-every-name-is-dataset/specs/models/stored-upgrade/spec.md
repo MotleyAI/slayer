@@ -4,6 +4,7 @@
 A stored query written before this change — a saved query, a query-backed model's `source_queries` stage, or a memory's query, nested or not, with or without a version of its own — SHALL load in the qualified syntax of `queries/references`, with no deprecation warning, by a conversion that reads the stored datasets:
 - each reference SHALL be rewritten to the qualified spelling that has the meaning it had before this change, reading the stage's own population;
 - a reference the new routing would send along a different path SHALL be rewritten to the explicit route from the population that keeps its old path;
+- a reference whose anchor was reached by a route longer than its written path SHALL be rewritten to its explicit route from the population, so its column name is kept;
 - a rewritten path SHALL be kept only if it resolves back to the same oriented sequence of relationships;
 - an unaliased entry whose references share no anchor SHALL get an alias equal to its column name before this change, so every later stage, query-backed model consumer and `DatasetField.sql` reading that column keeps working;
 - `count(*)` SHALL become `count(<population>.*)`.
@@ -23,7 +24,7 @@ A stored query that cannot be converted this way (a dataset it reads is missing,
 - **THEN** the first stage's entry gets that name as its alias and the model returns the rows it returned before
 
 #### Scenario: An unspellable old path makes the document unloadable
-- **WHEN** a stored query's reference reached its target through one of two unnamed parallel relationships
+- **WHEN** a stored query's reference reads a dataset that its population reaches only across two unnamed parallel relationships, so its old path has no explicit spelling
 - **THEN** the document fails to load, stays untouched on disk, and the warning names the document and the reference
 
 #### Scenario: A memory's query converts on every load

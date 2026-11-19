@@ -47,7 +47,7 @@ In every position of a query (dimensions, time dimensions, metrics and their agg
 A query SHALL reach a reference's anchor from its population as follows. When the anchor is the population, the path SHALL be empty. When exactly one path from the population to the anchor has every hop provably to-one on its traversal orientation, that path SHALL be taken, whatever other routes exist. When no such path exists and exactly one simple route exists, that route SHALL be taken. When two or more to-one paths exist, or none exists and two or more routes exist, the reference SHALL fail with a typed ambiguity error naming each executable explicit spelling; a direct relationship SHALL have no precedence over a longer path. When no route exists, the anchor SHALL be an unrelated dataset (`queries/unrelated-datasets`). Routes never cross the time spine. Binding, population inference, population recommendation, schema-drift attribution and the stored-query migration SHALL use this one rule, so they never disagree about which path a reference takes.
 
 #### Scenario: One to-one path wins over fanning routes
-- **WHEN** `orders → customers` and `orders → managers` are many-to-one, `customers → managers` is one-to-many, and a query with `population: "orders"` selects `customers.region`
+- **WHEN** `orders → customers` and `orders → managers` are many-to-one, `managers → customers` is one-to-many, and a query with `population: "orders"` selects `customers.region`
 - **THEN** it takes the direct to-one relationship and executes
 
 #### Scenario: Two to-one paths are refused even with a direct relationship
@@ -128,11 +128,15 @@ A result key SHALL NOT contain the population unless the reference itself starts
 
 ### Requirement: A later stage reads a stage by its name and keeps its column names
 
-A later stage SHALL reference an earlier stage's columns through the stage's name, as `<stage>.<column>`. A stage's column names SHALL be its result keys with its population's name removed from the front and the remaining dots flattened to `__`. They SHALL equal the column names the same stage had before this change, except for an unaliased expression whose references share no anchor.
+A later stage SHALL reference an earlier stage's columns through the stage's name, as `<stage>.<column>`. A stage's column names SHALL be its result keys with its population's name removed from the front and the remaining dots flattened to `__`. They SHALL equal the column names the same stage had before this change, except for an unaliased expression whose references share no anchor and a reference whose anchor was reached by a route longer than its written path. When two entries of a stage that is read by name flatten to one column name, the stage SHALL fail with `NameCollisionError` naming both entries and suggesting an alias.
 
 #### Scenario: Stage columns keep their names
 - **WHEN** stage `s1` with `population: "orders"` selects `orders.status`, `customers.region`, `{"metric": "sum(orders.amount)", "alias": "tot"}` and `count(orders.*)`, and the final stage over `s1` selects `s1.status`, `s1.customers__region`, `s1.tot` and `s1._count`
 - **THEN** each reference reads the matching stage column, and the columns are named as before this change
+
+#### Scenario: Two anchors flattening to one stage column are refused
+- **WHEN** stage `s1` with `population: "orders"` selects `customers.region` and `orders.customers.region`, and a later stage reads `s1`
+- **THEN** it fails with `NameCollisionError` naming both entries and suggesting an alias
 
 ### Requirement: Pre-2.0 root-relative spellings convert when a population is named
 
@@ -160,8 +164,8 @@ A dotted reference whose first segment names a dataset or a stage SHALL be read 
 - **THEN** the stored query measures `sum(orders.amount)`
 
 #### Scenario: A refinement matches a converted entry
-- **WHEN** a saved query measuring `sum(orders.amount)` is refined by removing the metric `sum(amount)` with `population: "orders"`
-- **THEN** that metric is removed
+- **WHEN** a saved query with `population: "orders"` measuring `sum(orders.amount)` is refined by restating the metric `sum(amount)`
+- **THEN** the restatement matches the saved entry: the response has one such column, with the same SQL and columns as the unrefined query, and one deprecation warning
 
 ### Requirement: A reference whose meaning changed announces it
 

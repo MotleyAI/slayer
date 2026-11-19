@@ -49,6 +49,9 @@ PINNED: dict[tuple[str, str], str] = {
     **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
     ("slayer/engine/elaborate_env.py", "midnight"): "3.0",
     ("slayer/core/vocabulary.py", ""): "3.0",
+    # Root-relative reference spellings: one door for a bare name, `count(*)` and a non-dataset first segment.
+    ("slayer/engine/legacy_references.py", ""): "3.0",
+    ("slayer/engine/binding.py", "before 2.0"): "3.0",
 }
 
 

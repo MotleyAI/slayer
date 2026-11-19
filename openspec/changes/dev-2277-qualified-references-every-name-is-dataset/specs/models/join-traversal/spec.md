@@ -85,6 +85,113 @@ typed spelling.
 - **THEN** the database is queried once, and both responses carry the same columns
   and metadata
 
+### Requirement: An extension join repeating a stored edge is that edge
+
+A join declared by a query extension of model `M` towards `T` SHALL be matched against every edge between `M` and `T` in the query object's join graph. That covers stored edges declared on either model, a stored query-backed model's declared joins, and edges added by the query's other extensions. Each candidate SHALL be compared in the `M → T` orientation: an edge declared `T → M` has its key pairs swapped and its cardinality inverted.
+- **Named match.** A declaration whose name equals a candidate's name SHALL be that edge. Different key pairs or a conflicting cardinality SHALL be an error naming the edge.
+- **Unique pair match.** Otherwise, a declaration whose key-pair set equals exactly one candidate's SHALL be that edge, applied once. A declared name SHALL then be a query-local alias of that edge, resolving within the declaring query object only. Paths, result keys and metadata SHALL keep the edge's canonical spelling: its stored name, else its target model.
+- **Ambiguous pair match.** Several candidates with the declaration's key-pair set SHALL be an error naming every candidate.
+- **No match.** A declaration matching no candidate SHALL be a new query-local edge.
+- **Join type.** The declared join type SHALL take no part in this identity and SHALL NOT change how an edge is traversed: a matched edge keeps its stored join type, and a new query-local edge is traversed as LEFT. A declaration's description and meta SHALL be ignored on a match.
+- **Cardinality.** Cardinalities conflict only when both are set and differ after orientation. A matched edge keeps its stored cardinality.
+- **Names.** A declared name equal to a stored edge name of the datasource that does not belong to the matched edge SHALL be an error. A new query-local edge's name, and an alias, SHALL follow the stored edge-name rules: it SHALL NOT equal a model name of the datasource or a stage name in scope. A declared name equal to the target model's own name SHALL be accepted as that model's spelling.
+- **One relationship declared twice.** Declarations of one new relationship from both sides, or twice from one side, SHALL be one edge: unnamed, or carrying the one name declared. Two different names for one new relationship SHALL be an error.
+- **Parallel new edges.** A new unnamed edge parallel to another edge between the same models SHALL leave a bare hop between them failing closed as ambiguous.
+
+#### Scenario: Repeating a stored join in an extension
+- **WHEN** an extension over a table-backed model repeats a stored join and a query reads through it
+- **THEN** the query resolves over that single edge instead of failing as an ambiguous hop
+
+#### Scenario: A differing extension join stays parallel
+- **WHEN** an extension adds an unnamed join to the same target with different join pairs
+- **THEN** a bare hop to that target fails closed as ambiguous
+
+#### Scenario: A reversed declaration is the stored edge
+- **WHEN** only `orders → customers` on `customer_id = id` is stored and a query extends `customers` with a join to `orders` on `id = customer_id`
+- **THEN** the declaration is the stored edge: one join is emitted, and `customers.orders` traverses it
+
+#### Scenario: Declared join type does not split the edge
+- **WHEN** the stored `orders → customers` edge is LEFT and an extension of `orders` declares it INNER with the same pairs
+- **THEN** it is the stored edge, traversed as LEFT, and `customers.<field>` stays unambiguous
+
+#### Scenario: Alias resolves to the stored edge under its canonical spelling
+- **WHEN** an extension declares the stored `orders → customers` edge under the name `c`, and the query selects both `c.name` and `customers.region`
+- **THEN** `customers` is joined once, and the result keys are `orders.customers.name` and `customers.region`
+
+#### Scenario: Alias selects one of two parallel stored edges
+- **WHEN** `orders` stores `billing_address` and `shipping_address` edges to `addresses` on different pairs, and an extension declares the billing pairs under the name `b`
+- **THEN** `b.city` reads the billing address and its result key is spelled `orders.billing_address.city`
+
+#### Scenario: Several candidates with equal pairs are ambiguous
+- **WHEN** two stored edges between `orders` and `addresses` share one key-pair set and an unnamed extension join declares that set
+- **THEN** the query fails naming both edges
+
+#### Scenario: Named declaration with different pairs is an error
+- **WHEN** an extension declares a join named `billing_address` on pairs that differ from the stored `billing_address` edge
+- **THEN** the query fails naming `billing_address`
+
+#### Scenario: Conflicting cardinality is an error
+- **WHEN** the stored `orders → customers` edge is `many_to_one` and an extension of `customers` declares the reverse join as `many_to_one`
+- **THEN** the query fails naming the edge and both cardinalities
+
+#### Scenario: Alias equal to another edge's name is an error
+- **WHEN** an extension matches the shipping edge by its pairs but names it `billing_address`
+- **THEN** the query fails naming `billing_address`
+
+#### Scenario: Alias equal to a model or stage name is an error
+- **WHEN** an extension matches the stored `orders → customers` edge by its pairs but names it after another model or a stage in scope
+- **THEN** the query fails naming the alias
+
+#### Scenario: Two names for one new relationship
+- **WHEN** an extension of `a` declares a new join to `b` named `x`, and an extension of `b` declares the reverse join named `y`
+- **THEN** the query fails naming both names
+
+#### Scenario: Multi-hop and cyclic query-local chains
+- **WHEN** extensions add `a → b` and `b → c` as new edges and a query rooted at `a` selects `b.c.<field>`, or extensions close a cycle `a → b → a` on different pairs
+- **THEN** the chain resolves over the query-local edges, and the cycle's hops resolve by their names exactly as stored edges in a cycle do
+
+### Requirement: Route enumeration is edge-aware
+Route counting SHALL treat parallel edges as distinct routes over the bidirectional edge set, whether or
+not each edge is addressable. Every surface that emits a route — shortest-path selection, root
+recommendation, short-form routing and its suggestions, population inference, the facade catalog, model
+conversion — SHALL emit only executable paths: each hop spelled canonically (its edge name, else its target
+model) and resolving to exactly the edge traversed. An edge whose canonical token resolves to more than one
+edge (an unnamed edge in a parallel set) is unaddressable: route emission SHALL skip it and the surface
+SHALL report each skipped pair with the remedy to name its edges — an item reachable only across such a pair
+is reported unreachable, never silently and never with a path that would fail. Among routes of equal hop
+count, the route with fewer hops that are not provably to-one SHALL be chosen, then the lexicographically
+smallest canonical token sequence; a surface that prefers fan-out-free routes searches provably to-one hops
+first. No search SHALL route through the time spine: a route may begin or end there, never cross it.
+
+#### Scenario: Parallel edges count as distinct routes
+- **WHEN** two edges connect a pair of models on the only route between two others
+- **THEN** route counting reports the route as ambiguous, not unique
+
+#### Scenario: Recommendation emits an executable named path
+- **WHEN** root recommendation routes an item across an ambiguous pair whose edges
+  are named
+- **THEN** the recommended path uses the edge-name token and resolves without error
+
+#### Scenario: A single named edge is emitted by its name
+- **WHEN** `customers`→`regions` is a single edge named `hr` and root recommendation is given the items
+  `orders.id` and `regions.rname`
+- **THEN** the recommended path for `regions.rname` is `customers.hr.rname`, not `customers.regions.rname`
+
+#### Scenario: Equal-length routes prefer the to-one hop
+- **WHEN** `a` declares `to_b` (`a`→`b`, many-to-one) and `b` declares `to_a` (`b`→`a`, many-to-one), and
+  root recommendation attaches a measure on `b` to the root `a`
+- **THEN** the emitted path is the item as written, resolving through `to_b`, never the fanning reverse traversal of `to_a`
+
+#### Scenario: An unaddressable pair is reported, not silently dropped
+- **WHEN** `orders` declares two unnamed joins to `addresses` and root recommendation is given `orders.id`
+  and `addresses.city`
+- **THEN** no path is emitted through that pair and the response warnings name `orders`↔`addresses` and the
+  remedy to name the edges
+
+#### Scenario: Routes never cross the spine
+- **WHEN** `orders` and `returns` are each wired to the time spine by their axis and share no join
+- **THEN** `returns` is unreachable from `orders` on every route-emitting surface
+
 ## REMOVED Requirements
 
 ### Requirement: Directed FK cycles keep literal-edge-first resolution

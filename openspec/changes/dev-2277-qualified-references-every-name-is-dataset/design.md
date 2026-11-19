@@ -77,7 +77,7 @@ None is strained beyond the approved arc42 edits.
    - In Axiom 2.4, "any other unreachable qualifier anchored at the query root. Only definition defaults cancel — a revisiting query path is refused (its root qualifier is no revisit, Principle 1)" becomes "any other unreachable qualifier read as a query reference (Principle 1). Only definition defaults cancel — a revisiting query path is refused (its anchor is no revisit, Principle 1)".
    - In Axiom 2.6, "any other qualifier the anchor cannot reach forward anchored at the query root instead" becomes "any other qualifier the anchor cannot reach forward read as a query reference (Principle 1) instead".
    - In Axiom 3.1, "reached only by naming `D` as a query path's first hop, never by route search" becomes "reached only by naming `D` as a reference's anchor (Principle 1), never by route search".
-9. **An edge name is never a first segment;** role-playing is spelled `<dataset>.<edge>.<field>`. Edge names and dataset names already share one namespace, so a first segment is never both. (default)
+9. **An edge name is never a first segment;** role-playing is spelled `<dataset>.<edge>.<field>`. A first segment naming both a dataset and an edge reads the dataset; an edge named like a dataset stays legal and is reached after an anchor (`orders.orders.name`). (default)
 10. **Keys use the written anchor; different anchors are different entries,** even when they read one column. Spelling twins of one hop stay one value (DEV-1954). (default)
 11. **Expression keys** are the common anchored prefix plus the sanitized text relative to it, which keeps today's keys for single-dataset expressions; with no common anchor, the bare sanitized text. (default)
 12. **The legacy conversion runs only when a population is named,** once at pipeline entry over parse trees, with the bundle to classify first segments. It warns once per form per document, and a saved query stores the converted twin. (default; the issue's scope, engine P7/P8)
@@ -87,7 +87,7 @@ None is strained beyond the approved arc42 edits.
 16. **Stored definitions keep dataset-local references.** (default)
 17. **`recommend_population`:** `count(D.*)` is an attachment on D; `count(*)` and bare names are refused with qualified suggestions. This absorbs DEV-2045. (default)
 18. **Spec corpus.** Rule-bearing requirements are MODIFIED here. After DEV-1607 merges, every MODIFIED text is re-based on the respelled corpus. Then a sweep MODIFIES each scenario whose asserted keys or outcome change, and the owner OKs the exact diff (tasks 1.3–1.4). Scenarios that use a legacy spelling whose outcome is unchanged stay as they are. (default)
-19. **The whole test suite is respelled** to the qualified syntax by applying the conversions recorded during a test run, through the deterministic tooling. DEV-1607's FutureWarning-as-error filter makes this necessary. (default)
+19. **The whole test suite is respelled** to the qualified syntax by applying the conversions recorded during a test run, through the deterministic tooling, so the suite exercises the qualified syntax and emits no deprecation outside the dedicated legacy tests. (default)
 20. **Refinement identity and cache keys compare converted forms.** (default)
 21. **New capability `queries/references`** under the cross-cutting `queries` group, so no `model.c4` or `index.yaml` change. (default)
 22. **Anchors come from the reading dataset's datasource only.** A visible dataset of another datasource keeps today's unknown-dataset error and never becomes an unrelated product. (codex)

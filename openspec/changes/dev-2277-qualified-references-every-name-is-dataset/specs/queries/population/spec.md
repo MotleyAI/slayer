@@ -124,7 +124,11 @@ that full canonical path, so the recommended root executes once named as
 on a dataset that no join path connects to a candidate SHALL NOT count against that
 candidate; once a root is chosen, each such attachment SHALL be reported with the
 spelling a query rooted there uses (its anchor, `queries/unrelated-datasets`)
-and flagged `unrelated`, and SHALL never steer the choice. Without determination items,
+and flagged `unrelated`, and SHALL never steer the choice.
+Each item's path SHALL be a qualified reference (`queries/references`) that a query naming the
+recommended root as `population` executes with the item's meaning: the item as written when it
+resolves from the root along the chosen path, else its explicit route from the root.
+Without determination items,
 attachments steer selection by join-path reachability alone. Every other item
 SHALL carry `unrelated` false. A feasible `root_hint` (determines all determination
 items under either rule, reaches all attachments, by a join path or as unrelated
@@ -152,7 +156,7 @@ warnings with the remedy to name its edges.
   via `warehouses`) and `recommend_population` is given `orders.status` and
   `regions.population`
 - **THEN** the root is `orders` and the path for `regions.population` is
-  `customers.regions.population`, while
+  `orders.customers.regions.population`, while
   `{"dimensions": ["orders.status", "regions.population"]}` without `population`
   fails with the ambiguous-path error
 
