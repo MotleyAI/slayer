@@ -1,7 +1,7 @@
 ## 1. Prerequisites
 
 - [x] 1.1 Merge DEV-1607 (PR #604) into this branch and respell the deltas and design to its names (verify: `openspec validate dev-2219-stages-inherit-joins-on-pass-through-key --strict` passes)
-- [ ] 1.2 If DEV-2277 merged first, respell the scenarios to its reference rules with the owner's approval of the exact edit (verify: validate passes)
+- [x] 1.2 If DEV-2277 merged first, respell the scenarios to its reference rules with the owner's approval of the exact edit (verify: validate passes)
 - [x] 1.3 After PR #604 merges, merge `origin/main` before opening this change's PR, so its diff holds only this change (verify: `git diff --stat origin/main...HEAD` lists no DEV-1607 file)
 
 ## 2. Tests (pr-tests; unit, SQLite and DuckDB, no `integration` marker)
