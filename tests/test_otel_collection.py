@@ -10,6 +10,7 @@ import pytest
 from opentelemetry.trace import SpanKind, StatusCode
 
 from slayer import otel
+from slayer.async_utils import run_sync
 from slayer.core import probes
 from slayer.core.models import DatasourceConfig
 from slayer.sql import client as client_module
@@ -307,6 +308,38 @@ def test_database_server_attributes_follow_the_connection_used(
     assert actual == expected
 
 
+def _env_backed_client(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> client_module.SlayerSQLClient:
+    monkeypatch.setenv("SLAYER_OTEL_TEST_DB", str(tmp_path / "first.db"))
+    return client_module.SlayerSQLClient(
+        DatasourceConfig(name="shop", type="sqlite", database="${SLAYER_OTEL_TEST_DB}"),
+    )
+
+
+def test_database_attributes_name_the_cached_sync_engine(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _env_backed_client(tmp_path, monkeypatch)
+    try:
+        client._get_sync_engine_for_client()
+        monkeypatch.setenv("SLAYER_OTEL_TEST_DB", str(tmp_path / "second.db"))
+        namespace = client.connection_url().database
+    finally:
+        client.close()
+    assert namespace == str(tmp_path / "first.db")
+
+
+async def test_database_attributes_name_the_loops_async_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLAYER_OTEL_TEST_HOST", "first-db")
+    client = client_module.SlayerSQLClient(
+        DatasourceConfig(name="shop", type="postgres", host="${SLAYER_OTEL_TEST_HOST}", database="sales", username="u"),
+    )
+    try:
+        client._get_async_engine()  # builds the engine without connecting
+        monkeypatch.setenv("SLAYER_OTEL_TEST_HOST", "second-db")
+        host = client.connection_url().host
+    finally:
+        await client.aclose()
+    assert host == "first-db"
+
+
 def test_direct_synchronous_execution_is_a_database_span(
     otel_env: OtelCapture, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -320,6 +353,19 @@ def test_direct_synchronous_execution_is_a_database_span(
     finally:
         client.close()
     assert otel_env.attributes("slayer.db.execute")["db.response.returned_rows"] == 1
+
+
+def test_a_synchronous_call_inside_a_running_loop_keeps_its_parent(otel_env: OtelCapture) -> None:
+    async def query() -> None:
+        with probes.scope(name="query"):
+            pass
+
+    async def request() -> None:
+        with probes.scope(name="request", attributes={"surface": "rest"}):
+            run_sync(query())
+
+    asyncio.run(request())
+    assert otel_env.parent_name("slayer.query") == "slayer.request"
 
 
 def test_a_probe_with_an_error_type_is_a_failed_span(otel_env: OtelCapture) -> None:

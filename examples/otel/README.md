@@ -64,10 +64,10 @@ To see a log record, stop Postgres during a query. The SQL client then logs a re
 
 ```bash
 curl -s -X POST localhost:5143/query -H "Content-Type: application/json" \
-  -d '{"population": "orders", "metrics": ["count(*)"]}'
+  -d '{"source_model": "orders", "measures": ["count(*)"]}'
 docker compose stop postgres
 curl -s -X POST localhost:5143/query -H "Content-Type: application/json" \
-  -d '{"population": "orders", "metrics": ["count(*)"]}'
+  -d '{"source_model": "orders", "measures": ["count(*)"]}'
 docker compose start postgres
 ```
 

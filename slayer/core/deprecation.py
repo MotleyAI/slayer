@@ -4,6 +4,7 @@
 major version reaches a call's ``removal``.
 """
 
+import asyncio
 import contextlib
 import os
 import sys
@@ -22,10 +23,11 @@ class WarningLocation(BaseModel):
     module: str
 
 
-# Frames under these directories are never the caller a warning names.
+# Frames under these directories are never the caller a warning names; asyncio's sit between run_sync and its caller.
 _INTERNAL_DIRS = (
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep,
     os.path.abspath(pydantic.__path__[0]) + os.sep,
+    os.path.dirname(os.path.abspath(asyncio.__file__)) + os.sep,
 )
 
 

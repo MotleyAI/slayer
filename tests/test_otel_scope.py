@@ -7,11 +7,13 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mcp.server.fastmcp.exceptions import ToolError
 
 from opentelemetry.trace import SpanKind
 
+from slayer import otel
 from slayer.api.server import create_app
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.translator import QueryResult
@@ -59,6 +61,20 @@ def test_an_unknown_rest_path_is_other(otel_env: OtelCapture, storage: YAMLStora
     with TestClient(create_app(storage=storage)) as client:
         response = client.get("/zqxj/unknown")
     assert (response.status_code, _request(otel_env)) == (404, ("rest", "other"))
+
+
+def test_an_uncaught_rest_failure_is_a_500_request(otel_env: OtelCapture) -> None:
+    app = FastAPI()
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise RuntimeError("handler bug")
+
+    app.add_middleware(otel.RequestMiddleware, mounted="/mcp")
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/boom")
+    status = otel_env.attributes("slayer.request").get("http.response.status_code")
+    assert (response.status_code, status) == (500, 500)
 
 
 def test_the_mcp_mount_opens_no_rest_request(otel_env: OtelCapture, storage: YAMLStorage) -> None:

@@ -39,7 +39,8 @@ def run_sync(coro: Coroutine[Any, Any, T]) -> T:
     # Loop already running (Jupyter, async framework, etc.)
     # Run in a thread to avoid "cannot run nested event loop" error
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        # The caller's context, so a probe opened inside keeps its parent.
+        return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
 
 
 def marked_coroutine_function(func: F) -> F:

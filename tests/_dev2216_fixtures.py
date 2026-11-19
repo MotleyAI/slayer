@@ -128,6 +128,7 @@ async def ossie_engine(
             try:
                 yield engine
             finally:
+                await engine.aclose()  # this loop's async engine and its open connections
                 engine.close()
         return
     if dialect == "duckdb":
