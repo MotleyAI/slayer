@@ -24,6 +24,7 @@ from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     NativeFn,
     LIST_ELEMENT,
+    LIST_POSITION,
     LIST_VALUE,
     PORTABLE_LIBRARY,
     ExtremumFn,
@@ -57,6 +58,7 @@ from slayer.sql.dialects.reflection import (
 )
 
 #: Byte-based string functions and their character (UTF-8) counterparts.
+_INDEX = "__slayer_i"
 _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
 _JSON_SCALAR_TYPES = ("Int64", "UInt64", "Double", "Bool")
 #: Types ClickHouse refuses inside ``Nullable``.
@@ -68,6 +70,22 @@ def _compact(values: Expression) -> Expression:
     element = exp.to_identifier(LIST_ELEMENT)
     keep = exp.Lambda(this=is_not_null(exp.Column(this=element.copy())), expressions=[element])
     return exp.Anonymous(this="arrayFilter", expressions=[keep, values.copy()])
+
+
+def _positioned_rows(values: Expression, *, kind: str) -> Expression:
+    """``arrayMap(i -> CAST(tuple(values[i], i) AS Tuple(value T, pos)), arrayFilter(i -> values[i] IS NOT NULL,
+    arrayEnumerate(values)))``: NULLs leave before the cast to the non-Nullable ``T``."""
+    index = exp.to_identifier(_INDEX)
+    row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {kind}, {LIST_POSITION} BIGINT>")
+
+    def element(i: Expression) -> Expression:
+        return anon("arrayElement", values.copy(), i.copy())
+
+    i = exp.Column(this=index.copy())
+    kept = exp.Lambda(this=is_not_null(element(i)), expressions=[index.copy()])
+    positions = exp.Anonymous(this="arrayFilter", expressions=[kept, anon("arrayEnumerate", values.copy())])
+    as_row = exp.Lambda(this=exp.Cast(this=anon("tuple", element(i), i.copy()), to=row_type), expressions=[index])
+    return anon("arrayMap", as_row, positions)
 
 
 def _utf8(node: Expression) -> Expression:
@@ -254,11 +272,17 @@ class ClickhouseDialect(SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False,
+        distinct: bool = False, positioned: bool = False,
     ) -> ListRelation:
-        """``ARRAY JOIN`` of one-field named tuples, so the element reads as ``alias.value``."""
+        """``ARRAY JOIN`` of named tuples, so the element reads as ``alias.value``; ``positioned``: one array of
+        ``(value, position)`` tuples, compacted once."""
+        assert not (distinct and positioned), "a distinct list relation carries no position"
         element_name = exp.to_identifier(LIST_ELEMENT)
-        row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {(element or DataType.OPAQUE).kind.value}>")
+        kind = (element or DataType.OPAQUE).kind.value
+        if positioned:
+            return ListRelation(relation=exp.Alias(this=_positioned_rows(values, kind=kind), alias=alias.copy()),
+                                join_kind="ARRAY")
+        row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {kind}>")
         as_row = exp.Lambda(this=exp.Cast(this=anon("tuple", exp.Column(this=element_name.copy())), to=row_type),
                             expressions=[element_name])
         kept = anon("arrayDistinct", _compact(values)) if distinct else _compact(values)

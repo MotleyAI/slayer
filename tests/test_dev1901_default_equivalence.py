@@ -222,11 +222,14 @@ class TestFanningDefaultHomesLikeItsTwin:
             == pytest.approx(WSUM_FAN)
 
 
-class TestFailClosed:
-    async def test_local_kwarg_on_a_fanning_path_stays_refused(self) -> None:
-        with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
-            await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_dataset="regions")
-        assert "region_events" in str(ei.value)
+class TestFanningKwarg:
+    async def test_fanning_kwarg_homes_on_its_dataset(self) -> None:
+        # region_events determines its region's pop: the aggregate is computed over region_events rows.
+        sql = await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_dataset="regions")
+        total = next(sqlglot.parse_one(sql, read="sqlite").find_all(exp.Sum))
+        select = total.find_ancestor(exp.Select)
+        assert select is not None
+        assert select.args["from_"].this.name == "region_events"
 
 
 async def _gen(expression: str, *, source_dataset: str = "orders") -> str:

@@ -433,6 +433,7 @@ carve_outs:
   - {name: column, file: slayer/sql/dialects/snowflake.py, reason: "physical database or result-set column"}
   - {name: column_comments_query, file: slayer/sql/dialects/snowflake.py, reason: "physical database or result-set column"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/snowflake.py, reason: "physical database or result-set column"}
+  - {name: read_column, file: slayer/sql/dialects/snowflake.py, reason: "physical database or result-set column"}
   - {name: column, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: referred_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
