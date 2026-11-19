@@ -32,6 +32,10 @@ def _source_names(source: Expression) -> set:
     alias = source.args.get("alias")
     if isinstance(source, exp.Unnest) and isinstance(alias, exp.TableAlias) and not alias.name:
         return {c.name for c in alias.columns}
+    if isinstance(source, exp.Table) and alias is None:
+        parts = [p.name for p in (source.args.get("catalog"), source.args.get("db"), source.this)
+                 if isinstance(p, exp.Identifier)]
+        return {".".join(parts[i:]) for i in range(len(parts))} | {source.alias_or_name}
     return {source.alias_or_name}
 
 
@@ -102,6 +106,8 @@ def unmangle_dotted_table_refs(node: Expression) -> None:
             continue
         select = col.parent_select
         sources = _visible_source_names(select) if select is not None else set()
+        if len(prefix) > 1 and len(this_segments) == 1 and ".".join(p.name for p in prefix) in sources:
+            continue  # a schema-qualified source's own column
         if prefix[0].name in sources:
             segments = [p.name for p in prefix[1:]] + this_segments
             if len(segments) == 1:

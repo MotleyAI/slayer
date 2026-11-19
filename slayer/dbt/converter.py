@@ -606,7 +606,7 @@ class DbtToSlayerConverter:
         """Drop fields reading a masked physical column, type the rest, and drop metrics SLayer cannot read."""
         cols = self._drop_masked(sm, cols, live=live)
         dbt_aggs = {m.name: m.agg.lower() for m in sm.measures}
-        sources = {m.name or "": src for m in metrics if (src := _aggregated_field(m.expression)) is not None}
+        sources = {m.name or "": src for m in metrics if (src := _aggregated_field(m.text)) is not None}
         aggs_of: dict[str, list[str]] = defaultdict(list)
         for name, (col_name, agg) in sources.items():
             aggs_of[col_name].append("sum_boolean" if dbt_aggs.get(name) == "sum_boolean" else agg)
@@ -1211,7 +1211,7 @@ class DbtToSlayerConverter:
         source_sm = self._find_measure_model(metric_name)
         slayer_dataset = self._datasets_by_name.get(source_sm.name) if source_sm is not None else None
         base = next(
-            (m.expression for m in slayer_dataset.metrics if m.name == metric_name), None,
+            (m.text for m in slayer_dataset.metrics if m.name == metric_name), None,
         ) if slayer_dataset is not None else None
         if slayer_dataset is None or base is None:
             self._fail_metric(
@@ -1785,7 +1785,7 @@ class DbtToSlayerConverter:
         if leaf is None:
             return None  # clean-failed inside _filtered_leaf_spec
         column_expr, col_type, col_format, agg_call = leaf
-        source = _aggregated_field(base.expression)
+        source = _aggregated_field(base.text)
         typed = slayer_dataset.get_field(source[0]) if source is not None and col_type is not DataType.INTEGER else None
         element_type = typed.element_type if typed is not None else None
         col_type = typed.datatype if typed is not None else col_type

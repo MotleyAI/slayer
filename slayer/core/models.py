@@ -41,7 +41,7 @@ from slayer.core.enums import (
     builtin_empty_value,
     type_display,
 )
-from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, UnknownKeyError
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, UnknownKeyError
 from slayer.core.names import NAME_PATTERN, folded_collisions, match_name
 from slayer.core import vocabulary
 from slayer.core.vocabulary import SOURCE_ORIGIN_KEYS, Spellings, attribute_used, converted_document, converted_input, method_twin, name_twins, renamed_input, same_ignoring_deprecations
@@ -49,7 +49,13 @@ from slayer.core.warnings import DeprecatedInputWarning, NameCollisionWarning, S
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
 from slayer.core.keys import RESERVED_SCALAR_NAMES
-from slayer.core.refs import IDENTIFIER_RE
+from slayer.core.field_expression import (
+    Expression,
+    ExpressionObject,
+    dialect_tokens,
+    portable_text,
+    unquoted_identifier,
+)
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
@@ -167,22 +173,14 @@ def _validate_field_name(name: str, context: str) -> str:
     return name
 
 
-def _bare_identifier(sql: str) -> str | None:
-    """The identifier ``sql`` names — bare or double-quoted — else ``None``."""
-    text = sql.strip()
-    if len(text) > 1 and text[0] == text[-1] == '"':
-        text = text[1:-1]
-    return text if IDENTIFIER_RE.match(text) else None
-
-
 def is_base_field_sql(sql: str | None) -> bool:
-    """A field ``sql`` that names one physical column (unset, bare or double-quoted identifier)."""
-    return sql is None or _bare_identifier(sql) is not None
+    """A definition text that names one physical column (unset, bare or double-quoted identifier)."""
+    return sql is None or unquoted_identifier(sql) is not None
 
 
 def physical_column_sql(*, sql: str | None, name: str) -> str:
     """The unquoted physical identifier of a base field, else ``name``."""
-    return (_bare_identifier(sql) if sql is not None else None) or name
+    return (unquoted_identifier(sql) if sql is not None else None) or name
 
 
 def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
@@ -272,7 +270,18 @@ def _check_one_expression(*, field: str, sql: str) -> None:
 class DatasetField(DatasetPart):
     """A row-level field, usable per-query as a GROUP BY dimension or an aggregation metric."""
     name: str
-    sql: str | None = None
+    expression: Expression | None = Field(
+        default=None,
+        description=(
+            "The field's definition: portable SQL as a string (shorthand for {sql: ...}), or {sql, dialects: "
+            "[{dialect, expression}]}. A bare name reads the source column, dataset.field reads a field. Unset reads "
+            "the source column of the field's name."
+        ),
+    )
+    sql: str | None = Field(
+        default=None,
+        description="Deprecated: use expression. Kept only until the datasource's dialect is known.",
+    )
     datatype: DataType = Field(
         default=DataType.STRING,
         description=(
@@ -321,11 +330,27 @@ class DatasetField(DatasetPart):
     distinct_count: int | None = None  # true cardinality at profile time
     # Runtime-only (never persisted): stale respellings of a generated query-backed field.
     _respellings: tuple[str, ...] = PrivateAttr(default=())
+    # Runtime-only: the definition came from the deprecated ``sql`` spelling.
+    _from_sql: bool = PrivateAttr(default=False)
+    # Runtime-only: the native SQL this field runs on its datasource (``with_native``); ``None`` is unresolved.
+    _native: str | None = PrivateAttr(default=None)
+    _resolved: bool = PrivateAttr(default=False)
 
     @model_validator(mode="wrap")
     @classmethod
     def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["DatasetField"]) -> "DatasetField":
         return _part_input(cls, data, handler, vocabulary.field)
+
+    @model_validator(mode="after")
+    def _sql_shorthand(self) -> "DatasetField":
+        """A deprecated ``sql`` naming one source column is the ``expression`` shorthand; other ``sql`` waits for its
+        datasource's dialect."""
+        if self.sql is None:
+            return self
+        self._from_sql = True
+        if unquoted_identifier(self.sql) is not None:
+            self.expression, self.sql = self.sql.strip(), None
+        return self
 
     @field_validator("name")
     @classmethod
@@ -342,9 +367,57 @@ class DatasetField(DatasetPart):
 
     @model_validator(mode="after")
     def _validate_sql_expression(self) -> "DatasetField":
-        if self.sql is not None:
-            _check_one_expression(field=self.name, sql=self.sql)
+        if isinstance(self.expression, ExpressionObject) and not self.expression.sql and not self.expression.dialects:
+            raise FieldExpressionError(owner=f"Field {self.name!r}", reason="its expression has neither sql nor a "
+                                       "dialects entry.")
+        for native in self.native_texts:
+            _check_one_expression(field=self.name, sql=native)
         return self
+
+    @property
+    def native_texts(self) -> list[str]:
+        """Every native SQL text the field carries: its dialect entries and a deprecated ``sql``."""
+        entries = (self.expression.dialects or []) if isinstance(self.expression, ExpressionObject) else []
+        return [*(e.expression for e in entries), *([self.sql] if self.sql is not None else [])]
+
+    @property
+    def from_sql(self) -> bool:
+        """Whether the definition came from the deprecated ``sql`` spelling."""
+        return self._from_sql
+
+    @property
+    def resolved(self) -> bool:
+        """Whether this field carries the native SQL it runs on its datasource."""
+        return self._resolved
+
+    def with_native(self, native: str | None) -> "DatasetField":
+        """A copy running ``native`` (``None``: the source column of its name)."""
+        out = self.model_copy()
+        out._native, out._resolved = native, True
+        return out
+
+    @property
+    def definition_sql(self) -> str | None:
+        """The SQL this field's value reads: its resolved native SQL, else best effort from its forms; ``None`` reads
+        the source column of its name."""
+        if self._resolved:
+            return self._native
+        if self.sql is not None:
+            return self.sql
+        if self.expression is None:
+            return None
+        portable = portable_text(self.expression)
+        if portable is not None:
+            return portable
+        texts = self.native_texts
+        return texts[0] if texts else None
+
+    @property
+    def definition_known(self) -> bool:
+        """Whether ``definition_sql`` is the text that runs, not a best-effort guess among dialect entries."""
+        if self._resolved or self.sql is not None or self.expression is None:
+            return True
+        return portable_text(self.expression) is not None or len(set(self.native_texts)) == 1
 
     @model_validator(mode="after")
     def _validate_granularity_temporal(self) -> "DatasetField":
@@ -366,32 +439,39 @@ class DatasetField(DatasetPart):
     def _sql_is_nontrivial(self) -> bool:
         """The value SQL is not the bare self-name; a QUOTED self-name counts, since
         only the expansion door re-qualifies it with its quoting intact."""
-        return self.sql is not None and self.sql.strip() != self.name
+        text = self.definition_sql
+        return text is not None and text.strip() != self.name
 
     @property
     def is_base(self) -> bool:
-        return is_base_field_sql(self.sql)
+        """Whether the definition reads one source column alone (a physical reader when unfiltered)."""
+        return self.definition_known and is_base_field_sql(self.definition_sql)
+
+    @property
+    def is_physical_reader(self) -> bool:
+        """A base field without a ``filter``: relationship keys, drift and live typing read it as its source column."""
+        return self.is_base and self.filter is None
 
     @property
     def physical_name(self) -> str:
         """The physical column this base field reads; raises on an expression field."""
         if not self.is_base:
             raise RelationshipKeyError(
-                summary=f"field {self.name!r} is not a base field (sql={self.sql!r}) "
+                summary=f"field {self.name!r} is not a base field (expression={self.definition_sql!r}) "
                         f"and has no physical spelling",
             )
-        return physical_column_sql(sql=self.sql, name=self.name)
+        return physical_column_sql(sql=self.definition_sql, name=self.name)
 
     @property
     def physical_quoted(self) -> bool:
-        """Whether this base field's ``sql`` quotes its physical name (an exact-case name)."""
-        text = (self.sql or "").strip()
+        """Whether this base field quotes its physical name (an exact-case name)."""
+        text = (self.definition_sql or "").strip()
         return self.is_base and len(text) > 1 and text[0] == text[-1] == '"'
 
     @property
     def needs_expansion(self) -> bool:
         """The reference resolves to more than a bare physical column — a derived
-        ``sql`` or an attached ``filter`` — so its uses expand to that definition."""
+        definition or an attached ``filter`` — so its uses expand to that definition."""
         return self._sql_is_nontrivial or self.filter is not None
 
     @property
@@ -414,6 +494,22 @@ class DatasetField(DatasetPart):
     def type(self, value: DataType) -> None:
         attribute_used(self, old="type", new="datatype")
         self.datatype = value
+
+
+#: Runtime-only fields reading a source column a metric's ``source.x`` names.
+SOURCE_READER_PREFIX = "__slayer_source_"
+
+
+def is_source_qualifier(name: str, *, dataset: "SlayerDataset") -> bool:
+    """Whether ``name`` is the ``source`` qualifier on ``dataset``: no field of ``dataset`` is named ``source``."""
+    return name.casefold() == "source" and not any(c.name.casefold() == "source" for c in dataset.fields)
+
+
+def source_reader(dataset: "SlayerDataset", *, qualifier: str, column: str) -> DatasetField | None:
+    """The runtime reader ``qualifier.column`` names on ``dataset`` when ``qualifier`` is the source qualifier."""
+    if not is_source_qualifier(qualifier, dataset=dataset):
+        return None
+    return dataset.get_field(f"{SOURCE_READER_PREFIX}{column}", quoted=True)
 
 
 def list_operations_hint(field: DatasetField) -> str:
@@ -534,7 +630,12 @@ class MetricBase(BaseModel):
 class DatasetMetric(MetricBase, DatasetPart):
     """A named aggregation expression saved on a dataset (or a query extension) and referenced by bare name."""
     _TEXT: ClassVar[str] = "expression"
-    expression: str = Field(description="Same syntax as the query object's metrics.")
+    expression: Expression = Field(
+        description=(
+            "Same syntax as the query object's metrics, as a string or {sql, dialects}; only sql (or an "
+            "OSSIE_SQL_2026 entry) is evaluated. source.x reads the dataset's source column."
+        ),
+    )
     name: str = Field(description="The metric's name; queries, filters and order reference it.")
     label: str | None = None
     description: str | None = None
@@ -551,10 +652,22 @@ class DatasetMetric(MetricBase, DatasetPart):
     def _validate_name(cls, v: str) -> str:
         return check_metric_name(v, what="DatasetMetric name")
 
-    @field_validator("expression")
-    @classmethod
-    def _reject_raw_window_function(cls, v: str) -> str:
-        return check_metric_text(v, what="DatasetMetric expression")
+    @model_validator(mode="after")
+    def _reject_raw_window_function(self) -> "DatasetMetric":
+        text = portable_text(self.expression)
+        if text is None:
+            carried = ", ".join(dialect_tokens(self.expression)) or "none"
+            raise FieldExpressionError(owner=f"Metric {self.name!r}", reason=f"has no portable sql (dialects carried: "
+                                       f"{carried}); only sql or an OSSIE_SQL_2026 entry is evaluated.")
+        check_metric_text(text, what="DatasetMetric expression")
+        return self
+
+    @property
+    def text(self) -> str:
+        """The metric's evaluated (portable) expression."""
+        text = portable_text(self.expression)
+        assert text is not None  # validated
+        return text
 
     # Expressions may contain ``__`` (flattened virtual-dataset relationship paths); typos are
     # caught by strict resolution at binding time.
@@ -573,7 +686,7 @@ class DatasetMetric(MetricBase, DatasetPart):
 
     @property
     @deprecated("formula is deprecated; use expression", category=None)
-    def formula(self) -> str:
+    def formula(self) -> Expression:
         attribute_used(self, old="formula", new="expression")
         return self.expression
 
@@ -926,14 +1039,14 @@ def relationship_key_error(
     if col is None:
         renamed = next((c.name for c in fields
                         if c.is_base and c.name != key and c.physical_name == key), None)
-        hint = (f"name the field by its name {renamed!r}, not its physical sql" if renamed
-                else f"declare DatasetField(name={key!r}) on '{side}' (sql= its physical column if renamed)")
+        hint = (f"name the field by its name {renamed!r}, not the source column it reads" if renamed
+                else f"declare DatasetField(name={key!r}) on '{side}' (expression= its source column if renamed)")
         return RelationshipKeyError(summary=f"{head} is not a declared field of '{side}'",
                             suggestion=hint)
     if not col.is_base:
         return RelationshipKeyError(
-            summary=f"{head} is an expression field of '{side}' (sql={col.sql!r})",
-            suggestion="key the relationship on a base field: sql unset or a single field identifier",
+            summary=f"{head} is an expression field of '{side}' (expression={col.definition_sql!r})",
+            suggestion="key the relationship on a base field: expression unset or a single source column",
         )
     if col.filter is not None:
         return RelationshipKeyError(
@@ -1109,6 +1222,16 @@ class SlayerDataset(DatasetPart):
         for f in v:
             parse_sql_predicate(f)
         return v
+
+    @model_validator(mode="after")
+    def _qualify_sql_sibling_aliases(self) -> "SlayerDataset":
+        """A bare ``sql`` alias of a sibling that reads more than its own column reads that sibling by path."""
+        expanding = {c.name for c in self.fields if c.needs_expansion}
+        for i, c in enumerate(self.fields):
+            target = unquoted_identifier(c.expression) if c.from_sql and isinstance(c.expression, str) else None
+            if target is not None and target != c.name and target in expanding:
+                self.fields[i] = c.model_copy(update={"expression": f"{self.name}.{target}"})
+        return self
 
     @model_validator(mode="after")
     def _validate_field_metric_disjoint(self) -> "SlayerDataset":

@@ -1498,7 +1498,7 @@ class OsiToSlayerConverter:
             return f"its name collides on {item.dataset!r}"
         dataset.metrics.append(item.metric)
         try:
-            bind_dataset_expression(item.metric.expression, dataset=dataset, datasets=list(self._datasets.values()),
+            bind_dataset_expression(item.metric.text, dataset=dataset, datasets=list(self._datasets.values()),
                                dialect=self._target)
         except Exception as exc:  # noqa: BLE001 — any binding failure keeps it pending
             dataset.metrics.remove(item.metric)

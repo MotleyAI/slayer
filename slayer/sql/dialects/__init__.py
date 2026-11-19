@@ -48,6 +48,7 @@ __all__ = [
     "SQLGLOT_NAMES",
     "get_dialect",
     "dialect_for_ds_type",
+    "ossie_token",
     "build_sa_backend_registry",
     "dialect_for_sa_backend",
 ]
@@ -113,6 +114,11 @@ def get_dialect(sqlglot_name: str) -> SqlDialect:
 def dialect_for_ds_type(ds_type: str | None) -> SqlDialect:
     """Lenient lookup by datasource type; ``None``, empty and unknown types get Postgres."""
     return _BY_DS_TYPE.get(ds_type or "", _BY_SQLGLOT_NAME["postgres"])
+
+
+def ossie_token(ds_type: str | None) -> str:
+    """The Ossie dialect token of a datasource type's own SQL: its sqlglot name, upper-cased."""
+    return dialect_for_ds_type(ds_type).sqlglot_name.upper()
 
 
 def dialect_for_sa_backend(backend: str | None) -> SqlDialect:

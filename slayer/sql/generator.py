@@ -6184,7 +6184,7 @@ class SQLGenerator:
     def _is_nontrivial_derived(dataset: SlayerDataset, name: str) -> bool:
         """True iff ``name`` is a field on ``dataset`` whose ``DatasetField.sql`` is a"""
         col = next((c for c in dataset.fields if c.name == name), None)
-        return col is not None and col.sql is not None and not is_trivial_base(
+        return col is not None and col.definition_sql is not None and not is_trivial_base(
             field=col,
         )
 

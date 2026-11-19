@@ -624,7 +624,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 "datatype": _render_field_type(c),
                 "primary_key": "yes" if c.primary_key else "",
                 "unique": "yes" if c.unique else "",
-                "sql": c.sql if c.sql else c.name,
+                "sql": c.definition_sql or c.name,
                 "allowed_aggregations": aggs,
                 "filter": c.filter,
                 "label": c.label,
@@ -653,7 +653,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         for mm in dataset.metrics:
             metric_rows.append({
                 "name": mm.name,
-                "expression": mm.expression,
+                "expression": mm.text,
                 "label": mm.label,
                 "description": _truncate_description(mm.description, descriptions_max_chars),
                 "meta": _format_meta(mm.meta),
@@ -871,7 +871,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     "primary_key": c.primary_key,
                     "unique": c.unique,
                     **({"granularity": str(c.granularity)} if c.granularity is not None else {}),
-                    **({"sql": c.sql} if show_sql else {}),
+                    **({"sql": c.definition_sql} if show_sql else {}),
                     "allowed_aggregations": c.allowed_aggregations,
                     **({"filter": c.filter} if show_sql else {}),
                     "label": c.label,
@@ -893,7 +893,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             payload["metrics"] = [
                 {
                     "name": mm.name,
-                    "expression": mm.expression,
+                    "expression": mm.text,
                     "label": mm.label,
                     "description": _truncate_description(
                         mm.description, descriptions_max_chars,

@@ -86,6 +86,7 @@ from slayer.core.models import (
     is_identifier,
     reserved_value_param_message,
     shadows_library_function,
+    source_reader,
 )
 from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine.population import dimension_routing
@@ -1046,8 +1047,12 @@ def _resolve_dotted(
 ) -> ValueKey:
     """Resolve a dotted ref against the scope; ``quoted`` flags each double-quoted segment, matched exactly.
 
-    Resolution order: root qualifier dropped → declared alias (dotted text) → relationship walk
-    → leaf field → saved metric (re-anchored into host coords, eligible position)."""
+    Resolution order: the ``source`` qualifier's source column → root qualifier dropped → declared alias (dotted text)
+    → relationship walk → leaf field → saved metric (re-anchored into host coords, eligible position)."""
+    if isinstance(scope, DatasetScope) and scope.population is not None and len(parts) == 2:
+        reader = source_reader(scope.population, qualifier=parts[0], column=parts[1])
+        if reader is not None:
+            return FieldSqlKey(path=(), dataset=scope.population.name, field_name=reader.name)
     original_parts = parts
     original_quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=original_quoted)
@@ -1240,8 +1245,8 @@ def _resolve_saved_metric(
     records = _bind_records.get()
     if records is not None:
         records.metrics[(terminal_dataset.name, metric.name)] = None
-    parsed = parse_bound_expr(metric.expression, metric.bound_variables)
-    _reject_placeholders(parsed, text=metric.expression)
+    parsed = parse_bound_expr(metric.text, metric.bound_variables)
+    _reject_placeholders(parsed, text=metric.text)
     if metric.name not in terminal_dataset.query_local_names:
         # A stored definition never sees a query's extensions.
         bundle = bundle.definition_view()
@@ -2425,9 +2430,9 @@ def _reject_windowed_field_sql(
         if dataset is None:
             continue
         col = next((c for c in dataset.fields if c.name == k.field_name), None)
-        if col is None or col.sql is None:
+        if col is None or col.definition_sql is None:
             continue
-        if has_window_function(col.sql):
+        if has_window_function(col.definition_sql):
             raise IllegalWindowInFilterError(
                 filter_expr=str(parsed),
                 source=(

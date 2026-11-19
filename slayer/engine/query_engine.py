@@ -28,7 +28,7 @@ from pydantic import (
 from slayer.async_utils import run_sync
 from slayer.core import probes
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, RelationshipCardinality, TimeGranularity
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, DataType, RelationshipCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
     AmbiguousDatasetError,
@@ -76,6 +76,7 @@ from slayer.core.query import (
     render_probe_text,
 )
 from slayer.core.relationship_search import blocking_pairs, shortest_routes, unreachable_target
+from slayer.engine.definitions import needs_live_types, resolved_dataset
 from slayer.engine.field_dependency import check_definition_ambiguity, check_definition_reach, check_dataset_filters
 from slayer.engine.population.inference import (
     ambiguity_resolved_path,
@@ -147,12 +148,14 @@ from slayer.ir.planned import (
 from slayer.live_schema import ingestion, schema_drift
 from slayer.engine.dataset_reads import narrowing_datasets
 from slayer.live_schema.schema_scope import IngestScopeArgs
+from slayer.live_schema.type_refinement import live_table_location
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
     build_response_metadata,
     projection_result_keys,
 )
+from slayer.sql.definitions import with_converted_sql
 from slayer.sql.field_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
@@ -840,6 +843,54 @@ class SlayerQueryEngine:
         self._column_presence_cache: dict[tuple, bool] = {}
         # Live-schema facts reused by query-time drift attribution.
         self._drift_snapshots = schema_drift.LiveSnapshotCache()
+        # Live source-column types a portable definition's undeclared columns read, by table.
+        self._source_column_types: dict[tuple, dict[str, DataType]] = {}
+
+    async def _live_column_types(self, *, datasource: DatasourceConfig, dataset: SlayerDataset) -> dict[str, DataType]:
+        """``dataset``'s live source columns and their types, when a definition needs them; empty when unknown."""
+        if not dataset.sql_table or not needs_live_types(dataset, ds_type=datasource.type):
+            return {}
+        key = (_sql_client_cache_key(datasource), dataset.sql_table)
+        if key not in self._source_column_types:
+            client = self.client_for(datasource)
+            try:
+                location = await live_table_location(dataset.sql_table, datasource, client)
+                columns = await client.reflect_columns(location) if location is not None else []
+            except Exception as exc:  # unreachable: source columns stay Opaque
+                logger.warning("Could not read the columns of %s: %s", dataset.sql_table, exc)
+                return {}
+            self._source_column_types[key] = {c.name: c.narrowed_type for c in columns}
+        return self._source_column_types[key]
+
+    async def _resolved(
+        self, dataset: SlayerDataset, *, datasource: DatasourceConfig, datasets: Sequence[SlayerDataset],
+    ) -> SlayerDataset:
+        """``dataset`` as it runs on ``datasource`` (each field carrying its native SQL)."""
+        if dataset.source_queries:
+            return dataset
+        live = await self._live_column_types(datasource=datasource, dataset=dataset)
+        return resolved_dataset(dataset, ds_type=datasource.type, datasets=datasets, live=live)
+
+    async def _resolved_bundle(
+        self, bundle: ResolvedSourceBundle, *, datasource: DatasourceConfig,
+    ) -> ResolvedSourceBundle:
+        """``bundle`` with every dataset's row definitions resolved for ``datasource``."""
+        peers = list(bundle.referenced_datasets)
+        done: Dict[str, SlayerDataset] = {}
+
+        async def one(dataset: SlayerDataset) -> SlayerDataset:
+            if dataset.name not in done:
+                done[dataset.name] = await self._resolved(dataset, datasource=datasource, datasets=peers)
+            return done[dataset.name]
+
+        population = await one(bundle.population) if bundle.population is not None else None
+        referenced = [population if population is not None and d.name == population.name else await one(d)
+                      for d in bundle.referenced_datasets]
+        stages = {name: await self._resolved(d, datasource=datasource, datasets=peers)
+                  for name, d in bundle.stage_source_datasets.items()}
+        return bundle.model_copy(update={
+            "population": population, "referenced_datasets": referenced, "stage_source_datasets": stages,
+        })
 
     @property
     def policy(self) -> Optional[SessionPolicy]:
@@ -1396,7 +1447,8 @@ class SlayerQueryEngine:
                     dataset=source, variables=stage_vars,
                     dialect=dialect_for_ds_type(datasource.type),
                 )
-        bundle = bundle.model_copy(update={"stage_source_datasets": stage_sources})
+        bundle = await self._resolved_bundle(bundle.model_copy(update={"stage_source_datasets": stage_sources}),
+                                             datasource=datasource)
 
         if result_order:
             query = _with_default_order(query)
@@ -2106,10 +2158,10 @@ class SlayerQueryEngine:
             now=self._clock(),
         )
         dialect = self._dialect_for_type(datasource.type)
-        bundle = bundle.model_copy(update={
+        bundle = await self._resolved_bundle(bundle.model_copy(update={
             "dialect": dialect, "datasource_type": datasource.type, "population": dataset,
             "referenced_datasets": [dataset if m.name == dataset.name else m for m in bundle.referenced_datasets],
-        })
+        }), datasource=datasource)
         planned = plan_stages(queries=[probe_query], bundle=bundle)
         root = planned[-1]
         built = build_planned_statement(
@@ -3136,11 +3188,16 @@ class SlayerQueryEngine:
             dataset = await self._validate_and_populate_cache(dataset, notices_out=notices)
         failures = DocumentLoadFailures()
         loaded = await self._preload_relationship_targets(dataset, failures=failures)
-        notices.extend(saved_date_only_notices(dataset, datasets_by_name=loaded))
-        _validate_relationship_keys(dataset=dataset, loaded=loaded)
         ds = await self.storage.get_datasource(dataset.data_source) if dataset.data_source else None
+        resolved = dataset
+        if ds is not None and not dataset.source_queries:
+            dataset = with_converted_sql(dataset, ds_type=ds.type)
+            resolved = await self._resolved(dataset, datasource=ds,
+                                            datasets=[d for d in loaded.values() if d is not None])
+        notices.extend(saved_date_only_notices(dataset, datasets_by_name=loaded))
+        _validate_relationship_keys(dataset=resolved, loaded=loaded)
         check_placeholders(mode_a_texts(dataset), dialect=dialect_for_ds_type(ds.type if ds else None))
-        await self._validate_mode_a_relationship_paths(dataset, loaded=loaded)
+        await self._validate_mode_a_relationship_paths(resolved, loaded=loaded)
         await self.validate_sql_dataset_source(dataset)
         try:
             prior = await self.storage.get_dataset(dataset.name, data_source=prior_data_source or dataset.data_source)
@@ -3293,7 +3350,7 @@ class SlayerQueryEngine:
             )
 
         for col in dataset.fields:
-            for fragment in (col.sql, col.filter):
+            for fragment in (col.definition_sql if col.resolved else None, col.filter):
                 if not fragment:
                     continue
                 try:

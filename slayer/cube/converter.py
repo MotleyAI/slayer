@@ -1009,7 +1009,7 @@ class CubeToSlayerConverter:
         """Drop the metrics reading a joined cube's physical column that cannot be read."""
         kept: list[DatasetMetric] = []
         for m in build.metrics:
-            problem = next((p for mk, p in build.foreign_problems.items() if mk in m.expression), None)
+            problem = next((p for mk, p in build.foreign_problems.items() if mk in m.text), None)
             if problem is None:
                 kept.append(m)
                 continue
@@ -1033,7 +1033,7 @@ class CubeToSlayerConverter:
         for col in build.fields:
             col.sql, col.filter = resolve(col.sql), resolve(col.filter)
         for m in build.metrics:
-            m.expression = resolve(m.expression) or m.expression
+            m.expression = resolve(m.text) or m.expression
 
     def _type_fields(self, build: _CubeBuild, *, live: LiveSource | None, report) -> None:
         """Type each field from the database, then the Cube dimension type, then its aggregations; drop the metrics
@@ -1248,7 +1248,7 @@ class CubeToSlayerConverter:
             problems = metric_problems(dataset.model_copy(update={"metrics": metrics}), datasets_by_name=self._datasets,
                                         dialect=self._sql_dialect)
         else:
-            problems = metric_dependency_problems([(m.name, m.expression) for m in metrics])
+            problems = metric_dependency_problems([(m.name, m.text) for m in metrics])
         for m, problem in zip(metrics, problems):
             if problem is not None:
                 report.add(CubeConversionIssue(

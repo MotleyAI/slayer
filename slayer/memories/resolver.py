@@ -582,9 +582,9 @@ class _ExtensionScope(BaseModel):
                     out.append(EntityResolution(canonical_forms=[f"{target.data_source}.{target.name}.{leaf}"]))
             return out
         metric = owner.get_metric(name)
-        if metric is None or not metric.expression:
+        if metric is None or not metric.text:
             return []
-        return [r for token in _field_entity_tokens("expression", metric.expression) for r in await self.resolve(token, host=owner)]
+        return [r for token in _field_entity_tokens("expression", metric.text) for r in await self.resolve(token, host=owner)]
 
 
 async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerDataset]:

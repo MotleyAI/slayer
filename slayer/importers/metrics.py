@@ -27,11 +27,11 @@ def metric_problems(dataset: SlayerDataset, *, datasets_by_name: Mapping[str, Sl
 
     found = {i: p for i, m in enumerate(dataset.metrics)
              if (p := _list_problem(m, dataset=dataset, datasets_by_name=datasets_by_name)
-                 or expression_refusal(m.expression, dialect=dialect)) is not None}
+                 or expression_refusal(m.text, dialect=dialect)) is not None}
     while True:  # a metric reading a dropped one is dropped too
         kept = [(i, m) for i, m in enumerate(dataset.metrics) if i not in found]
         problems = metric_dependency_problems(
-            [(m.name, m.expression) for _, m in kept],
+            [(m.name, m.text) for _, m in kept],
             aggregations=frozenset(a.name for a in dataset.aggregations),
             fields=frozenset(c.name for c in dataset.fields), relationship_path=relationship_path,
         )
@@ -45,7 +45,7 @@ def _list_problem(metric: DatasetMetric, *, dataset: SlayerDataset,
                   datasets_by_name: Mapping[str, SlayerDataset]) -> str | None:
     """Why ``metric`` aggregates a list field (its own dataset's or a joined one's) SLayer refuses, else ``None``."""
     try:
-        tree = parse_expr(metric.expression)
+        tree = parse_expr(metric.text)
     except ValueError:
         return None  # reported by the dependency check
     for node in walk_parsed(tree):

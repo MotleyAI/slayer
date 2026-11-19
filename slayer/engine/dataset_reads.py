@@ -141,16 +141,16 @@ class _Reads:
         col = host.get_field(name, quoted=True)
         if col is None or not self._first_visit(host, f"field:{name}"):
             return
-        if col.sql is not None and not is_trivial_base(field=col):
-            self.fragment(col.sql, host=host, scope=scope)
+        if col.definition_sql is not None and not is_trivial_base(field=col):
+            self.fragment(col.definition_sql, host=host, scope=scope)
         if col.filter:
             self.fragment(col.filter, host=host, scope=scope)
 
     def metric(self, *, host: SlayerDataset, name: str, scope: QueryScope) -> None:
         metric = host.get_metric(name)
-        if metric is None or not metric.expression or not self._first_visit(host, f"metric:{name}"):
+        if metric is None or not metric.text or not self._first_visit(host, f"metric:{name}"):
             return
-        for parts in text_paths(metric.expression, root=None):
+        for parts in text_paths(metric.text, root=None):
             self.ref(parts, host=host, scope=scope)
 
     def _first_visit(self, host: SlayerDataset, key: str) -> bool:

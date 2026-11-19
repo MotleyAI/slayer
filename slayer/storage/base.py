@@ -39,6 +39,7 @@ from slayer.engine.field_dependency import check_dataset_filters, validate_deriv
 from slayer.core.relationship_walker import edges_between
 from slayer.core.names import folded_collisions, match_name
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
+from slayer.core.field_expression import stored_definition_text
 from slayer.core.models import (
     DatasourceConfig,
     DatasetRelationship,
@@ -82,6 +83,7 @@ from slayer.storage.document_keys import (
     with_relationship_pairs,
 )
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
+from slayer.storage.field_expression_migration import FIELD_EXPRESSION_VERSION, respell_source_paths
 from slayer.storage.granularity_rename import (
     Renames,
     granularity_renames,
@@ -103,6 +105,7 @@ from slayer.storage.legacy_alias_rewrite import (
     mode_a_surface_texts,
 )
 from slayer.database.client import SqlClient
+from slayer.sql.definitions import with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
@@ -162,8 +165,8 @@ def _canonical_key(*, key: Any, fields: Any) -> Any:
         return key
     renames = [
         c["name"] for c in cols
-        if isinstance(c.get("sql"), str) and is_base_field_sql(c["sql"])
-        and physical_column_sql(sql=c["sql"], name=c["name"]) == key
+        if isinstance(text := stored_definition_text(c), str) and is_base_field_sql(text)
+        and physical_column_sql(sql=text, name=c["name"]) == key
     ]
     return renames[0] if len(renames) == 1 else key
 
@@ -189,7 +192,8 @@ def _undeclared_key(*, key: Any, fields: list) -> bool:
     return not any(
         isinstance(c, dict) and isinstance(c.get("name"), str) and (
             c["name"] == key
-            or (is_base_field_sql(c.get("sql")) and physical_column_sql(sql=c.get("sql"), name=c["name"]) == key)
+            or (isinstance(text := stored_definition_text(c), (str, type(None))) and is_base_field_sql(text)
+                and physical_column_sql(sql=text, name=c["name"]) == key)
         )
         for c in fields
     )
@@ -560,7 +564,7 @@ def _refuse_colon_metrics(dataset: SlayerDataset) -> None:
     """A metric expression in a removed colon spelling fails the save; other parse errors surface at binding."""
     for metric in dataset.metrics:
         try:
-            parse_expr(metric.expression)
+            parse_expr(metric.text)
         except ColonSpellingError:
             raise
         except Exception:  # noqa: BLE001, S112 — reported when a query binds it
@@ -1151,12 +1155,31 @@ class StorageBackend(ABC):
             data = await self._dedup_exact_inverse_relationships(
                 name=name, data=data, data_source=data_source,
             )
+            if pre_version < FIELD_EXPRESSION_VERSION:
+                data = respell_source_paths(data, peer_relationships=await self._peer_relationships(
+                    data=data, data_source=data_source))
             write_back = True
             if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
                 await self._apply_refinement_or_raise(
                     name=name, data=data, data_source=data_source,
                 )
-        return SlayerDataset.model_validate(data), write_back
+        dataset = SlayerDataset.model_validate(data)
+        datasource = await self.get_datasource(data_source) if any(c.sql is not None for c in dataset.fields) else None
+        if datasource is not None:
+            dataset, write_back = with_converted_sql(dataset, ds_type=datasource.type), True
+        # A field's sql waiting for its datasource's dialect is never written back.
+        return dataset, write_back and not any(c.sql is not None for c in dataset.fields)
+
+    async def _peer_relationships(self, *, data: dict, data_source: str) -> dict[str, list]:
+        """Each relationship target's own stored relationships, by target name."""
+        out: dict[str, list] = {}
+        for relationship in data.get("relationships") or []:
+            target = relationship.get("to") if isinstance(relationship, dict) else None
+            if isinstance(target, str) and target not in out:
+                peer = await self._peer_dataset_dict(name=target, data_source=data_source)
+                rels = peer.get("relationships") if isinstance(peer, dict) else None
+                out[target] = rels if isinstance(rels, list) else []
+        return out
 
     async def _dataset_names(self, data_source: str) -> set[str]:
         return {n for ds, n in await self._list_all_dataset_identities() if ds == data_source}

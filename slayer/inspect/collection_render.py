@@ -138,7 +138,7 @@ def _datasets_summary_json(
                 "metrics": [
                     {
                         "name": mm.name,
-                        "expression": mm.expression,
+                        "expression": mm.text,
                         "description": desc(mm.description),
                     }
                     for mm in m.metrics
@@ -210,7 +210,7 @@ def _append_verbose_dataset_lines(
     dataset_lines.append("")
 
     metric_rows = [
-        {"name": mm.name, "expression": mm.expression, "description": desc(mm.description)}
+        {"name": mm.name, "expression": mm.text, "description": desc(mm.description)}
         for mm in m.metrics
     ]
     dataset_lines.append(f"**Metrics ({len(metric_rows)}):**")

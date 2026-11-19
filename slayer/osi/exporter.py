@@ -581,7 +581,7 @@ class _Exporter:
         for slayer_metric in ds.graph.metrics:
             label = f"Metric {slayer_metric.name or slayer_metric.expression!r} on {name!r}"
             try:
-                key = bind_dataset_expression(slayer_metric.expression, dataset=ds.graph, datasets=list(self.graph.values()),
+                key = bind_dataset_expression(slayer_metric.text, dataset=ds.graph, datasets=list(self.graph.values()),
                                          dialect=self.target)
             except Exception as exc:  # noqa: BLE001 — an unbindable metric travels verbatim
                 self._carry_metric(ds, slayer_metric, label=f"{label} does not bind ({exc})", needs=set())
