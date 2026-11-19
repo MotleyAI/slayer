@@ -26,8 +26,8 @@ in `main`'s vocabulary and paths (`slayer.database.client`, `population` / `metr
 - [x] 3.2 `examples/comparisons/probes.yaml`: the five C23 round-trip probes in `main`'s query and model vocabulary; Q22 / Q27 / C9 probes stay `main`'s.
 - [x] 3.3 `examples/comparisons/slayer/models/customers.yaml` stays `main`'s except the `tags` field gains `db_type: 'VARCHAR[]'`; `matrix.yaml` keeps `main`'s Q27 caveat ("List fields …"); C23 = `'yes'` and C4 = "9 engines tested live, 4 more by SQL generation." from `1.x`.
 - [x] 3.4 `tests/test_comparison_matrix.py`: `1.x`'s new tests in `main`'s vocabulary, `main`'s existing tests kept.
-- [ ] 3.5 Respell `examples/comparisons/probes.yaml` and `examples/comparisons/slayer/{models,extra_models}/*.yaml` to DEV-1607's query shapes (query metric entries `{metric, alias}`, dimension entries `{field, alias}`, and any other spelling `main` refuses or deprecates), probe meaning unchanged. Verify: no probe in the full SLayer run fails or warns because of a refused or deprecated spelling.
-- [ ] 3.6 Run the SLayer probe runner on the C23 probes against `main`; every one passes. Regenerate `matrix.json` with `examples/comparisons/export_matrix.py`; its `--check` passes and probe links point at `main`.
+- [x] 3.5 Respell `examples/comparisons/probes.yaml` and `examples/comparisons/slayer/{models,extra_models}/*.yaml` to DEV-1607's query shapes (query metric entries `{metric, alias}`, dimension entries `{field, alias}`, and any other spelling `main` refuses or deprecates), probe meaning unchanged. Verify: no probe in the full SLayer run fails or warns because of a refused or deprecated spelling, except F9d, F9e, Q16a and Q25-per-order, which use the removed per-query extension fields (DEV-2370).
+- [x] 3.6 Run the SLayer probe runner on the C23 probes against `main`; every one passes. Regenerate `matrix.json` with `examples/comparisons/export_matrix.py`; its `--check` passes and probe links point at `main`.
 
 ## 4. Packaging
 
@@ -35,8 +35,8 @@ in `main`'s vocabulary and paths (`slayer.database.client`, `population` / `metr
 
 ## 5. Gate
 
-- [ ] 5.1 Every `tests/test_otel_*.py` and `tests/pg_facade/test_connection.py`, serially and with `-n 8`; the section 1 tests; `la-affected-tests` scope; `tests/test_comparison_matrix.py`; `tests/test_forward_merge_specs.py`. Verify: all pass.
-- [ ] 5.2 `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2365-merge-1x-into-main-the-otel-backport-dev-2358 --strict`. Verify: all clean.
+- [x] 5.1 Every `tests/test_otel_*.py` and `tests/pg_facade/test_connection.py`, serially and with `-n 8`; the section 1 tests; `la-affected-tests` scope; `tests/test_comparison_matrix.py`; `tests/test_forward_merge_specs.py`. Verify: all pass.
+- [x] 5.2 `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2365-merge-1x-into-main-the-otel-backport-dev-2358 --strict`. Verify: all clean.
 
 ## 6. Before the PR opens
 
