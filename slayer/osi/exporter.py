@@ -16,7 +16,8 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import AmbiguousReferenceError, SlayerError
+from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
 from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
 from slayer.core.relationship_walker import aggregation_owner, dataset_field_type, terminal_dataset, walk
@@ -460,8 +461,16 @@ class _Exporter:
         return tree.sql(dialect=PORTABLE_READER)
 
     def _portable_path(self, dataset: SlayerDataset, col: exp.Column, *, seen: frozenset[str]) -> str | None:
-        """The portable form of the field of ``dataset`` that path ``col`` names, else ``None``."""
-        ref = dataset.get_field(col.name) if col.table == dataset.name and not col.args.get("db") else None
+        """The portable form of the field of ``dataset`` that path ``col`` names (each part exactly when quoted, else in
+        any case), else ``None``."""
+        table = col.args.get("table")
+        if not isinstance(table, exp.Identifier) or col.args.get("db") or not isinstance(col.this, exp.Identifier):
+            return None
+        try:
+            own = match_name(name=table.name, declared=[dataset.name], quoted=table.quoted) is not None
+            ref = dataset.get_field(col.name, quoted=col.this.quoted) if own else None
+        except AmbiguousReferenceError:
+            return None
         return self._portable(dataset, ref, seen=seen) if ref is not None else None
 
     def _field(self, ds: _Dataset, field: DatasetField, tree: exp.Expr) -> dict[str, Any]:

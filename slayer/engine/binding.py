@@ -1036,6 +1036,16 @@ def _broken_chain_error(
     )
 
 
+def _source_column_key(
+    parts: Tuple[str, ...], *, scope: DatasetScope | StageSchema, quoted: Tuple[bool, ...],
+) -> FieldSqlKey | None:
+    """The key of the runtime reader ``source.column`` names on the scope's population, else ``None``."""
+    if not isinstance(scope, DatasetScope) or scope.population is None or len(parts) != 2:
+        return None
+    reader = source_reader(scope.population, qualifier=parts[0], column=parts[1], quoted=quoted[1:2] == (True,))
+    return None if reader is None else FieldSqlKey(path=(), dataset=scope.population.name, field_name=reader.name)
+
+
 def _resolve_dotted(
     parts: Tuple[str, ...],
     *,
@@ -1049,11 +1059,9 @@ def _resolve_dotted(
 
     Resolution order: the ``source`` qualifier's source column → root qualifier dropped → declared alias (dotted text)
     → relationship walk → leaf field → saved metric (re-anchored into host coords, eligible position)."""
-    if isinstance(scope, DatasetScope) and scope.population is not None and len(parts) == 2:
-        reader = source_reader(scope.population, qualifier=parts[0], column=parts[1],
-                               quoted=len(quoted) > 1 and quoted[1])
-        if reader is not None:
-            return FieldSqlKey(path=(), dataset=scope.population.name, field_name=reader.name)
+    source_key = _source_column_key(parts, scope=scope, quoted=quoted)
+    if source_key is not None:
+        return source_key
     original_parts = parts
     original_quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=original_quoted)

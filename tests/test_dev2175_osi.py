@@ -196,6 +196,15 @@ class TestExportForms:
         assert net is not None
         assert _identifiers(net["expression"]["sql"]) == {"price", "quantity", "discount"}
 
+    async def test_unquoted_path_inlined_in_any_case(self, tmp_path: Path) -> None:
+        env = await make_env(tmp_path)
+        await save(env, _orders_dataset({"name": "price"}, {"name": "quantity", "datatype": "Integer"},
+                                        {"name": "discount"}, {"name": "Gross", "expression": "price * quantity"},
+                                        {"name": "net", "expression": "ORDERS.gross - discount"}))
+        net = field(dataset((await export(env)).document, "orders"), "net")
+        assert net is not None
+        assert _identifiers(net["expression"]["sql"]) == {"price", "quantity", "discount"}
+
     async def test_filtered_column(self, tmp_path: Path) -> None:
         env = await make_env(tmp_path)
         await save(env, _orders_dataset({"name": "completed_amount", "expression": "amount",
