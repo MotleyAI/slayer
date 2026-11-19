@@ -262,13 +262,14 @@ class TestExecution:
         assert aliased.columns[0].split(".")[-1] == "r"
         assert sorted_rows(aliased) == sorted_rows(plain)
 
-    async def test_an_alias_equal_to_the_default_name_changes_nothing(self, tmp_path: Path) -> None:
+    async def test_an_alias_keys_bare_and_changes_no_values(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
         aliased = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                           "dimensions": [{"field": "orders.status", "alias": "status"}]})
         plain = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                         "dimensions": ["orders.status"]})
-        assert list(aliased.columns) == list(plain.columns)
+        assert list(aliased.columns) == ["status", "orders._count"]
+        assert list(plain.columns) == ["orders.status", "orders._count"]
         assert sorted_rows(aliased) == sorted_rows(plain)
 
     async def test_an_old_field_reference_converts(self, tmp_path: Path) -> None:
