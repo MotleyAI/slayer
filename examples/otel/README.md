@@ -54,7 +54,7 @@ A REST trace starts at `slayer.request`. SLayer keeps its tracer provider privat
 
 ## See The Logs
 
-In Logs, the records come from SLayer's own loggers, such as `slayer.sql.client`. Each record is the message template only, for example `Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s`. The values in a message, such as SQL, stay in the process. An exception appears as its class, in `error.type`. Each record carries the trace id of the request that wrote it, so you can go from a trace to its logs.
+In Logs, the records come from SLayer's own loggers, such as `slayer.sql.client`. Each record is the message template only, for example `Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s`. The values in a message, such as SQL, stay in the process. A record logged with an exception (`exc_info`) carries its class in `error.type`. Each record carries the trace id of the request that wrote it, so you can go from a trace to its logs.
 
 Your terminal output does not change. SLayer still prints its full warnings to stderr.
 

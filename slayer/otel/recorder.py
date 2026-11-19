@@ -162,15 +162,22 @@ def _pending_shutdowns(providers: list[Any]) -> list[threading.Thread]:
 
 def _await_shutdowns(workers: list[threading.Thread]) -> bool:
     deadline = time.monotonic() + SHUTDOWN_WAIT_SECONDS
-    for worker in workers:
-        with contextlib.suppress(RuntimeError):  # no thread to spare: its provider stays open, and pending
-            worker.start()
-    for worker in workers:
+    with _redaction:  # one starter at a time; a worker an earlier call could not start gets another try
+        started = [worker for worker in _lingering if worker.ident is None and _started(worker)]
+    for worker in dict.fromkeys([*workers, *started]):
         if worker.ident is not None:
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
     with _redaction:
         _show_export_text_when_idle()
         return not _lingering
+
+
+def _started(worker: threading.Thread) -> bool:
+    try:
+        worker.start()
+    except RuntimeError:  # no thread to spare: its provider stays open, and pending
+        return False
+    return True
 
 
 def _shutdown_one(*, provider: Any) -> None:
