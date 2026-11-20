@@ -264,8 +264,8 @@ def _monthly_dataset() -> SlayerDataset:
         name="monthly", sql_table="monthly", data_source="ds",
         default_time_dimension="month_ts",
         fields=[
-            DatasetField(name="month_ts", sql="month_ts", datatype=D71.DataType.DATETIME),
-            DatasetField(name="rev", sql="rev", datatype=D71.DataType.FLOAT),
+            DatasetField(name="month_ts", expression="month_ts", datatype=D71.DataType.DATETIME),
+            DatasetField(name="rev", expression="rev", datatype=D71.DataType.FLOAT),
         ],
     )
 

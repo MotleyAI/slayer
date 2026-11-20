@@ -43,8 +43,8 @@ async def storage() -> AsyncIterator[StorageBackend]:
         await s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         ))
         yield s
@@ -63,8 +63,8 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
         asyncio.run(s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )))
         yield s

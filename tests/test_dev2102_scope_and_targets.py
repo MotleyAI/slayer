@@ -30,7 +30,7 @@ from tests._dev2102_fixtures import (
     with_datasets,
 )
 
-TIER_LABEL = {"name": "tier_label", "sql": "upper(tier)", "datatype": "String"}
+TIER_LABEL = {"name": "tier_label", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "upper(tier)"}, {"dialect": "SQLITE", "expression": "upper(tier)"}]}, "datatype": "String"}
 AMOUNT = {"metric": "sum(orders.amount)", "alias": "a"}
 CREDIT_TOTAL = {"name": "credit_total", "expression": "sum(credit)"}
 COUNT_X = {"name": "x", "expression": "count(*)"}

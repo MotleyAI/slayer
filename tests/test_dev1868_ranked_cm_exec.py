@@ -112,7 +112,7 @@ class TestRanklessTargetStaysTyped:
         customers = await exec_engine.storage.get_dataset("customers")
         assert customers is not None
         await exec_engine.storage.save_dataset(customers.model_copy(update={"fields": [
-            *customers.fields, DatasetField(name="signup_copy", sql="signup_at", datatype=DataType.DATETIME),
+            *customers.fields, DatasetField(name="signup_copy", expression="signup_at", datatype=DataType.DATETIME),
         ]}))
         query = q(
             dimensions=["customers.tier"],

@@ -127,25 +127,25 @@ def _chain_datasets(
     decoy_root_field: str | None = None,
 ) -> list[SlayerDataset]:
     consumer_columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.STRING),
-        DatasetField(name="email", sql="email", datatype=DataType.STRING),
-        DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", expression="name", datatype=DataType.STRING),
+        DatasetField(name="email", expression="email", datatype=DataType.STRING),
+        DatasetField(name="lifetimeValue", expression="lifetime_value", datatype=DataType.FLOAT),
     ]
     if case_colliding_fields:
         # Differs from ``email`` only by case; Postgres case-folds the namespace.
-        consumer_columns.append(DatasetField(name="Email", sql="email", datatype=DataType.STRING))
+        consumer_columns.append(DatasetField(name="Email", expression="email", datatype=DataType.STRING))
     return [
         SlayerDataset(
             name="SandboxInvoiceV2", sql_table="invoices", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.FLOAT),
-                DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="totalAmount", expression="total_amount", datatype=DataType.FLOAT),
+                DatasetField(name="subscription_id", expression="subscription_id", datatype=DataType.INTEGER),
                 *([
                     # Root field named what a deep relationship path flattens to; names permit ``__``.
-                    DatasetField(name=decoy_root_field, sql="decoy", datatype=DataType.STRING),
+                    DatasetField(name=decoy_root_field, expression="decoy", datatype=DataType.STRING),
                 ] if decoy_root_field else []),
             ],
             relationships=[DatasetRelationship(
@@ -155,16 +155,16 @@ def _chain_datasets(
         SlayerDataset(
             name="SandboxSubscription", sql_table="subscriptions", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="SandboxCustomer", from_columns=["customer_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name="SandboxCustomer", sql_table="customers", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="consumer_id", expression="consumer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="SandboxConsumer", from_columns=["consumer_id"], to_columns=["id"])],
         ),
@@ -712,9 +712,9 @@ class TestCteNames:
             name="ShiftOrders", sql_table="orders", data_source=DS,
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -988,8 +988,8 @@ class TestEngineContract:
         model = SlayerDataset(
             name="TypeProbe", sql_table="invoices", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name=over_limit, sql="total_amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name=over_limit, expression="total_amount", datatype=DataType.FLOAT),
             ],
         )
         await engine.storage.save_dataset(model)

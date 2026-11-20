@@ -45,7 +45,7 @@ def _orders_fan_datasets():
     orders = next(m for m in models if m.name == "orders")
     orders.fields.append(DatasetField(
         name="bad_amt", datatype=DataType.FLOAT,
-        sql="amount + customers.regions.region_events.value"))
+        expression="amount + customers.regions.region_events.value"))
     return models
 
 

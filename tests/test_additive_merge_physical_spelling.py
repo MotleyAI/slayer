@@ -13,7 +13,7 @@ def _stored(*, amount_type: DataType = DataType.FLOAT) -> SlayerDataset:
         name="orders", sql_table="orders", data_source="ds",
         fields=[
             DatasetField(name="order_id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="amount_col", sql="amount", datatype=amount_type),
+            DatasetField(name="amount_col", expression="amount", datatype=amount_type),
         ],
         metrics=[DatasetMetric(expression="sum(amount_col)", name="amount")],
     )
@@ -57,7 +57,7 @@ def test_renamed_column_is_widened_on_sqlite():
 def test_column_named_like_the_physical_spelling_keeps_its_own_match():
     stored = SlayerDataset(
         name="t", sql_table="t", data_source="ds",
-        fields=[DatasetField(name="x", sql="y", datatype=DataType.INTEGER), DatasetField(name="y", datatype=DataType.INTEGER)],
+        fields=[DatasetField(name="x", expression="y", datatype=DataType.INTEGER), DatasetField(name="y", datatype=DataType.INTEGER)],
     )
     live = SlayerDataset(
         name="t", sql_table="t", data_source="ds",

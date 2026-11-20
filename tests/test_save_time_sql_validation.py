@@ -65,7 +65,7 @@ def _sql_dataset(
         name=name,
         sql=sql,
         data_source=data_source,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT)],
     )
 
 
@@ -216,7 +216,7 @@ class TestGatesSkipProbe:
         )
         model = SlayerDataset(
             name="t", sql_table="orders", data_source=_DS,
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT)],
         )
         await engine.validate_sql_dataset_source(model)  # must not raise
 
@@ -281,7 +281,7 @@ class TestGatesSkipProbe:
             name="col_var_dataset",
             sql="SELECT nonexistent FROM orders",
             data_source=_DS,
-            fields=[DatasetField(name="c", sql="{threshold}", datatype=DataType.STRING)],
+            fields=[DatasetField(name="c", expression="{threshold}", datatype=DataType.STRING)],
         )
         with pytest.raises(DatasetSqlValidationError):
             await engine.validate_sql_dataset_source(model)

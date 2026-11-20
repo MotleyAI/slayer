@@ -155,8 +155,8 @@ def ai_host() -> SlayerDataset:
             # chain leaf and the direct dataset in one SELECT without tripping the
             # (orthogonal) flat public-name namespace — isolating the D4
             # join-alias-distinctness concern.
-            DatasetField(name="chain_val", datatype=DataType.STRING, sql="a.b.val"),
-            DatasetField(name="direct_val", datatype=DataType.STRING, sql="a__b.val"),
+            DatasetField(name="chain_val", datatype=DataType.STRING, expression="a.b.val"),
+            DatasetField(name="direct_val", datatype=DataType.STRING, expression="a__b.val"),
         ],
         relationships=[
             DatasetRelationship(to="a", from_columns=["a_id"], to_columns=["id"]),

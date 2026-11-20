@@ -23,26 +23,26 @@ async def storage(tmp_path: Path) -> AsyncIterator[StorageBackend]:
     await s.save_dataset(SlayerDataset(
         name="orders", data_source="mydb", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="ship_region_id", sql="ship_region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="ship_region_id", expression="ship_region_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     ))
     await s.save_dataset(SlayerDataset(
         name="customers", data_source="mydb", sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
     ))
     await s.save_dataset(SlayerDataset(
         name="regions", data_source="mydb", sql_table="regions",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     ))
     yield s
@@ -204,8 +204,8 @@ async def named_storage(storage: StorageBackend) -> StorageBackend:
     await storage.save_datasource(DatasourceConfig(name="otherdb", type="postgres", host="y"))
     await storage.save_dataset(SlayerDataset(
         name="regions", data_source="otherdb", sql_table="regions",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                 DatasetField(name="name", sql="name", datatype=DataType.STRING)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                 DatasetField(name="name", expression="name", datatype=DataType.STRING)],
     ))
     await storage.set_datasource_priority(["otherdb", "mydb"])
     return storage
@@ -261,15 +261,15 @@ async def cased_storage(tmp_path: Path) -> AsyncIterator[StorageBackend]:
     await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
     await s.save_dataset(SlayerDataset(
         name="Orders", data_source="mydb", sql_table="orders",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                 DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                 DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT)],
         relationships=[DatasetRelationship(to="Customers", from_columns=["customer_id"], to_columns=["id"])],
     ))
     await s.save_dataset(SlayerDataset(
         name="Customers", data_source="mydb", sql_table="customers",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                 DatasetField(name="name", sql="name", datatype=DataType.STRING)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                 DatasetField(name="name", expression="name", datatype=DataType.STRING)],
     ))
     yield s
 

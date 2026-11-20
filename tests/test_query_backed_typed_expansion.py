@@ -40,18 +40,18 @@ def _orders_dataset() -> SlayerDataset:
         sql_table="orders_t",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
             DatasetField(
                 name="amount",
-                sql="amount",
+                expression="amount",
                 datatype=DataType.FLOAT,
                 description="Total order amount in USD",
                 format=NumberFormat(type=NumberFormatType.CURRENCY),
             ),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
         ],
         default_time_dimension="created_at",
     )
@@ -63,10 +63,10 @@ def _customers_dataset() -> SlayerDataset:
         sql_table="customers_t",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -1086,7 +1086,7 @@ class TestWrapperAliasShapes:
         })
         customers_with_rev = _customers_dataset().model_copy(update={
             "fields": list(_customers_dataset().fields) + [
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         })
         m = SlayerDataset(
@@ -1125,7 +1125,7 @@ class TestWrapperAliasShapes:
         })
         customers_with_rev = _customers_dataset().model_copy(update={
             "fields": list(_customers_dataset().fields) + [
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         })
         m = SlayerDataset(
@@ -1216,7 +1216,7 @@ class TestP4ClosureBehavior:
         })
         customers_with_rev = _customers_dataset().model_copy(update={
             "fields": list(_customers_dataset().fields) + [
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         })
         qb = SlayerDataset(

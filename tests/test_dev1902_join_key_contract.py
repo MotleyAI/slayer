@@ -11,6 +11,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import RelationshipKeyError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.relationship_walker import OrientedRelationship, edges_between, relationship_key_fields
 from slayer.core.models import (
     DatasetField,
@@ -82,8 +83,8 @@ class TestBaseColumnSeam:
         assert physical_column_sql(sql=sql, name=name) == expected
 
     def test_column_is_base_and_physical_name(self):
-        renamed = DatasetField(name="customer_id", sql="cust_fk")
-        quoted = DatasetField(name="id", sql='"CustPK"')
+        renamed = DatasetField(name="customer_id", expression="cust_fk")
+        quoted = DatasetField(name="id", expression='"CustPK"')
         plain = DatasetField(name="status")
         assert renamed.is_base
         assert quoted.is_base
@@ -93,7 +94,7 @@ class TestBaseColumnSeam:
         assert plain.physical_name == "status"
 
     def test_physical_name_of_expression_column_raises(self):
-        col = DatasetField(name="ck", sql="CAST(id AS INT)")
+        col = DatasetField(name="ck", expression="CAST(id AS INT)")
         assert not col.is_base
         with pytest.raises(RelationshipKeyError):
             _ = col.physical_name
@@ -101,12 +102,12 @@ class TestBaseColumnSeam:
 
 class TestSourceSideAtConstruction:
     def test_renamed_source_key_is_accepted(self):
-        model = _orders(DatasetField(name="customer_id", sql="cust_fk"),
+        model = _orders(DatasetField(name="customer_id", expression="cust_fk"),
                         pairs=[["customer_id", "id"]])
         assert model.relationships[0].column_pairs == [("customer_id", "id")]
 
     def test_quoted_base_source_key_is_accepted(self):
-        _orders(DatasetField(name="customer_id", sql='"CustFK"'), pairs=[["customer_id", "id"]])
+        _orders(DatasetField(name="customer_id", expression='"CustFK"'), pairs=[["customer_id", "id"]])
 
     def test_undeclared_source_key_rejected(self):
         with pytest.raises(ValueError) as exc:
@@ -117,12 +118,12 @@ class TestSourceSideAtConstruction:
         assert "suggestion:" in msg
 
     def test_physical_spelling_of_a_renamed_source_key_rejected(self):
-        fk = DatasetField(name="customer_id", sql="cust_fk")
+        fk = DatasetField(name="customer_id", expression="cust_fk")
         with pytest.raises(ValueError, match="relationship orders → customers key 'cust_fk'"):
             _orders(fk, pairs=[["cust_fk", "id"]])
 
     def test_expression_source_key_rejected(self):
-        ck = DatasetField(name="ck", sql="CAST(id AS INT)")
+        ck = DatasetField(name="ck", expression="CAST(id AS INT)")
         with pytest.raises(ValueError) as exc:
             _orders(ck, pairs=[["ck", "id"]])
         msg = str(exc.value)
@@ -130,7 +131,7 @@ class TestSourceSideAtConstruction:
         assert "base field" in msg
 
     def test_filtered_source_key_rejected(self):
-        fk = DatasetField(name="customer_id", sql="cust_fk", filter="status = 'ok'")
+        fk = DatasetField(name="customer_id", expression="cust_fk", filter="status = 'ok'")
         with pytest.raises(ValueError, match="relationship orders → customers key 'customer_id'"):
             _orders(fk, pairs=[["customer_id", "id"]])
 
@@ -192,7 +193,7 @@ class TestTargetSide:
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
             await storage.save_dataset(_customers(
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="code", sql="UPPER(code_raw)")))
+                DatasetField(name="code", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="UPPER(code_raw)")]))))
             engine = SlayerQueryEngine(storage=storage)
             orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
             with pytest.raises(RelationshipKeyError) as exc:
@@ -286,20 +287,20 @@ _LIVE = LiveTable(columns={"id": DataType.INTEGER, "legalEntityType": DataType.S
 
 class TestDriftAndRefinement:
     def test_quoted_self_name_present_is_not_drift(self):
-        model = _parties(DatasetField(name="legalEntityType", sql='"legalEntityType"'))
+        model = _parties(DatasetField(name="legalEntityType", expression='"legalEntityType"'))
         entry, dropped = diff_sql_table_dataset(
             dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
         assert entry is None
         assert dropped == set()
 
     def test_quoted_rename_present_keeps_its_join(self):
-        model = _parties(DatasetField(name="entity_type", sql='"legalEntityType"'))
+        model = _parties(DatasetField(name="entity_type", expression='"legalEntityType"'))
         entry, _ = diff_sql_table_dataset(
             dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
         assert entry is None
 
     def test_quoted_base_column_missing_is_drift(self):
-        model = _parties(DatasetField(name="entity_type", sql='"entityKind"'))
+        model = _parties(DatasetField(name="entity_type", expression='"entityKind"'))
         entry, dropped = diff_sql_table_dataset(
             dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
         assert isinstance(entry, EditDatasetDelete)
@@ -338,7 +339,7 @@ class TestDriftAndRefinement:
                 conn.executemany("INSERT INTO items VALUES (?, ?)", [(1, 10), (2, 20)])
             doc = {
                 "name": "items", "sql_table": "items", "data_source": "live",
-                "fields": [{"name": "quantity", "sql": '"qty"', "datatype": "Float"}],
+                "fields": [{"name": "quantity", "expression": '"qty"', "datatype": "Float"}],
             }
             ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
             client = SlayerSQLClient(datasource=ds)
@@ -357,7 +358,7 @@ class TestDriftAndRefinement:
 
     def test_detection_skips_non_base_target_key(self):
         target = _customers(DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                            DatasetField(name="code", sql="UPPER(code_raw)"))
+                            DatasetField(name="code", expression="UPPER(code_raw)"))
         orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
         note = _detection_skip_reason(
             dataset=orders, target=target, src_cols=["customer_code"], tgt_cols=["code"])

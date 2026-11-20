@@ -30,6 +30,7 @@ from slayer.core.errors import (
     SlayerError,
     UnresolvableDimensionRelationshipError,
 )
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.relationship_walker import terminal_dataset, walk
 from slayer.core.keys import Grain
 from slayer.core.models import (
@@ -330,7 +331,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),))
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
         exc = ei.value
@@ -347,7 +348,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="rc", datatype=DataType.FLOAT, sql="spend",
+            name="rc", datatype=DataType.FLOAT, expression="spend",
             filter="regions.customers.spend > 0"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
@@ -359,7 +360,7 @@ class TestSaveTimeStorageDoor:
         await storage.save_dataset(_regions())
         await storage.save_dataset(_customers())
         model = _orders(cols=(DatasetField(
-            name="rc", datatype=DataType.FLOAT, sql="customers.regions.customers.spend"),))
+            name="rc", datatype=DataType.FLOAT, expression="customers.regions.customers.spend"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
         assert ei.value.revisited == "customers"
@@ -370,7 +371,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="rc", datatype=DataType.FLOAT, sql="customers.regions.customers.spend"),))
+            name="rc", datatype=DataType.FLOAT, expression="customers.regions.customers.spend"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
         assert ei.value.reference == "customers.regions.customers.spend"
@@ -385,7 +386,7 @@ class TestSaveTimeStorageDoor:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="y", datatype=DataType.FLOAT),
-                DatasetField(name="rt", datatype=DataType.FLOAT, sql="b.a.y"),
+                DatasetField(name="rt", datatype=DataType.FLOAT, expression="b.a.y"),
             ],
             relationships=[DatasetRelationship(to="b", from_columns=["id"], to_columns=["id"],
                              cardinality=RelationshipCardinality.ONE_TO_ONE)],
@@ -414,7 +415,7 @@ class TestSaveTimeStorageDoor:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="bf", datatype=DataType.FLOAT, sql="line_items.orders.amount"),
+                DatasetField(name="bf", datatype=DataType.FLOAT, expression="line_items.orders.amount"),
             ],
             relationships=[DatasetRelationship(
                 to="line_items", from_columns=["id"], to_columns=["order_id"],
@@ -431,7 +432,7 @@ class TestSaveTimeStorageDoor:
         # succeeds (the query-time door stays the check).
         storage = _storage(tmp_path)
         model = _customers(cols=(DatasetField(
-            name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),))
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
         await storage.save_dataset(model)  # must not raise
         assert await storage.get_dataset("customers", data_source=DS) is not None
 
@@ -439,7 +440,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),))
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
         await storage.save_dataset(model, _validate=False)  # migration write-back path
         assert await storage.get_dataset("customers", data_source=DS) is not None
 
@@ -455,7 +456,7 @@ class TestSaveTimeStorageDoor:
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="spend", datatype=DataType.FLOAT),
                 DatasetField(name="revisit_spend", datatype=DataType.FLOAT,
-                       sql="regions.customers.spend"),
+                       expression="regions.customers.spend"),
             ],
             relationships=[
                 DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
@@ -481,7 +482,7 @@ class TestSaveTimeEngineDoor:
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),))
+            name="revisit_spend", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),))
         with pytest.raises(DerivedFieldCircularError) as storage_ei:
             await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
@@ -506,9 +507,9 @@ class TestSaveTimeEngineDoor:
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
         model = _customers(cols=(
-            DatasetField(name="chain", datatype=DataType.FLOAT, sql="revisit_spend * 2"),
+            DatasetField(name="chain", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="customers.revisit_spend * 2")])),
             DatasetField(name="revisit_spend", datatype=DataType.FLOAT,
-                   sql="regions.customers.spend"),
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),
         ))
         with pytest.raises(DerivedFieldCircularError) as storage_ei:
             await storage.save_dataset(model)
@@ -576,11 +577,11 @@ def _revisit_query_datasets() -> list[SlayerDataset]:
     """One rich graph; the query selects the circular definition under test."""
     customers = _customers(
         cols=(
-            DatasetField(name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),
+            DatasetField(name="revisit_spend", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.customers.spend"), DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),
             DatasetField(name="revisit_lead", datatype=DataType.FLOAT,
-                   sql="customers.regions.customers.spend"),
-            DatasetField(name="chain", datatype=DataType.FLOAT, sql="revisit_spend * 2"),
-            DatasetField(name="filt_revisit", datatype=DataType.FLOAT, sql="spend",
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.regions.customers.spend"), DialectEntry(dialect="SQLITE", expression="customers.regions.customers.spend")])),
+            DatasetField(name="chain", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.revisit_spend * 2"), DialectEntry(dialect="SQLITE", expression="customers.revisit_spend * 2")])),
+            DatasetField(name="filt_revisit", datatype=DataType.FLOAT, expression="spend",
                    filter="regions.customers.spend > 0"),
         ),
     )
@@ -592,7 +593,7 @@ def _unresolved_query_datasets() -> list[SlayerDataset]:
     before it could revisit."""
     customers = _customers(
         cols=(DatasetField(name="ghost_spend", datatype=DataType.FLOAT,
-                     sql="ghost.customers.spend"),),
+                     expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="ghost.customers.spend"), DialectEntry(dialect="SQLITE", expression="ghost.customers.spend")])),),
         relationships=(DatasetRelationship(to="ghost", from_columns=["region_id"], to_columns=["id"]),),
     )
     return [_regions(), customers, _orders()]

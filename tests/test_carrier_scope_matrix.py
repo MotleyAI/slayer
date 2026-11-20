@@ -54,18 +54,18 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _customers(extra=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-        DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+        DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(
@@ -76,13 +76,13 @@ def _customers(extra=None) -> SlayerDataset:
 
 def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="status", sql="status", datatype=DataType.STRING),
-        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-        DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-        DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="status", expression="status", datatype=DataType.STRING),
+        DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+        DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME),
+        DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+        DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(
@@ -219,7 +219,7 @@ class TestScopeClosureInvariant:
             dimensions=[QueryDimension(field="orders.status")],
         )
         model = _orders(extra=[
-            DatasetField(name="active_amount", sql="amount", filter="status = 'active'",
+            DatasetField(name="active_amount", expression="amount", filter="status = 'active'",
                    datatype=DataType.FLOAT),
         ])
         sql = await _gen(query, model)
@@ -348,7 +348,7 @@ class TestScopeDefectPins:
 
     async def test_cross_model_source_crosses_further_join(self) -> None:
         customers = _customers(extra=[
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
             population="orders",

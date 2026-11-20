@@ -113,9 +113,9 @@ def orders_dataset() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             # Filtered fields (CASE-WHEN at aggregation time).
-            DatasetField(name="ok_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="status = 'ok'"),
-            DatasetField(name="nomatch", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="nomatch", datatype=DataType.FLOAT, expression="amount",
                    filter="amount > 100000"),
         ],
         relationships=[

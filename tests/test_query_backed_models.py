@@ -27,10 +27,10 @@ def _orders_dataset() -> SlayerDataset:
         sql_table="orders_t",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -324,7 +324,7 @@ class TestSaveModelGuards:
                 name="bad",
                 data_source="ds",
                 source_queries=[SlayerQuery(population="orders")],
-                fields=[DatasetField(name="x", sql="x", datatype=DataType.STRING)],
+                fields=[DatasetField(name="x", expression="x", datatype=DataType.STRING)],
             )
             with pytest.raises(ValueError, match="auto-generated and must not be supplied"):
                 await engine.save_dataset(m)
@@ -523,7 +523,7 @@ class TestQueryBackedColumnTypes:
             await storage.save_dataset(SlayerDataset(
                 name="t_b", sql_table="orders_t", data_source="ds_b",
                 fields=[
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             ))
             engine = SlayerQueryEngine(storage=storage)
@@ -573,7 +573,7 @@ class TestQueryBackedColumnTypes:
             await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=ds_path))
             await storage.save_dataset(SlayerDataset(
                 name="t", sql_table="orders_t", data_source="ds",
-                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+                fields=[DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             ))
             with transaction(ds_path) as conn:
                 conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
@@ -686,11 +686,11 @@ class TestRequestVariableHygiene:
             await storage.save_datasource(DatasourceConfig(name="ds_b", type="sqlite", database=":memory:"))
             await storage.save_dataset(SlayerDataset(
                 name="t_a", sql_table="t_a", data_source="ds_a",
-                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+                fields=[DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             ))
             await storage.save_dataset(SlayerDataset(
                 name="t_b", sql_table="t_b", data_source="ds_b",
-                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+                fields=[DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             ))
             engine = SlayerQueryEngine(storage=storage)
 
@@ -986,10 +986,10 @@ class TestSiblingStageJoins:
             sql_table="orders_t",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         ))
         await storage.save_dataset(SlayerDataset(
@@ -997,8 +997,8 @@ class TestSiblingStageJoins:
             sql_table="customers_t",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         ))
         return SlayerQueryEngine(storage=storage), tmp

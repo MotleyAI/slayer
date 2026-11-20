@@ -21,7 +21,7 @@ def _chain(reader_sql: str) -> dict[str, SlayerDataset]:
             columns.append(DatasetField(name=f"{nxt}_id"))
             joins.append(DatasetRelationship(to=nxt, from_columns=[f"{nxt}_id"], to_columns=["id"]))
         if name == "a":
-            columns.append(DatasetField(name="r", sql=reader_sql))
+            columns.append(DatasetField(name="r", expression=reader_sql))
         models[name] = SlayerDataset(name=name, sql_table=name, data_source="d", fields=columns, relationships=joins)
     return models
 

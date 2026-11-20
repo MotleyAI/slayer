@@ -18,13 +18,14 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 import slayer.engine.query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
+from tests._field_builders import col, pk, to_customers
 
 
 # SQL inspection helpers — implementation-agnostic. They walk the rendered
@@ -97,12 +98,12 @@ def funds_dataset() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="geozone", sql="geozone", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="expensenet", sql="expensenet", datatype=DataType.FLOAT),
-            DatasetField(name="benchmarkexp", sql="benchmarkexp", datatype=DataType.FLOAT),
-            DatasetField(name="average_daily_value_traded_3m", sql="adv3m", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="geozone", expression="geozone", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="expensenet", expression="expensenet", datatype=DataType.FLOAT),
+            DatasetField(name="benchmarkexp", expression="benchmarkexp", datatype=DataType.FLOAT),
+            DatasetField(name="average_daily_value_traded_3m", expression="adv3m", datatype=DataType.FLOAT),
         ],
     )
 
@@ -116,13 +117,13 @@ def orders_dataset() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
         ],
     )
 
@@ -144,21 +145,21 @@ async def orders_customers_engine(tmp_path):
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="revenue", sql="lifetime_revenue", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="revenue", expression="lifetime_revenue", datatype=DataType.FLOAT),
         ],
     ))
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            pk(),
+            col("customer_id"),
+            col("status", DataType.STRING),
+            col("created_at", DataType.DATETIME),
+            col("revenue", expression="amount"),
         ],
-        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
+        relationships=[to_customers()],
     )
     await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage), orders
@@ -384,9 +385,9 @@ class TestWindowArgReuse:
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
         # The internal reset/value CTE aliases must not leak.
-        for col in outer_cols:
-            assert "_cp_reset_" not in col
-            assert "_cp_value_" not in col
+        for column in outer_cols:
+            assert "_cp_reset_" not in column
+            assert "_cp_value_" not in column
 
 
 # Group D — ORDER BY policy.
@@ -620,9 +621,9 @@ class TestEdgeCases:
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
         # No hidden ``change_*`` or ``_ft*`` alias leaking into the projection.
-        for col in outer_cols:
-            assert "change" not in col.lower()
-            assert "_ft" not in col
+        for column in outer_cols:
+            assert "change" not in column.lower()
+            assert "_ft" not in column
 
     async def test_named_override_alias(
         self, orders_dataset: SlayerDataset,
@@ -1374,8 +1375,8 @@ class TestOuterOrderByQualifierStripping:
         assert isinstance(parsed, exp.Select)
         order = parsed.args.get("order")
         assert order is not None, f"no ORDER BY in outer SQL.\n{sql}"
-        for col in order.find_all(exp.Column):
-            assert col.args.get("table") is None, (
+        for column in order.find_all(exp.Column):
+            assert column.args.get("table") is None, (
                 f"Outermost ORDER BY must not carry inner-CTE qualifiers, "
-                f"got col {col.sql()!r}.\nSQL:\n{sql}"
+                f"got col {column.sql()!r}.\nSQL:\n{sql}"
             )

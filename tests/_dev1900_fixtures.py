@@ -30,6 +30,7 @@ from typing import AsyncIterator, List, Optional
 import pytest
 
 from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -91,11 +92,11 @@ def dev1900_datasets() -> List[SlayerDataset]:
         cardinality=RelationshipCardinality.ONE_TO_MANY,
     ))
     regions.fields.append(
-        DatasetField(name="bad_pop", datatype=DataType.FLOAT, sql="pop + region_events.value"))
+        DatasetField(name="bad_pop", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="pop + region_events.value") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])))
     regions.fields.append(
-        DatasetField(name="bad_pop2", datatype=DataType.FLOAT, sql="regions.bad_pop * 2"))
+        DatasetField(name="bad_pop2", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="regions.bad_pop * 2") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])))
     regions.fields.append(
-        DatasetField(name="derived_pop", datatype=DataType.FLOAT, sql="pop * 2"))
+        DatasetField(name="derived_pop", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="pop * 2") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])))
     # A region-owned aggregation whose weight defaults to the BARE owner-local
     # derived field bad_pop (which crosses the fanning hop) — the bare-default
     # counterpart to customers' dotted wsumx.
@@ -114,7 +115,7 @@ def dev1900_datasets() -> List[SlayerDataset]:
         name="wgood", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.derived_pop")]))
     cust.fields.append(DatasetField(
-        name="bad_pop_spend", datatype=DataType.FLOAT, sql="spend",
+        name="bad_pop_spend", datatype=DataType.FLOAT, expression="spend",
         filter="regions.bad_pop > 0"))
 
     models.append(region_events_dataset())
@@ -143,9 +144,9 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
     models = dev1900_datasets()
     regions = _regions(models)
     regions.fields.append(
-        DatasetField(name="unparseable", datatype=DataType.FLOAT, sql=")((( bad"))
+        DatasetField(name="unparseable", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression=")((( bad") for d in ("DUCKDB", "SQLITE")])))
     regions.fields.append(
-        DatasetField(name="cyc", datatype=DataType.FLOAT, sql="regions.cyc + 1"))
+        DatasetField(name="cyc", datatype=DataType.FLOAT, expression="regions.cyc + 1"))
     customers = _customers(models)
     customers.aggregations.append(Aggregation(
         name="wunparse", expression="SUM({value} * {weight})",
@@ -157,7 +158,7 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
         name="wexpr_unparse", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql=")((( bad")]))
     customers.fields.append(DatasetField(
-        name="flagged_spend", datatype=DataType.FLOAT, sql="spend",
+        name="flagged_spend", datatype=DataType.FLOAT, expression="spend",
         filter="regions.unparseable > 0"))
     return models
 

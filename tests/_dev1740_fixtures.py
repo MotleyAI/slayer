@@ -100,7 +100,7 @@ def orders_dataset() -> SlayerDataset:
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             # Filtered field (CASE-WHEN at aggregation time) — for a filtered
             # aggregate reconciliation under the computed dimension.
-            DatasetField(name="ok_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="status = 'ok'"),
         ],
         relationships=[

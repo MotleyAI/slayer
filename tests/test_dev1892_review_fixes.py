@@ -58,7 +58,7 @@ def _customers_dataset(*, key_sql: str | None) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="prod", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INTEGER, sql=key_sql, primary_key=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, expression=key_sql, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
@@ -78,7 +78,7 @@ def _fk_hop_datasets(*, fk_sql: str | None) -> tuple[SlayerDataset, dict[str, Sl
         name="customers", data_source="prod", sql_table="customers",
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INTEGER, sql=fk_sql),
+            DatasetField(name="region_id", datatype=DataType.INTEGER, expression=fk_sql),
         ],
         relationships=[DatasetRelationship(
             to="regions", from_columns=["region_id"], to_columns=["id"],

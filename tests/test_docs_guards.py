@@ -286,7 +286,7 @@ def test_datasets_keep_only_metric_expressions() -> None:
     dataset = {
         "name": "orders", "sql_table": "orders", "data_source": "db",
         "filters": ["deleted_at IS NULL"],
-        "fields": [{"name": "net", "sql": "amount - tax", "filter": "status = 'paid'", "datatype": "Float"}],
+        "fields": [{"name": "net", "expression": "amount - tax", "filter": "status = 'paid'", "datatype": "Float"}],
         "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
         "aggregations": [{"name": "wavg", "expression": "SUM({value} * {weight}) / SUM({weight})"}],
         "source_queries": [{"population": "raw", "filter": ["raw.amount > 0"]}],
@@ -296,7 +296,7 @@ def test_datasets_keep_only_metric_expressions() -> None:
 
 def test_inline_extension_and_standalone_objects() -> None:
     query = {"population": "orders",
-             "extensions": [{"dataset": "orders", "fields": [{"name": "big", "sql": "amount > 100"}]}],
+             "extensions": [{"dataset": "orders", "fields": [{"name": "big", "expression": "amount > 100"}]}],
              "metrics": ["count(orders.*)"]}
     assert mode_b_values(query) == ["count(orders.*)"]
     assert mode_b_values({"expression": "cumsum(sum(revenue))"}) == ["cumsum(sum(revenue))"]

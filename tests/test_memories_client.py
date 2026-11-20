@@ -40,13 +40,13 @@ async def storage() -> AsyncIterator[YAMLStorage]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
                     DatasetField(
                         name="amount",
-                        sql="amount",
+                        expression="amount",
                         datatype=DataType.FLOAT,
                     ),
                 ],

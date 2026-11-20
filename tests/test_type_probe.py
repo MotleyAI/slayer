@@ -250,8 +250,8 @@ def test_parse_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
 
 def _orders(sql_table: str = "orders") -> SlayerDataset:
     return SlayerDataset(name="orders", sql_table=sql_table, data_source="test", fields=[
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
     ])
 
 

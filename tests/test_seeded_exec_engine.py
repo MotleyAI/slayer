@@ -45,7 +45,7 @@ def _seed_nums(dialect: str):
 
 _DATASET = SlayerDataset(
     name="nums", data_source="test", sql_table="nums",
-    fields=[DatasetField(name="v", sql="v", datatype=DataType.INTEGER)],
+    fields=[DatasetField(name="v", expression="v", datatype=DataType.INTEGER)],
 )
 
 

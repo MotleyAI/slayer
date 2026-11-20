@@ -8,6 +8,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import RefinementConflictError, UnknownReferenceError, UnresolvableDimensionRelationshipError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.population.inference import spine_datasource
@@ -249,7 +250,7 @@ async def test_the_root_wins_over_an_edge_named_like_it(backend: str) -> None:
 async def test_a_column_sql_root_qualifier_keeps_an_edge_named_like_the_root(backend: str) -> None:
     async with orders_engine(backend, edge_name="orders") as eng:
         model = orders_dataset(edge_name="orders")
-        extra = DatasetField(name="cust_name", datatype=DataType.STRING, sql="orders.orders.name")
+        extra = DatasetField(name="cust_name", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="orders.orders.name"), DialectEntry(dialect="SQLITE", expression="orders.orders.name")]))
         await eng.storage.save_dataset(model.model_copy(update={"fields": [*model.fields, extra]}), _validate=False)
         resp = await eng.execute(_orders(dimensions=["orders.cust_name"], metrics=["count(orders.*)"]))
         assert canonical_rows(resp) == [("ann", "2"), ("bob", "2")]

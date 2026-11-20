@@ -185,7 +185,7 @@ class TestJoinSafetyLogicalSpace:
             name="hub", data_source="test", sql_table="hub",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="region_fk", sql="region_code", datatype=DataType.INTEGER),
+                DatasetField(name="region_fk", expression="region_code", datatype=DataType.INTEGER),
                 DatasetField(name="region_id", expression="region_fk", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="regions",

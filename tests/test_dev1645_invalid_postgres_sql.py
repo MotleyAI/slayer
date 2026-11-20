@@ -28,6 +28,7 @@ import pytest
 import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, SlayerQuery, TimeDimension
 from slayer.sql.generator import SQLGenerator
@@ -47,15 +48,15 @@ def _orders_customers_regions() -> tuple[SlayerDataset, list[SlayerDataset]]:
     regions = SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     )
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -63,10 +64,10 @@ def _orders_customers_regions() -> tuple[SlayerDataset, list[SlayerDataset]]:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",  # lets first/last + cumsum tests reuse this graph
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
@@ -84,10 +85,10 @@ def orders_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -101,16 +102,16 @@ def accounts_dataset() -> SlayerDataset:
         sql_table="public.accounts",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(
                 name="is_inactive",
                 datatype=DataType.BOOLEAN,
-                sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END",
+                expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END",
             ),
             DatasetField(
                 name="acct_form",
                 datatype=DataType.STRING,
-                sql="acct_form",  # lowercase sibling — must stay unquoted
+                expression="acct_form",  # lowercase sibling — must stay unquoted
             ),
         ],
     )
@@ -158,7 +159,7 @@ class TestFlavorAOrderByUnprojected:
         """Flavor A + B together: a non-projected mixed-case sort field emits a
         split reference whose column part is quoted: ``orders."CreatedAt"``."""
         model = orders_dataset.model_copy(deep=True)
-        model.fields.append(DatasetField(name="CreatedAt", sql="CreatedAt", datatype=DataType.DATETIME))
+        model.fields.append(DatasetField(name="CreatedAt", expression="CreatedAt", datatype=DataType.DATETIME))
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -195,16 +196,16 @@ class TestFlavorAOrderByUnprojected:
         clusters = SlayerDataset(
             name="clusters", sql_table="clusters", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
             ],
         )
         accts = SlayerDataset(
             name="accts", sql_table="accts", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="clu_ref", expression="clu_ref", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
             relationships=[DatasetRelationship(to="clusters", from_columns=["clu_ref"], to_columns=["id"])],
         )
@@ -425,7 +426,7 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             filters=["StateFlag IS NOT NULL"],
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)],
         )
         query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "count(accounts.*)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
@@ -440,10 +441,10 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(
                     name="amount",
-                    sql="amount",
+                    expression="amount",
                     datatype=DataType.FLOAT,
                     filter="StateFlag = 'Active'",
                 ),
@@ -461,8 +462,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="cluster_analysis",
             data_source="test",
             fields=[
-                DatasetField(name="CLSTR_PIN", sql="CLSTR_PIN", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                DatasetField(name="CLSTR_PIN", expression="CLSTR_PIN", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
             ],
         )
         accounts = SlayerDataset(
@@ -470,8 +471,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="account_clusters",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="clu_ref", expression="clu_ref", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="cluster_analysis", from_columns=["clu_ref"], to_columns=["CLSTR_PIN"])],
         )
@@ -498,8 +499,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="StateFlag", sql="StateFlag", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="StateFlag", expression="StateFlag", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
@@ -520,10 +521,10 @@ class TestFlavorBMixedCaseQuoting:
             data_source="test",
             default_time_dimension="ts",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="RegionCode", sql="RegionCode", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="ts", sql="ts", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="RegionCode", expression="RegionCode", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="ts", expression="ts", datatype=DataType.DATETIME),
             ],
         )
         query = SlayerQuery.model_validate({
@@ -550,8 +551,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="MixedAmt", sql="MixedAmt", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="MixedAmt", expression="MixedAmt", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery.model_validate({
@@ -567,15 +568,15 @@ class TestFlavorBMixedCaseQuoting:
         regions = SlayerDataset(
             name="regions", sql_table="MyRegions", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
         cust = SlayerDataset(
             name="cust", sql_table="cust", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
@@ -595,7 +596,7 @@ class TestFlavorBMixedCaseQuoting:
             name="accounts",
             sql_table="public.MyAccounts",
             data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)],
         )
         query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "count(accounts.*)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
@@ -616,8 +617,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="j", sql="COALESCE(RawVal, 0)", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="j", expression="COALESCE(RawVal, 0)", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "sum(accounts.j)"}]})
@@ -635,8 +636,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="regions",
             data_source="test",
             fields=[
-                DatasetField(name="RegionId", sql="RegionId", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="RegionId", expression="RegionId", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
         customers = SlayerDataset(
@@ -644,8 +645,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="RegionRef", sql="RegionRef", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="RegionRef", expression="RegionRef", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["RegionRef"], to_columns=["RegionId"])],
         )
@@ -717,11 +718,12 @@ class TestMixedCaseQuotingMultiDialect:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(
                     name="is_inactive",
                     datatype=DataType.BOOLEAN,
-                    sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END",
+                    expression=ExpressionObject(dialects=[DialectEntry(
+                        dialect=dialect.upper(), expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END")]),
                 ),
             ],
         )

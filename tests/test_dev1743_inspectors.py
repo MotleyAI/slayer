@@ -50,7 +50,7 @@ def test_schema_drift_resolves_dunder_direct_join_target() -> None:
     models = dunder_target_datasets()  # raises TODAY — the fail-first signal
     orders = next(m for m in models if m.name == "orders")
     orders.fields.append(
-        DatasetField(name="cr_label", sql="customer__region.label", datatype=DataType.STRING)
+        DatasetField(name="cr_label", expression="customer__region.label", datatype=DataType.STRING)
     )
 
     # Seed the base diff: drop the ``label`` field on ``customer__region``.
@@ -101,11 +101,11 @@ def test_column_dependency_reports_dotted_chain_dependency() -> None:
 
     regions = by_name["regions"]
     regions.fields.append(
-        DatasetField(name="label", sql="upper(name)", datatype=DataType.STRING)
+        DatasetField(name="label", expression="upper(name)", datatype=DataType.STRING)
     )
     orders = by_name["orders"]
     orders.fields.append(
-        DatasetField(name="region_label", sql="customers.regions.label", datatype=DataType.STRING)
+        DatasetField(name="region_label", expression="customers.regions.label", datatype=DataType.STRING)
     )
 
     deps = _field_dependencies(
