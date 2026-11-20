@@ -69,8 +69,9 @@ in `queries/cross-model-aggregates`.
 ### Requirement: Grain guarantee
 For a query with at least one measure, and for a measure-less query with distinct
 dimension values enabled (the default), the result SHALL have exactly one row per
-combination of dimension values present among the row-filtered population's rows.
-Raw-row mode (`distinct_dimension_values=false`) is the documented exception and
+combination of dimension values present among the row-filtered population's rows — for a query
+omitting `population`, among its row supply (`queries/population` › Rows of an inferred query
+are the row supply), never one row twice. Raw-row mode (`distinct_dimension_values=false`) is the documented exception and
 returns one row per population row. A row-level filter that reaches the population root
 only across a non-determining path SHALL NOT multiply the population's rows, whatever the
 conjunct's boolean shape: raw-row mode returns each population row passing the restriction
@@ -118,7 +119,9 @@ When aggregates at different grains combine in one expression, the expression's 
 SHALL be the union of its operands' grains, each operand broadcast from its own grain
 to that union; combining at different grains is never, by itself, an error. Broadcast
 SHALL only go from coarser to finer; consuming an aggregate at a strictly coarser
-grain SHALL fail with a typed error, never collapse implicitly.
+grain SHALL fail with a typed error, never collapse implicitly. The population supplies the
+rows — for a query omitting `population`, its row supply — and a cell an operand lacks
+contributes the operand's empty value.
 
 #### Scenario: Different-grain arithmetic broadcasts to the union
 - **WHEN** a measure divides a query-grain aggregate by a
@@ -330,18 +333,31 @@ related row.
 
 ### Requirement: Compositionality
 Each result cell's values SHALL depend only on the evaluated expression, the
-population, and the row-level filters — never on which other measures, measure-typed
-filters, or order entries the query contains. Adding or removing a projected measure
-SHALL NOT change the row set or any other column's values. A measure-typed filter
-masks result cells without changing any surviving cell's values; ORDER BY and LIMIT
+cell, and the row-level filters — never on which other measures, measure-typed
+filters, or order entries the query contains. In a query naming `population`, adding or
+removing a projected measure SHALL NOT change the row set or any other column's values. In a
+query omitting it with at least one measure, adding a measure SHALL NOT remove a row or change any value in an existing
+row, a row it adds carrying each other measure's value on its own grain there (its empty value
+where it has no cell). A transform over result rows
+(the rank family, `lag`, `lead`, cumulative and collapsing transforms) is exempt from the previous
+sentence and from the single-measure-split guarantee below until transforms evaluate over their
+operand's own cells (DEV-2218). A measure-typed
+filter masks result cells without changing any surviving cell's values; ORDER BY and LIMIT
 select and order rows without changing any cell's values. A multi-measure query SHALL
-return, cell by cell, the same values as its single-measure splits. Selecting an
+return, cell by cell, the same values as its single-measure splits in each split's rows, and
+in the rows only its siblings supply, its value on its own grain there (its empty value where it
+has no cell). Selecting an
 expression as a measure SHALL NOT make any other measure, filter or order entry that
 contains it fail.
 
 #### Scenario: Adding a measure changes nothing else
-- **WHEN** any supported query runs with and without one additional measure
+- **WHEN** any supported query naming `population` runs with and without one additional measure
 - **THEN** both runs return the same rows and identical values in all shared columns
+
+#### Scenario: Adding a measure to an inferred query only adds rows
+- **WHEN** a query without `population` grouping by `customers.region` and measuring
+  `orders.total_revenue` adds `returns.total_returns`
+- **THEN** EAST 350 and WEST 300 keep their values, and the added NORTH row carries NULL revenue
 
 #### Scenario: Measure-typed filter masks without altering values
 - **WHEN** a query filters on an aggregate predicate
@@ -1147,3 +1163,63 @@ An aggregation over a row-level source whose home (per "Home dataset of a row-le
 #### Scenario: A home-changing default after a redundant partition still homes below the root
 - **WHEN** an aggregation homed below the query root also carries a redundant `partition_by=` that the query's grain already implies and a definition default that moves its home
 - **THEN** it is computed at the same home and returns the same value as without the redundant `partition_by=`
+
+### Requirement: Filters restrict every home of an inferred query
+In a query omitting `population`, a field-typed filter conjunct SHALL restrict the rows of every
+aggregation's home, and of the dimension anchor where its cells are supplied, before any tuple is
+taken: inlined where the dataset determines every reference of the conjunct, otherwise by
+association, exactly as a conjunct restricts a named population (each restricted row counted
+once, the restriction reported through the semi-join informational entry naming the aggregate).
+Each conjunct's references SHALL be routed from the dataset it restricts (`queries/references`).
+A query-declared INNER join SHALL restrict each dataset as the field filter "some row is reached
+along the route from that dataset to the join's declaring dataset". A conjunct reading several
+homes SHALL restrict each of them by its own disposition. A conjunct on a dataset that supplies no
+rows SHALL still restrict every home it reaches. No conjunct SHALL choose the dimension anchor or
+make an aggregation supply rows.
+
+#### Scenario: One filter, two homes
+- **WHEN** a query without `population` groups by `customers.region`, measures
+  `orders.total_revenue` and `returns.total_returns`, and filters `orders.amount > 100`, over the
+  seed of `queries/population` › Rows of an inferred query are the row supply
+- **THEN** revenue is restricted inline and returns by association: EAST (200, 25), WEST
+  (300, NULL)
+
+#### Scenario: A filter on a dataset no metric is homed on
+- **WHEN** the same query measures only `orders.total_revenue` and filters `visits.visit_id is
+  not null`
+- **THEN** the orders are restricted to customers with a visit: the only row is WEST 300
+
+#### Scenario: A query-declared INNER join restricts each home
+- **WHEN** a query without `population` declares an `inner` relationship from `customers` to a
+  dataset listing C1 and C4, groups by `customers.region` and measures `orders.total_revenue` and
+  `returns.total_returns`
+- **THEN** the rows are EAST (300, 25) and NORTH (NULL, 10)
+
+### Requirement: Row laws of inferred queries
+Before measure-typed filters, `order` and `limit`, every query omitting `population` SHALL obey:
+**measure monotonicity** — adding a measure to a query with at least one measure never removes a
+row and never changes a value in an existing row (transforms over result rows excepted until
+DEV-2218); **home-row preservation** —
+every home row of a full-grain aggregate surviving the filters lands in a row, exactly one when
+the home determines the dimensions and the data respects declared cardinality; **filter
+non-expansion** — adding a field filter never adds a row and never changes a result key; and the
+**unit** — a query with measures and no dimensions returns exactly one row. Filter non-expansion
+and the unit SHALL hold for a query naming `population` too.
+
+#### Scenario: Monotonicity over generated queries
+- **WHEN** the law harness generates root-less queries and adds a measure to each
+- **THEN** every row of the smaller query is a row of the larger one with the same values
+
+#### Scenario: Home rows are preserved
+- **WHEN** the law harness generates root-less queries over data with orphan home rows
+- **THEN** the sum of an additive full-grain measure over the result equals its total over the
+  home's filtered rows
+
+#### Scenario: Filters never expand
+- **WHEN** the law harness adds a field filter to generated queries, with and without `population`
+- **THEN** the filtered result's keys are a subset of the unfiltered result's keys
+
+#### Scenario: The unit
+- **WHEN** a query with measures and no dimensions runs, with and without `population`, with and
+  without a filter no row passes
+- **THEN** it returns exactly one row

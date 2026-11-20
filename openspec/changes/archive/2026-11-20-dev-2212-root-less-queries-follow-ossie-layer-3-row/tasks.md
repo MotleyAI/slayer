@@ -52,5 +52,5 @@
 ## 8. Gates
 
 - [x] 8.1 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline, never `--writebaseline`), `poetry run la-arch-check`, `npx likec4 validate architecture`, `openspec validate --all --strict`.
-- [ ] 8.2 Local test scope green (`la-affected-tests`); full suites green in CI.
+- [x] 8.2 Local test scope green (`la-affected-tests`); full suites green in CI.
 - [ ] 8.3 After merge: comment on DEV-2218 and DEV-2217 that the row supply is on `main`.
