@@ -30,7 +30,6 @@ from slayer.core.enums import (
 from slayer.core.errors import (
     AmbiguousRelationshipPathError,
     AmbiguousReferenceError,
-    AssociationError,
     CanonicalAliasShadowsFieldError,
     CircularRelationshipPathError,
     ComputedDimensionError,
@@ -2333,7 +2332,8 @@ def check_windowed_time_axis_attributable(
             f"dimension ('{active_td_name}') attributable from {root_name}, but "
             f"it crosses a fanning relationship.",
             location=f"metric {alias!r}",
-            suggestion=_RELATIONSHIP_REMEDY,
+            suggestion="Omit to_many_handling (or set 'associate') to count each home row once per bucket, "
+            "or declare relationship cardinality or a covering unique key on the target.",
         )
 
 
@@ -2408,18 +2408,6 @@ def check_filter_dependencies_analyzable(
         location=f"filter {filter_text!r}",
         suggestion="Fix the field's SQL, or remove the filter.",
     )
-
-
-def check_association_windowed_ranked(*, alias: str, windowed_or_ranked: bool) -> None:
-    """window=/first/last cannot associate — the pick per entity is undefined."""
-    if windowed_or_ranked:
-        raise AssociationError(
-            summary="The aggregate needs distinct-entity association over an "
-            "unattributable dimension, which is unsupported in combination with "
-            "window=/first/last.",
-            location=f"metric {alias!r}",
-            suggestion="Drop the window/first-last or attribute the dimension.",
-        )
 
 
 def check_parameter_determined(

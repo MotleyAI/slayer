@@ -2,8 +2,8 @@
 dialects. Each ``fanning_inline/`` shape restricts the population by a correlated
 EXISTS base query; each ``producer/`` and ``dims_only/`` shape carries the semi-join
 and no fanning join; the ``positive/`` to-one case stays a plain row restriction;
-and ``producer/windowed_fanning_axis`` fails closed (decision 12 — its window axis
-is not attributable from the population root).
+and ``producer/windowed_fanning_axis`` associates (its window axis fans from the
+population root, so each customer counts once per frame).
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _cases() -> dict:
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["customers.tier"], "filter": [_OK]}},
         # windowed over a fanning time axis (orders.ordered_at from customers):
-        # its axis is not attributable from the root, so it fails closed (decision 12).
+        # it associates, each customer once per frame.
         "producer/windowed_fanning_axis": {
             "source": "customers", "mode": None,
             "kw": {"time_dimensions": [
@@ -80,10 +80,10 @@ def _cases() -> dict:
     }
 
 
-#: The only shape that still fails closed post-implementation: a window whose time
-#: axis is not attributable from the population root (decision 12). Every
-#: fanning_inline/producer/dims_only shape now restricts by EXISTS instead.
-FAIL_CLOSED = {"producer/windowed_fanning_axis"}
+#: Shapes that fail closed; none since a window over a fanning time axis associates.
+FAIL_CLOSED: set[str] = set()
+#: A window over a fanning time axis: real SQL, never a recorded raise.
+FANNING_WINDOW = "producer/windowed_fanning_axis"
 
 
 async def _generate_one(case, dialect: str):
@@ -114,11 +114,18 @@ bind_golden_tests(
 
 
 def test_fail_closed_cases_record_a_raise(baseline) -> None:
-    """A window over a fanning time axis fails closed (decision 12): its baseline
-    is a recorded raise, never SQL — the fan-multiply must not slip through as SQL."""
+    """Each fail-closed shape's baseline is a recorded raise, never SQL."""
     for key, value in baseline.items():
         if key.split("::", 1)[0] in FAIL_CLOSED:
             assert isinstance(value, dict), f"{key} unexpectedly emits SQL: {value}"
+
+
+def test_fanning_window_emits_sql(baseline) -> None:
+    """A window over a fanning time axis associates: its baseline is SQL, never a recorded raise."""
+    keys = [k for k in baseline if k.split("::", 1)[0] == FANNING_WINDOW]
+    assert keys
+    for key in keys:
+        assert not isinstance(baseline[key], dict), f"{key} unexpectedly raises: {baseline[key]}"
 
 
 def test_to_one_case_generates_sql(baseline) -> None:

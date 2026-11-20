@@ -17,6 +17,7 @@ Executed dual-engine (SQLite + DuckDB) against the ``_dev1900_fixtures`` graph.
 
 from __future__ import annotations
 
+import re
 import warnings as _warnings
 
 import pytest
@@ -26,6 +27,7 @@ from slayer.core.errors import (
     AssociatedGrainWarning,
     BroadcastGrainWarning,
     SlayerError,
+    TimeAxisError,
 )
 from slayer.core.models import DatasetField, DataType
 from slayer.core.query import QueryMetric, TimeDimension
@@ -34,6 +36,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1892_fixtures import assert_ref_free
+from tests._dev1914_fixtures import WINDOW_BY_ORDER_MONTH, WINDOW_OK_BY_ORDER_MONTH
 from tests._engine_helpers import _join_aliases
 from tests._dev1900_fixtures import (
     AMOUNT_SUM,
@@ -172,8 +175,9 @@ class TestOrderWrapInheritsPopulation:
 class TestWindowedDerivedFanningAxisFailsClosed:
     """Decision 12 is closure-aware: a windowed metric whose active time axis is a
     host-local derived field — pathless in its own coordinates, but whose SQL
-    crosses a fanning hop — fails closed in every mode. The bare host-path is empty
-    (reads as safe); only the dependency closure reveals the fan."""
+    crosses a fanning hop — fans like any other axis: it fails closed outside
+    association and associates under it. The bare host-path is empty (reads as
+    safe); only the dependency closure reveals the fan."""
 
     def _bundle(self) -> ResolvedSourceBundle:
         m = dev1900_datasets()
@@ -185,15 +189,20 @@ class TestWindowedDerivedFanningAxisFailsClosed:
             dialect="postgres",
             population=cust, referenced_datasets=[x for x in m if x.name != "customers"])
 
-    @pytest.mark.parametrize("mode", MODES)
-    def test_pathless_derived_window_axis_raises(self, mode):
-        q = cust_q(
+    def _query(self, mode):
+        return cust_q(
             time_dimensions=[{"field": "customers.bad_date", "granularity": "month"}],
             metrics=[WINDOWED], to_many_handling=mode)
-        bundle = self._bundle()
+
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
+    def test_pathless_derived_window_axis_raises(self, mode):
+        q, bundle = self._query(mode), self._bundle()
         with pytest.raises((SlayerError, ValueError)) as ei:
             plan_query(query=q, bundle=bundle)
         assert "bad_date" in str(ei.value)
+
+    def test_pathless_derived_window_axis_associates(self):
+        assert plan_query(query=self._query("associate"), bundle=self._bundle()) is not None
 
 
 class TestMultiMeasureProducerNamesEveryMeasure:
@@ -326,21 +335,33 @@ class TestProducersInheritDisposition:
         assert "EXISTS" in sql.upper()
         assert "orders" not in _join_aliases(sql, dialect=dialect), sql
 
-    @pytest.mark.parametrize("mode", MODES)
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    @pytest.mark.parametrize("with_filter", [True, False])
+    async def test_windowed_fanning_axis_associates(self, backend, mode, with_filter):
+        """A window over a fanning time axis counts each customer once per month whose frame holds one of its
+        (filter-passing) orders."""
+        _, engine = backend
+        kw = {"filter": [OK]} if with_filter else {}
+        resp = await engine.execute(cust_q(
+            time_dimensions=_orders_month_td(), metrics=[WINDOWED], to_many_handling=mode, **kw))
+        got = {month_key(r["orders.ordered_at"]): float(r["w"]) for r in resp.data if r["orders.ordered_at"]}
+        assert got == (WINDOW_OK_BY_ORDER_MONTH if with_filter else WINDOW_BY_ORDER_MONTH)
+
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
     @pytest.mark.parametrize("with_filter", [True, False])
     async def test_windowed_fanning_axis_fails_closed(self, backend, mode, with_filter):
-        """A window over a fanning time axis (orders.ordered_at from customers)
-        fails closed in every mode, filter or not: its axis is not attributable
-        from the population root; the error names the time dimension (decision 12)."""
+        """Outside association a window over a fanning time axis fails closed, filter or not, naming the time
+        dimension and association among the remedies."""
         _, engine = backend
         kw = {"filter": [OK]} if with_filter else {}
         query = cust_q(
             time_dimensions=_orders_month_td(), metrics=[WINDOWED],
             to_many_handling=mode, **kw)
-        with pytest.raises((SlayerError, ValueError)) as ei:
+        with pytest.raises(TimeAxisError) as ei:
             await engine.execute(query)
         msg = str(ei.value)
         assert "ordered_at" in msg, msg
+        assert re.search(r"to_many_handling|associat", ei.value.suggestion or "", re.IGNORECASE), msg
         assert_ref_free(msg)
 
     async def test_first_last_producer_with_sibling_sum(self, backend):

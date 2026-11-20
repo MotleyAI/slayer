@@ -485,8 +485,8 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
 def _collect_broadcast_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[BroadcastGrainWarningPayload]:
-    """One broadcast payload per ``(stage location, metric label, fallback reason)``; dimensions unioned."""
-    dims_by_key: "dict[tuple[str, str, Optional[str]], list[tuple[str, str]]]" = {}
+    """One broadcast payload per ``(stage location, metric label)``; dimensions unioned."""
+    dims_by_key: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
     if labels is None:
         labels = _stage_labels(stages=stages, displays=displays)
     for planned, location in zip(planned_list, labels):
@@ -494,7 +494,7 @@ def _collect_broadcast_warnings(
             metric = attach.broadcast_metric
             if not metric:
                 continue
-            dims = dims_by_key.setdefault((location, metric, attach.association_unsupported), [])
+            dims = dims_by_key.setdefault((location, metric), [])
             seen = {d for d, _ in dims}
             for dim, reason in attach.broadcast_dimensions:
                 if dim not in seen:
@@ -502,10 +502,10 @@ def _collect_broadcast_warnings(
                     seen.add(dim)
     return [
         BroadcastGrainWarningPayload(
-            metric=metric, location=location, association_unsupported=unsupported,
+            metric=metric, location=location,
             dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
         )
-        for (location, metric, unsupported), dims in dims_by_key.items()
+        for (location, metric), dims in dims_by_key.items()
     ]
 
 
@@ -656,9 +656,7 @@ def _emit_python_warnings(response) -> None:
         if isinstance(w, BroadcastGrainWarningPayload):
             reason = w.dimensions[0].reason if w.dimensions else ""
             _warnings_module.warn(
-                BroadcastGrainWarning(
-                    metric=w.metric, reason=reason, association_unsupported=w.association_unsupported,
-                ),
+                BroadcastGrainWarning(metric=w.metric, reason=reason),
                 stacklevel=outside_stacklevel(),
             )
         elif isinstance(w, AssociatedWarningPayload):

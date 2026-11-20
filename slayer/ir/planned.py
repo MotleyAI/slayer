@@ -44,6 +44,7 @@ __all__ = [
     "MaskEntry",
     "MaskTyping",
     "OrderEntry",
+    "EntityDedup",
     "PickedParam",
     "PlainProducerKernel",
     "PlannedQuery",
@@ -314,6 +315,15 @@ class PlainProducerKernel(BaseModel):
     kind: Literal["plain"] = "plain"
 
 
+class EntityDedup(BaseModel):
+    """Association's level 1 under a ranked / windowed reducer: one row per (cell, entity) picking each input once."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: The root's identity keys in the producer's coordinates.
+    entity_keys: List[ValueKey] = Field(default_factory=list)
+
+
 class RankedProducerKernel(BaseModel):
     """A ``first``/``last`` producer: one row per grain group, picked by ranking."""
 
@@ -322,6 +332,8 @@ class RankedProducerKernel(BaseModel):
     kind: Literal["ranked"] = "ranked"
     agg: Literal["first", "last"]
     ranking_time_key: ValueKey
+    #: Set when associating: the ranking runs over the deduplicated entity rows.
+    association: Optional[EntityDedup] = None
 
 
 class PickedParam(BaseModel):
@@ -359,6 +371,8 @@ class TrailingWindowProducerKernel(BaseModel):
     endpoints: Optional["PlannedQuery"] = None
     #: The producer's grain keys in ``endpoints``' column order.
     endpoint_keys: List[ValueKey] = Field(default_factory=list)
+    #: Set when associating: each frame's rows dedup per (bucket, cell, entity) before the reducer.
+    association: Optional[EntityDedup] = None
 
 
 class AssociationProducerKernel(BaseModel):
@@ -381,9 +395,6 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
-    #: Every associated dimension is a list child of the root: level 1 is each root row once per distinct
-    #: element combination, with no key to group by.
-    list_rows: bool = False
 
 
 ProducerKernel = Union[
@@ -415,8 +426,6 @@ class RegroupAttachPlan(BaseModel):
     producer_root_dataset: Optional[str] = None
     broadcast_metric: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
-    # Why the default mode broadcast instead of associating; ``None`` for a requested broadcast.
-    association_unsupported: Optional[str] = None
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).

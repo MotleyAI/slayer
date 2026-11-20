@@ -45,6 +45,8 @@ __all__ = [
     "RANKED_SOURCE_ALIAS",
     "RANK_FIELD",
     "RANK_KEY_FIELD",
+    "RANK_PASS_FIELD",
+    "RANK_VALUE_FIELD",
     "RankedGrainProjection",
     "build_rank_field",
     "build_rank_key",
@@ -64,6 +66,9 @@ RANKED_SOURCE_ALIAS = "_ranked_src"
 RANK_FIELD = "_ranked_rn"
 #: The ranking key, carried out of the ranked scope so a NULL key is never picked.
 RANK_KEY_FIELD = "_ranked_key"
+#: An associated ranking's per-entity value and FILTER pass flag (0 passes).
+RANK_VALUE_FIELD = "_ranked_v"
+RANK_PASS_FIELD = "_ranked_pass"
 
 
 class RankedGrainProjection(BaseModel):

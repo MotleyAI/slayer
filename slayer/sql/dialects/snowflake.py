@@ -46,10 +46,9 @@ def _semi_structured(values: Expression) -> Expression:
     return exp.Cast(this=values.copy(), to=exp.DataType.build("ARRAY"))
 
 
-def _typed_elements(values: Expression, element: Optional[DataType], distinct: bool = False) -> Expression:
+def _typed_elements(values: Expression, element: Optional[DataType]) -> Expression:
     """The non-NULL elements as a structured ``ARRAY(T)``, whose elements read as ``T``."""
     kept = anon("ARRAY_COMPACT", _semi_structured(values))
-    kept = anon("ARRAY_DISTINCT", kept) if distinct else kept
     if element is None or element.is_opaque:
         return kept
     return exp.Cast(this=kept, to=exp.DataType.build(f"ARRAY<{element.kind.value}>"))
@@ -244,10 +243,10 @@ class SnowflakeDialect(SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False, positioned: bool = False,  # NOSONAR(S1172) — FLATTEN always exposes INDEX
+        positioned: bool = False,  # NOSONAR(S1172) — FLATTEN always exposes INDEX
     ) -> ListRelation:
         """``FLATTEN`` of the list cast to ``ARRAY(T)``, so ``value`` is typed; no correlated subquery reads it."""
-        rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element, distinct)))
+        rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element)))
         return ListRelation(relation=exp.TableFromRows(this=rows, alias=exp.TableAlias(this=alias.copy())))
 
     def read_column(self, column: Expression, *, zoned: bool) -> Expression:
