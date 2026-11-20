@@ -69,7 +69,7 @@ The inner stage emits a column called `rev`; the outer stage averages `avg(month
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
-As we want to use a result of a child query as a dimension, we use a [dynamic relationship](../../concepts/queries.md#query-extensions) inside the parent query to make it available. For the bucketing, we use a computed dimension with a CASE expression; since the child query is a joined dataset like any other, we reference its columns using the standard `table.column` syntax in the expression:
+As we want to use a result of a child query as a dimension, we use a [dynamic relationship](../../concepts/queries.md#query-extensions) inside the parent query to make it available. For the bucketing, we use a computed dimension with a CASE expression; since the child query is a joined dataset like any other, we reference its fields using the standard `dataset.field` syntax in the expression:
 
 ```json
 [

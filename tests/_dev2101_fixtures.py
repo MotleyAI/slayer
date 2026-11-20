@@ -41,7 +41,7 @@ ALL_IDS = frozenset({1, 2, 3, 4, 5})
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
@@ -330,7 +330,7 @@ def day(value: Any) -> str | None:
 
 async def emit(query: SlayerQuery, *, dialect: str, datasets: Iterable[SlayerDataset] | None = None,
                datasource_fields: dict | None = None) -> str:
-    """Dry-run SQL for ``query`` over the dev2101 models on ``dialect`` (asserts it parses there)."""
+    """Dry-run SQL for ``query`` over the dev2101 datasets on ``dialect`` (asserts it parses there)."""
     first, *rest = list(datasets) if datasets is not None else dev2101_datasets()
     return await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect,
                                   datasource_fields=datasource_fields)
@@ -433,7 +433,7 @@ async def check_filtered_aggregations(engine: SlayerQueryEngine) -> None:
     assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 150.0, 2: 80.0}
 
 
-#: Custom aggregations FILTERed to the paid rows: (formula, by region, ungrouped).
+#: Custom aggregations FILTERed to the paid rows: (expression, by region, ungrouped).
 CUSTOM_PAID: list[tuple[str, dict[Any, float | None], float]] = [
     ("rows(amount)", {"EU": 2, "US": 1, None: None}, 3),
     ("per_order(amount)", {"EU": 15, "US": 40, None: None}, 70 / 3),
@@ -441,7 +441,7 @@ CUSTOM_PAID: list[tuple[str, dict[Any, float | None], float]] = [
 
 
 async def check_filtered_custom_aggregations(engine: SlayerQueryEngine) -> None:
-    """A FILTERed custom aggregation restricts every row its formula reads, inline and as a saved measure."""
+    """A FILTERed custom aggregation restricts every row its expression reads, inline and as a saved metric."""
     for formula, by_region, total in CUSTOM_PAID:
         measure = m(f"{formula} FILTER (WHERE status = 'paid')")
         resp = await engine.execute(q(dimensions=["orders.region"], metrics=[measure]))

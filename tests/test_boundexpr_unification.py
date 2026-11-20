@@ -1,8 +1,8 @@
-"""BoundExpr type unification (DEV-1450 stage 7b.6).
+"""BoundExpr type unification.
 
 The binder and the planner once carried two different ``BoundExpr``
 classes; they were unified, and the single canonical home is now
-``slayer.ir.bound`` (DEV-1872) — no re-exports.
+``slayer.ir.bound`` — no re-exports.
 
 Tests cover:
 
@@ -61,7 +61,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestTypeUnification:
     def test_bound_expr_single_home(self) -> None:
-        # One real home (DEV-1872): the class lives in ir.bound and the
+        # One real home: the class lives in ir.bound and the
         # old planned-side re-export is gone from the public surface.
         assert BoundExpr.__module__ == "slayer.ir.bound"
         assert "BoundExpr" not in slayer.ir.planned.__all__
@@ -106,7 +106,7 @@ class TestValueSlotExpressionPopulated:
             "filter": ["orders.amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
-        # The 'amount' ColumnKey is now a hidden slot dep.
+        # The 'amount' FieldKey is now a hidden slot dep.
         hidden_slots = [
             s for s in planned.row_slots
             if isinstance(s.key, FieldKey) and s.key.leaf == "amount"
@@ -118,7 +118,7 @@ class TestValueSlotExpressionPopulated:
 
 
 # ---------------------------------------------------------------------------
-# Mask slots carry the bound expression (DEV-1865)
+# Mask slots carry the bound expression
 # ---------------------------------------------------------------------------
 
 
@@ -136,7 +136,7 @@ def _sole_mask_key(planned):
 
 class TestMaskExpressionPopulated:
     def test_user_filter_compiles_to_a_mask_slot(self) -> None:
-        # DEV-1865: every filter conjunct compiles to a hidden slot whose
+        # Every filter conjunct compiles to a hidden slot whose
         # key IS the binder-produced predicate (not just date_range filters).
         q = SlayerQuery.model_validate({
             "population": "orders",
@@ -158,13 +158,13 @@ class TestMaskExpressionPopulated:
         })
         planned = plan_query(query=q, bundle=_bundle())
         key = _sole_mask_key(planned)
-        # Should be an ArithmeticKey wrapping ColumnKey(amount) and a
+        # Should be an ArithmeticKey wrapping FieldKey(amount) and a
         # LiteralKey.
         assert isinstance(key, ArithmeticKey)
         assert key.op == ">"
 
     def test_measure_mask_carries_the_aggregate(self) -> None:
-        # An aggregate-bearing (measure-typed) mask carries the
+        # An aggregate-bearing (metric-typed) mask carries the
         # expression too.
         q = SlayerQuery.model_validate({
             "population": "orders",

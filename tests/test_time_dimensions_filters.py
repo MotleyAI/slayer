@@ -1,18 +1,18 @@
-"""Stage 7b.3c (DEV-1450) — date_range → filter + main-TD disambiguation.
+"""date_range → filter + main-TD disambiguation.
 
 Two pieces:
 
-1. ``_resolve_main_time_dimension(query, model) -> Optional[TimeDimension]``
+1. ``_resolve_main_time_dimension(query, dataset) -> Optional[TimeDimension]``
    resolves the active TD for transform / windowing semantics:
    single TD → it; multiple TDs with ``query.main_time_dimension`` →
-   match by full_name or leaf; multiple TDs with model
+   match by full_name or leaf; multiple TDs with dataset
    ``default_time_dimension`` → match by leaf; neither → None;
    unrecognised name → ``UnknownReferenceError``.
 
 2. ``plan_query`` converts each ``TimeDimension.date_range = [start,
    end]`` into a row-phase ``BoundFilter`` on the bare underlying
-   column (``column >= start(start) AND column < next_start(end)``). The
-   filter binds against the raw ``ColumnKey``, NOT the ``TimeTruncKey`` —
+   field (``field >= start(start) AND field < next_start(end)``). The
+   filter binds against the raw ``FieldKey``, NOT the ``TimeTruncKey`` —
    so the shifted self-join CTE reads raw data while the outer projection
    applies the date filter.
 """
@@ -326,7 +326,7 @@ class TestResolveMainTimeDimension:
 
     def test_default_td_picks_host_local_over_joined(self) -> None:
         # Legacy ``_resolve_time_alias`` returns
-        # f"{model.name}.{default_time_dimension}" — the host-local form.
+        # f"{dataset.name}.{default_time_dimension}" — the host-local form.
         # When the query includes a joined TD ``customers.created_at``
         # AND a local TD ``reviewed_at``, and the host's default is set
         # to ``created_at`` (which doesn't match a local TD), the
@@ -349,7 +349,7 @@ class TestResolveMainTimeDimension:
         )
         # With only one TD, the helper returns that TD (single-TD path
         # bypasses default_time_dimension). To exercise the default
-        # path we need 2+ TDs. Build a fresh model + bundle inline:
+        # path we need 2+ TDs. Build a fresh dataset + bundle inline:
         host = SlayerDataset(
             name="orders",
             data_source="prod",
@@ -411,9 +411,9 @@ class TestResolveMainTimeDimension:
         assert resolved is td_a
 
     def test_unknown_default_td_does_not_raise_but_returns_none(self) -> None:
-        # If model.default_time_dimension is set but doesn't match any
+        # If dataset.default_time_dimension is set but doesn't match any
         # entry in query.time_dimensions, the resolver returns None
-        # (legacy behaviour — the default points at a column the user
+        # (legacy behaviour — the default points at a field the user
         # didn't include this query).
         model = _orders_dataset(default_td="not_in_query")
         td_a = TimeDimension(
@@ -434,7 +434,7 @@ class TestResolveMainTimeDimension:
 
 
 def _plan_filters(planned):
-    """DEV-1865: the placed-filter view is reconstructed by the emission lowering."""
+    """The placed-filter view is reconstructed by the emission lowering."""
     return _lower_positions(planned).filters
 
 
@@ -475,7 +475,7 @@ class TestDateRangeFilter:
         )
         planned = plan_query(query=q, bundle=_bundle_local())
         lower, upper = _find_date_range_filter_on(planned=planned, leaf="created_at")
-        # The bound targets the BARE underlying column, not the TimeTruncKey.
+        # The bound targets the BARE underlying field, not the TimeTruncKey.
         assert lower.operands[0] == FieldKey(path=(), leaf="created_at")
         # TIMESTAMP operand: datetime literals; the day-period upper bound is exclusive.
         assert lower.operands[1] == LiteralKey(value=datetime(2024, 1, 1))
@@ -541,13 +541,13 @@ class TestDateRangeFilter:
         lower, _upper = _find_date_range_filter_on(
             planned=planned, leaf="signed_up_at",
         )
-        # Joined TD: path carries the join hop on the underlying column.
+        # Joined TD: path carries the relationship hop on the underlying field.
         expected_col = FieldKey(path=("customers",), leaf="signed_up_at")
         assert lower.operands[0] == expected_col
 
     def test_user_filter_and_date_range_coexist(self) -> None:
         # A user-supplied filter and the auto-generated date_range filter
-        # both appear, both row-phase. DEV-1450 stage 7b.9 enforces
+        # both appear, both row-phase, in the
         # legacy WHERE order: date_range first, user filter second.
         q = SlayerQuery.model_validate({
             "population": "orders",
@@ -579,7 +579,7 @@ class TestDateRangeFilter:
 
     def test_multiple_tds_each_with_date_range(self) -> None:
         # Two TDs, each with date_range — two separate filters, one per
-        # underlying column.
+        # underlying field.
         q = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -601,7 +601,7 @@ class TestDateRangeFilter:
             f for f in _plan_filters(planned) if f.phase == Phase.ROW
         ]
         assert len(row_filters) == 2
-        # Each one targets a different underlying column.
+        # Each one targets a different underlying field.
         and_created = _find_date_range_filter_on(
             planned=planned, leaf="created_at",
         )
@@ -655,20 +655,20 @@ class TestDateRangeFilter:
 
 
 # ---------------------------------------------------------------------------
-# date_range filter on the underlying column (NOT TimeTruncKey)
+# date_range filter on the underlying field (NOT TimeTruncKey)
 # ---------------------------------------------------------------------------
 
 
 class TestDateRangeHiddenSlot:
     def test_raw_column_slot_materialized_hidden(self) -> None:
-        # The date_range filter binds against the raw ColumnKey. For
-        # the generator to render that column expression independently
+        # The date_range filter binds against the raw FieldKey. For
+        # the generator to render that field expression independently
         # of the TimeTruncKey (so the outer WHERE references the raw
-        # column while the truncated form goes in the SELECT), the
-        # planner MUST materialise the raw ColumnKey as a hidden slot
+        # field while the truncated form goes in the SELECT), the
+        # planner MUST materialise the raw FieldKey as a hidden slot
         # alongside the public TimeTruncKey slot — they are two
         # distinct slot identities even though they target the same
-        # underlying column.
+        # underlying field.
         q = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -723,6 +723,6 @@ class TestDateRangeBindsToUnderlyingColumn:
         # Walk the predicate; no TimeTruncKey should appear in the tree.
         keys = list(walk_value_keys(fp.expression.value_key))
         assert not any(isinstance(k, TimeTruncKey) for k in keys), (
-            f"date_range filter should target raw column, not TimeTruncKey; "
+            f"date_range filter should target raw field, not TimeTruncKey; "
             f"got keys: {[type(k).__name__ for k in keys]}"
         )

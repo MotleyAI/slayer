@@ -1,4 +1,4 @@
-"""Row-level security scopes every table inside a filtered dataset, and the query reports every model it reads."""
+"""Row-level security scopes every table inside a filtered dataset, and the query reports every dataset it reads."""
 
 from __future__ import annotations
 

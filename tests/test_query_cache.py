@@ -587,7 +587,7 @@ class TestRefresh:
         await engine.execute(q, cache=True)
         assert old_key in engine._cache._entries
 
-        # Edit the stored model: an always-applied filter changes the SQL.
+        # Edit the stored dataset: an always-applied filter changes the SQL.
         edited = _orders_dataset("ds").model_copy(update={"filters": ["amount > 60"]})
         await engine.storage.save_dataset(edited)
         new_sql = (await engine.execute(q, dry_run=True)).sql

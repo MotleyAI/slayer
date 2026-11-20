@@ -12,7 +12,7 @@ from tests._dev2119_fixtures import BACKENDS, EFF, TIER1, by_bucket, by_dims, em
 
 MIXED = "orders.quantity * avg(orders.price, partition_by=orders.product)"
 
-#: (formula, per-region value) over ``dimensions=["region"]``.
+#: (expression, per-region value) over ``dimensions=["region"]``.
 REGION_SHAPES: dict[str, tuple[str, dict[str, Any]]] = {
     "expression_value": ("last(orders.amount * orders.quantity)", {"EU": 200.0, "US": 80.0}),
     "expression_key_last": (f"last(orders.amount, {EFF})", {"EU": 50.0, "US": 60.0}),
@@ -22,7 +22,7 @@ REGION_SHAPES: dict[str, tuple[str, dict[str, Any]]] = {
                       {"EU": 49.5, "US": 40.0}),
     "attached_constituent": (f"last({MIXED}, {EFF})", {"EU": pytest.approx(28 / 3), "US": pytest.approx(14 / 3)}),
 }
-#: (formula, per created_at month value) over a month time dimension on ``created_at``.
+#: (expression, per created_at month value) over a month time dimension on ``created_at``.
 WINDOWED_SHAPES: dict[str, tuple[str, dict[str, float]]] = {
     "windowed_last": (f"last(orders.amount, {EFF}, window='2m')",
                       {"2024-12": 60.0, "2025-01": 60.0, "2025-02": 40.0, "2025-03": 50.0}),

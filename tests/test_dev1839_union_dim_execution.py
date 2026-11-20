@@ -1,4 +1,4 @@
-"""DEV-1839 executed ground truth (SQLite + DuckDB) for mixed-grain transforms
+"""Executed ground truth (SQLite + DuckDB) for mixed-grain transforms
 used as computed dimensions — the ``queries/computed-dimensions`` delta
 scenarios. Expectations hand-computed in ``tests/_dev1839_fixtures.py``.
 
@@ -9,7 +9,7 @@ Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   Nested transform evaluates at its own grain ............ TestNestedTransform
   Explicit transform partition over union rows ........... TestExplicitUnionPartition
   Union attach is cardinality-neutral (D8 structure) ..... TestUnionAttachStructure
-  Same mixed-grain transform as dimension and measure .... TestDualRole
+  Same mixed-grain transform as dimension and metric ..... TestDualRole
   Duplicate producers across roles (accepted trade-off) .. TestDuplicateProducerRoles
 (Guard scenarios → tests/test_dev1839_guards.py.)
 """
@@ -245,7 +245,7 @@ class TestUnionAttachStructure:
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ), dialect)
         # ``_cm_`` is the pinned attach-CTE naming contract (``cm_cte_bodies``
-        # in the DEV-1739+ suites relies on it), not renderer-private detail.
+        # in the partitioned-metric suites relies on it), not renderer-private detail.
         attaches = _row_attach_joins(sql, dialect)
         assert len(attaches) == 1, sql
         _, on_cols = attaches[0]
@@ -262,8 +262,8 @@ class TestDuplicateProducerRoles:
         self, exec_backend,
     ) -> None:
         # The region aggregate feeds BOTH the mixed dim's nested attach and a
-        # combined measure attach. Duplicate producers are accepted (DEV-1824
-        # design D10; stage-2 dedup) — values and cardinality must hold.
+        # combined metric attach. Duplicate producers are accepted (design
+        # D10; stage-2 dedup) — values and cardinality must hold.
         dialect, engine = exec_backend
         query = q(
             dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],

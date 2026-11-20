@@ -1,5 +1,5 @@
-"""Distinct-entity association, executed values on SQLite + DuckDB: cross-model,
-multi-hop, ``count(*)``, median, measure-local filter, mode-invariance of
+"""Distinct-entity association, executed values on SQLite + DuckDB: cross-dataset,
+multi-hop, ``count(*)``, median, metric-local filter, mode-invariance of
 attributable slices, and cardinality neutrality.
 
 Spec: queries/attribution-modes — "Distinct-entity association over the virtual
@@ -81,7 +81,7 @@ class TestCrossModelAssociation:
     async def test_filtered_count_over_association_counts_matching_entities(
         self, exec_backend_ext,
     ):
-        """A non-star ``count`` over a filtered association column counts
+        """A non-star ``count`` over a filtered association field counts
         only the entities whose masked value is non-NULL (COUNT(_v)), NOT every
         associated entity (COUNT(*)). ``gold_spend`` masks ``spend`` to gold tier,
         so ``count(gold_spend)`` = distinct GOLD customers/cell — a strict subset of
@@ -174,7 +174,7 @@ class TestMixedGrain:
 class TestMeasureLocalFilter:
     async def test_filter_restricts_the_association(self, exec_backend_ext):
         """Scenario: measure-local filter restricts the association — the gold
-        filter on the aggregate's own column limits the associated entities;
+        filter on the aggregate's own field limits the associated entities;
         result cardinality is unchanged."""
         _, engine = exec_backend_ext
         resp = await engine.execute(assoc_q(

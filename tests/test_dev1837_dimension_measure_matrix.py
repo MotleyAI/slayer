@@ -1,4 +1,4 @@
-"""The dimension-family × measure-family compatibility matrix,
+"""The dimension-family × metric-family compatibility matrix,
 executed on SQLite + DuckDB. The matrix is the migration's tracked frontier:
 supported cells assert hand-computed oracles (``tests/_dev1837_fixtures.py``);
 still-guarded cells strict-xfail pointing at their stage issue, so a lift
@@ -6,23 +6,23 @@ XPASSes and forces the cell flip (design D6). It shrinking to empty is the
 migration's definition of done.
 
 Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
-  Banded dimension with a time-shift measure ......... band-time_shift cell
+  Banded dimension with a time-shift metric .......... band-time_shift cell
   Banded dimension with change and change_pct ........ band-change / band-change_pct
   Banded dimension with a running total .............. band-cumsum
   Bare partitioned aggregate as dim + transform ...... bare-* transform cells
-  Transform-root dimension with a transform measure .. rank-* transform cells
+  Transform-root dimension with a transform metric ... rank-* transform cells
   Union-grain (mixed) dimension family .............. mixed-* cells
-  Banded dimension with a bare windowed measure ...... band-wm
+  Banded dimension with a bare windowed metric ....... band-wm
   Bare partitioned aggregate as dim + bare last ...... bare-rk
   Transform-root dim + bare windowed / ranked ........ rank-wm / rank-rk
   Scalar-expression dim + bare windowed / last ....... expr-wm / expr-rk
-  Alongside a partitioned measure .................... TestCoexistenceTriples
-  Adding a transform/wm/rk measure is card-neutral ... TestCardinalityNeutrality
+  Alongside a partitioned metric ..................... TestCoexistenceTriples
+  Adding a transform/wm/rk metric is card-neutral .... TestCardinalityNeutrality
   Running total partitions by a computed dimension ... expr-cumsum
   Attached value never widens the grain .............. TestPartitionedShiftFix
   Explicit partition_by on the transform wins ........ TestExplicitTransformPartition
 (…/specs/queries/partitioned-aggregates):
-  Partitioned measure with a time-shift executes ..... TestPartitionedShiftFix
+  Partitioned metric with a time-shift executes ...... TestPartitionedShiftFix
   Shifted re-aggregation grain excludes the value .... TestPartitionedShiftFix
 """
 
@@ -76,7 +76,7 @@ TD_ATTACH = frozenset({"win_part", "wm"})
 
 #: Still-guarded cells → the stage issue their strict-xfail points at. The
 #: wm/rk column and the last column have flipped — the four
-#: ``(family, cm)`` cells (row attach × cross-model measure) are now supported
+#: ``(family, cm)`` cells (row attach × cross-dataset metric) are now supported
 #: (target-rooted producers), so they move to the supported table with the
 #: broadcast oracle (``x = CM_TOTAL``). Nothing remains guarded here.
 XFAIL_CELLS: dict[tuple[str, str], str] = {}
@@ -239,7 +239,7 @@ class TestCoexistenceTriples:
             assert float(rt_actual) == pytest.approx(REGION_TOTAL[key[0]]), f"{key}: rt"
             _assert_x(x_actual, x_map[key], key=key)
 
-        # Solo runs: each measure alone at the same grain yields the same value.
+        # Solo runs: each metric alone at the same grain yields the same value.
         for name, measure in (("m", m), ("rt", rt), ("x", x)):
             solo = await engine.execute(
                 self._triple_query(family, metrics=[measure]),
@@ -276,13 +276,13 @@ class TestCoexistenceTriples:
     ) -> None:
         """Design D4's load-bearing case: the rank-dim producer carries an
         internal WITH of its own, so its hoisted CTEs must keep their
-        dependency edges through the cross-model prelude (Codex F6)."""
+        dependency edges through the cross-dataset prelude (Codex F6)."""
         await self._assert_triple(exec_backend, family="rank", op=op)
 
 
 class TestPartitionedShiftFix:
     """The placeholder-leak fix (``queries/partitioned-aggregates`` delta): a
-    partitioned measure + a temporal transform must execute, and the shifted
+    partitioned metric + a temporal transform must execute, and the shifted
     re-aggregation groups by the query grain only — never the attached value."""
 
     @pytest.mark.parametrize("op", ["time_shift", "change", "change_pct"])
@@ -341,7 +341,7 @@ class TestPartitionedShiftFix:
 
 class TestCardinalityNeutrality:
     """Codex F7 — adding a transform, bare windowed, or bare first/last
-    measure must not move the result grain of an aggregation-derived
+    metric must not move the result grain of an aggregation-derived
     dimension (band, bare, AND transform-root)."""
 
     @pytest.mark.parametrize("family", ["band", "bare", "rank"])

@@ -1,4 +1,4 @@
-"""Case-collision rejection for datasource / model / memory ids.
+"""Case-collision rejection for datasource / dataset / memory ids.
 
 Ids are filenames in the YAML backend, so saving an id that differs only
 by case from an existing one raises IdCollisionError there (exact-id
@@ -95,7 +95,7 @@ class TestDatasourceCollision:
     async def test_collides_with_model_data_source(
         self, storage: YAMLStorage,
     ) -> None:
-        # Models under an orphan datasource reserve its name.
+        # Datasets under an orphan datasource reserve its name.
         await storage.save_dataset(_dataset("orders", data_source="db"))
         ds = _ds("DB")
         with pytest.raises(IdCollisionError):
@@ -104,7 +104,7 @@ class TestDatasourceCollision:
 
 
 # ---------------------------------------------------------------------------
-# YAML: models
+# YAML: datasets
 # ---------------------------------------------------------------------------
 
 

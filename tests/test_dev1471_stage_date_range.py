@@ -1,4 +1,4 @@
-"""A two-bound date_range on a stage time dimension filters the outer stage's rows before its aggregation, exactly as a model-scope range filters a model."""
+"""A two-bound date_range on a stage time dimension filters the outer stage's rows before its aggregation, exactly as a dataset-scope range filters a dataset."""
 
 from __future__ import annotations
 

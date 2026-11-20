@@ -1,11 +1,11 @@
-"""DEV-1706 Stage 2 — minimal alias allocator (``slayer/sql/naming.py``).
+"""Minimal alias allocator (``slayer/sql/naming.py``).
 
 The allocator is per-generation and collision-safe. It mints ``_val_<n>``
 materialisation aliases (Law 2) and CTE names, seeded from every name already
-in scope so it can never collide with a user column, a ``__``-path join alias,
+in scope so it can never collide with a user field, a ``__``-path join alias,
 or a reserved public alias. It also hands out generation-local ``ScopeFrame``
 ids (D-F). Stage 9 grows this module into the full naming module; Stage 2 only
-needs the collision-safe primitive (subsumes DEV-1692's collision check).
+needs the collision-safe primitive.
 
 These tests fail at import until ``slayer/sql/naming.py`` exists — that is the
 intended "feature missing" red state (Step 4, tests-first).
@@ -34,7 +34,7 @@ from slayer.sql.naming import (
 
 
 def test_naming_imports_cold_without_dialects_cycle() -> None:
-    """DEV-1817 regression: importing ``slayer.sql.naming`` FIRST (before
+    """Regression: importing ``slayer.sql.naming`` FIRST (before
     ``slayer.sql.dialects``) must not fail on a naming <-> dialects.base import
     cycle. Runs in a fresh interpreter so the import order is genuinely cold —
     the in-process suite imports dialects early and would mask the cycle."""
@@ -79,7 +79,7 @@ class TestAllocateVal:
     def test_skips_reserved(self) -> None:
         a = AliasAllocator()
         a.reserve("_val_0")
-        # A user column literally named ``_val_0`` must not be shadowed.
+        # A user field literally named ``_val_0`` must not be shadowed.
         assert a.allocate_val() == "_val_1"
 
     def test_never_collides_with_user_names(self) -> None:
@@ -111,11 +111,11 @@ class TestAllocateCte:
         )
 
     def test_cross_family_names_reserved_then_allocated(self) -> None:
-        """Codex F3: the DEV-1692 fix reserves every deterministic CTE name
+        """Codex F3: the allocator reserves every deterministic CTE name
         (``_cm_`` / ``_wm_`` / user CTEs) up front, then ALLOCATES
         the transform families (``shifted_`` / ``sjoin_``) around them. A
         transform CTE whose preferred name collides with a reserved name from
-        another family (or a user model/CTE literally named ``shifted_x``)
+        another family (or a user dataset/CTE literally named ``shifted_x``)
         must rename, not shadow."""
         a = AliasAllocator()
         # A user/other-family CTE already claims the transform's preferred name.
@@ -140,7 +140,7 @@ class TestNextScopeId:
 
 
 # ===========================================================================
-# DEV-1713 Stage 9 — full naming module.
+# Stage 9 — full naming module.
 #
 # The functions exercised below do not exist yet; these tests are the Step-4
 # "feature missing" red state. They pin the single-owner contract for every
@@ -151,7 +151,7 @@ class TestNextScopeId:
 class TestResultKey:
     """``result_key`` builds the DOTTED user-facing FINAL-stage key from
     STRUCTURED parts (source_relation + path hops + leaf). It is the D3
-    (DEV-1495 bug 1) fix's single owner of the dotted form."""
+    fix's single owner of the dotted form."""
 
     def test_local_leaf(self) -> None:
 
@@ -197,7 +197,7 @@ class TestResultKey:
 class TestResultKeyFromAlias:
     """``result_key_from_alias`` is the deliberately-named second entry
     point for an ALREADY-canonical relative alias that may embed hop dots
-    (cross-model measure aliases built by ``_canonical_alias_for_formula``)."""
+    (cross-dataset metric aliases built by ``_canonical_alias_for_formula``)."""
 
     def test_bare_alias(self) -> None:
 
@@ -265,7 +265,7 @@ class TestFlatName:
 
     def test_non_injective_collision_pair(self) -> None:
         """Codex F10: ``flat_name`` is intentionally non-injective — a dotted
-        joined dim (``customers.region``) and a literal ``__`` column
+        joined dim (``customers.region``) and a literal ``__`` field
         (``customers__region``) flatten to the SAME downstream name. The
         stage-schema collision guard (``stage_planner._emit_stage_schema``)
         compares ``flat_name`` outputs, so delegation must preserve this
@@ -313,8 +313,8 @@ class TestManglingRelocatedToNaming:
 
     def test_dialects_import_bijection_from_naming(self) -> None:
         """BigQuery and T-SQL dialects consume the bijection from the naming
-        module (the single owner), not a private dialect-package copy. DEV-1817
-        moved the shared mangling into ``DottedAliasManglingMixin`` (base), so
+        module (the single owner), not a private dialect-package copy. The shared
+        mangling lives in ``DottedAliasManglingMixin`` (base), so
         the bijection is consumed there rather than in each dialect module."""
 
         assert base.encode_alias is encode_alias
@@ -338,7 +338,7 @@ class TestManglingRelocatedToNaming:
 
 
 class TestAssertUniqueCteNames:
-    """``assert_unique_cte_names`` is the DEV-1692 belt: it fails loudly on
+    """``assert_unique_cte_names`` is the belt: it fails loudly on
     a duplicate CTE name WITHIN a single ``WITH`` scope, while allowing the
     same name to recur across independent nested ``WITH`` scopes (Codex F2)."""
 
@@ -369,7 +369,7 @@ class TestAssertUniqueCteNames:
 
 
 class TestQuotingRelocatedToNaming:
-    """The DEV-1645 mixed-case identifier-quoting policy is now owned by the
+    """The mixed-case identifier-quoting policy is now owned by the
     naming module (D-b); the generator keeps thin delegators (existing
     ``TestMixedCaseHelperUnit`` pins those). Cross-dialect quote-character
     behaviour is covered by ``test_mixed_case_column_quoted_per_dialect``."""
@@ -392,7 +392,7 @@ class TestQuotingRelocatedToNaming:
 
 
 class TestFlatNameReproducesLegacy:
-    """The legacy virtual-model flatteners (``_alias_to_short`` /
+    """The legacy virtual-dataset flatteners (``_alias_to_short`` /
     ``_alias_to_short_local``) delegate to ``flat_name`` (byte-identical
     output). Those are closures, so this pins the reproduction property
     directly: ``flat_name`` with the first path segment as ``strip_relation``

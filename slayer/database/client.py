@@ -300,7 +300,7 @@ def _rows_as_dicts(result: Any) -> list[dict[str, Any]]:
 
 
 def sql_dataset_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
-    """The zero-row trial of read-only model ``sql``; anything else raises."""
+    """The zero-row trial of read-only dataset ``sql``; anything else raises."""
     inner = parse_query(sql=sql, target_dialect=dialect)
     return exp.select("*").from_(inner.subquery("_sd_validate")).where(
         exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))

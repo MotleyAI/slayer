@@ -1,6 +1,6 @@
-"""DEV-1777 sub-item 3(b): the ``declared_measures`` prefix partition is
+"""The ``declared_measures`` prefix partition is
 structural. ``partition_declared_measures`` single-sources the dim / time-dim /
-aggregate slice arithmetic that ``stage_planner`` (and the retired cross-model
+aggregate slice arithmetic that ``stage_planner`` (and the retired cross-dataset
 planner) used to inline as ``[:n_dims]`` / ``[n_dims:n_dims+n_tds]`` / ``[n_dims+n_tds:]``;
 ``PreboundQuery.grain_declared_metrics`` exposes the grain prefix over it.
 """

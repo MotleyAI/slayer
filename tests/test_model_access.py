@@ -42,7 +42,7 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFiltered
 
 
 def _unloadable_reader(sql: str) -> SlayerDataset:
-    """``reader``, joined to the unloadable model, with a column ``sql``."""
+    """``reader``, related to the unloadable dataset, with a field ``sql``."""
     return SlayerDataset(
         name="reader", sql_table="pub_items", data_source=DS,
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="leak", datatype=DataType.INTEGER, sql=sql)],
@@ -129,7 +129,7 @@ class TestBypass:
         assert await everything._list_all_dataset_identities() == await inner._list_all_dataset_identities()
         assert await everything.list_datasets(DS) == await inner.list_datasets(DS)
         assert await everything.get_dataset("fin") == await inner.get_dataset("fin")
-        assert (await must_get(everything, "fin")).relationships  # the join to hr is kept
+        assert (await must_get(everything, "fin")).relationships  # the relationship to hr is kept
         assert await everything.list_memories() == await inner.list_memories()
         model_name = embedding_client.current_model()
         assert (

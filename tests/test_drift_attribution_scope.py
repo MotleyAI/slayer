@@ -298,7 +298,7 @@ class TestReadSetScope:
         )
         stored = await env.engine.storage.get_dataset("qb_pruned", data_source="ds")
         assert stored is not None
-        # Swap s1's measure for one that fails at execution (not drift).
+        # Swap s1's metric for one that fails at execution (not drift).
         stages = [
             s.model_copy(update={"metrics": [{"metric": "sum(orders.bad)", "alias": "total"}]})
             if s.name == "s1" else s
@@ -339,7 +339,7 @@ class TestPayload:
         assert err.datasets == sorted(_blamed(err))
 
     async def test_models_are_sorted_and_distinct_across_blamed_entries(self, env: _Env) -> None:
-        # Dropping customers blames it wholesale and cascades orders' join.
+        # Dropping customers blames it wholesale and cascades orders' relationship.
         env.live("DROP TABLE customers")
         err = await _fails_with_drift(env.engine, {
             "population": "orders", "dimensions": ["customers.region"],
@@ -651,7 +651,7 @@ class TestResolvedDatasource:
         render = SlayerQueryEngine._plan_and_render
 
         async def _foreign_source(self: SlayerQueryEngine, **kwargs: Any) -> Any:
-            # A pipeline model always carries a data_source; make it disagree with the executing one.
+            # A pipeline dataset always carries a data_source; make it disagree with the executing one.
             rendered = await render(self, **kwargs)
             foreign = rendered.dataset.model_copy(update={"data_source": "ds_a"})
             return rendered.model_copy(update={"dataset": foreign})
@@ -768,7 +768,7 @@ _QB_STAGES = [
     {"population": "s1", "metrics": [{"metric": "sum(s1.total)", "alias": "grand"}]},
 ]
 
-# (id, input, expected read set); query-backed models qb / qb_pruned are saved by the test.
+# (id, input, expected read set); query-backed datasets qb / qb_pruned are saved by the test.
 _READ_SET_CORPUS = [
     pytest.param(
         {"population": "orders", "dimensions": ["customers.region"],
@@ -834,7 +834,7 @@ def _long_chain_datasets(ds: str) -> list[SlayerDataset]:
 
 
 def _assert_relations_stamped(statement: Expression, *, dataset_by_table: dict[str, str]) -> set[str]:
-    """Every physical model relation carries the stamp, stage/CTE relations never; returns stamped sql models."""
+    """Every physical dataset relation carries the stamp, stage/CTE relations never; returns stamped sql datasets."""
     ctes = {c.alias_or_name for c in statement.find_all(exp.CTE)}
     sql_models = [s for s in statement.find_all(exp.Subquery) if _STAMP in s.meta]
     inside_sql_models = {id(n) for s in sql_models for n in s.this.walk()}

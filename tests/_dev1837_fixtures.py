@@ -1,23 +1,23 @@
-"""Shared fixtures for DEV-1837 — computed dimension × transform-measure
+"""Shared fixtures for computed dimension × transform-metric
 coexistence (stage 1a).
 
-Reuses the DEV-1739/1824 models, dataset, and execution harness verbatim
+Reuses the ``_dev1739``/``_dev1824`` fixtures' datasets, seed data, and execution harness verbatim
 (``tests/_dev1824_fixtures.py``) and adds the hand-computed oracles for the
-dimension-family × measure-family matrix.
+dimension-family × metric-family matrix.
 
 Dimension families (every family leads with ``region``)
 -------------------------------------------------------
-D-col   ``region``                                          (plain column)
+D-col   ``region``                                          (plain field)
 D-expr  ``region, lower(city) AS lc``                       (scalar expression)
 D-band  ``region, BAND35 AS band``                          (banded row attach)
 D-bare  ``region, amount:sum(partition_by=city) AS ct``     (bare row attach)
 D-rank  ``region, rank(amount:sum(partition_by=region), direction='desc') AS rr``  (transform root)
-D-mixed ``region, city, MIXED_DIM AS mr``  (union-grain transform root, DEV-1839:
+D-mixed ``region, city, MIXED_DIM AS mr``  (union-grain transform root:
         rank(region_total - city_total, direction='desc') → (N,CityA)=1 (N,CityB)=3 (N,NULL)=1
         (S,CityC)=4 (NULL,CityD)=4; monthly series per group = D-expr's)
 
-Group grains (m = ``sum(amount)``, from the DEV-1739 rows)
----------------------------------------------------------
+Group grains (m = ``sum(amount)``, from the ``_dev1739_fixtures`` rows)
+----------------------------------------------------------------------
 band per row (city total > 35): rows 1,2 (CityA 30)→0; row 3 (CityB 40)→1;
 row 4 (city NULL 30)→0; rows 5,6 (CityC 50)→1; row 7 (CityD 60)→1.
 ct per row = the same city totals (30/40/30/50/60); rr = region-total rank
@@ -40,7 +40,7 @@ buckets and combined placeholders; ordering axis = month):
 * ``cumsum`` accumulates within the full dimension grain.
 * ``consecutive_periods(sum(amount) > 28)`` counts existing buckets, resetting
   on a failed predicate (25 fails, 30/40/60/70 pass).
-* ``rank(sum(amount), direction='desc')`` (measure context) ranks the whole result DESC, RANK()
+* ``rank(sum(amount), direction='desc')`` (metric context) ranks the whole result DESC, RANK()
   ties; no time dimension in those cells.
 
 The fixed M-part × temporal-transform shape (``partitioned-aggregates`` delta):
@@ -89,7 +89,7 @@ DIM_FAMILY_DIMS = {
     "mixed": ["orders.region", "orders.city", {"field": MIXED_DIM, "alias": "mr"}],
 }
 
-#: Transform-measure formulas, keyed by op (the M-transform family).
+#: Transform-metric expressions, keyed by op (the M-transform family).
 TRANSFORM_FORMULAS = {
     "time_shift": "time_shift(sum(orders.amount), -1)",
     "lag": "lag(sum(orders.amount))",

@@ -2,12 +2,12 @@
 
 The function:
 
-* Adds new columns / joins / tables that appeared in the live schema since
-  the last ingest.
-* Never overwrites existing column / join definitions.
-* Skips ``sql``-mode and query-backed models.
+* Adds new fields / relationships / datasets for what appeared in the live
+  schema since the last ingest.
+* Never overwrites existing field / relationship definitions.
+* Skips ``sql``-mode and query-backed datasets.
 * Returns a combined ``IdempotentIngestResult`` with ``additions``,
-  ``to_delete`` (verbatim ``validate_models`` output), and per-model
+  ``to_delete`` (verbatim ``validate_datasets`` output), and per-dataset
   ``errors``.
 """
 
@@ -138,7 +138,7 @@ class TestAdditive:
         assert addition is not None
         assert "delivery_address" in addition.new_fields
         assert addition.created is False
-        # Persisted model now has the new column
+        # Persisted dataset now has the new field
         loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
         assert any(c.name == "delivery_address" for c in loaded.fields)
@@ -182,7 +182,7 @@ class TestAdditive:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        # Persist orders model with no joins
+        # Persist orders dataset with no relationships
         await storage.save_dataset(
             SlayerDataset(
                 name="customers",
@@ -243,7 +243,7 @@ class TestAdditive:
 class TestPreservation:
     async def test_existing_column_metadata_preserved(self, workspace: Path) -> None:
         storage, ds, db_path = await _setup(workspace)
-        # Mutate the persisted orders model: customize amount's metadata
+        # Mutate the persisted orders dataset: customize amount's metadata
         loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
         for c in loaded.fields:
@@ -268,7 +268,7 @@ class TestPreservation:
         assert amount.format is not None
         assert amount.format.type == NumberFormatType.CURRENCY
         assert amount.meta == {"unit": "usd"}
-        # New column appended
+        # New field appended
         assert any(c.name == "extra" for c in loaded2.fields)
 
 
@@ -297,7 +297,7 @@ class TestSkipNonSqlTableModes:
 
     async def test_query_backed_model_skipped(self, workspace: Path) -> None:
         storage, ds, _ = await _setup(workspace)
-        # Save a query-backed model that references orders. Use the engine
+        # Save a query-backed dataset that references orders. Use the engine
         # so the cache populates correctly.
         engine = SlayerQueryEngine(storage=storage)
         await engine.create_dataset_from_query(
@@ -309,7 +309,7 @@ class TestSkipNonSqlTableModes:
         )
         result = await _ingest(datasource=ds, storage=storage)
         assert _addition_for("orders_summary", result.additions) is None
-        # And the persisted query-backed model is unchanged.
+        # And the persisted query-backed dataset is unchanged.
         loaded = await storage.get_dataset("orders_summary", data_source="ds")
         assert loaded is not None
         assert loaded.source_queries is not None
@@ -340,11 +340,11 @@ class TestCombinedReturnShape:
 
         result = await _ingest(datasource=ds, storage=storage)
         # No additions for this drift — the additive pass simply skips the
-        # name (it is taken in the persisted model) and lets validate_models
+        # name (it is taken in the persisted dataset) and lets validate_datasets
         # surface the bucket mismatch.
         addition = _addition_for("orders", result.additions)
         assert addition is None or "amount" not in addition.new_fields
-        # Nor a delete: a type mismatch on an existing column is a re-type finding.
+        # Nor a delete: a type mismatch on an existing field is a re-type finding.
         assert not any(
             isinstance(e, WholeDatasetDelete) or (isinstance(e, EditDatasetDelete) and "amount" in e.remove.fields)
             for e in result.to_delete if e.dataset_name == "orders"
@@ -356,12 +356,12 @@ class TestErrorIsolation:
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         storage, ds, db_path = await _setup(workspace)
-        # Add two new tables so the additive pass tries to save two models.
+        # Add two new tables so the additive pass tries to save two datasets.
         with transaction(db_path) as conn:
             conn.execute("CREATE TABLE a_new (id INTEGER PRIMARY KEY, x TEXT)")
             conn.execute("CREATE TABLE b_new (id INTEGER PRIMARY KEY, y TEXT)")
 
-        # Patch save_model on the storage to fail for "a_new" only.
+        # Patch save_dataset on the storage to fail for "a_new" only.
         original_save = storage.save_dataset
 
         async def flaky_save(model, **kwargs):
@@ -379,7 +379,7 @@ class TestErrorIsolation:
 
 class TestMemoryEmbeddingRefresh:
     """`_refresh_datasource_embeddings` must walk memories whose
-    entities are rooted at the datasource, in addition to models and the
+    entities are rooted at the datasource, in addition to datasets and the
     datasource doc. Failures attribute to the offending memory by id."""
 
     @staticmethod
@@ -505,7 +505,7 @@ class TestMemoryEmbeddingRefresh:
         ]
         assert memory_errors, (
             f"expected an IngestionError with "
-            f"model_name='memory:{saved.id}'; got {result.errors!r}"
+            f"dataset_name='memory:{saved.id}'; got {result.errors!r}"
         )
         assert memory_errors[0].data_source == ds.name
         assert memory_errors[0].error.startswith("embedding refresh:")
@@ -515,7 +515,7 @@ class TestMemoryEmbeddingRefresh:
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The defensive try/except in the memory loop must convert a
-        raise from ``refresh_memory`` into a tagged ``(model_name,
+        raise from ``refresh_memory`` into a tagged ``(dataset_name,
         error_text)`` tuple — never propagate."""
         storage, ds, _ = await _setup(workspace)
         saved = await storage.save_memory(
@@ -584,8 +584,8 @@ class TestMemoryEmbeddingRefresh:
         """Codex Finding 1: when ``save_embeddings`` raises while
         persisting a memory's embedding, the resulting warning carries
         the memory's canonical id so ``ingest_datasource_idempotent``
-        can route the failure to ``IngestionError(model_name="memory:<id>")``
-        rather than the unattributed ``model_name=""`` bucket."""
+        can route the failure to ``IngestionError(dataset_name="memory:<id>")``
+        rather than the unattributed ``dataset_name=""`` bucket."""
         storage, ds, _ = await _setup(workspace)
         saved = await storage.save_memory(
             learning="row that will fail to persist",
@@ -594,7 +594,7 @@ class TestMemoryEmbeddingRefresh:
         self._enable_channel(monkeypatch)
 
         # Patch the storage backend so save_embeddings raises only for
-        # the memory canonical id; model + datasource-doc rows persist
+        # the memory canonical id; dataset + datasource-doc rows persist
         # normally so we can pin that this is the only failure.
         original_save = storage.save_embeddings
 
@@ -614,7 +614,7 @@ class TestMemoryEmbeddingRefresh:
         ]
         assert memory_errors, (
             f"expected an IngestionError with "
-            f"model_name='memory:{saved.id}'; got {result.errors!r}"
+            f"dataset_name='memory:{saved.id}'; got {result.errors!r}"
         )
         assert "disk full" in memory_errors[0].error
         assert f"memory:{saved.id}" in memory_errors[0].error
@@ -657,7 +657,7 @@ class TestExcludeTables:
         assert _addition_for("orders", result.additions) is None
         # to_delete also doesn't reference orders
         assert not any(e.dataset_name == "orders" for e in result.to_delete)
-        # Persisted orders model is unchanged (no extra column appended)
+        # Persisted orders dataset is unchanged (no extra field appended)
         loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
         assert not any(c.name == "extra" for c in loaded.fields)
@@ -692,7 +692,7 @@ async def _persist_int_dataset(
     description: str = "",
     label: str | None = None,
 ) -> None:
-    """Persist a model with the target column hard-coded as type=INT,
+    """Persist a dataset with the target field hard-coded as type=INT,
     simulating an ingest from before SQLite widening."""
     col_kwargs: dict[str, Any] = {
         "name": column,
@@ -843,7 +843,7 @@ class TestSqliteProbeWideningOnReingest:
         even when the fresh live schema disagrees with persisted (e.g. a DBA
         ran ``ALTER COLUMN qty TYPE DOUBLE`` on Postgres). On non-SQLite the
         additive contract stays strict — drift surfaces via ``slayer
-        validate-models``, not via silent re-ingest overwrites.
+        validate-datasets``, not via silent re-ingest overwrites.
         """
         pytest.importorskip("duckdb")
         db_path = str(workspace / "live.duckdb")
@@ -869,8 +869,8 @@ class TestSqliteProbeWideningOnReingest:
     async def test_widened_columns_in_model_addition(
         self, workspace: Path
     ) -> None:
-        """The IdempotentIngestResult.additions entry for the model carries
-        ``widened_columns: List[str]`` listing the widening events."""
+        """The IdempotentIngestResult.additions entry for the dataset carries
+        ``widened_fields: List[str]`` listing the widening events."""
         db_path = str(workspace / "live.db")
         _create_probe_workspace_db(
             db_path, "tempstabidx",
@@ -893,7 +893,7 @@ class TestSqliteProbeWideningOnReingest:
         self, workspace: Path
     ) -> None:
         """The CLI renderer (``_print_ingest_addition``) must include
-        widened columns in user-visible output so re-ingest events are
+        widened fields in user-visible output so re-ingest events are
         discoverable from the terminal."""
         db_path = str(workspace / "live.db")
         _create_probe_workspace_db(
@@ -911,12 +911,12 @@ class TestSqliteProbeWideningOnReingest:
         buf = io.StringIO()
         _print_ingest_addition(addition, file=buf)
         output = buf.getvalue()
-        # Output mentions the widened column name and a "widen" keyword.
+        # Output mentions the widened field name and a "widen" keyword.
         assert "tempstabidx" in output
         assert "widen" in output.lower()
 
     async def test_does_not_narrow_double_to_int(self, workspace: Path) -> None:
-        """Widen-only contract: a persisted DOUBLE column never narrows to
+        """Widen-only contract: a persisted DOUBLE field never narrows to
         INT even when probe says INT."""
         db_path = str(workspace / "live.db")
         _create_probe_workspace_db(
@@ -925,7 +925,7 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        # Persist column as DOUBLE.
+        # Persist field as DOUBLE.
         await storage.save_dataset(
             SlayerDataset(
                 name="sensordata",

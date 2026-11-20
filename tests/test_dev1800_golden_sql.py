@@ -1,6 +1,6 @@
 """Golden SQL baseline for change/change_pct (any transform) over a
-cross-model inner combined into a composite, across the standard five-dialect
-matrix (harness: tests/_golden_harness.py), on the ``_dev1750_fixtures`` models.
+cross-dataset inner combined into a composite, across the standard five-dialect
+matrix (harness: tests/_golden_harness.py), on the ``_dev1750_fixtures`` datasets.
 
 The ``fc/*`` cases are the failing composite class: they are recorded as raises
 today and become SQL after the change (each such flip is an ALLOWED_DELTAS entry
@@ -43,7 +43,7 @@ def _orders(**kw) -> SlayerQuery:
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
-        # Failing composite class — measure position (recorded as raises today).
+        # Failing composite class — metric position (recorded as raises today).
         "fc/change_plus_sum": _orders(
             to_many_handling="broadcast",
             metrics=[{"metric": f"change({CM}) + sum(orders.amount)", "alias": "c"}]),
@@ -90,7 +90,7 @@ def _cases() -> dict:
             dimensions=["orders.status"],
             metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
             order=[{"field": f"change({CM}) + sum(orders.amount)", "direction": "desc"}]),
-        # Filter placement by mask typing: row mask (base WHERE) vs measure mask
+        # Filter placement by mask typing: row mask (base WHERE) vs metric mask
         # (HAVING) — the already-legal placements the stage rule must preserve.
         "pos/row_mask": _orders(
             dimensions=["orders.status"], filter=["orders.status = 'ok'"],
@@ -98,7 +98,7 @@ def _cases() -> dict:
         "pos/measure_mask": _orders(
             dimensions=["orders.status"], filter=["sum(orders.amount) > 10"],
             metrics=[{"metric": "sum(orders.amount)", "alias": "a"}]),
-        # Windowed-value filter (a ranked cross-model value) — D5 places it at the
+        # Windowed-value filter (a ranked cross-dataset value) — D5 places it at the
         # combined outer WHERE; the "with transform" variant is pos/filter_composite.
         "pos/windowed_value_filter": _orders(
             to_many_handling="broadcast",

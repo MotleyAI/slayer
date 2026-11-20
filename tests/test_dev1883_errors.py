@@ -118,7 +118,7 @@ class TestNonRegression:
     async def test_granularity_in_measure_is_treated_like_any_row_level_scalar(
         self, exec_engine,
     ) -> None:
-        """Position parity: a bare ``date_trunc`` measure gets the same treatment as another row-level temporal scalar."""
+        """Position parity: a bare ``date_trunc`` metric gets the same treatment as another row-level temporal scalar."""
         async def outcome(formula: str):
             query = fx.q(population="orders", dimensions=["orders.status"], metrics=[{"metric": formula, "alias": "v"}])
             try:

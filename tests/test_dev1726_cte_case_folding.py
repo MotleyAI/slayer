@@ -1,11 +1,11 @@
-"""DEV-1726 — dialect-aware case-folding for CTE-name collision detection.
+"""Dialect-aware case-folding for CTE-name collision detection.
 
 ``AliasAllocator`` and ``assert_unique_cte_names`` compared CTE names by exact
 string, but generated CTE names are emitted unquoted, so on case-folding
 backends two names differing only in case fold to the same identifier: two
-user measure aliases ``Foo``/``foo`` that both drive ``time_shift`` CTEs
+user metric aliases ``Foo``/``foo`` that both drive ``time_shift`` CTEs
 produced ``shifted_Foo``/``shifted_foo`` — a duplicate ``WITH`` name on
-Postgres despite the DEV-1692 de-collision machinery.
+Postgres despite the de-collision machinery.
 
 Contract pinned here (spec-resolved, including the Codex plan review):
 
@@ -15,7 +15,7 @@ Contract pinned here (spec-resolved, including the Codex plan review):
   ClickHouse compares exact. BigQuery FOLDS — the GoogleSQL lexical doc's
   case-sensitivity table marks "Aliases within a query" (which CTE names are)
   case-insensitive, and sqlglot classifies BigQuery ``CASE_INSENSITIVE`` —
-  correcting the DEV-1726 issue text. SQLite/DuckDB reject case-differing CTE
+  correcting the issue text. SQLite/DuckDB reject case-differing CTE
   names even QUOTED (verified empirically), correcting the issue's "quoted
   SQLite" parenthetical. MySQL/T-SQL fold deliberately despite
   platform/collation-dependence: folding is rename-only-safe while not
@@ -29,8 +29,8 @@ Contract pinned here (spec-resolved, including the Codex plan review):
   validates SLayer's own allocator-sanitized output, where a fold-collision
   (quoted or not) always signals an allocator-bypass bug. It is not a
   general-purpose validator of arbitrary SQL.
-* End-to-end, per dialect: two cross-model aggregates over a stored model's
-  grandfathered ``Rev``/``rev`` columns dedup the second ``_cm_`` CTE to
+* End-to-end, per dialect: two cross-dataset aggregates over a stored dataset's
+  grandfathered ``Rev``/``rev`` fields dedup the second ``_cm_`` CTE to
   ``..._rev_sum_2`` on folding dialects (references following the rename) and
   keep both original-case names on ClickHouse — while the user-facing result
   keys survive unchanged (public aliases are reserved, never allocator-minted).
@@ -289,7 +289,7 @@ def _vehicle_dataset() -> SlayerDataset:
 
 
 def _customers_dataset() -> SlayerDataset:
-    """Grandfathered case-only column pair over two physical columns (saved unvalidated)."""
+    """Grandfathered case-only field pair over two physical columns (saved unvalidated)."""
     return SlayerDataset(
         name="customers",
         sql_table="public.customers",
@@ -324,7 +324,7 @@ async def _cm_vehicle_sql(dialect: str) -> str:
 
 
 def _case_only_result_names_query() -> SlayerQuery:
-    """Two measures whose result names differ ONLY in case — refused before SQL generation."""
+    """Two metrics whose result names differ ONLY in case — refused before SQL generation."""
     return SlayerQuery(
         population="orders",
         time_dimensions=[
@@ -362,7 +362,7 @@ def _assert_cte_referenced(sql: str, *, dialect: str, name: str) -> None:
 def _assert_result_keys_survive(sql: str, *, dialect: str) -> None:
     """Codex F4: folding renames only allocator-MINTED internal names; the
     user-facing result keys (reserved, never minted) survive byte-identical —
-    modulo the pre-existing DEV-1571 ``.``→``___`` mangling on
+    modulo the pre-existing ``.``→``___`` mangling on
     BigQuery/T-SQL."""
     aliases = {
         p.alias_or_name

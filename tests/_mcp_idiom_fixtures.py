@@ -1,6 +1,6 @@
 """The query idioms the MCP surface documents, and a seeded DuckDB engine to run them.
 
-Underscore-prefixed so pytest skips collection. Joins: ``orders.customer_id →
+Underscore-prefixed so pytest skips collection. Relationships: ``orders.customer_id →
 customers.id``, ``customers.region_id → regions.id`` (reverse traversal is automatic).
 
 regions:   1 North | 2 South | 3 East | 4 West
@@ -17,7 +17,7 @@ every ordering customer has both statuses, so their credit (600) attributes to e
 ``with_namesake`` adds customer 6 Alice R1 0 and order 12 (6, paid, 2025-07-01, 40).
 ``with_last_year`` adds orders 13 (Bob, paid, 2024-01-05, 8) and 14 (Carol, open, 2024-06-30, 12).
 
-Child dataset (``make_child_engine``): ``orders`` and ``returns`` both join ``customers``.
+Child dataset (``make_child_engine``): ``orders`` and ``returns`` both relate to ``customers``.
 
 regions:   1 North | 2 South
 customers: 1 Alice R1 | 2 Bob R1 | 3 Carol R2 | 4 Dan (no region; omitted when ``with_regionless=False``)
@@ -29,7 +29,7 @@ events (id, kind), joined to nothing: 1 a | 2 b | 3 a | 4 c | 5 a | 6 b
 Orders: Alice 30, Bob 35, Carol 40, Dan 50, parentless 13; total 168. Returns: Alice 7, Carol 8; total 15.
 By region: North 65, South 40, NULL 63 (Dan + parentless).
 
-Items dataset (``make_items_engine``), one model ``items``:
+Items dataset (``make_items_engine``), one dataset ``items``:
 
 items (id, code, flag, status, tags):
    1 A123  true  paid    [x, y] | 2 A12  false NULL    [x] | 3 B123 NULL paid [y]
@@ -121,7 +121,7 @@ EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
 
 
 # --------------------------------------------------------------------------- #
-# Models + seed
+# Datasets + seed
 # --------------------------------------------------------------------------- #
 def idiom_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     return [
@@ -222,7 +222,7 @@ async def make_idiom_engine(
     *, dialect: str = "duckdb", with_namesake: bool = False, with_last_year: bool = False,
     datasets: list[SlayerDataset] | None = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
-    """The idiom dataset on ``sqlite`` or ``duckdb``; ``models`` replaces :func:`idiom_models`."""
+    """The idiom dataset on ``sqlite`` or ``duckdb``; ``datasets`` replaces :func:`idiom_datasets`."""
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     async with seeded_exec_engine(

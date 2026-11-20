@@ -1,4 +1,4 @@
-"""A non-direct-join dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
+"""A non-direct-relationship dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
 Short-form auto-routing is on (broken chains never auto-fixed); full routing behaviour in test_dev1856."""
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def _amount_query(**kw) -> dict:
 
 class TestValidPathBindsAllJoins:
     async def test_full_valid_path_resolves_all_joins_bound(self, tmp_path) -> None:
-        """``Subscription.Customer.Consumer.name`` — every hop is a direct join, so each
+        """``Subscription.Customer.Consumer.name`` — every hop is a direct relationship, so each
         JOIN is emitted, the alias is bound, and the SQL parses on Postgres."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
@@ -116,7 +116,7 @@ class TestValidPathBindsAllJoins:
         sqlglot.parse_one(sql, dialect="postgres")
 
     async def test_valid_two_hop_direct_path(self, tmp_path) -> None:
-        """With a direct Invoice->Customer join, the 2-hop ``Customer.Consumer.name``
+        """With a direct Invoice->Customer relationship, the 2-hop ``Customer.Consumer.name``
         is fully direct and resolves."""
         engine = await _engine(tmp_path, direct_customer=True)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
@@ -141,7 +141,7 @@ class TestValidPathBindsAllJoins:
 
     async def test_self_qualified_root_col_is_local(self, tmp_path) -> None:
         """A self-qualified ``Invoice.status`` normalizes to a local ref (no
-        circular-join error, no routing)."""
+        circular-relationship-path error, no routing)."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
             dimensions=["Invoice.status"],
@@ -221,15 +221,15 @@ class TestShortFormRoutingAndBrokenChains:
 
 class TestDiagnosticsPreserved:
     async def test_circular_join_keeps_its_own_error(self, tmp_path) -> None:
-        """A path that revisits a model is a circular-join error (a distinct
-        ValueError), not folded into the missing-join rejection."""
+        """A path that revisits a dataset is a circular-relationship-path error (a
+        distinct ValueError), not folded into the missing-relationship rejection."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=":memory:")
         )
         # A <-> B cycle over two DISTINCT edges; named so each hop resolves
         # unambiguously (two edges on one pair fail closed on a bare
-        # model-name token) and the revisit check still fires.
+        # dataset-name token) and the revisit check still fires.
         await storage.save_dataset(SlayerDataset(
             name="B", sql_table="B", data_source="test",
             fields=[_pk(), _d("a_id"), _t("label")],
@@ -254,12 +254,12 @@ class TestDiagnosticsPreserved:
 
 
 # ===========================================================================
-# Internal enrichments unaffected (cross-model re-rooting)
+# Internal enrichments unaffected (cross-dataset re-rooting)
 # ===========================================================================
 
 class TestInternalEnrichmentsUnaffected:
     async def test_cross_model_rerooting_still_binds(self, tmp_path) -> None:
-        """A cross-model measure over a routed path, with a source-local dim, must
+        """A cross-dataset metric over a routed path, with a source-local dim, must
         still emit valid SQL — the re-rooted CTE carries a host-local dimension
         that never binds to a base-table join, and that is legal."""
         engine = await _engine(tmp_path)
@@ -277,7 +277,7 @@ class TestInternalEnrichmentsUnaffected:
 
 class TestDownstreamStageScope:
     async def test_downstream_stage_dotted_ref_rejects(self, tmp_path) -> None:
-        """An outer-stage dotted ref names a model no join path reaches from the flat
+        """An outer-stage dotted ref names a dataset no relationship path reaches from the flat
         stage: ``UnrelatedDatasetError``; the inner stage's full-path dim resolves."""
         engine = await _engine(tmp_path)
         inner = SlayerQuery.model_validate({
@@ -306,7 +306,7 @@ def _count(nodes: set[str], edges: list[tuple[str, str, str | None]], root: str,
 
 
 class TestCountSimplePaths:
-    # The join graph is an undirected multigraph — one entry per declared
+    # The relationship graph is an undirected multigraph — one entry per declared
     # edge; route counts below are derived on the bidirectional semantics.
     def test_unique(self) -> None:
         assert _count({"A", "B", "C"}, [("A", "B", None), ("B", "C", None)], "A", "C") == 1

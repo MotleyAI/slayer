@@ -1,4 +1,4 @@
-"""Model filters whose dataset reaches itself are refused, at both save doors and at query time."""
+"""Dataset filters that reach their own dataset are refused, at both save doors and at query time."""
 
 from __future__ import annotations
 

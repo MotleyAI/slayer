@@ -45,7 +45,7 @@ async def _session(env: Env) -> AsyncGenerator[Run]:
 
 
 async def _mismatches(original: Env, imported: Env, payloads: list[dict[str, Any]]) -> list[str]:
-    """Payloads whose results differ between the stores, plus every measure no payload could run on the original.
+    """Payloads whose results differ between the stores, plus every metric no payload could run on the original.
 
     A payload the original rejects is skipped."""
     found: list[str] = []

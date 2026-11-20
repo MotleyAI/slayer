@@ -1,6 +1,6 @@
-"""Translator tests for Metabase v0.62 fingerprint queries (DEV-1558 B5).
+"""Translator tests for Metabase v0.62 fingerprint queries.
 
-Metabase's field-value rescan emits two SQL shapes against the model path
+Metabase's field-value rescan emits two SQL shapes against the dataset path
 (not the catalog executor):
 
 * ``SELECT SUBSTRING("public"."customers"."name", 1, 1234) AS "substring4476"
@@ -17,8 +17,7 @@ The translator must:
       logging a WARNING that the wrapper was dropped.
 
 The hygiene allowlist (Phase 1): ``SUBSTRING``, ``SUBSTR``, ``LEFT``,
-``RIGHT``, ``UPPER``, ``LOWER``, ``TRIM``, ``LENGTH``. Same set DEV-1378 lifted
-into the DSL allowlist for WHERE-clause use.
+``RIGHT``, ``UPPER``, ``LOWER``, ``TRIM``, ``LENGTH``. Same set as the DSL allowlist for WHERE-clause use.
 """
 
 from __future__ import annotations
@@ -246,7 +245,7 @@ def test_metabase_fingerprint_customers_corpus_16() -> None:
 def test_translate_accepts_lazy_catalog_executor_factory() -> None:
     """Codex round 16: ``translate(catalog_sql_executor=...)`` accepts
     a zero-arg factory so the pg facade doesn't pay the DuckDB
-    materialisation cost on non-catalog (model) queries. The factory
+    materialisation cost on non-catalog (dataset) queries. The factory
     is only invoked when ``is_catalog_only(parsed)`` is True."""
     call_count = {"n": 0}
 
@@ -261,7 +260,7 @@ def test_translate_accepts_lazy_catalog_executor_factory() -> None:
         call_count["n"] += 1
         return _RecordingExecutor()
 
-    # Model-path query — must NOT instantiate the executor.
+    # Dataset-path query — must NOT instantiate the executor.
     translate(
         "SELECT customer_id FROM orders",
         _catalog(), dialect="postgres",

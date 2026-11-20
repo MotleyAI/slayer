@@ -27,7 +27,7 @@ pytestmark = pytest.mark.integration
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "examples"
 JAFFLE_DATA_DIR = NOTEBOOK_DEMO_DIR
-JAFFLE_MODELS_DIR = JAFFLE_DATA_DIR / "slayer_models"
+JAFFLE_MODELS_DIR = JAFFLE_DATA_DIR / "slayer_datasets"
 
 # Discover all .ipynb files, excluding checkpoints
 _NOTEBOOKS = sorted(
@@ -57,7 +57,7 @@ _INGEST_DEMO_NOTEBOOKS = {
 @pytest.fixture(scope="session")
 def _jaffle_datasets_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
     """Ingest the base Jaffle models once, validate every demo table is present,
-    and snapshot ``slayer_models/`` so consumers restore it instead of
+    and snapshot ``slayer_datasets/`` so consumers restore it instead of
     re-ingesting."""
     if JAFFLE_MODELS_DIR.exists():
         shutil.rmtree(JAFFLE_MODELS_DIR)

@@ -59,7 +59,7 @@ async def _prepare(tmp_path):
     setup_cube.build_shop_duckdb(db_path)
     gold = setup_cube.compute_gold(db_path)  # read-only, before SLayer opens RW
 
-    result = setup_cube.import_cube_lib(models_dir=store)
+    result = setup_cube.import_cube_lib(datasets_dir=store)
     assert not result.report.has_errors, [
         i.message for i in result.report.issues if i.severity == "error"
     ]
@@ -128,7 +128,7 @@ def test_gold_values_are_exact(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_library_import_persists_all_models(tmp_path):
     store = tmp_path / "slayer_models"
-    result: CubeConversionResult = setup_cube.import_cube_lib(models_dir=store)
+    result: CubeConversionResult = setup_cube.import_cube_lib(datasets_dir=store)
     assert not result.report.has_errors
     assert {m.name for m in result.datasets} == EXPECTED_MODELS
     fp_members = {
@@ -142,7 +142,7 @@ def test_library_import_persists_all_models(tmp_path):
 def test_cli_import_writes_report_and_models(tmp_path):
     store = tmp_path / "slayer_models"
     report = tmp_path / "cube_import_report.json"
-    proc = setup_cube.import_cube_cli(models_dir=store, report_path=report)
+    proc = setup_cube.import_cube_cli(datasets_dir=store, report_path=report)
     assert proc.returncode == 0, proc.stderr
 
     data = json.loads(report.read_text())

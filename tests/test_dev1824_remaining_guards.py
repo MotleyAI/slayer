@@ -1,8 +1,8 @@
 """Guard preservation — the error surface that REMAINS after the
-stage-1 lifts (design Non-Goals): cross-model partitioned aggregates in the
-lifted shapes (stage 3), the measure-side grain rule, and the
+stage-1 lifts (design Non-Goals): cross-dataset partitioned aggregates in the
+lifted shapes (stage 3), the metric-side grain rule, and the
 grain-self-containment boundary inside dimension expressions. The G4/G5
-pins for plain ``window=`` measures moved to the lifted direction
+pins for plain ``window=`` metrics moved to the lifted direction
 (tests/test_dev1835_guard_dissolution.py).
 
 The lifted-direction tests live in tests/test_dev1824_partitioned_execution.py
@@ -23,13 +23,13 @@ from tests._dev1824_fixtures import gen, month_td, q
 
 
 class TestCrossModelPartitionedStillGuarded:
-    """Cross-model SOURCES stay off the stage-1 primitive: each lifted shape
+    """Cross-dataset SOURCES stay off the stage-1 primitive: each lifted shape
     keeps failing closed (never a placeholder leak) when the aggregate's source
-    crosses a join path."""
+    crosses a relationship path."""
 
     async def test_cross_model_window_plus_partition(self) -> None:
         # Fails closed with a precise attributability error (the active
-        # time dimension is a host column, unreachable from customers).
+        # time dimension is a host field, unreachable from customers).
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             metrics=[QueryMetric(
@@ -55,7 +55,7 @@ class TestCrossModelPartitionedStillGuarded:
         assert "__regroup__" not in str(ei.value)
 
     async def test_filter_on_cross_model_partitioned_now_compiles(self) -> None:
-        # The filter-lag guard is retired — the measure-typed mask
+        # The filter-lag guard is retired — the metric-typed mask
         # routes through the combined attach (executed values: dev1865 suite).
         query = q(
             dimensions=["customers.tier"],
@@ -79,8 +79,8 @@ class TestMeasureGrainRulePreserved:
 
     async def test_dual_role_aggregate_is_validated_strictly(self) -> None:
         # CR — the SAME aggregate as a computed-dimension row attach AND a bare
-        # measure: the finer-grain leniency must not carry into the combined
-        # measure role, or the join-back fails with an internal RuntimeError.
+        # metric: the finer-grain leniency must not carry into the combined
+        # metric role, or the join-back fails with an internal RuntimeError.
         # It must raise the clean "not a query dimension" error instead.
         band = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 50 THEN 1 ELSE 0 END"
         query = q(
@@ -110,7 +110,7 @@ class TestMeasureGrainRulePreserved:
 class TestDimensionGrainSelfContainment:
     """Inside a dimension expression the lift is CONDITIONAL on an explicit
     grain: bare-grain forms keep erroring, now with the partition_by directive
-    (measure⇔dimension symmetry admits only grain-self-contained expressions)."""
+    (metric⇔dimension symmetry admits only grain-self-contained expressions)."""
 
     async def test_transform_over_bare_aggregate_in_dimension(self) -> None:
         band = "CASE WHEN cumsum(sum(orders.amount)) > 50 THEN 1 ELSE 0 END"

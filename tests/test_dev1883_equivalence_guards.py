@@ -1,9 +1,9 @@
 """Fail-closed guards for equivalent time dimensions (Option A).
 
-Two same-column buckets are now legal, so equivalence decided by column-name text
+Two same-field buckets are now legal, so equivalence decided by field-name text
 leaves two silent-wrong holes; both fail closed here until DEV-1925 resolves by bound
 ``TimeTruncKey`` identity:
-  * a bare ``main_time_dimension`` naming a column with several granularities;
+  * a bare ``main_time_dimension`` naming a field with several granularities;
   * time dimensions that bind to one ``TimeTruncKey`` but disagree on date range/label.
 """
 import pytest
@@ -36,7 +36,7 @@ def _mtd(*grans_and_cols: tuple) -> SlayerQuery:
 
 
 async def _orders_dataset(engine: SlayerQueryEngine, **overrides):
-    """The orders model (asserted present), with optional field overrides applied."""
+    """The orders dataset (asserted present), with optional field overrides applied."""
     model = await engine.storage.get_dataset("orders")
     assert model is not None
     return model.model_copy(update=overrides) if overrides else model
@@ -77,7 +77,7 @@ class TestMainTimeDimensionAmbiguity:
         assert resolved.field == "orders.created_at"
 
     async def test_ambiguous_default_resolves_to_none(self, engine) -> None:
-        # A passive model default can't pick a bucket: resolve to None (lenient) so
+        # A passive dataset default can't pick a bucket: resolve to None (lenient) so
         # no-transform queries still run; a transform then fails at point of use.
         model = await _orders_dataset(engine, default_time_dimension="created_at")
         q = fx.q(

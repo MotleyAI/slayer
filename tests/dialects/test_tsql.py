@@ -424,7 +424,7 @@ class TestEngineTsqlDecodeIntegration:
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
         # ``orders.status`` encodes to ``orders___status``.
-        # ``count(*)`` measure alias ``orders._count`` encodes to
+        # ``count(*)`` metric alias ``orders._count`` encodes to
         # ``orders____count`` (3 underscores from the dot + 1 leading).
         rows = [{"orders____count": 42, "orders___status": "paid"}]
         engine, tmp, _ = await _build_tsql_engine(rows)

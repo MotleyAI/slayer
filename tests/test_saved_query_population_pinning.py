@@ -22,7 +22,7 @@ REVENUE = {"metric": "sum(orders.amount)", "alias": "revenue"}
 BY_CUSTOMER: Dict[str, Any] = {"dimensions": ["customers.name"], "metrics": [REVENUE]}
 OK_FILTER = {"filter": ["orders.status = 'ok'"]}
 N = {"metric": "count(*)", "alias": "n"}
-# The final stage infers model ``orders``, which a sibling stage is named.
+# The final stage infers dataset ``orders``, which a sibling stage is named.
 COLLIDING: List[Any] = [
     {"name": "orders", "population": "customers", "dimensions": ["customers.name"],
      "metrics": [{"metric": "count(customers.*)", "alias": "n"}]},

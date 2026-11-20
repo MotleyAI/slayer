@@ -264,7 +264,7 @@ class TestScanClassification:
         assert by_name["alembic_version"].meta == {"internal_table": "alembic"}
 
     def test_real_tables_get_no_breadcrumb(self, workspace: Path) -> None:
-        """A non-matching model must not grow an empty meta dict that would show up in every ingested YAML."""
+        """A non-matching dataset must not grow an empty meta dict that would show up in every ingested YAML."""
         _, ds = _ds(workspace, _MIXED)
         by_name = {m.name: m for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
         assert by_name["orders"].meta is None
@@ -309,7 +309,7 @@ class TestMatchesTheLiveObjectName:
         self, workspace: Path
     ) -> None:
         """The internal-table rule matches the live object name, and the
-        model keeps that faithful ``__`` name (no sanitization); the report carries
+        dataset keeps that faithful ``__`` name (no sanitization); the report carries
         both, now equal."""
         _, ds = _ds(
             workspace,
@@ -353,7 +353,7 @@ class TestSkipAndHideAreDisjoint:
     def test_construction_failure_reports_skipped_only(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A per-object build failure lands in `skipped`, not `hidden_internals` — no model was produced to hide."""
+        """A per-object build failure lands in `skipped`, not `hidden_internals` — no dataset was produced to hide."""
         real = ing._build_one_dataset
 
         def _boom(**kwargs):
@@ -440,14 +440,14 @@ class TestLiveNameSurvivesToTheReport:
     ) -> None:
         """FAIL-FIRST (CR): when a fresh dlt internal ``_dlt_loads__x`` adopts a
         stored sanitized ``_dlt_loads_x`` (stored-name-wins), the internal-table
-        entry's ``model_name`` must be re-pointed onto the adopted name — else the
+        entry's ``dataset_name`` must be re-pointed onto the adopted name — else the
         hidden-internal re-check looks up the stale ``__`` name and drops it."""
         _, ds = _ds(
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
         )
         storage = await _storage_with(workspace, ds)
-        # Seed the old-world sanitized model pointing at the live __ object.
+        # Seed the old-world sanitized dataset pointing at the live __ object.
         await storage.save_dataset(SlayerDataset(
             name="_dlt_loads_x", data_source="ds", sql_table="_dlt_loads__x",
             hidden=True, meta={"internal_table": "dlt"},
@@ -462,7 +462,7 @@ class TestSurfaceInternals:
     def test_flag_records_the_classification_anyway(
         self, workspace: Path
     ) -> None:
-        """`internal_tables` is populated regardless of the flag, so a surfaced run can still report an earlier run's hidden model."""
+        """`internal_tables` is populated regardless of the flag, so a surfaced run can still report an earlier run's hidden dataset."""
         _, ds = _ds(workspace, _MIXED)
         report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds, surface_internals=True))
 
@@ -572,7 +572,7 @@ class TestIdempotencyAndReporting:
     async def test_user_unhidden_internal_is_not_reported_as_hidden(
         self, workspace: Path
     ) -> None:
-        """The report describes the post-merge model, so a user-unhidden internal is not reported as hidden."""
+        """The report describes the post-merge dataset, so a user-unhidden internal is not reported as hidden."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
@@ -591,7 +591,7 @@ class TestIdempotencyAndReporting:
     async def test_user_unhidden_internal_stays_visible(
         self, workspace: Path
     ) -> None:
-        """Re-ingest must never fight a deliberate un-hide; the model stays visible."""
+        """Re-ingest must never fight a deliberate un-hide; the dataset stays visible."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
@@ -632,7 +632,7 @@ class TestIdempotencyAndReporting:
     async def test_user_authored_sql_model_is_untouched_and_reported_honestly(
         self, workspace: Path
     ) -> None:
-        """A user-authored sql-mode model is left untouched, and the report reads effective storage state."""
+        """A user-authored sql-mode dataset is left untouched, and the report reads effective storage state."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await storage.save_dataset(
@@ -655,8 +655,8 @@ class TestIdempotencyAndReporting:
     async def test_dunder_internal_model_uses_faithful_name(
         self, workspace: Path
     ) -> None:
-        """A ``__``-named internal table keeps its faithful model name
-        (no sanitization), so table_name == model_name in the report."""
+        """A ``__``-named internal table keeps its faithful dataset name
+        (no sanitization), so table_name == dataset_name in the report."""
         _, ds = _ds(
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
@@ -674,7 +674,7 @@ class TestIdempotencyAndReporting:
     async def test_surface_internals_does_not_unhide_an_existing_model(
         self, workspace: Path
     ) -> None:
-        """The flag controls creation, not mutation, so it does not unhide an existing model and still lists it."""
+        """The flag controls creation, not mutation, so it does not unhide an existing dataset and still lists it."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
@@ -785,7 +785,7 @@ class TestRenderer:
         assert "  - alembic_version: alembic" in out
 
     def test_line_names_the_model_when_it_differs(self, capsys) -> None:
-        """The advice takes the MODEL name, so a `__`-sanitized line must name the model the user can act on."""
+        """The advice takes the DATASET name, so a `__`-sanitized line must name the dataset the user can act on."""
         _print_ingest_drift_and_errors(
             _result_with_hidden(
                 hidden_internals=[
@@ -807,7 +807,7 @@ class TestRenderer:
         assert "(model:" not in out
 
     def test_section_explains_both_escape_hatches(self, capsys) -> None:
-        """`--surface-internals` only affects newly created models, so the section also points at `edit_model`."""
+        """`--surface-internals` only affects newly created datasets, so the section also points at `edit_dataset`."""
         _print_ingest_drift_and_errors(_result_with_hidden(), data_source="ds")
         out = capsys.readouterr().out
 
@@ -997,7 +997,7 @@ class TestParserWiring:
 
 
 class TestDatasourcesCreateReporting:
-    """`datasources create --ingest` now reports hidden internals and skips instead of silently hiding models."""
+    """`datasources create --ingest` now reports hidden internals and skips instead of silently hiding datasets."""
 
     @staticmethod
     def _create_args(workspace: Path, db_path: str, **overrides) -> SimpleNamespace:
@@ -1133,7 +1133,7 @@ class TestRest:
         assert {h["tool"] for h in body["hidden_internals"]} == {"dlt", "alembic"}
 
     def test_re_ingest_with_flag_does_not_unhide(self, workspace: Path) -> None:
-        """The creation-only rule holds over REST too; the body reports the model as still hidden."""
+        """The creation-only rule holds over REST too; the body reports the dataset as still hidden."""
         db_path, _ = _ds(workspace, _MIXED)
         client = _api_client(workspace, db_path)
 
@@ -1177,7 +1177,7 @@ async def _datasets_in(storage: YAMLStorage) -> list[SlayerDataset]:
 
 class TestVisibilitySurfaces:
     async def test_nothing_is_omitted_from_storage(self, workspace: Path) -> None:
-        """Hidden, not skipped — every object still becomes a model."""
+        """Hidden, not skipped — every object still becomes a dataset."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
@@ -1187,7 +1187,7 @@ class TestVisibilitySurfaces:
         )
 
     async def test_absent_from_mcp_models_summary(self, workspace: Path) -> None:
-        """Hidden internals are absent from the real MCP `models_summary` tool."""
+        """Hidden internals are absent from the real MCP `datasets_summary` tool."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
@@ -1249,7 +1249,7 @@ class TestJoinsIntoHiddenModels:
     async def test_visible_model_joins_to_a_hidden_one(
         self, workspace: Path
     ) -> None:
-        """Hiding must not filter join targets, since a silent drop would return different rows without raising."""
+        """Hiding must not filter relationship targets, since a silent drop would return different rows without raising."""
         _, ds = _ds(
             workspace,
             """
@@ -1281,7 +1281,7 @@ class TestJoinsIntoHiddenModels:
                 "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
             })
         )
-        # The hidden model's name in the result key is evidence the join resolved.
+        # The hidden dataset's name in the result key is evidence the relationship resolved.
         assert resp.row_count == 2
         assert set(resp.data[0]) == {
             "_dlt_loads.schema_name",
@@ -1297,7 +1297,7 @@ class TestDriftScope:
     async def test_hidden_internal_is_validated_like_any_other_model(
         self, workspace: Path
     ) -> None:
-        """A hidden internal is still validated like any other model, so its schema drift is surfaced."""
+        """A hidden internal is still validated like any other dataset, so its schema drift is surfaced."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
@@ -1324,7 +1324,7 @@ class TestDriftScope:
 
 
 class TestMcpIngestReporting:
-    """`ingest_datasource_models` has its own renderer, which must report hidden internals and skips to the agent that ran the ingest."""
+    """`ingest_datasource` has its own renderer, which must report hidden internals and skips to the agent that ran the ingest."""
 
     async def _ingest_via_mcp(self, storage, *, schema_name: str = "") -> str:
         mcp = create_mcp_server(storage=storage)
@@ -1365,9 +1365,9 @@ class TestMcpIngestReporting:
     async def test_report_uses_the_faithful_dunder_name(
         self, workspace: Path
     ) -> None:
-        """A ``__``-named internal table keeps its faithful model name,
-        so the report shows the bare name with no ``(model: …)`` annotation (the
-        model no longer differs from the live object)."""
+        """A ``__``-named internal table keeps its faithful dataset name,
+        so the report shows the bare name with no ``(dataset: …)`` annotation (the
+        dataset no longer differs from the live object)."""
         _, ds = _ds(
             workspace, "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY);"
         )
@@ -1381,7 +1381,7 @@ class TestMcpIngestReporting:
     async def test_report_points_at_the_escape_hatch(
         self, workspace: Path
     ) -> None:
-        """The agent-facing hint names `edit_model`, not the CLI-only `--surface-internals` flag."""
+        """The agent-facing hint names `edit_dataset`, not the CLI-only `--surface-internals` flag."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
 
@@ -1394,7 +1394,7 @@ class TestMcpIngestReporting:
     async def test_hint_names_the_ingested_datasource(
         self, workspace: Path
     ) -> None:
-        """The hint names the ingested datasource, since an unqualified `edit_model` could un-hide a different datasource's model."""
+        """The hint names the ingested datasource, since an unqualified `edit_dataset` could un-hide a different datasource's dataset."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
 
@@ -1418,7 +1418,7 @@ class TestMcpIngestReporting:
         await _with_client(ingest_datasource_idempotent, datasource=ds_a, storage=storage)
         await _with_client(ingest_datasource_idempotent, datasource=ds_b, storage=storage)
 
-        # Same model name really does exist under both datasources.
+        # Same dataset name really does exist under both datasources.
         for name in ("ds", "second"):
             model = await storage.get_dataset("_dlt_loads", data_source=name)
             assert model is not None, name

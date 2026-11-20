@@ -1,8 +1,8 @@
-"""DEV-1832 task 1.1 — the fixture smoke test.
+"""The fixture smoke test.
 
-Re-derives every DEV-1832 oracle constant from the raw rows in pure Python (the
+Re-derives every oracle constant from the raw rows in pure Python (the
 double-entry guard against hand-arithmetic drift). Passes WITHOUT the feature —
-it validates the dataset, not cross-model expression aggregation.
+it validates the dataset, not cross-dataset expression aggregation.
 """
 
 from __future__ import annotations
@@ -208,7 +208,7 @@ def _x_series():
 
 def _sum_by_month(per_region_month: list) -> dict:
     """Sum values across regions per month, dropping None cells; a month with no
-    non-None cell is a NULL measure row and drops out entirely."""
+    non-None cell is a NULL metric row and drops out entirely."""
     out: dict = defaultdict(float)
     has_value: dict = defaultdict(bool)
     for (month, value) in per_region_month:
@@ -265,8 +265,8 @@ class TestCollapseAndFamilyOracles:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1928 — re-aggregation constituents in a mixed row source, windowed inner,
-# and the to-one cross-model cumsum. Every oracle re-derived from the raw rows.
+# Re-aggregation constituents in a mixed row source, windowed inner,
+# and the to-one cross-dataset cumsum. Every oracle re-derived from the raw rows.
 # --------------------------------------------------------------------------- #
 _O_CUST, _O_AMOUNT, _O_ORDERED = 1, 4, 5
 _C_ID2, _C_TIER = 0, 3

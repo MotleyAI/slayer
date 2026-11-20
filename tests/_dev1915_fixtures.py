@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1915 — a trailing ``window=`` on every aggregation.
+"""Shared fixtures for a trailing ``window=`` on every aggregation.
 
 Underscore-prefixed so pytest skips collection (mirrors ``tests/_dev1836_fixtures.py``,
 whose dual-engine shape this follows). One hand-computed dataset seeded into
@@ -15,7 +15,7 @@ orders (id, customer_id, amount, qty, created_at, updated_at, region):
    3  c3  300  3  2024-02-15  NULL        EU
    4  c4  400  4  2024-03-15  2024-03-25  EU
    5  c4  300  5  2024-03-20  2024-03-16  US
-customers (id, spend, signup_at, tier, discount):   [the DEV-1836 seed + discount]
+customers (id, spend, signup_at, tier, discount):   [the ``_dev1836_fixtures`` seed + discount]
    1  100  2024-01-05  gold    0.1
    2  150  2024-02-10  silver  0.2
    3   60  2024-03-15  gold    0.5
@@ -54,8 +54,8 @@ from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers; customers → orders is the inverted
-# fan-out orientation (DEV-1853) the probes cross.
+# Datasets — orders (host) → customers; customers → orders is the inverted
+# fan-out orientation the probes cross.
 # --------------------------------------------------------------------------- #
 def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -99,13 +99,13 @@ def customers_dataset() -> SlayerDataset:
             DatasetField(name="discount", datatype=DataType.FLOAT),
         ],
         aggregations=[
-            # Custom aggregation whose definition default names a target column.
+            # Custom aggregation whose definition default names a target field.
             Aggregation(
                 name="disc_spend", expression="SUM({value} * {d})",
                 params=[AggregationParam(name="d", sql="discount")],
             ),
             # A custom agg on customers whose param can be overridden by a root
-            # (orders) column, widening the home above the source (def-owner test).
+            # (orders) field, widening the home above the source (def-owner test).
             Aggregation(
                 name="wprod", expression="SUM({value} * {w})",
                 params=[AggregationParam(name="w", sql="1")],
@@ -182,7 +182,7 @@ COUNT_BY_REGION_90D = {
     ("EU", "2024-03"): 2, ("US", "2024-03"): 2,
 }
 
-#: Cross-model, rooted at orders over customers.signup_at (window='1y').
+#: Cross-dataset, rooted at orders over customers.signup_at (window='1y').
 CM_COUNT_1Y = {"2024-01": 1, "2024-02": 2, "2024-03": 4}
 CM_LAST_1Y = {"2024-01": 100.0, "2024-02": 150.0, "2024-03": 40.0}
 #: disc_spend = SUM(spend * discount) over the interval customers.
@@ -192,7 +192,7 @@ DISC_SPEND_1Y = {"2024-01": 10.0, "2024-02": 40.0, "2024-03": 110.0}
 #: is empty: counts 0, everything else NULL, every bucket still returned.
 EMPTY_MONTHS = ["2024-01", "2024-02", "2024-03"]
 
-#: measure-filtered: amount:count(window='90d') >= 3 keeps Feb (3) and Mar (4).
+#: metric-filtered: amount:count(window='90d') >= 3 keeps Feb (3) and Mar (4).
 FILTER_COUNT_GE3_MONTHS = ["2024-02", "2024-03"]
 #: order-only: amount:max(window='90d') desc → Mar 400, Feb 300, Jan 200.
 ORDER_MAX_DESC_MONTHS = ["2024-03", "2024-02", "2024-01"]
@@ -274,7 +274,7 @@ def rows_by(resp, *keys) -> dict:
 
 
 def by_month(resp: SlayerResponse, value_key: str) -> dict:
-    """``{month: value}`` for a single windowed measure grouped by the time bucket."""
+    """``{month: value}`` for a single windowed metric grouped by the time bucket."""
     time_key = next(k for k in resp.columns if k.endswith("orders.created_at")
                     or k.endswith("signup_at"))
     return {month_key(r[time_key]): r[value_key] for r in resp.data}

@@ -1,4 +1,4 @@
-"""Extensions of any model a stage reads: scope, resolution order, rejected targets and save-time refusal."""
+"""Extensions of any dataset a stage reads: scope, resolution order, rejected targets and save-time refusal."""
 
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ class TestScope:
 
 
 class TestModelNameCase:
-    """An extension names a model as any unquoted reference does: the stored spelling in any case."""
+    """An extension names a dataset as any unquoted reference does: the stored spelling in any case."""
 
     @pytest.mark.parametrize("spelled", ["Customers", "customers", "CUSTOMERS"])
     async def test_an_extension_reaches_a_model_saved_in_another_case(self, dialect, spelled: str) -> None:

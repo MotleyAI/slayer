@@ -45,9 +45,9 @@ def _filters(*filters: str) -> QueryFeatures:
 
 
 # --------------------------------------------------------------------------- #
-# Formula → counts
+# Expression → counts
 # --------------------------------------------------------------------------- #
-#: ``(measure formula, aggregations, transforms, functions, flags)``.
+#: ``(metric expression, aggregations, transforms, functions, flags)``.
 MEASURE_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
     ("sum(x)::int", ["sum"], [], [], ["cast"]),
     ("CAST(avg(y) AS DOUBLE)", ["avg"], [], [], ["cast"]),

@@ -41,7 +41,7 @@ class AmbiguousRelationshipPathError(SlayerError):
     name disambiguates it, so traversal fails closed in both directions rather
     than silently picking the first stored edge. ``candidates`` holds the
     competing oriented edges; the message names each edge's declaring dataset,
-    name (if any), join pairs, and cardinality, plus the remediation."""
+    name (if any), key pairs, and cardinality, plus the remediation."""
 
     def __init__(
         self,

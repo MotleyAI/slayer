@@ -1,17 +1,17 @@
-"""Entity-text rendering for the search index (DEV-1375).
+"""Entity-text rendering for the search index.
 
 Pins what each entity kind contributes to its tantivy `text` field:
 
-* Named children (columns / measures / aggregations / join targets) are
+* Named children (fields / metrics / aggregations / relationship targets) are
   mentioned by name + kind only — never with their descriptions.
-* Non-named children (model filters, model sql, join_pairs, aggregation
+* Non-named children (dataset filters, dataset sql, join_pairs, aggregation
   params) get their full text content included.
-* Leaf entities include parent model + datasource name in their text so
+* Leaf entities include parent dataset + datasource name in their text so
   that a search for "orders amount" finds `orders.amount`.
 * `meta` is **excluded** from indexed text in v1 (DEV-1377 follow-up).
-* Hidden columns / models are skipped entirely (callers must filter
+* Hidden fields / datasets are skipped entirely (callers must filter
   before passing entities into the renderer).
-* `Column.sampled` appears when non-null.
+* `DatasetField.sampled` appears when non-null.
 """
 
 from __future__ import annotations
@@ -105,16 +105,16 @@ def test_datasource_text_includes_name_and_model_mentions() -> None:
     )
     text = render_datasource_text(name="warehouse", datasets=[orders, customers])
     assert "warehouse" in text
-    # Named children: model names mentioned by name + kind only.
+    # Named children: dataset names mentioned by name + kind only.
     assert "orders" in text
     assert "customers" in text
-    # Crucially, the model's description is NOT pulled into the datasource
+    # Crucially, the dataset's description is NOT pulled into the datasource
     # text (avoids duplication; child has its own indexed doc).
     assert "checkout order" not in text
 
 
 # ---------------------------------------------------------------------------
-# Model
+# Dataset
 # ---------------------------------------------------------------------------
 
 
@@ -128,25 +128,25 @@ def test_model_text_includes_self_metadata() -> None:
 
 def test_model_text_mentions_named_children_by_name_and_kind() -> None:
     text = render_dataset_text(dataset=_make_orders_dataset()).lower()
-    # Columns mentioned by name; their descriptions stay in their own doc.
+    # Fields mentioned by name; their descriptions stay in their own doc.
     assert "id" in text
     assert "amount" in text
     assert "status" in text
     assert "primary key" not in text or text.count("primary key") <= 1
-    assert "net amount in usd" not in text  # column description excluded
-    # Measure mentioned by name, formula & description excluded.
+    assert "net amount in usd" not in text  # field description excluded
+    # Metric mentioned by name, expression & description excluded.
     assert "aov" in text
     assert "average order value" not in text
     # Aggregation mentioned by name; description excluded.
     assert "weighted_avg_qty" in text
     assert "quantity-weighted average" not in text
-    # Join target mentioned by name.
+    # Relationship target mentioned by name.
     assert "customers" in text
 
 
 def test_model_text_includes_non_named_children_in_full() -> None:
     text = render_dataset_text(dataset=_make_orders_dataset())
-    # Model-level filters: actual SQL is in.
+    # Dataset-level filters: actual SQL is in.
     assert "status != 'cancelled'" in text
     # Join pairs: source/target spelled out.
     assert "customer_id" in text
@@ -173,7 +173,7 @@ def test_model_text_includes_sql_block_when_set() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Column
+# Field
 # ---------------------------------------------------------------------------
 
 
@@ -197,8 +197,8 @@ def test_column_text_includes_per_field_metadata() -> None:
 
 def test_column_text_includes_sampled_when_present() -> None:
     """Legacy ``sampled``-only fallback path: when ``sampled_values is None``
-    the renderer falls back to the persisted text. Used by numeric columns
-    and pre-DEV-1480 legacy data."""
+    the renderer falls back to the persisted text. Used by numeric fields
+    and legacy data persisted before ``sampled_values`` existed."""
     m = _make_orders_dataset()
     col = m.get_field("status")
     assert col is not None
@@ -218,7 +218,7 @@ def test_column_text_omits_sampled_when_absent() -> None:
 
 
 def test_column_text_omits_sampled_when_empty_string_and_no_list() -> None:
-    """DEV-1480: an all-NULL profiled categorical column persisted pre-DEV-1516
+    """An all-NULL profiled categorical field persisted before ``sampled_values`` existed
     has ``sampled=""`` and ``sampled_values=None``. Renderer must skip the
     ``Sample values:`` line for the empty-string fallback so the embedded text
     doesn't get a bare ``Sample values: `` trailer."""
@@ -233,9 +233,9 @@ def test_column_text_omits_sampled_when_empty_string_and_no_list() -> None:
 
 
 def test_column_text_renders_full_sampled_values_when_present() -> None:
-    """DEV-1516: when ``sampled_values`` is populated, the renderer surfaces
+    """When ``sampled_values`` is populated, the renderer surfaces
     the full list (typically 50) instead of falling back to the 20-truncated
-    ``sampled`` text. This is the per-column-data-pull contract.
+    ``sampled`` text. This is the per-field-data-pull contract.
 
     CodeRabbit thread 2: the list is JSON-encoded so values containing
     commas survive unambiguously to the consumer."""
@@ -259,9 +259,9 @@ def test_column_text_renders_full_sampled_values_when_present() -> None:
 
 
 def test_column_text_overflow_appends_distinct_count_line() -> None:
-    """DEV-1516: on overflow (distinct_count > len(sampled_values)) the
+    """On overflow (distinct_count > len(sampled_values)) the
     renderer emits a follow-up ``Distinct count: N`` line so the agent can
-    tell the column has more values than the top-50 we returned."""
+    tell the field has more values than the top-50 we returned."""
     m = _make_orders_dataset()
     col = m.get_field("status")
     assert col is not None
@@ -279,7 +279,7 @@ def test_column_text_overflow_appends_distinct_count_line() -> None:
 
 
 def test_column_text_no_distinct_line_when_count_equals_len_sampled_values() -> None:
-    """DEV-1516: emit the ``Distinct count`` line only when STRICTLY greater
+    """Emit the ``Distinct count`` line only when STRICTLY greater
     than ``len(sampled_values)``. Equal means we returned every value; no
     need to hint at more."""
     m = _make_orders_dataset()
@@ -294,7 +294,7 @@ def test_column_text_no_distinct_line_when_count_equals_len_sampled_values() -> 
 
 
 def test_column_text_no_distinct_line_when_distinct_count_is_none() -> None:
-    """DEV-1516: distinct_count line only fires when distinct_count is set."""
+    """The distinct_count line only fires when distinct_count is set."""
     m = _make_orders_dataset()
     col = m.get_field("status")
     assert col is not None
@@ -325,7 +325,7 @@ def test_column_text_sampled_values_with_commas_survive_intact() -> None:
 
 
 def test_column_text_authoritative_empty_list_wins_over_stale_sampled() -> None:
-    """DEV-1516 / codex finding #3: ``sampled_values=[]`` is authoritative
+    """Codex finding #3: ``sampled_values=[]`` is authoritative
     (we ran the profile and there were no values). It must NOT fall back to
     a stale ``sampled`` text — that would surface ghost values the agent
     would mistake for real data. The empty list also means the renderer
@@ -349,8 +349,8 @@ def test_column_text_authoritative_empty_list_wins_over_stale_sampled() -> None:
 
 
 def test_column_text_overflow_legacy_fallback_no_duplicate_distinct_line() -> None:
-    """DEV-1516 / codex finding #4: a legacy categorical column persisted
-    pre-DEV-1480 has ``sampled_values=None`` and the overflow suffix baked
+    """Codex finding #4: a legacy categorical field persisted
+    before ``sampled_values`` existed has ``sampled_values=None`` and the overflow suffix baked
     into the ``sampled`` text (``"... (N distinct)"``). The new
     distinct-count line must NOT fire on that fallback path — it would
     duplicate the suffix."""
@@ -383,7 +383,7 @@ def test_column_text_preserves_value_order() -> None:
 
 def test_column_text_both_none_emits_no_sample_lines() -> None:
     """Defensive: when both ``sampled`` and ``sampled_values`` are None
-    (unprofiled column), the renderer must emit neither the sample-values
+    (unprofiled field), the renderer must emit neither the sample-values
     line nor the distinct-count line."""
     m = _make_orders_dataset()
     col = m.get_field("status")
@@ -397,10 +397,10 @@ def test_column_text_both_none_emits_no_sample_lines() -> None:
 
 
 def test_column_text_includes_overflow_sampled_with_total_legacy_path() -> None:
-    """DEV-1480 overflow legacy path: when ``sampled_values is None`` the
+    """Overflow legacy path: when ``sampled_values is None`` the
     renderer falls back to the persisted ``sampled`` text which already
     carries the ``... (N distinct)`` suffix. Kept to pin the fallback shape
-    for pre-DEV-1480 / count_distinct-failed retry rows."""
+    for legacy / count_distinct-failed retry rows."""
     m = _make_orders_dataset()
     col = m.get_field("status")
     assert col is not None
@@ -426,7 +426,7 @@ def test_column_text_marks_primary_key() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Measure
+# Metric
 # ---------------------------------------------------------------------------
 
 
@@ -466,7 +466,7 @@ def test_aggregation_text_includes_formula_and_params() -> None:
     assert "amount" in text
     assert "weight" in text
     assert "quantity" in text
-    # Formula included.
+    # Expression included.
     assert "SUM" in text
 
 

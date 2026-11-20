@@ -1,4 +1,4 @@
-"""DEV-1846 — composite-input ``time_shift`` / ``consecutive_periods``, executed
+"""Composite-input ``time_shift`` / ``consecutive_periods``, executed
 on SQLite + DuckDB against ``tests/_dev1846_fixtures.py`` (every expectation
 hand-computed there). Covers the lifted shapes, the ``ValueError`` typing
 contract for still-unsupported inputs, the uniform fail-closed gate, and the
@@ -161,7 +161,7 @@ class TestTimeShiftCompositeExecution:
         assert _f(by["2024-03"]["prev"]) == pytest.approx(100.0)
 
     async def test_two_differently_parameterized_leaves(self, exec_engine) -> None:
-        """A join-crossing fragment leaf (``wrevenue_sum``) plus a column-filtered
+        """A relationship-crossing fragment leaf (``wrevenue_sum``) plus a field-filtered
         leaf (``hi_rev``): each re-aggregates with its own parameters/filter in
         the shifted period."""
         resp = await exec_engine.execute(_q(metrics=[
@@ -178,8 +178,8 @@ class TestTimeShiftCompositeExecution:
         assert _f(by["2024-03"]["prev"]) == pytest.approx(360.0)
 
     async def test_crossing_param_registers_join_per_leaf(self, exec_engine) -> None:
-        """A composite whose only aggregate leaf crosses the ``regions`` join:
-        the shifted CTE must bind that join to compute ``SUM(revenue * factor)``
+        """A composite whose only aggregate leaf crosses the ``regions`` relationship:
+        the shifted CTE must bind that relationship to compute ``SUM(revenue * factor)``
         in the prior period."""
         resp = await exec_engine.execute(_q(metrics=[
             QueryMetric(metric="wrevenue_sum(sales.revenue) * 2", alias="cur"),
@@ -367,8 +367,8 @@ class TestPredicateTypingContract:
 
 class TestUniformFailClosed:
     #: shape id -> the still-unsupported time_shift input: row-level leaves
-    #: only (DEV-1868 lifted nested transforms, cross-model leaves, and
-    #: aggregate-typed predicates into the series regime).
+    #: only (nested transforms, cross-dataset leaves, and
+    #: aggregate-typed predicates are lifted into the series regime).
     SHAPES = {
         "mixed_composite": "time_shift(sum(sales.revenue) * sales.weight, -1)",
         "pure_row_composite": "time_shift(sales.weight * sales.qty, -1)",
@@ -391,9 +391,9 @@ class TestUniformFailClosed:
 
     @pytest.mark.parametrize("shape", list(SHAPES))
     async def test_same_error_with_and_without_cross_model_sibling(self, shape) -> None:
-        """The presence of a cross-model measure elsewhere must not change which
+        """The presence of a cross-dataset metric elsewhere must not change which
         error the unsupported shape produces (today the plain path and the
-        cross-model-chain path diverge)."""
+        cross-dataset-chain path diverge)."""
         plain = await _error(metrics=[QueryMetric(metric=self.SHAPES[shape], alias="prev")])
         with_sibling = await _error(metrics=[
             QueryMetric(metric="sum(regions.factor)", alias="cm"),

@@ -38,7 +38,7 @@ def _without(document: dict[str, Any], name: str) -> dict[str, Any]:
     return doc
 
 
-# ──────────────────────────────── measures ─────────────────────────────────
+# ──────────────────────────────── metrics ─────────────────────────────────
 
 async def test_unedited_formula_restored(env) -> None:
     result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
@@ -114,7 +114,7 @@ async def test_restored_measure_attributes(env) -> None:
     assert (avg.meta or {}).get("owner") == "finance"
 
 
-# ───────────────────────────────── joins ───────────────────────────────────
+# ───────────────────────────────── relationships ───────────────────────────────────
 
 async def test_inner_join_restored(env) -> None:
     model = orders(metrics=BASIC_MEASURES, joins=[to_customers(join_type=JoinType.INNER, name="buyer")])

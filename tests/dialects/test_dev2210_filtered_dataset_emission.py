@@ -1,4 +1,4 @@
-"""Every dialect renders a model's filtered dataset: a derived table, inlined to-one joins, an ``EXISTS`` association."""
+"""Every dialect renders a dataset's filtered dataset: a derived table, inlined to-one joins, an ``EXISTS`` association."""
 
 from __future__ import annotations
 

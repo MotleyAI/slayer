@@ -1,4 +1,4 @@
-"""DEV-1868 W2 — cross-model partitioned aggregates nested inside transforms,
+"""W2 — cross-dataset partitioned aggregates nested inside transforms,
 executed values (spec: queries/partitioned-aggregates, nest-inside-transforms
 requirement)."""
 

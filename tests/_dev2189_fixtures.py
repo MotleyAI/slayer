@@ -96,7 +96,7 @@ def rls_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     ]
 
 
-#: The query-backed model the ``query_backed`` shape reads (saved by the engine builders).
+#: The query-backed dataset the ``query_backed`` shape reads (saved by the engine builders).
 QUERY_BACKED = SlayerDataset.model_validate({
     "name": "spend", "data_source": "test",
     "source_queries": [{"population": "orders", "dimensions": ["orders.customer_id"], "metrics": ["sum(orders.amount)"]}],
@@ -170,7 +170,7 @@ async def save_query_backed(engine: SlayerQueryEngine) -> None:
 
 @contextlib.asynccontextmanager
 async def file_engine(backend: str) -> AsyncGenerator[tuple[SlayerQueryEngine, DatasourceConfig]]:
-    """A policy-free engine over a seeded SQLite / DuckDB file, with the query-backed model saved."""
+    """A policy-free engine over a seeded SQLite / DuckDB file, with the query-backed dataset saved."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "seed.duckdb" if backend == "duckdb" else "seed.db")
         _seed_file(backend, db_path)
@@ -191,7 +191,7 @@ async def emission_engine(dialect: str) -> AsyncGenerator[tuple[SlayerQueryEngin
         await storage.save_datasource(ds)
         async with owned_query_engine(storage=storage) as engine:
             await save_datasets(storage)
-            # A query-backed model's save-time dry run never connects.
+            # A query-backed dataset's save-time dry run never connects.
             await storage.save_dataset(QUERY_BACKED, _validate=False)
             yield engine, ds
 

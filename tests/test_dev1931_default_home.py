@@ -1,4 +1,4 @@
-"""DEV-1931 — definition-default home resolution: owner-first with a query-root
+"""Definition-default home resolution: owner-first with a query-root
 fallback, genuine host-local ``()`` retained, and the same resolution governing
 input safety. Home paths from ``Aggregate.home_path``; values compare each
 default to its explicit ``weight=`` twin or an oracle; fail-closed cases raise."""
@@ -30,7 +30,7 @@ from tests._dev1931_fixtures import (
 
 
 def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
-    """The ``home_path`` of a measure's outer aggregate over the DEV-1931 graph."""
+    """The ``home_path`` of a metric's outer aggregate over the ``_dev1931_fixtures`` graph."""
     elab = elaborate_query(
         query=orders_q(
             dimensions=dimensions or [],
@@ -48,7 +48,7 @@ class TestDefinitionDefaultHomePath:
     """The home the default resolves to, once per definition default frame."""
 
     def test_root_local_direct_default_widens_to_root(self):
-        # orders.amount is the query root's own column → the default is retained
+        # orders.amount is the query root's own field → the default is retained
         # as a genuine `()` home candidate, exactly like the explicit weight.
         assert _home_path("wsum_host(customers.spend)") == ()
         assert _home_path("wsum_host(customers.spend, weight=orders.amount)") == ()
@@ -110,7 +110,7 @@ class TestDefinitionDefaultExecution:
         assert default == pytest.approx(explicit)
 
     async def test_mixed_frame_default_resolves_per_reference(self, engine):
-        # Independent oracle (a plain cross-model expression sum, works today):
+        # Independent oracle (a plain cross-dataset expression sum, works today):
         # spend broadcast onto each order + the order's own amount.
         oracle = await self._value(
             engine=engine, expression="sum(customers.spend * (customers.spend + orders.amount))")
@@ -148,7 +148,7 @@ class TestDefinitionDefaultExecution:
 
 
 class TestFanningDefinitionDefaultFailsClosed:
-    """F1: a fanning default is resolved on its declaring model and fails closed
+    """F1: a fanning default is resolved on its declaring dataset and fails closed
     even when another input widens the home away from it."""
 
     def test_home_widens_to_customers(self):

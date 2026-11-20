@@ -1,8 +1,8 @@
-"""Converter integration for FILTER_PARAMS (slayer/cube/converter.py, DEV-1730).
+"""Converter integration for FILTER_PARAMS (slayer/cube/converter.py).
 
 Requiredness (block vs bare) is resolved here against ``meta.required`` +
 ``honor_required_meta``; sentinels from the front-end are replaced with the
-emitted SLayer Mode-A text; variables are stashed in ``model.meta`` and reported.
+emitted SLayer Mode-A text; variables are stashed in ``dataset.meta`` and reported.
 """
 
 
@@ -83,7 +83,7 @@ def test_ignore_required_meta_makes_scalar_arrow_a_block():
     models, _ = _convert(_rr_source(), honor_required_meta=False)
     sql = models["RrDrivers"].sql
     # Now the scalar-position arrow is optional -> Cube's (1=1)::TIMESTAMP shape
-    # after collapse. Here we assert the block survives to the model.
+    # after collapse. Here we assert the block survives to the dataset.
     assert "{? '{fulfillment_date_from}' ?}::TIMESTAMP AS ty_start_date" in sql
 
 
@@ -103,7 +103,7 @@ def test_report_has_one_variable_entry_per_logical_variable():
     assert reported == {"fulfillment_date", "brand", "market"}
     assert all(i.severity == "info" for i in var_issues)
     # Dedup is by variable NAME, so both fulfillment_date bounds are reported —
-    # the report must agree with meta.cube_variables (DEV-1730 review).
+    # the report must agree with meta.cube_variables.
     all_msgs = " ".join(i.message for i in var_issues)
     assert "fulfillment_date_from" in all_msgs
     assert "fulfillment_date_to" in all_msgs
@@ -194,7 +194,7 @@ def test_dropped_cube_emits_no_variable_entries():
 
 
 def test_generated_model_sql_parses_after_probe_render():
-    # The converter must validate the sentinel-resolved SQL; a model that
+    # The converter must validate the sentinel-resolved SQL; a dataset that
     # survives conversion has parseable SQL once blocks collapse + vars fill.
     models, _ = _convert(_rr_source())
     assert "RrDrivers" in models  # survived offline validation

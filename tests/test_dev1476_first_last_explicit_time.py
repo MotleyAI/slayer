@@ -314,7 +314,7 @@ async def test_d_cross_cross_model_derived_time_arg(
 
 
 async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None:
-    """Target-model filter must be pushed INSIDE the ranked subquery, else the newest-but-excluded row wins ``_last_rn = 1`` and the outer MAX returns NULL."""
+    """Target-dataset filter must be pushed INSIDE the ranked subquery, else the newest-but-excluded row wins ``_last_rn = 1`` and the outer MAX returns NULL."""
     engine = await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -365,11 +365,11 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
 
 
 async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> None:
-    """A ``Column.filter`` masks the value; it never restricts the
+    """A ``DatasetField.filter`` masks the value; it never restricts the
     ranking. ``last(customers.active_amount)`` ranks customers by ``signup_at`` and
     the newest (id 3, 2023-09-01) is ``inactive``, so its masked value is NULL —
     the older active 100.0 is not reached (a row-restricting WHERE belongs in the
-    query, not the column)."""
+    query, not the field)."""
     engine = await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -715,7 +715,7 @@ class TestTimeArgJoinDiscovery:
                 base_render_order=order, slots_by_id=slots, scope=scope,
             )
         assert scope.join_paths.as_list() == []
-        assert seen == [], f"cross-model arg was resolved: {seen!r}"
+        assert seen == [], f"cross-dataset arg was resolved: {seen!r}"
 
     def test_residual_path_bearing_columnsqlkey_skipped_without_raise(self) -> None:
         # Path-bearing ColumnSqlKey time arg (a hop past the target) must be skipped by discovery — no raise, no registration. Built by hand: only arises post-reroot.
@@ -757,7 +757,7 @@ class TestGateUsesSharedArgSelection:
         assert explicit_ranking_key(self._scalar_first_arg_key()) is None
 
     def test_scalar_first_arg_gate_requires_default_time(self) -> None:
-        # no default_time_dimension, and two temporal columns: no sole-column default
+        # no default_time_dimension, and two temporal fields: no sole-field default
         orders = _u_orders(extra=[DatasetField(name="updated_at", sql="created_at", datatype=DataType.DATETIME)])
         bundle = _u_bundle(orders)
         key = self._scalar_first_arg_key()

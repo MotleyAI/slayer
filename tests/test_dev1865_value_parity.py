@@ -1,11 +1,11 @@
-"""DEV-1865 — position values agree with measure position.
+"""Position values agree with metric position.
 
-The twin-query law: a query Q that filters on a measure-typed predicate E keeps
-exactly the cells that a query Q' declaring E as a measure (no filter) reports
+The twin-query law: a query Q that filters on a metric-typed predicate E keeps
+exactly the cells that a query Q' declaring E as a metric (no filter) reports
 as passing E, with every shared column value identical. Run on SQLite + DuckDB.
 
-The cross-model-partitioned shape is currently red (the DEV-1824 guard); the
-plain / cross-model / windowed shapes exercise the same law and pin the
+The cross-dataset-partitioned shape was formerly guarded; the
+plain / cross-dataset / windowed shapes exercise the same law and pin the
 value-preserving invariant.
 """
 
@@ -76,7 +76,7 @@ class TestTwinQueryLaw:
 
 class TestNullPredicateDropsRow:
     async def test_null_measure_predicate_drops_every_cell(self, exec_engine) -> None:
-        # ``nomatch`` sums a never-true filtered column → NULL for every group;
+        # ``nomatch`` sums a never-true filtered field → NULL for every group;
         # NULL > 0 is NULL, so WHERE/HAVING drops the cell.
         twin = (await exec_engine.execute(q(
             dimensions=["orders.region"],
@@ -97,7 +97,7 @@ class TestNullPredicateDropsRow:
 
 class TestPositionSupportCannotLag:
     async def test_measure_legal_expression_filters_and_orders(self, exec_engine) -> None:
-        # Once an expression executes as a declared measure, the same expression
+        # Once an expression executes as a declared metric, the same expression
         # must be accepted as a filter and as an order target — no extra support.
         expr = "sum(customers.spend, partition_by=customers.regions.name)"
         dims = ["customers.regions.name", "customers.tier"]

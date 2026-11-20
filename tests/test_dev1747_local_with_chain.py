@@ -1,7 +1,7 @@
-"""DEV-1747 D8 — the LOCAL transform chain's WITH clause, assembled as AST.
+"""D8 — the LOCAL transform chain's WITH clause, assembled as AST.
 
-PR 3 (DEV-1746) built one WITH assembler (``slayer/sql/render/cte_assembly.py``)
-and adopted it on the cross-model sites, deferring the LOCAL single-model
+PR 3 built one WITH assembler (``slayer/sql/render/cte_assembly.py``)
+and adopted it on the cross-dataset sites, deferring the LOCAL single-dataset
 transform chain to this PR — its two near-identical sites still splice out of
 f-strings::
 
@@ -20,8 +20,6 @@ public alias round-trips through text as a MULTI-PART reference on BigQuery
 (``_base."orders_x.status"`` came back as ``` `_base___orders_x`.`status` ```),
 and this path is full of dotted ``<relation>.<alias>`` names — so a parse seam
 here would silently corrupt exactly the identifiers it carries.
-
-Refs: DEV-1747 (D8), DEV-1746 handoff, DEV-1742 §5.6.
 """
 from __future__ import annotations
 
@@ -42,8 +40,8 @@ from slayer.sql.generator import SQLGenerator
 from slayer.sql.render import cte_assembly
 import inspect
 
-#: A LOCAL (single-model) transform chain — no cross-model measure, so it takes
-#: the f-string splice path rather than the cross-model one PR 3 already fixed.
+#: A LOCAL (single-dataset) transform chain — no cross-dataset metric, so it takes
+#: the f-string splice path rather than the cross-dataset one PR 3 already fixed.
 _CHAIN_QUERY = SlayerQuery(
     population="orders",
     time_dimensions=[TimeDimension(

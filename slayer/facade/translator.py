@@ -2720,7 +2720,7 @@ def _canonical_field_or_raise(
     ``ON ORDERS.STORE_ID = STORES.ID`` would otherwise fail to match
     against a dataset whose ``DatasetField.name`` is ``store_id``. The canonical
     return propagates the dataset-side casing to every downstream
-    comparison (the configured-join existence check, the dynamic-join
+    comparison (the configured-relationship existence check, the dynamic-join
     ``DatasetExtension`` build).
     """
     if table.dataset_ref is None:

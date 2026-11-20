@@ -1,4 +1,4 @@
-"""DEV-1837 filter placement across attach and transform phases (design D3/D9;
+"""Filter placement across attach and transform phases (design D3/D9;
 spec requirement "Filters compose across attach and transform phases").
 
 Band-only monthly series (dims ``[band]`` + month, from the fixture rows):
@@ -120,8 +120,8 @@ class TestConjunctionSplits:
         }
 
     async def test_mixed_or_types_as_measure_and_masks_cells(self, exec_engine) -> None:
-        """DEV-1865: ``band`` is a query dimension (available at query grain),
-        so the whole OR types as measure and prunes result cells — band-1 cells
+        """``band`` is a query dimension (available at query grain),
+        so the whole OR types as metric and prunes result cells — band-1 cells
         survive unconditionally, others only where change > 0 (none here)."""
         resp = await exec_engine.execute(q(
             dimensions=[BAND],

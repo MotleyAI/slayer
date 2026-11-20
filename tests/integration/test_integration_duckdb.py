@@ -22,7 +22,7 @@ duckdb = pytest.importorskip("duckdb")
 @pytest.fixture(scope="module")
 def _duckdb_env_storage(tmp_path_factory):
     """Module-scoped: per-module DuckDB file with seeded customers/orders, plus
-    a YAMLStorage with the orders + customers models pre-saved. The per-test
+    a YAMLStorage with the orders + customers datasets pre-saved. The per-test
     ``duckdb_env`` fixture wraps a fresh engine around the returned storage
     (engines bind to their event loop — see slayer/database/client.py:144)."""
     tmp_path = tmp_path_factory.mktemp("duckdb_env")
@@ -120,7 +120,7 @@ class TestDuckDBQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, duckdb_env: SlayerQueryEngine) -> None:
-        """A model column holding a ``(?:...)`` regex literal and a ``%``
+        """A dataset field holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         orders = await duckdb_env.storage.get_dataset("orders")
         assert orders is not None
@@ -329,7 +329,7 @@ class TestDuckDBQueries:
         self, duckdb_env: SlayerQueryEngine
     ) -> None:
         """The unbounded ``cumsum`` a cumulative dbt metric maps to
-        must numerically equal the running total of the per-grain measure.
+        must numerically equal the running total of the per-grain metric.
 
         Monthly totals: Jan=300, Feb=200, Mar=375 → running totals 300, 500, 875.
         """
@@ -368,7 +368,7 @@ def duckdb_ingest_env(tmp_path_factory) -> tuple[list[SlayerDataset], Datasource
     """Set up tables with FK relationships and ingest via rollup.
 
     Module-scoped: tests destructure ``(models, ds)`` and build their own
-    ephemeral storage from the returned models — they never mutate the fixture
+    ephemeral storage from the returned datasets — they never mutate the fixture
     state. Saves the ~0.55s/call SQLAlchemy reflection across 6 tests.
     """
     tmp_path = tmp_path_factory.mktemp("duckdb_ingest")
@@ -421,24 +421,24 @@ def duckdb_ingest_env(tmp_path_factory) -> tuple[list[SlayerDataset], Datasource
 @pytest.mark.integration
 class TestDuckDBIngestion:
     def test_orders_has_own_columns_only(self, duckdb_ingest_env: tuple[list[SlayerDataset], DatasourceConfig]) -> None:
-        """After ingestion, models only have their own columns (no flattened joined dims)."""
+        """After ingestion, datasets only have their own fields (no flattened joined dims)."""
         models, _ = duckdb_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
         col_names = [c.name for c in orders.fields]
-        # Should have own columns only.
+        # Should have own fields only.
         assert "id" in col_names
         assert "customer_id" in col_names
-        # In v2, every non-joined column appears once (numeric columns included).
+        # In v2, every non-joined field appears once (numeric fields included).
         assert "amount" in col_names
-        # Joined dimensions are resolved via join graph, not pre-flattened.
+        # Joined dimensions are resolved via relationship graph, not pre-flattened.
         assert not any("." in name for name in col_names)
 
     def test_orders_uses_sql_table_with_joins(self, duckdb_ingest_env: tuple[list[SlayerDataset], DatasourceConfig]) -> None:
         models, _ = duckdb_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
-        # Models with joins use sql_table + explicit joins (no baked sql)
+        # Datasets with relationships use sql_table + explicit relationships (no baked sql)
         assert orders.sql_table is not None
         assert orders.sql is None
         assert len(orders.relationships) > 0
@@ -456,16 +456,16 @@ class TestDuckDBIngestion:
         assert regions.sql is None
 
     def test_orders_has_no_named_measures_after_ingest(self, duckdb_ingest_env: tuple[list[SlayerDataset], DatasourceConfig]) -> None:
-        """After ingestion, model.measures (formula list) is empty in v2.
+        """After ingestion, dataset.metrics (expression list) is empty in v2.
 
-        v1 generated row-level measures from each non-ID column. In v2, those
-        live on ``columns`` instead and ``measures`` (named formulas) is an
+        v1 generated row-level measures from each non-ID field. In v2, those
+        live on ``fields`` instead and ``metrics`` (named expressions) is an
         opt-in library users populate themselves.
         """
         models, _ = duckdb_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.metrics == []
-        # The 'amount' column lives on .columns now.
+        # The 'amount' field lives on .fields now.
         col_names = [c.name for c in orders.fields]
         assert "amount" in col_names
 
@@ -519,7 +519,7 @@ class TestDuckDBIngestion:
 
 @pytest.mark.integration
 class TestDuckDBMedianPercentile:
-    """Lock in DuckDB median/percentile so the static-formula refactor
+    """Lock in DuckDB median/percentile so the static-expression refactor
     (moving percentile out of BUILTIN_AGGREGATION_FORMULAS into the
     dialect-aware _build_percentile method) doesn't silently regress.
 
@@ -632,7 +632,7 @@ class TestDuckDBStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
     async def test_log10_round_trip_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        """A `log10(amount)` formula must execute correctly on
+        """A `log10(amount)` expression must execute correctly on
         DuckDB (native single-arg LOG10) and the emitted SQL must contain
         `log10(...)` rather than the canonicalised `LOG(10, ...)`."""
         existing = await duckdb_env.storage.get_dataset("orders")
@@ -680,7 +680,7 @@ class TestDuckDBStatAggregations:
 
 @pytest.fixture
 async def planets_duckdb_env(tmp_path):
-    """Planets fixture (DuckDB): a Column.sql with `row_number() over (...)`."""
+    """Planets fixture (DuckDB): a DatasetField.sql with `row_number() over (...)`."""
     db_path = tmp_path / "planets.duckdb"
     conn = duckdb.connect(str(db_path))
     conn.execute(
@@ -735,7 +735,7 @@ async def planets_duckdb_env(tmp_path):
 
 @pytest.mark.integration
 async def test_filter_on_windowed_column_duckdb_raises(planets_duckdb_env):
-    """DuckDB parity: filtering a windowed Column.sql raises
+    """DuckDB parity: filtering a windowed DatasetField.sql raises
     (use rank-family transforms instead)."""
     engine = planets_duckdb_env
     query = SlayerQuery(
@@ -748,7 +748,7 @@ async def test_filter_on_windowed_column_duckdb_raises(planets_duckdb_env):
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived ``Column.sql`` chaining (DuckDB)
+# Cross-dataset derived ``DatasetField.sql`` chaining (DuckDB)
 # ---------------------------------------------------------------------------
 
 
@@ -824,16 +824,16 @@ async def test_integration_duckdb_cross_model_derived_columnsql(
 
 # --------------------------------------------------------------------------- #
 # Executed-value coverage for first/last
-# over a cross-join derived source. The aggregate isolates into a host-rooted
+# over a relationship-crossing derived source. The aggregate isolates into a host-rooted
 # CTE where the crossed value is materialised inside the ranked subquery.
 # --------------------------------------------------------------------------- #
 
 
 @pytest.fixture(scope="module")
 def _dev1531_duckdb_storage(tmp_path_factory):
-    """orders → customers → regions chain with a cross-join derived column on
+    """orders → customers → regions chain with a relationship-crossing derived field on
     orders (``customers__regions.payment_amount``) plus a single-hop derived
-    column (``customers.balance``)."""
+    field (``customers.balance``)."""
     tmp_path = tmp_path_factory.mktemp("dev1531_duckdb")
     db_path = tmp_path / "dev1531.duckdb"
     conn = duckdb.connect(str(db_path))
@@ -965,13 +965,13 @@ class TestDev1531CrossJoinFirstLast:
 
 
 # --------------------------------------------------------------------------- #
-# SIBLING PROTECTION: a host column defined across the unproven 1:N hop is
+# SIBLING PROTECTION: a host field defined across the unproven 1:N hop is
 # refused when aggregated; the crossing sum is spelled on line_items and
-# isolates into its own producer, so it never multiplies sibling measures.
+# isolates into its own producer, so it never multiplies sibling metrics.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def _dev1709_duckdb_storage(tmp_path_factory):
-    """orders → line_items (1:N). ``li_qty`` on orders crosses that join
+    """orders → line_items (1:N). ``li_qty`` on orders crosses that relationship
     (sql=``line_items.qty``); order 1 has TWO line items so any base-pull
     would double-count order 1's local values."""
     tmp_path = tmp_path_factory.mktemp("dev1709_duckdb")
@@ -1040,7 +1040,7 @@ class TestDev1709SiblingProtection:
     ) -> None:
         # amount:sum must be 40.0 (10 + 30) — NOT 50.0, which a base-pulled
         # line_items join would produce (order 1 counted once per line item).
-        # The crossing sum is spelled on its own model: 2+3+5 = 10.
+        # The crossing sum is spelled on its own dataset: 2+3+5 = 10.
         query = SlayerQuery(
             population="orders",
             metrics=[
@@ -1056,9 +1056,9 @@ class TestDev1709SiblingProtection:
     async def test_derived_column_across_unproven_hop_refused(
         self, dev1709_env: SlayerQueryEngine,
     ) -> None:
-        # A host column defined across the unproven 1:N hop (li_qty =
+        # A host field defined across the unproven 1:N hop (li_qty =
         # line_items.qty) is not a function of an order row: aggregating it as
-        # host-local fails closed and names the cross-model spelling.
+        # host-local fails closed and names the cross-dataset spelling.
         query = SlayerQuery(
             population="orders",
             metrics=[
@@ -1126,7 +1126,7 @@ class TestDev1709SiblingProtection:
 # --------------------------------------------------------------------------- #
 # F1 / F4 semantic pins — executed-value coverage (decision 3A).
 #   F4 (revised): a host-local filter restricts a scalar
-#       cross-model aggregate's population by semi-join — the aggregate counts
+#       cross-dataset aggregate's population by semi-join — the aggregate counts
 #       exactly the target rows related to at least one passing host row.
 #   F1: a 1:N crossing aggregate keeps multiply-per-match semantics.
 # --------------------------------------------------------------------------- #
@@ -1218,7 +1218,7 @@ class TestF1F4SemanticValues:
         assert result.row_count == 0, result.data
 
     async def test_cross_model_scalar_broadcasts_to_every_host_group(self, f1f4_env) -> None:
-        # A cross-model aggregate that shares no grain with the host dimension
+        # A cross-dataset aggregate that shares no grain with the host dimension
         # (customers.balance:sum by orders.status) is, under explicit broadcast,
         # a scalar broadcast to every host group — each status shows the full 700.
         query = SlayerQuery(
@@ -1237,7 +1237,7 @@ class TestF1F4SemanticValues:
 
 
 # --------------------------------------------------------------------------- #
-# A cross-model aggregate grouped by a joined DERIVED dimension
+# A cross-dataset aggregate grouped by a joined DERIVED dimension
 # (shared-grain rendering). Executed on DuckDB so the mainstream native
 # ``IS NOT DISTINCT FROM`` grain join-back path runs end-to-end (SQLite uses
 # the ``IS`` override). orders → customers → regions chain with a target-local
@@ -1331,7 +1331,7 @@ def dev1728_env(_dev1728_duckdb_storage):
 @pytest.mark.integration
 class TestDev1728DerivedSharedGrain:
     async def test_target_local_derived_grain(self, dev1728_env: SlayerQueryEngine) -> None:
-        # Group cross-model sum by target-local ltv_x2.
+        # Group cross-dataset sum by target-local ltv_x2.
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.ltv_x2")],
@@ -1349,7 +1349,7 @@ class TestDev1728DerivedSharedGrain:
         assert by_grain[80.0] == pytest.approx(40.0), result.data
 
     async def test_crossing_derived_grain(self, dev1728_env: SlayerQueryEngine) -> None:
-        # Group cross-model sum by crossing deep_pop = regions.population.
+        # Group cross-dataset sum by crossing deep_pop = regions.population.
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.deep_pop")],

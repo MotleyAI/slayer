@@ -1,13 +1,13 @@
-"""DEV-1942 tasks 1.1 / 1.2 — a re-aggregation attached at two phases executes.
+"""A re-aggregation attached at two phases executes.
 
 The same re-aggregation used both standalone (combined phase) and as a mixed
 row-level constituent (row phase) in one query executes with the values each use has
-alone, on SQLite and DuckDB, in measure / filter / order positions and beside an
-unrelated multi-stage measure. The plan carries exactly two attaches sharing one
+alone, on SQLite and DuckDB, in metric / filter / order positions and beside an
+unrelated multi-stage metric. The plan carries exactly two attaches sharing one
 placeholder (phases row + combined), that placeholder staged BASE; the emitted
 statement lists the carrier before the re-aggregation CTE on every dialect. Under a
 fanning-hop population filter the constituent's producers restrict by association
-(EXISTS, no fanning join), report the semi-join under the selected measure, and a
+(EXISTS, no fanning join), report the semi-join under the selected metric, and a
 standalone re-aggregation pushes an out-of-scope (OR-mix) conjunct by semi-join too.
 
 Red today: the shape fails closed in the checker (dual-phase cases) and the population
@@ -85,7 +85,7 @@ async def exec_backend(request):
 
 
 def _region_month(resp: SlayerResponse, name: str) -> dict:
-    """``{(region, YYYY-MM): value}`` for measure ``name``, NULL-valued cells dropped."""
+    """``{(region, YYYY-MM): value}`` for metric ``name``, NULL-valued cells dropped."""
     mcol = next(c for c in resp.columns if "ordered_at" in c)
     vcol = next(c for c in resp.columns if c == name or c.endswith("." + name))
     return {(r["monthly.region"], month_key(r[mcol])): r[vcol]
@@ -129,7 +129,7 @@ class TestDualPhaseExecution:
         assert _region_month(resp, "b") == pytest.approx(B_BY_REGION_MONTH)
 
     async def test_standalone_in_filter_beside_mixed(self, exec_backend) -> None:
-        # min>5 keeps North (10), prunes South (5) and West (NULL) — a measure-typed mask.
+        # min>5 keeps North (10), prunes South (5) and West (NULL) — a metric-typed mask.
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             dimensions=["monthly.region"],
@@ -155,7 +155,7 @@ class TestDualPhaseExecution:
 
     async def test_shape_with_unrelated_cumsum_executes(self, exec_backend) -> None:
         # The multi-stage steps prelude (cumsum) beside the dual-phase shape; adding the
-        # dual-phase measures leaves the cumsum's own values unchanged.
+        # dual-phase metrics leaves the cumsum's own values unchanged.
         _, engine = exec_backend
         alone = await engine.execute(monthly_q(
             dimensions=["monthly.region"],

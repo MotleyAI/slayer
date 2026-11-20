@@ -1,4 +1,4 @@
-"""Saved query-backed models retain their declared relationship graph."""
+"""Saved query-backed datasets retain their declared relationship graph."""
 
 from __future__ import annotations
 

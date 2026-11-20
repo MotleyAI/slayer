@@ -1,13 +1,13 @@
-"""Shared fixtures for DEV-1839 — grain-union broadcasting for different-grain
+"""Shared fixtures for grain-union broadcasting for different-grain
 aggregates.
 
-Reuses the DEV-1739/1824 models, dataset, and execution harness verbatim
+Reuses the ``_dev1739``/``_dev1824`` fixtures' datasets, seed data, and execution harness verbatim
 (``tests/_dev1824_fixtures.py``) and adds hand-computed oracles for the
 union-grain scenarios, chosen so union-grain evaluation and any misgrained
 evaluation differ visibly.
 
-Oracle derivations (from the DEV-1739 rows; totals in ``_dev1824_fixtures``)
-----------------------------------------------------------------------------
+Oracle derivations (from the ``_dev1739_fixtures`` rows; totals in ``_dev1824_fixtures``)
+-----------------------------------------------------------------------------------------
 REGION_TOTAL   North=100 South=50 NULL=60; GRAND_TOTAL=210.
 CITY_TOTAL     (N,CityA)=30 (N,CityB)=40 (N,NULL)=30 (S,CityC)=50 (NULL,CityD)=60
                (city values are region-unique, so partition_by=city matches).
@@ -29,7 +29,7 @@ NESTED_RANK    rank(cumsum(region_month_total) - city_total, direction='desc') o
                (S,CityC,Mar)=0 (NULL,CityD,Mar)=0 → ranks 3 / 2 / 1 / 6 / 3 / 3.
 EXPLICIT_PART  MIXED_RANK re-partitioned by region: North diffs 70/70/60 →
                1/1/3; single South and NULL-region rows → 1.
-DUAL_MEASURE   MIXED_RANK's expression as a MEASURE at the (region, city,
+DUAL_MEASURE   MIXED_RANK's expression as a METRIC at the (region, city,
                channel) query grain: broadcast diffs 70×3, 60, 0×3 →
                ranks 1/1/1/4/5/5/5.
 SAMEGRAIN_RANK rank(amount_region + ok_region, direction='desc'): 200 / 75 / 120 →
@@ -130,7 +130,7 @@ RCC_TOTAL = {
     ("South", "CityC", "web"): 25.0, ("South", "CityC", "app"): 25.0,
     (None, "CityD", "web"): 60.0,
 }
-#: MIXED_RANK's expression as a measure at the (region, city, channel) grain.
+#: MIXED_RANK's expression as a metric at the (region, city, channel) grain.
 DUAL_MEASURE_RANK_OF = {
     ("North", "CityA", "web"): 1, ("North", "CityA", "app"): 1,
     ("North", "CityB", "web"): 4, ("North", None, "web"): 1,

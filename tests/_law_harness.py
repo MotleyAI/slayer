@@ -3,7 +3,7 @@ the ``tests/test_law_*.py`` files (the generative backend of the laws in
 ``architecture/semantics.arc42.md`` §3).
 
 Builds on the partition-by / computed-dimension fixture stack: orders → customers → regions,
-the 7-row dataset, ``DIM_FAMILY_DIMS`` and the attach + transform measure pool.
+the 7-row dataset, ``DIM_FAMILY_DIMS`` and the attach + transform metric pool.
 Everything is seeded (``LAW_SEED``) — no Hypothesis, no run-to-run drift; shape
 ids are stable across collections.
 
@@ -12,7 +12,7 @@ of 8): split-invariance ≤ (1 + 4)×(40 + 8) = 240 engine runs; grain-union
 2×(40 + 8) = 96; broadcast coherence 2 runs × (24 + 6 slice) pairs per grain
 × 3 grains = 180, plus the named chain/refusal cases; lowering soundness ~12.
 ≈ 540 total, all on tmpfile-backed engines. The pools also carry the
-cross-model partitioned operands (``cm_part`` / ``cm_last``, family
+cross-dataset partitioned operands (``cm_part`` / ``cm_last``, family
 ``cmgrain``, pair grain ``rn``).
 """
 
@@ -52,7 +52,7 @@ N_DUCKDB = 8
 N_PAIRS = 24
 DUCKDB_PAIR_STRIDE = 4
 
-#: Cross-model partitioned operands. A combined consumer needs its
+#: Cross-dataset partitioned operands. A combined consumer needs its
 #: partition key among the query dimensions, so these pin to ``cmgrain``.
 CM_PARTITIONED_MEASURES = {
     "cm_part": "sum(customers.spend, partition_by=customers.regions.name)",
@@ -68,14 +68,14 @@ RATIO_MEASURES = {
 }
 TD_RATIO = frozenset({"ratio_cumsum"})
 
-#: The full measure pool: every attach family + every transform op + the
-#: cross-model partitioned operands + the ratio composites.
+#: The full metric pool: every attach family + every transform op + the
+#: cross-dataset partitioned operands + the ratio composites.
 MEASURE_POOL = {
     **ATTACH_MEASURES, **TRANSFORM_FORMULAS, **CM_PARTITIONED_MEASURES, **RATIO_MEASURES,
 }
 
 #: Law-local dimension families: the ``DIM_FAMILY_DIMS`` set plus the grain carrying the
-#: cross-model partition key.
+#: cross-dataset partition key.
 LAW_DIM_FAMILY_DIMS = {
     **DIM_FAMILY_DIMS,
     "cmgrain": ["orders.region", "customers.regions.name"],
@@ -99,7 +99,7 @@ _MEASURE_ABBREV = {
 
 #: Explicit semantic grain of the broadcast-attach operands (grain-union law):
 #: partition keys, plus the month bucket for ``window=`` operands; ``cm`` is the
-#: grand cross-model total — the empty grain.
+#: grand cross-dataset total — the empty grain.
 OPERAND_GRAIN = {
     "part": ("region",),
     "last_part": ("region",),
@@ -122,7 +122,7 @@ OPERANDS = {
 }
 OPS = ("+", "-", "*")
 
-#: Registry key marking the measure-free (dims-only) variant of a shape.
+#: Registry key marking the metric-free (dims-only) variant of a shape.
 DIMS_ONLY = "<dims-only>"
 
 
@@ -143,8 +143,8 @@ _FRAGMENTS = frozenset(site.fragment for site in DEFERRAL_SITES)
 
 
 class LawShape(BaseModel):
-    """One generated query shape: a dimension family, 2–4 pool measures, and a
-    filter; the month time dimension is auto-forced by the FULL measure set so
+    """One generated query shape: a dimension family, 2–4 pool metrics, and a
+    filter; the month time dimension is auto-forced by the FULL metric set so
     the grain never moves between a shape's variants."""
 
     shape_id: str
@@ -177,7 +177,7 @@ def _shape(idx: int, family: str, keys: Sequence[str], ftag: str) -> LawShape:
 
 
 def _forced_family(keys: Sequence[str]) -> Optional[str]:
-    """The family a constrained measure pins its shape to, else None."""
+    """The family a constrained metric pins its shape to, else None."""
     for k in keys:
         family = MEASURE_REQUIRED_FAMILY.get(k)
         if family is not None:
@@ -186,9 +186,9 @@ def _forced_family(keys: Sequence[str]) -> Optional[str]:
 
 
 def sample_shapes() -> Tuple[LawShape, ...]:
-    """Deterministic covering core (every family, measure, and filter; ≥1
-    cross-model, ≥1 windowed, the ratio beside its transform), then seeded random
-    fill to ``N_SHAPES``. A measure with a required family (cm_part / cm_last)
+    """Deterministic covering core (every family, metric, and filter; ≥1
+    cross-dataset, ≥1 windowed, the ratio beside its transform), then seeded random
+    fill to ``N_SHAPES``. A metric with a required family (cm_part / cm_last)
     forces its shape there."""
     rng = random.Random(LAW_SEED)
     families = tuple(LAW_DIM_FAMILY_DIMS)
@@ -275,7 +275,7 @@ def sample_pairs(
 #: ``rn`` = (region, customers.regions.name). Each grain excludes the operands
 #: ill-typed there (a partition key outside the query grain is the axiom-6
 #: typed refusal, pinned by a named coherence test instead): part_city outside
-#: ``rc``, and the cross-model partitioned operands outside ``rn``.
+#: ``rc``, and the cross-dataset partitioned operands outside ``rn``.
 PAIRS_BY_GRAIN = {
     "rc": sample_pairs(exclude=CM_PARTITIONED_OPERANDS),
     "rm": sample_pairs(exclude=CM_PARTITIONED_OPERANDS | {"part_city"}),
@@ -360,7 +360,7 @@ def build_query(
 
 
 #: Shape variants that hit an enumerated fail-closed guard, keyed by
-#: (shape_id, dropped-measure-key | DIMS_ONLY | None) → a DEFERRAL_SITES
+#: (shape_id, dropped-metric-key | DIMS_ONLY | None) → a DEFERRAL_SITES
 #: fragment. Never a bare NotImplementedError catch; no silent skips — an
 #: unregistered raise fails the test, a registered one must match its site.
 EXPECTED_RAISES: dict[Tuple[str, Optional[str]], str] = {}

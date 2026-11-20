@@ -1,6 +1,6 @@
-"""Join keys name columns logically; the physical spelling is applied once, at
+"""Join keys name fields logically; the physical spelling is applied once, at
 emission (semantics Principle 3). Executed on SQLite and DuckDB over a graph whose every
-key column is renamed (``tests/_dev1902_fixtures.py``)."""
+key field is renamed (``tests/_dev1902_fixtures.py``)."""
 
 from __future__ import annotations
 
@@ -180,7 +180,7 @@ class TestJoinSafetyLogicalSpace:
             bundle=datasets_bundle({"customers": customers, "regions": regions}))
 
     def test_fk_seed_ignores_a_physical_spelling_match(self):
-        # A grain leaf spelled like the FK's physical column names no column.
+        # A grain leaf spelled like the FK's physical column names no field.
         hub = SlayerDataset(
             name="hub", data_source="test", sql_table="hub",
             fields=[
@@ -200,7 +200,7 @@ class TestJoinSafetyLogicalSpace:
 
 
 def _customer_totals(*, key: str = "customer_id") -> SlayerDataset:
-    """Query-backed: its columns come from the backing query, so the join key is checked once populated."""
+    """Query-backed: its fields come from the backing query, so the join key is checked once populated."""
     return SlayerDataset.model_validate({
         "name": "customer_totals", "data_source": "test",
         "source_queries": [{"population": "orders", "dimensions": ["orders.customer_id"],

@@ -1,16 +1,15 @@
-"""DEV-1711 Stage 7 — time_shift CTEs on ScopeFrame (cross-model partitions).
+"""time_shift CTEs on ScopeFrame (cross-dataset partitions).
 
 Migrates ``_emit_time_shift_ctes_for_planned`` onto a ``ScopeFrame`` so the
 shifted CTE's partition keys and time expressions all enter through
-``resolve()`` (Law 1: anchor + register the join it crosses) and the CTE's FROM
-is built from the scope's registered ``join_paths``. This closes DEV-1474 and
-several adjacent silent-broadcast defects the same joinless-shifted-CTE
-limitation caused.
+``resolve()`` (Law 1: anchor + register the relationship it crosses) and the CTE's FROM
+is built from the scope's registered ``join_paths``. This closes the
+silent-broadcast defects the joinless-shifted-CTE limitation caused.
 
 Failure taxonomy this file pins (each verified against the pre-Stage-7 code so
 every test fails for the RIGHT reason — feature missing, not setup):
 
-* **cross-model ``ColumnKey`` partition** (``stores.name``) → today raises
+* **cross-dataset ``ColumnKey`` partition** (``stores.name``) → today raises
   ``NotImplementedError: stage 7b.12``. The QoQ demo shape.
 * **derived (``ColumnSqlKey``) dim partition** (local ``upper(status)`` or
   joined ``stores.tier``) → today SILENTLY skipped by the auto-partition walk →
@@ -20,9 +19,9 @@ every test fails for the RIGHT reason — feature missing, not setup):
   values do.
 * **secondary ``TimeTruncKey`` dim** → same silent broadcast across the second
   time bucket.
-* **joined-column ROW filter** → today raises via ``_guard_no_joined_refs`` (the
-  shifted CTE carried no joins). The guard is lifted: the scope now pulls the
-  filter's join.
+* **joined-field ROW filter** → today raises via ``_guard_no_joined_refs`` (the
+  shifted CTE carried no relationships). The guard is lifted: the scope now pulls the
+  filter's relationship.
 * **plain ``=`` sjoin equality** → NULL dim / NULL time-bucket rows silently
   drop their shifted value. The grain join-back becomes null-safe (Codex F2 —
   the sjoin IS a grain join-back), so a NULL-store group keeps its prev value.
@@ -61,7 +60,7 @@ from tests._engine_helpers import _engine_generate
 
 
 # --------------------------------------------------------------------------- #
-# Model builders — orders → stores → regions (the QoQ demo chain).
+# Dataset builders — orders → stores → regions (the QoQ demo chain).
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
     return SlayerDataset(
@@ -220,11 +219,11 @@ def _qoq_query(*, metric_expression: str, metric_name: str) -> SlayerQuery:
 
 
 # =========================================================================== #
-# SQL-shape — cross-model / derived / secondary-TD partitions.
+# SQL-shape — cross-dataset / derived / secondary-TD partitions.
 # =========================================================================== #
 class TestShiftedCtePartitionShape:
     async def test_qoq_single_hop_partition_joins_and_projects(self) -> None:
-        """DEV-1474 core: ``change(sum(order_total))`` with ``stores.name`` — the
+        """Core: ``change(sum(order_total))`` with ``stores.name`` — the
         shifted CTE pulls ``LEFT JOIN stores`` (Law 1), projects the joined dim,
         and the sjoin joins back on it. Today: ``NotImplementedError 7b.12``."""
         sql = await _gen(
@@ -303,7 +302,7 @@ class TestShiftedCtePartitionShape:
 
     async def test_derived_joined_dim_partition_not_broadcast(self) -> None:
         """A derived JOINED dim (``stores.tier = upper(name)``) must partition the
-        shifted CTE: the join is pulled AND the expanded expression is grouped.
+        shifted CTE: the relationship is pulled AND the expanded expression is grouped.
         Today: silently skipped → broadcast across tiers (scope_closed passes)."""
         stores = _stores(extra=[
             DatasetField(name="tier", sql="upper(name)", datatype=DataType.STRING),
@@ -324,7 +323,7 @@ class TestShiftedCtePartitionShape:
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The derived JOINED expression is expanded (UPPER(stores.name), NOT the
-        # bare column) and grouped in the shifted CTE.
+        # bare field) and grouped in the shifted CTE.
         assert shifted.count("UPPER(stores.name)") >= 2, shifted  # SELECT + GROUP BY
         assert re.search(r"GROUP BY[\s\S]*UPPER\(stores\.name\)", shifted), shifted
         on = _sjoin_on(sql)
@@ -365,7 +364,7 @@ class TestShiftedCtePartitionShape:
         assert_scope_closed(sql)
 
     async def test_explicit_partition_by_rejected_on_time_shift(self) -> None:
-        """DEV-1739 D6: explicit ``partition_by=`` on ``time_shift`` is rejected at
+        """Explicit ``partition_by=`` on ``time_shift`` is rejected at
         bind time. The auto-include of query dimensions does the shift join-back;
         the explicit form was a no-op under the uniform rule, so it now raises
         rather than silently accepting an inert kwarg."""
@@ -389,7 +388,7 @@ class TestShiftedCtePartitionShape:
             await _gen(query, orders, extra_datasets=[stores, regions])
 
     async def test_joined_time_axis_pulls_join_into_shifted_cte(self) -> None:
-        """When the SHIFT-axis time dimension is itself a joined column
+        """When the SHIFT-axis time dimension is itself a joined field
         (``stores.opened_at``), routing it through the scope pulls ``LEFT JOIN
         stores`` into the shifted CTE. Today: the shifted CTE references an
         unbound ``stores`` alias → scope leak."""
@@ -407,7 +406,7 @@ class TestShiftedCtePartitionShape:
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
-        # The shift-axis time expression IS the joined column — not some unrelated
+        # The shift-axis time expression IS the joined field — not some unrelated
         # join that happens to be present; the offset lives in the join-back.
         assert "stores.opened_at" in shifted, shifted
         # The sole grain pair is the (joined) shifted time axis.
@@ -418,11 +417,11 @@ class TestShiftedCtePartitionShape:
 
 
 # =========================================================================== #
-# SQL-shape — joined-column ROW filter (guard lifted).
+# SQL-shape — joined-field ROW filter (guard lifted).
 # =========================================================================== #
 class TestShiftedCteJoinedFilter:
     async def test_query_filter_crossing_join_lifts_guard(self) -> None:
-        """A query ROW filter crossing the orders→stores join (``stores.name =
+        """A query ROW filter crossing the orders→stores relationship (``stores.name =
         'North'``) combined with a time_shift: the shifted CTE now joins stores
         and applies the filter. Today: ``NotImplementedError`` from
         ``_guard_no_joined_refs``."""
@@ -442,7 +441,7 @@ class TestShiftedCteJoinedFilter:
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The filter predicate is PRESERVED in the shifted CTE's WHERE (not merely
-        # the column appearing somewhere) — the re-aggregation runs over the same
+        # the field appearing somewhere) — the re-aggregation runs over the same
         # filtered population as _base.
         where = _shifted_where(sql)
         assert "stores.name" in where, where
@@ -450,9 +449,9 @@ class TestShiftedCteJoinedFilter:
         assert_scope_closed(sql)
 
     async def test_model_filter_mode_a_crossing_join_lifts_guard(self) -> None:
-        """Same, for a Mode-A MODEL filter (``stores.name IS NOT NULL``) that
-        crosses the join — the shifted CTE re-aggregates over the same filtered
-        population, joins pulled."""
+        """Same, for a Mode-A DATASET filter (``stores.name IS NOT NULL``) that
+        crosses the relationship — the shifted CTE re-aggregates over the same filtered
+        population, relationships pulled."""
         model = _orders(filters=["stores.name IS NOT NULL"])
         query = SlayerQuery(
             population="orders",
@@ -473,7 +472,7 @@ class TestShiftedCteJoinedFilter:
         # The predicate reaches the shifted CTE as an AST now that Mode-A text
         # enters through the one door, so sqlglot emits its canonical negated
         # form. The host path always re-parsed and rendered this way; the
-        # shifted path's raw-text passthrough was the odd one out (DEV-1745 W1).
+        # shifted path's raw-text passthrough was the odd one out.
         upper = where.upper()
         assert "IS NOT NULL" in upper or "NOT STORES.NAME IS NULL" in upper, where
         assert_scope_closed(sql)
@@ -501,8 +500,8 @@ class TestShiftedCteNullSafeJoinBack:
         bucket must match, not silently drop. Today: plain ``=``.
 
         Uses a LOCAL-dim partition so the sjoin is emitted on the pre-Stage-7
-        pipeline (a cross-model partition raises 7b.12 first) — this pins the
-        null-safe EQUALITY spelling specifically, independent of the join-pull."""
+        pipeline (a cross-dataset partition raises 7b.12 first) — this pins the
+        null-safe EQUALITY spelling specifically, independent of the relationship pull."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -537,7 +536,7 @@ class TestLocalOnlyTimeShiftUnchanged:
     async def test_local_partition_stays_joinless(self) -> None:
         """A time_shift partitioned only on a LOCAL bare dimension (``status``)
         must keep the shifted CTE's FROM bare — widening the FROM for the
-        cross-model case must never leak a join into the local path."""
+        cross-dataset case must never leak a join into the local path."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -570,8 +569,8 @@ class TestJoinedSecondaryTimeDimension:
     async def test_joined_secondary_td_registers_join_and_partitions(self) -> None:
         """A LOCAL shift axis (``ordered_at``) with a JOINED secondary time
         dimension (``stores.opened_at`` @quarter): the secondary TimeTruncKey must
-        register its crossed join into the shifted CTE AND stay part of the grain.
-        Exercises the plan's requirement that a secondary TimeTruncKey pulls joins
+        register its crossed relationship into the shifted CTE AND stay part of the grain.
+        Exercises the plan's requirement that a secondary TimeTruncKey pulls relationships
         while remaining a shifted-grain partition."""
         query = SlayerQuery(
             population="orders",

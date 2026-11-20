@@ -1,4 +1,4 @@
-"""Queries carrying ``{var}`` placeholders on formula surfaces construct; granularity / column placeholders don't."""
+"""Queries carrying ``{var}`` placeholders on expression surfaces construct; granularity / field placeholders don't."""
 
 from __future__ import annotations
 

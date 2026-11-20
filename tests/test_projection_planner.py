@@ -1,6 +1,6 @@
-"""Stage 7a.6 (DEV-1450) — ProjectionPlanner tests.
+"""ProjectionPlanner tests.
 
-The ProjectionPlanner allocates slots for declared measures + creates
+The ProjectionPlanner allocates slots for declared metrics + creates
 hidden slots for refs that appear ONLY in order/filter (the "hidden
 slot" semantics from the issue spec). Outputs a ``ProjectionPlan``
 carrying the ValueRegistry, the public-projection ordering, the order
@@ -80,7 +80,7 @@ class TestDeclaredMeasures:
 
 class TestHiddenSlots:
     def test_filter_only_ref_becomes_hidden(self):
-        # ORDER BY amount:sum DESC LIMIT 10 with no declared measure for
+        # ORDER BY amount:sum DESC LIMIT 10 with no declared metric for
         # amount:sum. The slot is materialised hidden.
         planner = ProjectionPlanner()
         plan = planner.plan(
@@ -215,7 +215,7 @@ class TestPlanFilters:
     def test_order_arithmetic_slots_root_and_aggregate(self):
         """``ORDER BY amount:sum + 1`` with no declared ``sum(amount)``.
 
-        DEV-1733 INVERTED the second half of this contract. The planner still
+        The second half of this contract is INVERTED. The planner still
         interns the inner aggregate as a hidden slot, and still never slots the
         literal — but the ArithmeticKey ROOT is now slotted too.
 
@@ -250,16 +250,16 @@ class TestPlanFilters:
         # Slots: status (public) + amount:sum (hidden) + the root (hidden).
         assert plan.registry.find_by_key(agg) is not None
         root_sid = plan.registry.find_by_key(order_expr)
-        assert root_sid is not None, "DEV-1733: the composite order root is slotted"
+        assert root_sid is not None, "the composite order root is slotted"
         assert plan.registry.get(root_sid).hidden is True
         # LiteralKey still NOT slotted.
         assert plan.registry.find_by_key(LiteralKey(value=Decimal(1))) is None
 
 
 class TestDev1501CanonicalNameWithAggArgs:
-    """DEV-1501 — hidden parametric AggregateKey slots must get distinct
+    """Hidden parametric AggregateKey slots must get distinct
     ``declared_name`` values so the SQL generator can materialise them as
-    base-CTE columns without alias collision. Mirrors the cross-model
+    base-CTE columns without alias collision. Mirrors the cross-dataset
     parametric P10 exception (``canonical_agg_name`` from
     ``slayer.core.refs``).
     """
@@ -304,7 +304,7 @@ class TestDev1501CanonicalNameWithAggArgs:
             f"Hidden parametric last() slots collided on declared_name: "
             f"both {slot_cr.declared_name!r}"
         )
-        # Exact canonical form — mirrors the cross-model parametric naming
+        # Exact canonical form — mirrors the cross-dataset parametric naming
         # convention (``revenue_percentile_p_0_5``).
         assert slot_cr.declared_name == "revenue_last_created_at", (
             f"Unexpected canonical name: {slot_cr.declared_name!r}"
@@ -316,7 +316,7 @@ class TestDev1501CanonicalNameWithAggArgs:
     def test_two_percentiles_with_different_kwargs_distinct_names(self):
         """``percentile(revenue, p=0.5)`` vs ``percentile(revenue, p=0.95)``
         as hidden order/filter slots must produce distinct ``declared_name``
-        values mirroring the cross-model parametric exception.
+        values mirroring the cross-dataset parametric exception.
         """
         k_p50 = AggregateKey(
             source=FieldKey(path=(), leaf="revenue"),

@@ -203,7 +203,7 @@ Hidden (3) — recognised ELT/migration internals (excluded from datasets_summar
 The hint names the datasource because these datasets collide across datasources
 by construction — every dlt-loaded database has its own `_dlt_loads`, so a bare
 `edit_dataset("_dlt_loads", hidden=false)` resolves by [datasource
-priority](../concepts/models.md) and can un-hide the wrong one.
+priority](../concepts/datasets.md) and can un-hide the wrong one.
 
 When a dataset's name differs from the live object it points at, the listing shows
 the dataset name too, since that is what `edit_dataset` takes: `- analytics._dlt_loads
@@ -267,7 +267,7 @@ obvious rather than silent.
 
 ### `slayer validate-datasets`
 
-Diff persisted datasets against the live database schemas (read-only) and, optionally, profile each relationship's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Relationship cardinality](../concepts/models.md#relationship-cardinality).
+Diff persisted datasets against the live database schemas (read-only) and, optionally, profile each relationship's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Relationship cardinality](../concepts/datasets.md#relationship-cardinality).
 
 ```bash
 slayer validate-datasets                                   # every datasource

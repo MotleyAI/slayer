@@ -1,5 +1,5 @@
 """Golden SQL — the two-level association producer
-across seven Tier-1 dialects, plus cross-model broadcast byte-identity
+across seven Tier-1 dialects, plus cross-dataset broadcast byte-identity
 tripwires.
 
 Blessed BEFORE implementation, so every ``bcast/`` case pins today's bytes

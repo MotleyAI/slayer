@@ -1,4 +1,4 @@
-"""Every ``_dev1966_fixtures`` model executes by name with its hand-computed values."""
+"""Every ``_dev1966_fixtures`` dataset executes by name with its hand-computed values."""
 
 from __future__ import annotations
 

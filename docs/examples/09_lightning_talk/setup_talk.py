@@ -26,7 +26,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _JAFFLE_DATA_DIR = os.path.normpath(os.path.join(_THIS_DIR, "..", "jaffle_data"))
 
-LIGHTNING_MODELS_DIR = os.path.join(_THIS_DIR, "slayer_models")
+LIGHTNING_DATASETS_DIR = os.path.join(_THIS_DIR, "slayer_datasets")
 BROOKLYN_MEMORY_ID = "lightning.brooklyn_pos"
 TOP_CUSTOMERS_MEMORY_ID = "lightning.top_customers"
 
@@ -52,12 +52,12 @@ def ensure_lightning_talk_demo(
 
     - DuckDB lives at ``docs/examples/jaffle_data/demo/jaffle_shop.duckdb``
       (shared with the other example notebooks).
-    - Datasets live at ``docs/examples/09_lightning_talk/slayer_models/``
+    - Datasets live at ``docs/examples/09_lightning_talk/slayer_datasets/``
       (isolated; ``save_memory`` calls only affect this dir).
     - Both stable memory ids are pre-deleted (best-effort) so re-running
       the notebook is idempotent after partial prior runs.
     """
-    storage = YAMLStorage(base_dir=LIGHTNING_MODELS_DIR)
+    storage = YAMLStorage(base_dir=LIGHTNING_DATASETS_DIR)
 
     _ds, datasets, _db_built = ensure_demo_datasource(
         storage=storage,

@@ -1,4 +1,4 @@
-"""Cube import: measures over a dropped (unparseable-SQL) column, and calc measures depending on them, are dropped and reported."""
+"""Cube import: measures over a dropped (unparseable-SQL) field, and calc measures depending on them, are dropped and reported."""
 
 import pytest
 

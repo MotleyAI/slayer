@@ -1,4 +1,4 @@
-"""Jaffle Shop demo: keys and joins on any SQLAlchemy, exact money, stale-DB rebuild, self-healing setup."""
+"""Jaffle Shop demo: keys and relationships on any SQLAlchemy, exact money, stale-DB rebuild, self-healing setup."""
 
 from __future__ import annotations
 
@@ -180,7 +180,7 @@ def _register_demo_ds(*, storage: YAMLStorage, store_dir: str) -> DatasourceConf
 
 
 def _store_affected_datasets(*, storage: YAMLStorage, store_dir: str) -> None:
-    """Persist demo models as an affected release left them: no joins, no money ``db_type``."""
+    """Persist demo datasets as an affected release left them: no relationships, no money ``db_type``."""
     ds = _register_demo_ds(storage=storage, store_dir=store_dir)
     for model in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds)):
         jaffle_shop.apply_demo_enrichment(model)
@@ -226,7 +226,7 @@ def _reset_engines():
 
 
 # ---------------------------------------------------------------------------
-# Keys and joins (models/fk-ingestion: DuckDB demo keeps its joins)
+# Keys and relationships (models/fk-ingestion: DuckDB demo keeps its relationships)
 # ---------------------------------------------------------------------------
 
 
@@ -336,7 +336,7 @@ class TestDemoMoneyIsExact:
 
 
 # ---------------------------------------------------------------------------
-# Rebuild and healing (demo/jaffle-shop: stale DB rebuilt; setup heals models)
+# Rebuild and healing (demo/jaffle-shop: stale DB rebuilt; setup heals datasets)
 # ---------------------------------------------------------------------------
 
 

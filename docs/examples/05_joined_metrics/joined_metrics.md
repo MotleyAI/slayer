@@ -1,6 +1,6 @@
 # Metrics from joined datasets
 
-A key requirement for an expressive semantic layer is [relationships](../05_joins/joins.md). Once you have a relationship defined, it's easy to reuse dimensions from child datasets — you've already joined the underlying table, just refer to dimension definitions prefixed with the right subquery alias.
+A key requirement for an expressive semantic layer is [relationships](../05_relationships/relationships.md). Once you have a relationship defined, it's easy to reuse dimensions from child datasets — you've already joined the underlying table, just refer to dimension definitions prefixed with the right subquery alias.
 
 Using *metrics* from child datasets is harder. Why not just do all the joins, then apply the metric definition to the corresponding columns in the joined-up expression? Because the join might change the cardinality (number of rows) in the pre-aggregation result, thus breaking aggregations such as sum or average.
 
@@ -20,7 +20,7 @@ We then evaluate both queries (the results may have different cardinality becaus
 
 This way we guarantee that the values of that joined metric are exactly the same as in the original — as that is exactly how it's evaluated.
 
-[Transforms](../../concepts/formulas.md) like `cumsum()` and `change()` work on cross-dataset metrics too — the transform is applied after the sub-query join:
+[Transforms](../../concepts/expressions.md) like `cumsum()` and `change()` work on cross-dataset metrics too — the transform is applied after the sub-query join:
 
 ```json
 {
@@ -35,4 +35,4 @@ This way we guarantee that the values of that joined metric are exactly the same
 
 ---
 
-See the [companion notebook](joined_measures_nb.ipynb) for runnable code demonstrating cross-dataset metrics.
+See the [companion notebook](joined_metrics_nb.ipynb) for runnable code demonstrating cross-dataset metrics.

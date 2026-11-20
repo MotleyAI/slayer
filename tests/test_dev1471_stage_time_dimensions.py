@@ -107,7 +107,7 @@ class TestStageBinder:
         stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.DATETIME))
         td = TimeDimension(field="not_a_column", granularity=TG.MONTH)
         bundle = _bundle(stage)
-        with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's columns
+        with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's fields
             bind_time_dimension(td, scope=stage, bundle=bundle)
 
     def test_dotted_name_on_stage_raises_illegal_scope(self) -> None:
@@ -171,7 +171,7 @@ class TestReBucketingChecker:
         [(TG.MONTH, TG.MONTH), (TG.MONTH, TG.YEAR), (TG.DAY, TG.WEEK), (None, TG.DAY)],
     )
     def test_valid_rebucketing_passes(self, upstream, requested) -> None:
-        # Same, nesting-coarser, or any granularity on an un-truncated column.
+        # Same, nesting-coarser, or any granularity on an un-truncated field.
         check_time_dimension_field(
             name="s1.created_at", field_type=DataType.DATETIME,
             bucketed_leaves=() if upstream is None else (("s1.created_at", upstream),),
@@ -246,7 +246,7 @@ class TestStageBindingErrorsEndToEnd:
             "time_dimensions": [TimeDimension(field="s1.nope", granularity=TG.MONTH)],
             "metrics": [{"metric": "sum(s1.rev)", "alias": "rev"}],
         })
-        with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's columns
+        with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's fields
             await engine.execute(query=[inner, outer], dry_run=True)
 
     async def test_dotted_name_end_to_end(self) -> None:
@@ -357,7 +357,7 @@ class TestStageReBucketExecuted:
             resp = await engine.execute(query=[inner, outer])
             got = {date_str(r[f"s1.{col}"]): r["cohort_size"] for r in resp.data}
             assert got == {"2025-02-01": 2, "2025-03-01": 2}
-            # Every granularity binds on an aggregate-output column — day too.
+            # Every granularity binds on an aggregate-output field — day too.
             day_outer = outer.model_copy(update={
                 "time_dimensions": [TimeDimension(field=col, granularity=TG.DAY)],
             })

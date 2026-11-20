@@ -198,7 +198,7 @@ def _count_top_only(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 class TestEverySiteStatesItsPopulation:
-    """The cross-model producer re-roots its own filters; every other site inherits."""
+    """The cross-dataset producer re-roots its own filters; every other site inherits."""
 
     @pytest.fixture
     def populations(self, monkeypatch: pytest.MonkeyPatch) -> list:

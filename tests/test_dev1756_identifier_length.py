@@ -2,7 +2,7 @@
 
 Postgres caps identifiers at 63 bytes and silently truncates past it, so long
 projection aliases collide. Fixed here: projection aliases (quoted), CTE names
-(unquoted), virtual-model shorts. Table aliases are surface 2.
+(unquoted), virtual-dataset shorts. Table aliases are surface 2.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from typing import Any, Protocol
 # how the "no churn for the common case" tests prove the write pass was identity.
 _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
 
-# Virtual-model shorts are not ported to the typed pipeline (query-backed shorts flow
+# Virtual-dataset shorts are not ported to the typed pipeline (query-backed shorts flow
 # through ``source_bundle``), so TestVirtualModelShorts exercises removed internals.
 _UNPORTED_SURFACE = (
     "Virtual-model-short fitting not ported to the typed pipeline "
@@ -144,7 +144,7 @@ def _chain_datasets(
                 DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.FLOAT),
                 DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
                 *([
-                    # Root column named what a deep join path flattens to; names permit ``__``.
+                    # Root field named what a deep relationship path flattens to; names permit ``__``.
                     DatasetField(name=decoy_root_column, sql="decoy", datatype=DataType.STRING),
                 ] if decoy_root_column else []),
             ],
@@ -189,7 +189,7 @@ async def _build_engine(tmp_path, *, validate: bool = True, **kw) -> tuple[Slaye
 
 @pytest.fixture
 async def chain(tmp_path) -> tuple[SlayerQueryEngine, SlayerDataset]:
-    """Engine + root model for the 3-hop chain, with a postgres datasource."""
+    """Engine + root dataset for the 3-hop chain, with a postgres datasource."""
     return await _build_engine(tmp_path)
 
 
@@ -214,7 +214,7 @@ SHORT_QUERY = SlayerQuery.model_validate({
 
 
 # Identifier-inspection helpers — only the namespaces this issue owns (aliases,
-# ORDER BY refs, CTE names). Join-path table aliases are surface 2.
+# ORDER BY refs, CTE names). Relationship-path table aliases are surface 2.
 
 
 def _nbytes(s: str) -> int:
@@ -317,7 +317,7 @@ def _assert_order_by_refs_resolve(sql: str, dialect: str = "postgres") -> None:
 async def _sql(engine: SlayerQueryEngine, dataset, query, *, dialect: str = "postgres", mode: str = "outer") -> str:
     """Emit SQL for ``query`` on ``dialect`` via the branch's dry-run pipeline.
 
-    Rebuilds a fresh engine on ``dialect`` from the models the passed engine
+    Rebuilds a fresh engine on ``dialect`` from the datasets the passed engine
     holds (the branch ties dialect to the datasource, so a per-dialect store is
     the way to re-emit the same query on another backend). ``mode`` is accepted
     for call-site compatibility — the branch's generator always emits the
@@ -631,7 +631,7 @@ class TestCteNames:
     async def test_cross_model_cte_name_within_limit(self, chain) -> None:
         engine, model = chain
         sql = await _sql(engine, model, _deep_cross_dataset_query())
-        assert "_cm_" in sql, "no cross-model CTE was generated; test is vacuous"
+        assert "_cm_" in sql, "no cross-dataset CTE was generated; test is vacuous"
         _assert_within_limit(sql, 63)
 
     async def test_cte_definition_and_references_agree(self, chain) -> None:
@@ -647,12 +647,12 @@ class TestCteNames:
             assert name in referenced, f"CTE {name!r} defined but never referenced\n{sql}"
 
     async def test_two_deep_cross_model_ctes_stay_distinct(self, chain) -> None:
-        """Two over-limit cross-model CTE names must fit and stay distinct after truncation."""
+        """Two over-limit cross-dataset CTE names must fit and stay distinct after truncation."""
         engine, model = chain
         sql = await _sql(engine, model, _deep_cross_dataset_query(two_metrics=True))
         tree = sqlglot.parse_one(sql, dialect="postgres")
         names = [n for n, _ in _cte_names(tree)]
-        assert len(names) >= 2, f"expected two cross-model CTEs\n{sql}"
+        assert len(names) >= 2, f"expected two cross-dataset CTEs\n{sql}"
         effective = [_pg_effective(n, quoted=False) for n in names]
         assert len(set(effective)) == len(effective), effective
         _assert_within_limit(sql, 63)
@@ -739,7 +739,7 @@ class TestCteNames:
 
 
 def _wrapper_select(vm_sql: str) -> exp.Select:
-    """The outermost SELECT of a virtual model's SQL — the rename wrapper."""
+    """The outermost SELECT of a virtual dataset's SQL — the rename wrapper."""
     return next(iter(sqlglot.parse_one(vm_sql, dialect="postgres").find_all(exp.Select)))
 
 
@@ -754,7 +754,7 @@ class TestVirtualModelShorts:
         for col in vm.fields:
             assert _nbytes(col.name) <= 63, col.name
             assert col.name in emitted, (
-                f"virtual-model column {col.name!r} is not an alias the wrapper "
+                f"virtual-dataset field {col.name!r} is not an alias the wrapper "
                 f"emits\n{vm.sql}"
             )
 
@@ -780,8 +780,8 @@ class TestVirtualModelShorts:
             ident = proj.args.get("alias")
             assert isinstance(ident, exp.Identifier), f"{ident} is not an Identifier"
             short = ident.this
-            assert short in by_short, f"{short!r} is not a virtual-model column\n{vm.sql}"
-            # How the generator will emit a downstream reference to this column.
+            assert short in by_short, f"{short!r} is not a virtual-dataset field\n{vm.sql}"
+            # How the generator will emit a downstream reference to this field.
             short_sql = by_short[short].sql
             assert short_sql is not None
             ref = gen._parse(short_sql).find(exp.Column)
@@ -897,7 +897,7 @@ class TestVirtualModelShorts:
         assert flat in str(exc.value)
 
     async def test_caller_supplied_measure_names_are_fitted(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
-        """A caller-supplied measure ``name`` bypasses ``_alias_to_short`` and needs its own fitting."""
+        """A caller-supplied metric ``name`` bypasses ``_alias_to_short`` and needs its own fitting."""
         engine, _ = chain
         long_a = "z" * 63 + "b"   # 64 bytes
         long_b = "z" * 63 + "c"   # 64 bytes, identical first 63
@@ -924,7 +924,7 @@ class TestVirtualModelShorts:
         assert long_b not in vm.sql, vm.sql
 
     async def test_nested_dag_two_levels_agree(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
-        """Two stages: stage 2 references stage 1's virtual-model columns."""
+        """Two stages: stage 2 references stage 1's virtual-dataset fields."""
         engine, _ = chain
         stage1 = _repro_query().model_copy(update={"name": "stage1"})
         vm = await engine._query_as_dataset(inner_query=stage1, override_name="stage1")
@@ -969,7 +969,7 @@ class TestEngineContract:
     ) -> None:
         """``get_result_column_types`` probe keys are fitted aliases and must decode back to canonical."""
         engine, _ = chain
-        over_limit = "totalAmount_" + "x" * 60   # 72-char measure name
+        over_limit = "totalAmount_" + "x" * 60   # 72-char metric name
 
         captured: dict[str, ResultColumnType] = {}
 
@@ -1005,7 +1005,7 @@ class TestEngineContract:
         emitted = [k for k in captured if _nbytes(k) > 63]
         assert not emitted, f"probe SQL should carry fitted aliases, got {emitted}"
         assert over_limit in types, (
-            f"over-limit measure dropped from the type map; probe keys were "
+            f"over-limit metric dropped from the type map; probe keys were "
             f"{sorted(captured)}"
         )
 
@@ -1019,9 +1019,9 @@ class TestSweep:
     @pytest.fixture
     def queries(self) -> list[SlayerQuery]:
         return [
-            _repro_query(),                                   # plain dims + measures
+            _repro_query(),                                   # plain dims + metrics
             _repro_query(with_order=True),                    # ORDER BY hoist + outer wrap
-            _deep_cross_dataset_query(),                        # cross-model CTE (_cm_ + WITH)
+            _deep_cross_dataset_query(),                        # cross-dataset CTE (_cm_ + WITH)
             SlayerQuery(                                      # arithmetic expression
                 population="SandboxInvoiceV2",
                 dimensions=[QueryDimension(field=f"{DEEP}.email")],

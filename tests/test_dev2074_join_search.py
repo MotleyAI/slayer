@@ -1,4 +1,4 @@
-"""The shared join-graph search layer ``slayer.core.relationship_search`` (design D1–D4)."""
+"""The shared relationship-graph search layer ``slayer.core.relationship_search`` (design D1–D4)."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def _named_two_cycle() -> dict[str, SlayerDataset]:
 
 
 def _unnamed_parallel() -> dict[str, SlayerDataset]:
-    """``orders`` declares two unnamed joins onto ``addresses``."""
+    """``orders`` declares two unnamed relationships onto ``addresses``."""
     return _by(
         _m("orders", joins=[_to("addresses"), _to("addresses", src="fk2")]),
         _m("addresses"),

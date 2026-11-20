@@ -1,4 +1,4 @@
-"""Save-time trial-execute validation of raw-``sql`` models (DEV-1843).
+"""Save-time trial-execute validation of raw-``sql`` datasets.
 
 Exercises ``SlayerQueryEngine.validate_sql_dataset_source`` and its wiring into
 ``save_model`` over a seeded SQLite datasource: valid SQL persists, a reachable
@@ -90,7 +90,7 @@ def _capture(sink: list[str]):
 
 
 def _trial(sql: str) -> str:
-    """The trial probe a SQLite datasource runs for model SQL ``sql``."""
+    """The trial probe a SQLite datasource runs for dataset SQL ``sql``."""
     return render_type_probe(sql_dataset_trial_query(sql, dialect=SqliteDialect()), dialect=SqliteDialect()).sql
 
 
@@ -203,8 +203,8 @@ class TestRejectAndAccept:
 
 
 class TestGatesSkipProbe:
-    """Non-sql-mode and parameterized models never trial-execute; a placeholder
-    in a column expression does not suppress the ``model.sql`` check."""
+    """Non-sql-mode and parameterized datasets never trial-execute; a placeholder
+    in a field expression does not suppress the ``dataset.sql`` check."""
 
     async def test_sql_table_model_not_trial_executed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -263,7 +263,7 @@ class TestGatesSkipProbe:
             _raise(_op_error("no such table: orders")),
         )
         # Placeholder appears only inside a ``{? ?}`` optional block — still a
-        # placeholder in model.sql, so the probe is skipped.
+        # placeholder in dataset.sql, so the probe is skipped.
         model = _sql_dataset(
             "SELECT id FROM orders {? WHERE status = {status} ?}",
             name="optblock_model",
@@ -275,8 +275,8 @@ class TestGatesSkipProbe:
         self, tmp_path: Path
     ) -> None:
         engine, _ = await _make_engine(tmp_path)
-        # model.sql is static and invalid; a {var} in a column expression must
-        # not suppress the model.sql probe (Codex MAJOR 1).
+        # dataset.sql is static and invalid; a {var} in a field expression must
+        # not suppress the dataset.sql probe (Codex MAJOR 1).
         model = SlayerDataset(
             name="col_var_model",
             sql="SELECT nonexistent FROM orders",
@@ -361,8 +361,8 @@ class TestInconclusiveWarnsAndSaves:
 
 
 class TestNonReadOnlySqlRejected:
-    """A raw-sql model whose SQL is not a read-only query is rejected before any
-    trial-execute, so a save can never mutate the datasource (DEV-1843)."""
+    """A raw-sql dataset whose SQL is not a read-only query is rejected before any
+    trial-execute, so a save can never mutate the datasource."""
 
     @pytest.mark.parametrize("bad_sql", [
         "DELETE FROM orders",

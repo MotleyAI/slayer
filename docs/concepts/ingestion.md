@@ -58,7 +58,7 @@ FK columns from referenced tables are excluded from the source dataset to avoid 
 
 All datasets use `sql_table` (the source table) plus `relationships` (direct FK relationships only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the relationship graph. A **composite** foreign key becomes a single relationship carrying all of its column pairs, not one relationship per column.
 
-Each FK relationship also gets a structural [`cardinality`](models.md#relationship-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-datasets --cardinality`.
+Each FK relationship also gets a structural [`cardinality`](datasets.md#relationship-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-datasets --cardinality`.
 
 ### Comments and descriptions
 

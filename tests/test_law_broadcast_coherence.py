@@ -1,5 +1,5 @@
 """LAW broadcast coherence (semantics.arc42.md §3 law 2): coercing then
-combining equals combining then coercing — a formula measure ``a ⊕ b`` matches
+combining equals combining then coercing — an expression metric ``a ⊕ b`` matches
 its operands queried separately and combined client-side (SQL NULL
 propagation), and coercions compose along grain chains."""
 
@@ -84,7 +84,7 @@ async def test_formula_equals_client_side_combine(pair_case):
     for key, row in right_rows.items():
         expected = _combine(op=pair.op, a=row["a"], b=row["b"])
         assert values_equal(a=left_rows[key], b=expected), (
-            f"LAW broadcast coherence violated — cell {key}: formula gave "
+            f"LAW broadcast coherence violated — cell {key}: expression gave "
             f"{left_rows[key]!r}, client-side combine gave {expected!r}; "
             f"pair={pair} grain={grain}"
         )
@@ -92,7 +92,7 @@ async def test_formula_equals_client_side_combine(pair_case):
 
 async def test_ill_typed_operand_refuses_identically_in_both_phrasings(exec_engine):
     """part(city) outside a city-bearing grain is ill-typed (axiom 6); the
-    typed refusal must not depend on phrasing (formula vs separate measures).
+    typed refusal must not depend on phrasing (expression vs separate metrics).
     The rm-grain pair sample excludes part_city for exactly this reason."""
     kwargs: dict = {"dimensions": ["orders.region"], "time_dimensions": month_td()}
     refusal = r"partition_by field 'city' is not a query dimension"

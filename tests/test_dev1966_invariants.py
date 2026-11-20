@@ -1,4 +1,4 @@
-"""Internal invariants: one per-stage model universe, collision fail-closed, no deferral arm.
+"""Internal invariants: one per-stage dataset universe, collision fail-closed, no deferral arm.
 
 Spec: openspec …/changes/dev-1966-… design decisions 4, 5 and 13.
 """

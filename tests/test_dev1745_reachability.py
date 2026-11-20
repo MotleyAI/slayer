@@ -1,16 +1,16 @@
-"""DEV-1745 (W4 / mechanism contract 5.3) — structural crossing metadata and
+"""W4 / mechanism contract 5.3 — structural crossing metadata and
 ONE reachability rule for every key kind.
 
 Filter routing must work EXCLUSIVELY from structural metadata. The
-``ColumnSqlKey`` model-name-membership heuristic goes: it asked whether the
-derived column's model NAME appeared anywhere in ``target_path`` — a flat
-membership test, not a structural prefix — so a model reachable on a SIBLING
-branch counted as reachable, and a host-model derived column whose SQL crosses
+``ColumnSqlKey`` dataset-name-membership heuristic goes: it asked whether the
+derived field's dataset NAME appeared anywhere in ``target_path`` — a flat
+membership test, not a structural prefix — so a dataset reachable on a SIBLING
+branch counted as reachable, and a host-dataset derived field whose SQL crosses
 INTO the target counted as host-local.
 
 The replacement is one rule for every kind: a dependency is reachable iff its
-anchored join path is a PREFIX of ``target_path``. A derived key's effective
-paths are its own ``path`` plus the paths its expanded ``Column.sql`` crosses.
+anchored relationship path is a PREFIX of ``target_path``. A derived key's effective
+paths are its own ``path`` plus the paths its expanded ``DatasetField.sql`` crosses.
 
 Reachability is an ALL-DEPENDENCIES predicate — a filter propagates only if
 EVERY dependency is available in the destination scope. Any unreachable
@@ -20,7 +20,7 @@ The metadata is computed at PLAN time and carried per filter, NOT on
 ``ColumnSqlKey`` (it is interned, and ``_reroot_path_ref`` copies unknown
 fields through rerooting unchanged) and NOT on ``ValueSlot``
 (``filter_referenced_slot_ids`` silently skips keys with no interned slot, and
-filter-only derived columns are exactly such keys).
+filter-only derived fields are exactly such keys).
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ from slayer.engine.plan import plan_query
 
 
 # --------------------------------------------------------------------------- #
-# Model graph:  orders -> customers -> regions
-#                      -> warehouses            (SIBLING branch)
+# Dataset graph:  orders -> customers -> regions
+#                        -> warehouses            (SIBLING branch)
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
     return SlayerDataset(
@@ -106,7 +106,7 @@ def _orders() -> SlayerDataset:
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="warehouse_id", datatype=DataType.INTEGER),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            # a model and a column that share a name — the heuristic's blind spot
+            # a dataset and a field that share a name — the heuristic's blind spot
             DatasetField(name="customers", datatype=DataType.STRING),
             # derived, LOCAL to the host, but its SQL crosses INTO customers
             DatasetField(name="host_derived_crossing", sql="customers.balance * 2",
@@ -117,7 +117,7 @@ def _orders() -> SlayerDataset:
             # derived, host-declared, sql that is BOTH host-local AND crossing
             DatasetField(name="host_derived_mixed", sql="amount * customers.balance",
                    datatype=DataType.FLOAT),
-            # derived referencing TWO models
+            # derived referencing TWO datasets
             DatasetField(name="multi_model",
                    sql="customers.balance + customers.regions.population",
                    datatype=DataType.FLOAT),
@@ -145,7 +145,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _paths_for(key):
-    """Anchored crossed-join-path set for one ValueKey, at plan time."""
+    """Anchored crossed-relationship-path set for one ValueKey, at plan time."""
     return key_closure(
         key=key,
         anchor_dataset=_orders(),
@@ -171,10 +171,10 @@ class TestCrossedPathScan:
         assert ("customers",) in paths
 
     def test_host_derived_crossing_is_detected(self) -> None:
-        """The heuristic called this host-local because model == host."""
+        """The heuristic called this host-local because dataset == host."""
         paths = _paths_for(_derived("host_derived_crossing"))
         assert ("customers",) in paths, (
-            "a host-model derived column whose SQL crosses into a join must "
+            "a host-dataset derived field whose SQL crosses into a relationship must "
             "report that crossing structurally"
         )
 
@@ -198,7 +198,7 @@ class TestCrossedPathScan:
         )
 
     def test_same_named_model_and_column_is_not_a_crossing(self) -> None:
-        """`orders.customers` is a COLUMN whose name matches a joined MODEL.
+        """`orders.customers` is a FIELD whose name matches a joined DATASET.
         Referencing it crosses nothing."""
         assert _paths_for(FieldKey(path=(), leaf="customers")) == ()
 
@@ -235,7 +235,7 @@ class TestCompositeKeyKindsAreTotal:
         assert ("customers",) in _paths_for(key)
 
     def test_nested_derived_below_a_composite(self) -> None:
-        """A derived crossing column buried under arithmetic must still be
+        """A derived crossing field buried under arithmetic must still be
         seen — this is the case a top-level-only scan misses."""
         key = ArithmeticKey(
             op="+",
@@ -247,9 +247,9 @@ class TestCompositeKeyKindsAreTotal:
         assert ("customers",) in _paths_for(key)
 
     def test_in_key_column_crossing_is_walked(self) -> None:
-        """An ``InKey`` is walked by the crossing scan: a crossing COLUMN
+        """An ``InKey`` is walked by the crossing scan: a crossing FIELD
         contributes its hop. ``values`` is ``Tuple[LiteralKey, ...]`` — literals
-        cross nothing — so the crossing can only ride on the column; the old
+        cross nothing — so the crossing can only ride on the field; the old
         host-local shape crossed nothing whatever the scan did (vacuous)."""
         key = InKey(
             field=FieldKey(path=("customers",), leaf="balance"),
@@ -282,7 +282,7 @@ class TestCompositeKeyKindsAreTotal:
 # Routing outcomes
 # --------------------------------------------------------------------------- #
 class TestProducerInheritanceRouting:
-    """Producer filter inheritance (``_cross_model_inherited_filters``) is the
+    """Producer filter inheritance (``_cross_dataset_inherited_filters``) is the
     one seam deciding which host ROW conjuncts a target-rooted producer
     inherits: attributable conjuncts inline, the rest push as a correlated
     EXISTS semi-join; an unresolvable hop fails closed."""
@@ -423,7 +423,7 @@ class TestCoordinateSystemInvariant:
     ``_reroot_path_ref`` re-anchors with ``model_copy(update={"path": ...})``
     and carries unknown fields through unchanged. On ``ValueSlot``, slots are
     copied wholesale (e.g. ``agg_slot.model_copy(update={"key": ...})`` in the
-    cross-model CTE builder), so a copied slot would carry PARENT-anchored
+    cross-dataset CTE builder), so a copied slot would carry PARENT-anchored
     paths into a nested plan.
     """
 
@@ -449,7 +449,7 @@ class TestCoordinateSystemInvariant:
         assert ("customers", "regions") in (from_orders or ())
 
     def test_nested_plan_recomputes_rather_than_inherits(self) -> None:
-        """The nested (rerooted) plan a cross-model CTE compiles must carry its
+        """The nested (rerooted) plan a cross-dataset CTE compiles must carry its
         OWN summary, not the parent's."""
         host = _orders()
         host.fields.append(
@@ -470,7 +470,7 @@ class TestCoordinateSystemInvariant:
             }),
             bundle=bundle,
         )
-        # DEV-1838 D5: the filtered-local nests as a host-rooted regroup
+        # The filtered-local nests as a host-rooted regroup
         # producer; the invariant is the same — the nested plan carries its
         # OWN summary.
         nested = [a.producer_plan for a in planned.regroup_attach_plans]

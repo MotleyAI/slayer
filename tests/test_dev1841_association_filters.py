@@ -1,4 +1,4 @@
-"""DEV-1841 / DEV-1910 — filters route into the home-rooted association
+"""Filters route into the home-rooted association
 producer: host-attributable conjuncts inline, reachable-but-unsafe conjuncts
 inline on the fanning home join (the per-entity dedup makes the fan-out
 harmless), out-of-scope conjuncts stay dropped+warned. Executed values on
@@ -6,7 +6,7 @@ SQLite + DuckDB.
 
 Membership is the semi-join semantics either way — entities of root rows with at
 least one related row passing the predicate — so these executed oracles are
-unchanged by the DEV-1910 re-home; only the emission (inline vs EXISTS) moves.
+unchanged by the home-rooted re-home; only the emission (inline vs EXISTS) moves.
 These tests pin that the association producer participates in the routing and its
 membership, including the NULL/absent-row case (an entity with no passing related
 row is excluded).
@@ -49,7 +49,7 @@ async def exec_backend_weak(request):
 
 class TestFilterRoutingIntoAssociation:
     async def test_host_local_filter_applies_inline(self, exec_backend):
-        """A host (orders) column filter restricts which rows enter the
+        """A host (orders) field filter restricts which rows enter the
         association before the per-cell distinct-entity aggregation."""
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
@@ -90,7 +90,7 @@ class TestFilterRoutingIntoAssociation:
     async def test_mixed_disjunction_pushes_on_association(
         self, exec_backend,
     ):
-        """DEV-1935: a mixed disjunction is pushed on the association arm (ok 270,
+        """A mixed disjunction is pushed on the association arm (ok 270,
         new 250), reported through the informational entry, no dropped warning."""
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(

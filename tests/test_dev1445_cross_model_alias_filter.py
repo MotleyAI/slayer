@@ -1,7 +1,7 @@
-"""DEV-1450 stage 7b.15e — DEV-1445 acceptance via ``engine.execute``.
+"""Alias filters on a renamed cross-dataset metric, via ``engine.execute``.
 
-DEV-1445: a renamed cross-model measure
-(``{"formula": "sum(customers.revenue)", "name": "rev"}``) can be filtered by
+A renamed cross-dataset metric
+(``{"metric": "sum(customers.revenue)", "alias": "rev"}``) can be filtered by
 EITHER the user alias (``rev``) OR the dotted aggregation
 (``sum(customers.revenue)``). Both bind to ONE structural slot (P2/P4), so the
 two filter forms produce bit-identical results.
@@ -110,9 +110,9 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQu
     ``sum(customers.revenue)`` bind to one slot — both filter forms produce
     identical results.
 
-    Cross-model revenue grouped by the joined ``customers.region`` is
-    ``NA = 150``, ``EU = 70``. DEV-1836 applies the aggregate-phase cross-model
-    filter uniformly with local aggregate filters: ``>= 80`` restricts rows, so
+    Cross-dataset revenue grouped by the joined ``customers.region`` is
+    ``NA = 150``, ``EU = 70``. The aggregate-phase cross-dataset filter
+    applies uniformly with local aggregate filters: ``>= 80`` restricts rows, so
     the failing ``EU`` group is dropped entirely (not preserved with a NULL).
     """
     eng, _ = engine
@@ -134,7 +134,7 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQu
         })
     )
 
-    # Result-key contract: renamed cross-model measure surfaces as the
+    # Result-key contract: renamed cross-dataset metric surfaces as the
     # user name under the host prefix.
     assert alias.columns == ["customers.region", "rev"]
     assert dotted.columns == alias.columns
@@ -181,10 +181,10 @@ async def test_dev1445_filter_actually_applies(engine: Tuple[SlayerQueryEngine, 
 
 async def test_dev1445_both_filter_forms_share_one_cte(engine: Tuple[SlayerQueryEngine, str]):
     """Both filter forms in the SAME query intern to ONE slot — the rendered
-    SQL has exactly one cross-model (``_cm_``) CTE with one HAVING predicate.
+    SQL has exactly one cross-dataset (``_cm_``) CTE with one HAVING predicate.
 
     This is the structural counterpart to the result-equality test: a
-    regression that minted a duplicate cross-model slot for the dotted vs.
+    regression that minted a duplicate cross-dataset slot for the dotted vs.
     alias spelling would still return the same rows (both slots compute the
     same value) but would emit two ``_cm_`` CTEs / two filter predicates.
     """
@@ -202,7 +202,7 @@ async def test_dev1445_both_filter_forms_share_one_cte(engine: Tuple[SlayerQuery
             {"customers.region": "NA", "rev": 150.0},
         ]
     )
-    # Structural: one shared cross-model CTE, one outer-WHERE predicate.
+    # Structural: one shared cross-dataset CTE, one outer-WHERE predicate.
     dry = await eng.execute(query, dry_run=True)
     sql = dry.sql
     assert sql is not None

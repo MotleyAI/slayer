@@ -1,4 +1,4 @@
-"""A small shop for stage edge inheritance on pass-through key columns.
+"""A small shop for stage edge inheritance on pass-through key fields.
 
 Physical tables::
 

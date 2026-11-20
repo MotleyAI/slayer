@@ -1,4 +1,4 @@
-"""Field filters, dataset filters and join keys under the row-definition name rule, in the ``expression`` spelling.
+"""Field filters, dataset filters and relationship keys under the row-definition name rule, in the ``expression`` spelling.
 
 Specs: models/column-filters, models/model-filters, models/join-keys.
 """
@@ -124,7 +124,7 @@ class TestDatasetFilter:
             assert await ids(engine) == [2]
 
 
-# ── join keys over renamed readers ────────────────────────────────────────
+# ── relationship keys over renamed readers ──────────────────────────────────
 
 def _graph() -> list[SlayerDataset]:
     """``orders → customers → regions`` with every key a renamed reader in the ``expression`` spelling."""

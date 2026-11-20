@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-2006 — ranked / windowed re-aggregation operands.
+"""Shared fixtures for ranked / windowed re-aggregation operands.
 
 Underscore-prefixed so pytest skips collection. One snapshot dataset seeded into
 SQLite and DuckDB; ``account_snapshots.customer_id → customers.id`` is many-to-one.
@@ -58,7 +58,7 @@ from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def snapshots_dataset() -> SlayerDataset:
     return SlayerDataset(

@@ -1,5 +1,5 @@
-"""DEV-1868 — series-regime ``time_shift`` (spec: queries/transforms,
-composite-input requirement): nested-transform inputs, cross-model composite
+"""Series-regime ``time_shift`` (spec: queries/transforms,
+composite-input requirement): nested-transform inputs, cross-dataset composite
 leaves, and aggregate-typed predicate inputs shift the materialised series;
 NULL outside it. Row-level leaves stay fail-closed."""
 
@@ -72,7 +72,7 @@ class TestNestedTransformInput:
                       QueryMetric(metric="sum(sales.revenue)", alias="r")],
         ))
         _assert_months(resp, name="t", expected=SHIFTED_CUMSUM)
-        # The shifted measure changes neither the row count nor its sibling.
+        # The shifted metric changes neither the row count nor its sibling.
         for month, rev in {"2024-01": 60.0, "2024-02": 100.0,
                            "2024-03": 60.0}.items():
             assert float(keyed_by_month(resp)[(month,)]["r"]) == rev

@@ -81,13 +81,13 @@ def setup_diamond_example() -> tuple:
 
     Uses a temporary directory that the caller can clean up.
     """
-    work_dir = tempfile.mkdtemp(prefix="diamond_joins_")
+    work_dir = tempfile.mkdtemp(prefix="diamond_relationships_")
     db_path = os.path.join(work_dir, "diamond.duckdb")
-    models_dir = os.path.join(work_dir, "slayer_models")
+    datasets_dir = os.path.join(work_dir, "slayer_datasets")
 
     create_diamond_db(db_path)
 
-    storage = YAMLStorage(base_dir=models_dir)
+    storage = YAMLStorage(base_dir=datasets_dir)
     ds = DatasourceConfig(name="diamond", type="duckdb", database=db_path)
     run_sync(storage.save_datasource(ds))
 

@@ -1,11 +1,11 @@
-"""DEV-1832 task 1.5 — ``Column.filter`` is a conditional derived definition.
+"""``DatasetField.filter`` is a conditional derived definition.
 
 Every ``#### Scenario`` of ``models/column-filters`` › *Column.filter is a
 conditional derived definition*, plus the three BREAKING behaviour changes as
 explicit fail-without-fix tests: an aggregation's parameters are no longer
-masked by the source column's filter (#1); a filtered column used as a parameter
-now IS masked (#2); a filtered column in dimension / filter / order / partition
-position now reads the masked value (#3). Single-column aggregate SQL and the
+masked by the source field's filter (#1); a filtered field used as a parameter
+now IS masked (#2); a filtered field in dimension / filter / order / partition
+position now reads the masked value (#3). Single-field aggregate SQL and the
 ranked masked-pick are unchanged (regression guards).
 """
 
@@ -82,7 +82,7 @@ def _metric(metric: str, alias: str = "m") -> QueryMetric:
 
 
 async def _save_validated(dataset: SlayerDataset) -> None:
-    """Save ``model`` with save-time validation on (raises on cycle / bad path)."""
+    """Save ``dataset`` with save-time validation on (raises on cycle / bad path)."""
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=os.path.join(d, "store"))
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
@@ -119,7 +119,7 @@ def _tsales_dataset() -> SlayerDataset:
 
 
 # --------------------------------------------------------------------------- #
-# Single-column and ranked masked pick are unchanged (regression guards).
+# Single-field and ranked masked pick are unchanged (regression guards).
 # --------------------------------------------------------------------------- #
 class TestSingleColumnUnchanged:
     async def test_single_column_aggregate_sql_unchanged(self) -> None:
@@ -133,7 +133,7 @@ class TestSingleColumnUnchanged:
         assert float(resp.data[0]["m"]) == pytest.approx(QAMT_SUM)
 
     async def test_ranked_over_filtered_picks_masked_value_sql(self) -> None:
-        # q_amount:last needs a ranking time column; the masked value is picked.
+        # q_amount:last needs a ranking time field; the masked value is picked.
         sql = await gen(
             SlayerQuery(population="tsales", metrics=[_metric("last(tsales.q_amount)")]),
             datasets=[_tsales_dataset()])
@@ -153,7 +153,7 @@ class TestSingleColumnUnchanged:
 
     @pytest.mark.parametrize("position", ["measure", "dimension", "filter", "last"])
     async def test_filtered_physical_column_masked_once(self, position: str) -> None:
-        # A filtered column with no sql (or sql == name) wraps exactly one CASE WHEN.
+        # A filtered field with no sql (or sql == name) wraps exactly one CASE WHEN.
         model = _tsales_dataset()
         model.fields.append(
             DatasetField(name="amt", datatype=DataType.FLOAT, filter="product = 'Q'"))
@@ -270,7 +270,7 @@ class TestFilteredLeafInExpression:
 
 
 # --------------------------------------------------------------------------- #
-# Filtered leaf on a joined model contributes its filter's crossings.
+# Filtered leaf on a joined dataset contributes its filter's crossings.
 # --------------------------------------------------------------------------- #
 class TestFilteredLeafOnJoinedModel:
     async def test_filtered_joined_leaf_expression(self, exec_backend) -> None:
@@ -290,7 +290,7 @@ class TestFilteredLeafOnJoinedModel:
         assert "Aggregate the target field directly" in str(ei.value)
 
     async def test_fanning_filter_default_parameter_fails_closed(self) -> None:
-        # A filtered PHYSICAL column (no sql) whose filter crosses the fanning hop,
+        # A filtered PHYSICAL field (no sql) whose filter crosses the fanning hop,
         # used as a definition default: its crossings close like a derived one's.
         models = dev1832_datasets()
         cust = next(m for m in models if m.name == "customers")
@@ -306,12 +306,12 @@ class TestFilteredLeafOnJoinedModel:
 
 
 # --------------------------------------------------------------------------- #
-# Host-locality reaches into Column.filter, not just Column.sql (DEV-1832 / Codex).
+# Host-locality reaches into DatasetField.filter, not just DatasetField.sql (Codex).
 # --------------------------------------------------------------------------- #
 class TestHostLocalFilterReachability:
-    """A host-declared derived column whose VALUE crosses into a joined model but
-    whose ``Column.filter`` reads a host-local column is host-local: its mask
-    must stay at the host, where that column is bound. Host-locality must consult
+    """A host-declared derived field whose VALUE crosses into a joined dataset but
+    whose ``DatasetField.filter`` reads a host-local field is host-local: its mask
+    must stay at the host, where that field is bound. Host-locality must consult
     the filter fragment, not only the value (which the crossed set already
     covers)."""
 
@@ -346,8 +346,8 @@ class TestHostLocalFilterReachability:
     def test_filtered_physical_column_with_cross_model_filter_is_host_local(
         self,
     ) -> None:
-        # A column with NO sql masks its own physical value (host-local); a
-        # cross-model filter must NOT strip that host-locality (Codex edge case).
+        # A field with NO sql masks its own physical value (host-local); a
+        # cross-dataset filter must NOT strip that host-locality (Codex edge case).
         orders, key, b = self._orders_bundle(
             sql=None, filter_="customers.tier = 'gold'")
         assert key_has_host_local_ref(
@@ -356,7 +356,7 @@ class TestHostLocalFilterReachability:
 
 
 # --------------------------------------------------------------------------- #
-# Derived column over a filtered column expands the wrapped value.
+# Derived field over a filtered field expands the wrapped value.
 # --------------------------------------------------------------------------- #
 class TestDerivedOverFiltered:
     async def test_derived_column_expands_wrapped_value_sql(self) -> None:
@@ -396,7 +396,7 @@ class TestVariableSubstitution:
 # --------------------------------------------------------------------------- #
 class TestCycleAndPathValidation:
     async def test_filtered_columns_pass_cycle_validation(self) -> None:
-        # A filtered physical column and a filtered derived column both save —
+        # A filtered physical field and a filtered derived field both save —
         # the wrapped value's reference to its own physical column is not a cycle.
         await _save_validated(SlayerDataset(
             name="fcyc", sql_table="sales", data_source="test",
@@ -409,8 +409,8 @@ class TestCycleAndPathValidation:
             ]))
 
     async def test_filter_naming_another_derived_is_a_legal_edge(self) -> None:
-        # der2's filter names der1 (another derived column): a dependency EDGE,
-        # not a cycle — the model saves.
+        # der2's filter names der1 (another derived field): a dependency EDGE,
+        # not a cycle — the dataset saves.
         await _save_validated(SlayerDataset(
             name="fedge", sql_table="sales", data_source="test",
             fields=[
@@ -435,7 +435,7 @@ class TestCycleAndPathValidation:
             await _save_validated(model)
 
     async def test_filter_naming_own_physical_column_is_not_a_cycle(self) -> None:
-        # A filter naming its own column reads the PHYSICAL column when that column
+        # A filter naming its own field reads the PHYSICAL column when that field
         # is a bare physical one (``val`` → ``val``), not the recursive masked
         # value — so it is not a cycle (contrast the DERIVED ``loop`` above).
         await _save_validated(SlayerDataset(
@@ -447,9 +447,9 @@ class TestCycleAndPathValidation:
             ]))
 
     async def test_query_over_self_filtered_physical_column_reads_physical(self) -> None:
-        # Companion to the save test above: a query over the same column must also
+        # Companion to the save test above: a query over the same field must also
         # expand — its filter's self-reference reads the physical column, so exactly
-        # one CASE WHEN and no ColumnCycleError (CR: physical-read exemption).
+        # one CASE WHEN and no DatasetFieldCycleError (CR: physical-read exemption).
         model = SlayerDataset(
             name="fself", sql_table="fself", data_source="test",
             fields=[
@@ -463,9 +463,9 @@ class TestCycleAndPathValidation:
         assert len(masks) == 1, sql
 
     def test_cross_column_filter_cycle_still_raises_in_expansion(self) -> None:
-        # The physical-read exemption is LOCAL to a column's own filter fragment,
-        # never inherited into a referenced column's definition — so column
-        # expansion's own cycle-safety still fires on a genuine cross-column cycle
+        # The physical-read exemption is LOCAL to a field's own filter fragment,
+        # never inherited into a referenced field's definition — so field
+        # expansion's own cycle-safety still fires on a genuine cross-field cycle
         # (x.filter→y, y.sql→x), defence-in-depth below elaboration (Codex leak).
         model = SlayerDataset(
             name="cyc", sql_table="cyc", data_source="test",
@@ -509,7 +509,7 @@ class TestCycleAndPathValidation:
         assert "ghost" in str(ei.value).lower()
 
     def test_filter_to_known_but_unloaded_peer_is_skipped(self) -> None:
-        # A reverse-direction join declared on the peer is invisible when the peer
+        # A reverse-direction relationship declared on the peer is invisible when the peer
         # failed to load; the filter is unproven, not broken — skip, never raise (CR).
         host = SlayerDataset(
             name="host", data_source="test", sql_table="host",

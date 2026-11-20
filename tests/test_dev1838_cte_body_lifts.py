@@ -160,7 +160,7 @@ class TestNestedAttachInsideProducer:
         self, exec_backend,
     ):
         """Green pin — a hidden ranked order-only aggregate beside a
-        filtered-local measure renders one flat WITH today."""
+        filtered-local metric renders one flat WITH today."""
         dialect, engine = exec_backend
         query = q(dimensions=["orders.status"],
                   metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],

@@ -1,5 +1,5 @@
 """LAW grain union (semantics.arc42.md §3 law 1): grain(a ⊕ b) =
-grain(a) ∨ grain(b). Population half: measures never move the group set.
+grain(a) ∨ grain(b). Population half: metrics never move the group set.
 Broadcast half: an attached operand is constant within its own semantic grain;
 the direct half combines operands of different explicit grains at a finer
 query grain and pins the union-grain cells."""
@@ -85,7 +85,7 @@ async def test_population_and_operand_broadcast_constancy(law_case):
             continue
         if meas == "cm" and shape.dim_family == "cmgrain":
             # regions.name is attributable from customers, so the ungrained
-            # cross-model sum participates at that grain instead of ().
+            # cross-dataset sum participates at that grain instead of ().
             grain = ("cmregion",)
         cells: dict[tuple, set] = {}
         for key, row in full_rows.items():
@@ -131,7 +131,7 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
         cells.setdefault(cell, set()).add(canon(row["x"]))
     for cell, values in cells.items():
         assert len(values) == 1, (
-            f"LAW grain union violated — mixed-grain formula not constant "
+            f"LAW grain union violated — mixed-grain expression not constant "
             f"within union-grain cell {cell}: {sorted(map(str, values))}"
         )
     got = {cell: next(iter(values)) for cell, values in cells.items()}

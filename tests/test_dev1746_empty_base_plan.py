@@ -2,7 +2,7 @@
 
 When a query asks only for isolated aggregates — no host row slots and no
 host-local aggregates — the host base has nothing to project, so the generator
-synthesises a one-row spine for the cross-model CROSS JOIN to hang off::
+synthesises a one-row spine for the cross-dataset CROSS JOIN to hang off::
 
     _base AS (SELECT 1 AS _placeholder)                       -- unfiltered
     _base AS (SELECT 1 AS _placeholder FROM orders AS orders_x
@@ -25,7 +25,7 @@ Per Codex D7 the node stays minimal — its PRESENCE is the discriminator, and i
 carries the host filter ids. No ``grain_slot_ids`` field is added: in this shape
 the grain is empty by definition, and a field that is always ``[]`` documents
 nothing. The invariant it would have encoded is asserted directly instead —
-whenever the node is present, every cross-model plan's join-back pairs are
+whenever the node is present, every cross-dataset plan's join-back pairs are
 empty, which is exactly why the join degenerates to a CROSS JOIN.
 """
 
@@ -133,7 +133,7 @@ class TestEmptyBaseGrainPlanNode:
 
     def test_node_records_the_host_local_filters(self) -> None:
         """The filtered form's WHERE is exactly the ROW-phase filters that were
-        NOT routed into a cross-model CTE."""
+        NOT routed into a cross-dataset CTE."""
         planned = plan_query(query=_filtered_query(), bundle=_bundle())
         assert planned.empty_base_plan is not None
         ids = list(planned.empty_base_plan.host_filter_ids)
@@ -172,7 +172,7 @@ class TestEmptyBaseGrainPlanNode:
         for factory in (_unfiltered_query, _filtered_query):
             planned = plan_query(query=factory(), bundle=_bundle())
             assert planned.empty_base_plan is not None
-            # A cross-model aggregate is an isolated regroup-attach
+            # A cross-dataset aggregate is an isolated regroup-attach
             # placeholder (its producer is a target-rooted _cm_ CTE), so its host
             # projection slot carries the substitution placeholder key.
             attach_placeholders = {
@@ -311,7 +311,7 @@ class TestEmptyBaseExecution:
     async def test_expression_over_isolated_aggregates_alone(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """An expression of cross-model aggregates alone also leaves ``_base`` a placeholder spine."""
+        """An expression of cross-dataset aggregates alone also leaves ``_base`` a placeholder spine."""
         query = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(metric="sum(customers.spend) * 2", alias="twice")],

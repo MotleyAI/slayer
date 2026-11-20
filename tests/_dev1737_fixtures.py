@@ -1,4 +1,4 @@
-"""Shared fixtures for the Mode-B date functions: seeded tables, models, a Python oracle, and the executed case matrix."""
+"""Shared fixtures for the Mode-B date functions: seeded tables, datasets, a Python oracle, and the executed case matrix."""
 
 from __future__ import annotations
 
@@ -464,7 +464,7 @@ def all_datasets(*, data_source: str) -> list[SlayerDataset]:
 
 
 async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
-    """Spec scenarios whose values need a real backend (clock, joins, literals)."""
+    """Spec scenarios whose values need a real backend (clock, relationships, literals)."""
     async def by_id(expr: str, model: str = "orders") -> dict[int, Any]:
         resp = await engine.execute(SlayerQuery.model_validate(
             {"population": model, "dimensions": [f"{model}.id", {"field": expr, "alias": "v"}]}))
@@ -481,7 +481,7 @@ async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
     assert await count("date_diff('day', '2024-05-01', created_at) >= 0") == 3
     assert await by_id("date_diff('day', customers.signup_date, order_date)") == {1: 61, 2: 61, 3: 95, 4: 305, 5: None}
     for expr, expected in (
-        # Column-anchored: a literal-only dimension hits DEV-2011 (constant GROUP BY on T-SQL).
+        # Field-anchored: a literal-only dimension hits constant GROUP BY on T-SQL until DEV-2011.
         ("date_add(date_add(order_date, 30, 'day'), -1, 'month')", date(2024, 2, 29)),
         ("date_add(date_add(created_at, -30, 'day'), 1, 'month')", datetime(2024, 2, 29, 5, 30)),
         ("date_add(order_date, 2, 'hour')", datetime(2024, 3, 1, 2, 0)),

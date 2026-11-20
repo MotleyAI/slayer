@@ -53,7 +53,7 @@ def _drop_db(postgresql_proc, db_name):
 
 @pytest.fixture(scope="module")
 def _chain_storage(postgresql_proc, tmp_path_factory):
-    """3-hop join chain whose projection aliases cross Postgres' 63-byte limit."""
+    """3-hop relationship chain whose projection aliases cross Postgres' 63-byte limit."""
     conn, db_name = _create_db(postgresql_proc)
     try:
         cur = conn.cursor()
@@ -238,14 +238,14 @@ class TestPostgresIdentifierLength:
         assert first.data == second.data
 
     async def test_deep_cross_model_measure_executes(self, chain_env: SlayerQueryEngine) -> None:
-        """Surface 3: the `_cm_` cross-model CTE name also crosses 63 bytes on this chain."""
+        """Surface 3: the `_cm_` cross-dataset CTE name also crosses 63 bytes on this chain."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field="status")],
             "metrics": [{"metric": f"sum({DEEP}.lifetimeValue)"}],
         })
         result = await chain_env.execute(query=query)
-        assert "_cm_" in cast(str, result.sql), "no cross-model CTE generated; test is vacuous"
+        assert "_cm_" in cast(str, result.sql), "no cross-dataset CTE generated; test is vacuous"
         for name in re.findall(r"\b_cm_\w+", cast(str, result.sql)):
             assert len(name.encode()) <= 63, f"{name!r} exceeds the Postgres limit"
         alias = f"SandboxInvoiceV2.{DEEP}.lifetimeValue_sum"
@@ -253,7 +253,7 @@ class TestPostgresIdentifierLength:
         assert float(result.data[0][alias]) == 30.0
 
     async def test_nested_query_backed_model_executes(self, chain_env: SlayerQueryEngine) -> None:
-        """Surface 4: virtual-model short names as output aliases; mixed-case exercises case-folding."""
+        """Surface 4: virtual-dataset short names as output aliases; mixed-case exercises case-folding."""
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "SandboxInvoiceV2",

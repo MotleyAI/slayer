@@ -10,14 +10,14 @@
 
 Plus the two flagged semantic pins — **F1** (1:N crossing aggregates keep
 multiply-per-match) and **F4** (a host-local filter semi-joins into the scalar
-cross-model CTE) — as SQL-shape assertions here; their executed-value
+cross-dataset CTE) — as SQL-shape assertions here; their executed-value
 counterparts live in ``tests/integration/test_integration_duckdb.py``. And the
 **RLS × isolation-CTE** cells, which exercise the validator's post-RLS
 ``allow_rls_correlation`` allowlist against the session-policy transform.
 
-Carriers exercised: aggregate source (ColumnKey / ColumnSqlKey), explicit-time
-positional arg, ``Column.filter``, derived + time dimensions, WHERE filters
-(typed + Mode-A), model filters, order refs. Scopes: host base ``_base``,
+Carriers exercised: aggregate source (FieldKey / FieldSqlKey), explicit-time
+positional arg, ``DatasetField.filter``, derived + time dimensions, WHERE filters
+(typed + Mode-A), dataset filters, order refs. Scopes: host base ``_base``,
 first/last ranked subquery, forward ``_cm_*`` CTE, ``time_shift`` CTE, windowed
 producer CTE. ``_fm_``/``_wm_`` legacy scope shapes get direct validator
 coverage in ``tests/test_scope_check.py`` (hand-written SQL).
@@ -48,7 +48,7 @@ _ALWAYS = lambda *_args, **_kw: True  # noqa: E731 — RLS has_column probe stub
 
 
 # --------------------------------------------------------------------------- #
-# Model builders — the orders → customers → regions chain.
+# Dataset builders — the orders → customers → regions chain.
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
     return SlayerDataset(
@@ -144,7 +144,7 @@ class TestScopeClosureInvariant:
         assert_scope_closed(sql)
 
     async def test_host_base_where_filter_mode_a_crosses_join(self) -> None:
-        # A Mode-A WHERE filter that crosses the orders→customers join pulls the
+        # A Mode-A WHERE filter that crosses the orders→customers relationship pulls the
         # LEFT JOIN into the host base scope; still closed.
         query = SlayerQuery(
             population="orders",
@@ -170,7 +170,7 @@ class TestScopeClosureInvariant:
             dimensions=[QueryDimension(field="orders.status")],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
-        assert "_cm_" in sql  # forward cross-model CTE scope
+        assert "_cm_" in sql  # forward cross-dataset CTE scope
         assert_scope_closed(sql)
 
     async def test_first_last_ranked_explicit_time_arg(self) -> None:
@@ -212,7 +212,7 @@ class TestScopeClosureInvariant:
         assert_scope_closed(sql)
 
     async def test_column_filter_carrier_host_base(self) -> None:
-        # A per-measure Column.filter (local) on the host base scope.
+        # A per-metric DatasetField.filter (local) on the host base scope.
         query = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(metric="sum(orders.active_amount)")],
@@ -243,7 +243,7 @@ class TestScopeClosureInvariant:
 # --------------------------------------------------------------------------- #
 class TestSemanticPinsSqlShape:
     async def test_f4_scalar_cross_model_agg_semi_joins_host_local_filter(self) -> None:
-        # No dimensions ⇒ scalar cross-model aggregate. The
+        # No dimensions ⇒ scalar cross-dataset aggregate. The
         # host-local filter (orders.status='paid') restricts the target-rooted
         # _cm_ CTE's population via a correlated EXISTS — never via a
         # cardinality-changing join of the CTE body.
@@ -328,12 +328,12 @@ class TestRlsIsolationCte:
 
 
 # --------------------------------------------------------------------------- #
-# Layer 2 — scope pins. Rich cross-model / first-last / windowed coverage
+# Layer 2 — scope pins. Rich cross-dataset / first-last / windowed coverage
 # lives in tests/test_sql_generator.py.
 # --------------------------------------------------------------------------- #
 class TestScopeDefectPins:
     async def test_windowed_measure_emits_wm_cte(self) -> None:
-        # Duration-windowed measures emit a range-join producer CTE under the
+        # Duration-windowed metrics emit a range-join producer CTE under the
         # `_cm_` producer scope. Rich coverage lives in
         # tests/test_sql_generator.py (TestFields / TestWindowedMeasureGuards)
         # and tests/integration/test_integration_windowed_measures.py.
@@ -359,7 +359,7 @@ class TestScopeDefectPins:
         assert "LEFT JOIN regions AS regions" in cm_body
 
     async def test_time_shift_cross_model_partition(self) -> None:
-        # The shifted CTE is a ScopeFrame that pulls the join a cross-model
+        # The shifted CTE is a ScopeFrame that pulls the join a cross-dataset
         # partition crosses. Rich coverage lives in
         # tests/test_dev1474_time_shift_cross_model_partition.py.
         query = SlayerQuery(

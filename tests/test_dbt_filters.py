@@ -125,11 +125,11 @@ class TestConvertDbtFilter:
             entity_registry=reg,
             dataset_entity_names={"claim_amount": "primary"},
         )
-        # claim_amount is the model's own primary entity, so bare name
+        # claim_amount is the dataset's own primary entity, so bare name
         assert result == "has_loss_payment = 1"
 
     def test_peer_dimension_qualified_when_all_models_provided(self) -> None:
-        """Dimension on peer model is qualified as peer_model.dim when all_semantic_models is provided."""
+        """Dimension on peer dataset is qualified as peer_dataset.dim when all_semantic_models is provided."""
         # claim_amount has primary entity 'claim_amount' but NO 'has_loss_payment' dimension
         claim_amount = DbtSemanticModel(
             name="claim_amount",
@@ -151,7 +151,7 @@ class TestConvertDbtFilter:
             dataset_entity_names={"claim_amount": "primary"},
             all_semantic_models={"claim_amount": claim_amount, "loss_payment": loss_payment},
         )
-        # Should be qualified with peer model name
+        # Should be qualified with peer dataset name
         assert result == "loss_payment.has_loss_payment = 1"
 
     def test_peer_dimension_warns_without_all_models(self, caplog) -> None:

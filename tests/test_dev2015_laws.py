@@ -1,4 +1,4 @@
-"""Laws over spine populations: measure invariance, grain-union broadcast, NULL axes, DATE/TIMESTAMP axes, model filters."""
+"""Laws over spine populations: metric invariance, grain-union broadcast, NULL axes, DATE/TIMESTAMP axes, dataset filters."""
 
 from __future__ import annotations
 

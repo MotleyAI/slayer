@@ -87,7 +87,7 @@ async def test_last_over_stage_time_dimension(backend: str) -> None:
     assert set(_by_month(resp.data, "lst").values()) == {400.0}
 
 
-# A model holding exactly the inner stage's monthly rows — the spec's reference
+# A dataset holding exactly the inner stage's monthly rows — the spec's reference
 # for "identical to the same shapes evaluated over a model-backed dataset".
 def _monthly_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -109,7 +109,7 @@ _MONTHLY_MODEL_TABLE = {
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_windowed_aggregate_over_stage_time_dimension(backend: str) -> None:
-    """rev:sum(window='60d') on the stage bucket equals the model-backed evaluation
+    """rev:sum(window='60d') on the stage bucket equals the dataset-backed evaluation
     over a dataset holding the same monthly rows (transforms spec equivalence)."""
     windowed = [{"metric": "sum(rev, window='60d')", "alias": "win"}]
     stage_outer = SlayerQuery.model_validate({
@@ -166,8 +166,8 @@ async def test_time_shift_over_multi_hop_flat_time_dimension(backend: str) -> No
 
 
 # --- two stage time dimensions: main_time_dimension, else the surviving default ---
-# NOTE: spec scenario names created_at month+year (one column); same-column
-# selection is deferred (DEV-1925), so this uses two distinct columns.
+# NOTE: spec scenario names created_at month+year (one field); same-field
+# selection is deferred (DEV-1925), so this uses two distinct fields.
 # shipped_at is constant so ``change`` over the created_at axis is unambiguous
 # and differs from the shipped_at axis (which would be all-NULL, one bucket).
 _TWO_TD_ROWS = [

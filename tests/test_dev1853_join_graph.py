@@ -1,4 +1,4 @@
-"""DEV-1853 — edge-aware route search (``slayer.core.relationship_search``) and executable root recommendation.
+"""Edge-aware route search (``slayer.core.relationship_search``) and executable root recommendation.
 
 The graph spans the bidirectional edge set: parallel edges are distinct
 routes, recommendations emit edge-name tokens where a hop needs one, and an
@@ -58,7 +58,7 @@ class TestParallelEdgesAreDistinctRoutes:
 
 class TestEdgeNameShadowsModelToken:
     def test_shadowed_bare_token_is_not_executable(self) -> None:
-        # Edge a↔b named "c" shadows the bare model token "c" (names resolve
+        # Edge a↔b named "c" shadows the bare dataset token "c" (names resolve
         # first), so the a↔c hop has no executable token — unroutable, never
         # a path that would land on the wrong endpoint.
         models = edge_graph(nodes={"a", "b", "c"}, edges=[("a", "b", "c"), ("a", "c", None)])
@@ -116,7 +116,7 @@ class TestRecommendRootModel:
 
     async def test_reverse_reachability_growth(self) -> None:
         # a → b and c → b share no directed common root today; the
-        # bidirectional graph makes every model a valid root.
+        # bidirectional graph makes every dataset a valid root.
         def leaf(name: str, extra: str, joins=None) -> SlayerDataset:
             return SlayerDataset(
                 name=name, data_source="test", sql_table=name,

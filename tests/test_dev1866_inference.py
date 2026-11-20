@@ -1,4 +1,4 @@
-"""DEV-1866 — population inference selection + determination-item extraction.
+"""Population inference selection + determination-item extraction.
 
 Metadata-only: exercises the selection core (``infer_population``) and the
 determination-item extractor (``determination_items``) against small
@@ -63,7 +63,7 @@ class TestSourceModelOptional:
 # --------------------------------------------------------------------------- #
 class TestSelection:
     async def test_canonical_picks_coarse_side(self, storage) -> None:
-        """dims on customers + a measure on orders ⇒ population = customers."""
+        """dims on customers + a metric on orders ⇒ population = customers."""
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
@@ -112,7 +112,7 @@ class TestSelection:
         assert choice.dataset_name == "customers"
 
     async def test_saved_measure_filter_does_not_participate(self, storage) -> None:
-        """A filter on a saved measure (orders.revenue) is dropped ⇒ customers."""
+        """A filter on a saved metric (orders.revenue) is dropped ⇒ customers."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
@@ -125,7 +125,7 @@ class TestSelection:
     async def test_saved_measure_filter_via_named_join_does_not_participate(
         self, storage
     ) -> None:
-        """Saved measure behind a named join (``tickets.reporter.handled``) is dropped ⇒ tickets."""
+        """Saved metric behind a named relationship (``tickets.reporter.handled``) is dropped ⇒ tickets."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["tickets.subject"],
@@ -185,8 +185,8 @@ class TestSelection:
         assert choice.dataset_name == "customers"
 
     async def test_measure_anchor_never_shifts_datasource(self, storage) -> None:
-        """A measure referencing a model in another datasource must not affect
-        scoping — measures never participate in inference."""
+        """A metric referencing a dataset in another datasource must not affect
+        scoping — metrics never participate in inference."""
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
@@ -245,7 +245,7 @@ class TestDeterminationItems:
         assert items == {"customers.region"}
 
     def test_saved_measure_via_named_join_ref_dropped(self) -> None:
-        """Owner found by walking the join path ⇒ a named-join saved measure is dropped."""
+        """Owner found by walking the relationship path ⇒ a named-relationship saved metric is dropped."""
         items = set(determination_items(
             SlayerQuery(
                 dimensions=["tickets.subject"],
@@ -256,7 +256,7 @@ class TestDeterminationItems:
         assert items == {"tickets.subject"}
 
     def test_column_sharing_an_aggregation_name_is_kept(self) -> None:
-        """A real column sharing an aggregation's name stays a determination item (column precedence)."""
+        """A real field sharing an aggregation's name stays a determination item (field precedence)."""
         items = set(determination_items(
             SlayerQuery(
                 dimensions=["tickets.subject"],

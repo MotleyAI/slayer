@@ -55,7 +55,7 @@ PINNED: dict[str, frozenset[str]] = {
     "reserved": frozenset(),
 }
 
-#: A model's own definition shadows these, so a new name in them needs no migration.
+#: A dataset's own definition shadows these, so a new name in them needs no migration.
 SHADOWABLE = frozenset({"functions", "spellings"})
 
 #: A newly reserved name outside ``SHADOWABLE`` → the ``(entity, source_version)`` migration that renames it in stores.

@@ -44,7 +44,7 @@ _BARE_LIMIT = re.compile(r"(?<![\w.\[\"`])LIMIT\s+\d+", re.IGNORECASE)
 def _plain_query(
     *, limit: Optional[int], offset: Optional[int], ordered: bool,
 ) -> SlayerQuery:
-    """Single-model aggregate — no isolation CTE, no hidden slot."""
+    """Single-dataset aggregate — no isolation CTE, no hidden slot."""
     return SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="orders.status")],
@@ -72,7 +72,7 @@ def _outer_trim_query(
 def _combined_query(
     *, limit: Optional[int], offset: Optional[int], ordered: bool,
 ) -> SlayerQuery:
-    """Cross-model measure — the combined-SELECT path that appends raw text."""
+    """Cross-dataset metric — the combined-SELECT path that appends raw text."""
     return SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="customers.tier")],
@@ -347,7 +347,7 @@ class TestPaginationExecution:
     async def test_combined_shape_limit_and_offset(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """The cross-model combined shape paginates when executed."""
+        """The cross-dataset combined shape paginates when executed."""
         top = await exec_engine.execute(
             _combined_query(limit=1, offset=None, ordered=True),
         )

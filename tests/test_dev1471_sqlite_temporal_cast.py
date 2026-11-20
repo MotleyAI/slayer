@@ -74,7 +74,7 @@ async def test_partitioned_temporal_aggregate_returns_full_date(backend: str) ->
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_derived_temporal_column_returns_full_date(backend: str) -> None:
-    """A non-identifier TIMESTAMP column (coalesce) projected and max-aggregated is a full date."""
+    """A non-identifier TIMESTAMP field (coalesce) projected and max-aggregated is a full date."""
     with tempfile.TemporaryDirectory() as tmp:
         eng = await _engine(backend, tmp, extra_columns=[_LAST_TOUCH])
         resp = await eng.execute(SlayerQuery.model_validate({
@@ -101,7 +101,7 @@ async def test_sqlite_sql_has_no_temporal_cast() -> None:
 
 
 async def test_sqlite_derived_column_sql_has_no_temporal_cast() -> None:
-    """The derived-column seam is suppressed on SQLite too (Codex's third seam)."""
+    """The derived-field seam is suppressed on SQLite too (Codex's third seam)."""
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["orders.customer_id"],

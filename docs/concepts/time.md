@@ -85,7 +85,7 @@ A bound is a *frame* bound when it bounds a **time dimension's own expression** 
 - a bound wrapped in `or` or `not`;
 - `filters` declared on the **dataset**.
 
-Mixed filters are split: `"orders.created_at >= '2025-01-01' and orders.status = 'paid'"` restricts the window's input to paid rows while still reaching back before January. The same holds for [`time_shift`](formulas.md#transform-functions). To clip the underlying rows, apply the bound in an inner stage of a multi-stage query.
+Mixed filters are split: `"orders.created_at >= '2025-01-01' and orders.status = 'paid'"` restricts the window's input to paid rows while still reaching back before January. The same holds for [`time_shift`](expressions.md#transform-functions). To clip the underlying rows, apply the bound in an inner stage of a multi-stage query.
 
 ## `whole_periods_only`
 

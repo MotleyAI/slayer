@@ -234,13 +234,13 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "metric …"
          + SUGGEST + "…",
          category="checker", family="cross-model", user=True, owner="checker"),
-    # An input whose derived-column definition cannot be analysed is unsafe, not empty.
+    # An input whose derived-field definition cannot be analysed is unsafe, not empty.
     _row(module=_EE, function="check_input_dependencies_analyzable", exc="UnanalyzableDependencyError",
          message="The aggregate names derived field …, whose definition no supported dialect can analyse for relationship dependencies; an unanalyzable dependency is unsafe."
          + AT + "metric …"
          + SUGGEST + "Fix the field's SQL, or remove it from the aggregate.",
          category="checker", family="cross-model", user=True, owner="checker"),
-    # Its unnameable arm: the closure is unanalysable but no single column can be named.
+    # Its unnameable arm: the closure is unanalysable but no single field can be named.
     _row(module=_EE, function="check_input_dependencies_analyzable", exc="UnanalyzableDependencyError",
          message="The aggregate has an input dependency whose definition no supported dialect can analyse for relationship dependencies; an unanalyzable dependency is unsafe."
          + AT + "metric …"
@@ -306,7 +306,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "filter …"
          + SUGGEST + "Fix the field's SQL, or remove the filter.",
          category="checker", family="filters", user=True, owner="checker"),
-    # Its unnameable arm: the closure is unanalysable but no single column can be named.
+    # Its unnameable arm: the closure is unanalysable but no single field can be named.
     _row(module=_EE, function="check_filter_dependencies_analyzable", exc="UnanalyzableDependencyError",
          message="The filter has a dependency whose definition no supported dialect can analyse for relationship dependencies; an unanalyzable dependency is unsafe."
          + AT + "filter …"
@@ -388,7 +388,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="names", user=True, owner="checker"),
 
     _row(module=_EE, function="validate_dataset_filter", exc="DatasetFilterError",
-         message="The dataset filter references metric …. Dataset filters can only reference table columns (WHERE)."
+         message="The dataset filter references metric …. Dataset filters can only reference row-level fields (WHERE)."
          + AT + "dataset filter …"
          + SUGGEST + "Use query-level filters for metric conditions.",
          category="checker", family="model-filters", user=True, owner="checker"),
@@ -397,7 +397,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "dataset filter …"
          + SUGGEST + "Factor it into a multi-stage source_queries dataset or use a rank-family transform at query time.",
          category="checker", family="model-filters", user=True, owner="checker"),
-    # Two sites: leaf-collision disambiguation and same-column multi-granularity.
+    # Two sites: leaf-collision disambiguation and same-field multi-granularity.
     _row(module=_BI, function="_resolve_main_time_dimension", exc="AmbiguousReferenceError", message="",
          category="bind", family="time-axis", user=True, owner="bind", sites=2),
     _row(module=_BI, function="_resolve_main_time_dimension", exc="UnknownReferenceError", message="",

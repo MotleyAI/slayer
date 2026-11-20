@@ -1,4 +1,4 @@
-"""Re-ingest matches a live column to the stored base column it is the physical spelling of."""
+"""Re-ingest matches a live column to the stored base field it is the physical spelling of."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from slayer.live_schema.ingestion import _additive_merge_existing
 
 
 def _stored(*, amount_type: DataType = DataType.FLOAT) -> SlayerDataset:
-    """The 0.10.2 Cube-import shape: a renamed base column and a measure named like the physical column."""
+    """The 0.10.2 Cube-import shape: a renamed base field and a metric named like the physical column."""
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[

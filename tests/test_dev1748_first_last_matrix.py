@@ -1,4 +1,4 @@
-"""DEV-1748 §5.8 — the first/last pinning matrix.
+"""§5.8 — the first/last pinning matrix.
 
 **Protocol.** This module landed and passed against the OLD code, BEFORE
 first/last was rebuilt as ``RankedAggregatePlan`` (B9). Its job is to state what
@@ -10,8 +10,8 @@ rewrite or a divergence that needs explicit approval — never routine churn.
 **One test was an exception, and it is the point of the exercise.**
 ``test_a_joined_derived_time_arg_ranks_by_the_joined_expression`` landed
 ``xfail(strict=True)``: the old code RAISED on a time arg that is a derived
-column on a joined model, because the ranking ran in the host base and could
-not pull the residual join (the DEV-1476/1526 remnant). The rewrite removes
+field on a joined dataset, because the ranking ran in the host base and could
+not pull the residual join. The rewrite removes
 that limitation, so the xfail was removed with it. Everything else in this
 module passed on both sides unchanged. The NULL-ranking-key cases were later
 changed deliberately: a NULL key is never picked, on any dialect.
@@ -283,7 +283,7 @@ class TestTiesAreNondeterministic:
 
 
 # --------------------------------------------------------------------------- #
-# Filtered first/last — Column.filter on the measure
+# Filtered first/last — DatasetField.filter on the metric
 # --------------------------------------------------------------------------- #
 
 
@@ -291,13 +291,13 @@ class TestFilteredFirstLast:
     async def test_last_over_a_filtered_column_masks_the_newest_row(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``Column.filter`` is a value mask, not a row restriction (DEV-1832): a
+        """``DatasetField.filter`` is a value mask, not a row restriction: a
         filtered ``last`` picks the MASKED value at the newest row by time, never
         the newest MATCHING row. ``filt``'s newest row (5.0) is below the
         ``big_amount`` threshold, so ``big_amount`` is NULL there and
         ``last(big_amount)`` is NULL — the older matching 61.0 is not reached
         (ranking never sees the filter; a row-restricting WHERE belongs in the
-        query, not the column)."""
+        query, not the field)."""
         rows = await _rows(
             engine, dimensions=["orders.status"],
             metrics=[{"metric": "last(orders.big_amount)", "alias": "l"}],
@@ -328,7 +328,7 @@ class TestFilteredFirstLast:
         self, engine: SlayerQueryEngine,
     ) -> None:
         """The stronger form of the case above, stated over the whole result:
-        a filtered measure must not change WHICH groups the query returns."""
+        a filtered metric must not change WHICH groups the query returns."""
         unfiltered = await _rows(
             engine, dimensions=["orders.status"],
             metrics=[{"metric": "last(orders.amount)", "alias": "l"}],
@@ -345,7 +345,7 @@ class TestFilteredFirstLast:
     async def test_a_filter_on_a_joined_column_ranks_the_matching_rows(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``gold_amount`` filters on ``customers.tier``, a column a hop away.
+        """``gold_amount`` filters on ``customers.tier``, a field a hop away.
         Only customer 100's orders qualify, so groups made entirely of other
         customers' orders come back NULL and customer-100 groups rank normally.
         """
@@ -364,10 +364,10 @@ class TestFilteredFirstLast:
         self, engine: SlayerQueryEngine,
     ) -> None:
         """``doubled_big`` masks on ``amount * 2``, an expression rather than a
-        bare column. It masks exactly the same rows as ``big_amount``, so the two
+        bare field. It masks exactly the same rows as ``big_amount``, so the two
         must agree group for group — a derived predicate that silently failed to
         bind would not. Both mask ``filt``'s newest row (5.0 → 10 ≤ 40) to NULL
-        (DEV-1832: the filter never restricts the ranking)."""
+        (the filter never restricts the ranking)."""
         derived = await _rows(
             engine, dimensions=["orders.status"],
             metrics=[{"metric": "last(orders.doubled_big)", "alias": "l"}],
@@ -495,7 +495,7 @@ class TestExplicitTimeArgs:
     async def test_a_local_derived_time_arg_ranks_like_its_underlying_column(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``created_alias`` is ``Column.sql = "created_at"``, so ranking by it
+        """``created_alias`` is ``DatasetField.sql = "created_at"``, so ranking by it
         must equal ranking by ``created_at``."""
         derived = await _rows(
             engine, dimensions=["orders.status"],
@@ -517,22 +517,22 @@ class TestExplicitTimeArgs:
     async def test_a_joined_derived_time_arg_ranks_by_the_joined_expression(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``customers.signup_alias`` is ``signup_at`` on the joined model, so
-        ranking by it reaches THROUGH the join.
+        """``customers.signup_alias`` is ``signup_at`` on the joined dataset, so
+        ranking by it reaches THROUGH the relationship.
 
-        This raised ``NotImplementedError`` before B9 — the DEV-1476 remnant.
+        This raised ``NotImplementedError`` before B9.
         The ranking ran in the host base, which could not pull the residual
-        join, so join discovery skipped the path-bearing ``ColumnSqlKey`` and
+        join, so relationship discovery skipped the path-bearing ``FieldSqlKey`` and
         the render seam refused rather than emit a reference to a relation the
         FROM did not have. A ranked CTE resolves its ranking key through its
-        OWN scope, so the join is registered where it is needed and the refusal
+        OWN scope, so the relationship is registered where it is needed and the refusal
         has nothing left to protect.
 
         The ``paid`` group's two rows belong to customers whose signup order is
         the reverse of the rows' own ``created_at`` order, so the two rankings
         disagree and the expected value is exactly the one ``created_at`` would
         NOT choose. An implementation that silently fell back to the default
-        ranking column returns ``PAID_LAST`` and fails here."""
+        ranking field returns ``PAID_LAST`` and fails here."""
         rows = await _rows(
             engine, dimensions=["orders.status"],
             metrics=[{"metric": "last(orders.amount, customers.signup_alias)", "alias": "l"}],
@@ -543,7 +543,7 @@ class TestExplicitTimeArgs:
 
 
 # --------------------------------------------------------------------------- #
-# Cross-model first/last
+# Cross-dataset first/last
 # --------------------------------------------------------------------------- #
 
 
@@ -551,7 +551,7 @@ class TestCrossModel:
     async def test_a_cross_model_first_last_ranks_in_the_target_scope(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``last(customers.spend)`` ranks CUSTOMERS by the target model's own
+        """``last(customers.spend)`` ranks CUSTOMERS by the target dataset's own
         ``default_time_dimension`` (``signup_at``), not orders by
         ``created_at``. Customer 101 signed up last; customer 100 first."""
         rows = await _rows(
@@ -566,7 +566,7 @@ class TestCrossModel:
     async def test_an_explicit_target_time_arg_gives_the_same_answer(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Naming the target's time column explicitly must agree with letting
+        """Naming the target's time field explicitly must agree with letting
         the target's default supply it."""
         rows = await _rows(
             engine,
@@ -580,7 +580,7 @@ class TestCrossModel:
         self, engine: SlayerQueryEngine,
     ) -> None:
         """``customers.signup_alias`` is derived but LOCAL to the target, so it
-        needs no extra join and must agree with the bare column."""
+        needs no extra relationship and must agree with the bare field."""
         rows = await _rows(
             engine,
             metrics=[
@@ -616,7 +616,7 @@ class TestCrossingInputsAndFanout:
         self, engine: SlayerQueryEngine,
     ) -> None:
         """``cust_region`` is ``customers__regions.name`` — the value itself
-        crosses two joins. The newest row of each customer-100 group belongs to
+        crosses two relationships. The newest row of each customer-100 group belongs to
         region ``Alpha``; customer-101/102 groups sit in the NULL-named region.
         """
         rows = await _rows(
@@ -630,7 +630,7 @@ class TestCrossingInputsAndFanout:
     async def test_a_sibling_aggregate_is_unchanged_by_an_adjacent_first_last(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """P-C's cardinality clause, stated in rows: adding a first/last measure
+        """P-C's cardinality clause, stated in rows: adding a first/last metric
         must not move a sibling ``sum(amount)``. The sibling's value is compared
         against the SAME query without the first/last, so this holds the line
         both today and after the rewrite moves the ranking into its own CTE."""
@@ -654,7 +654,7 @@ class TestCrossingInputsAndFanout:
     async def test_a_star_count_sibling_is_unchanged_too(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``count(*)`` has no source column, so it takes a different render path
+        """``count(*)`` has no source field, so it takes a different render path
         than ``sum(amount)`` and needs its own containment pin."""
         with_ranked = await _rows(
             engine, dimensions=["orders.status"],
@@ -676,7 +676,7 @@ class TestCrossingInputsAndFanout:
         self, engine: SlayerQueryEngine,
     ) -> None:
         """Order 15 is tagged ``rush`` TWICE. The fanning ``rush`` population
-        filter restricts by association (DEV-1909), so ``sum(amount)`` counts each
+        filter restricts by association, so ``sum(amount)`` counts each
         matching order once — order 15 and order 16 — never doubling order 15.
         ``last(amount)`` does not move either, because duplicating a row cannot
         change which row is newest."""
@@ -697,7 +697,7 @@ class TestCrossingInputsAndFanout:
     async def test_grouping_by_a_1n_dimension_ranks_within_each_match(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """With the fan-out column AS the grain, order 15 legitimately appears
+        """With the fan-out field AS the grain, order 15 legitimately appears
         in three tag groups. Each ranks over the rows that reached it."""
         rows = await _rows(
             engine, dimensions=["order_tags.name"],
@@ -711,7 +711,7 @@ class TestCrossingInputsAndFanout:
 
 
 # --------------------------------------------------------------------------- #
-# Composition — several ranked measures, and ranked measures inside expressions
+# Composition — several ranked metrics, and ranked metrics inside expressions
 # --------------------------------------------------------------------------- #
 
 
@@ -719,7 +719,7 @@ class TestComposition:
     async def test_two_ranked_measures_sharing_a_ranking_column(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``first`` and ``last`` over the same column and the same ranking key
+        """``first`` and ``last`` over the same field and the same ranking key
         — one ranked scope today, two CTEs after the rewrite. The answers must
         not depend on which."""
         rows = await _rows(
@@ -797,7 +797,7 @@ class TestComposition:
 
 
 # --------------------------------------------------------------------------- #
-# Filters and ordering that TARGET a ranked measure
+# Filters and ordering that TARGET a ranked metric
 # --------------------------------------------------------------------------- #
 
 
@@ -845,7 +845,7 @@ class TestFilteringAndOrderingOnARankedMeasure:
     async def test_ordering_by_a_ranked_measure_that_is_not_projected(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """The order-only case: the ranked measure is materialised but trimmed
+        """The order-only case: the ranked metric is materialised but trimmed
         from the projection, so it must still exist somewhere to sort by. The
         emitted columns are exactly the declared ones, in declaration order."""
         rows = await _rows(

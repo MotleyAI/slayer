@@ -1,4 +1,4 @@
-"""DEV-1859 task 4.4 — leg C executed values (SQLite + DuckDB): an attached
+"""Leg C executed values (SQLite + DuckDB): an attached
 (aggregate-valued) parameter on a row-level / literal / mixed source compiles by
 row-attaching the parameter's producer into the aggregation's input relation,
 rooted at the parameter's own home in every mode.
@@ -138,7 +138,7 @@ class TestDefaultAndErrorModeTwins:
         assert broadcast_warnings(resp)
 
     async def test_broadcast_mode_target_side_parameter_executes(self, orders_engine):
-        """Control: a parameter reading only customers-side columns nests inside
+        """Control: a parameter reading only customers-side fields nests inside
         the customers-rooted producer and broadcasts to both cells."""
         resp = await orders_engine.execute(bcast_q(
             dimensions=["orders.status"],
@@ -277,7 +277,7 @@ class TestUndeterminedParameterRejected:
         """Scenario: Undetermined attached parameter stays rejected — an associate
         parameter grained by ``status`` (an order attribute the customer entity
         does not determine) fails with the typed determination error, never wrong
-        values. Distinct from the cross-model input-safety residue above."""
+        values. Distinct from the cross-dataset input-safety residue above."""
         q = assoc_q(
             dimensions=["orders.status"],
             metrics=[QueryMetric(
@@ -296,7 +296,7 @@ class TestFilterAndOrderPositions:
 
     async def test_filter_only_prunes_with_values_unchanged(self, sales_engine):
         """Scenario: Attached parameter in filter and order positions — the
-        filter types as a measure, pruning rows with survivors unchanged."""
+        filter types as a metric, pruning rows with survivors unchanged."""
         full = await sales_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
@@ -310,7 +310,7 @@ class TestFilterAndOrderPositions:
             assert float(row["tot"]) == pytest.approx(float(full_tot[region[0]]))
 
     async def test_order_by_projected_measure_name(self, sales_engine):
-        """Scenario: ordered by the name of its projected measure."""
+        """Scenario: ordered by the name of its projected metric."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(metric=_ORDINARY, alias="w")],
@@ -320,7 +320,7 @@ class TestFilterAndOrderPositions:
         assert order == sorted(order, key=lambda reg: by_val[reg] or 0.0, reverse=True)
 
     async def test_order_by_raw_formula(self, sales_engine):
-        """Scenario: appears only as a raw ORDER BY formula (no projection)."""
+        """Scenario: appears only as a raw ORDER BY expression (no projection)."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")],

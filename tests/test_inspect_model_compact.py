@@ -1,4 +1,4 @@
-"""``inspect`` of a model at ``compact=False`` keeps each learning's full text; the tool exposes ``compact``."""
+"""``inspect`` of a dataset at ``compact=False`` keeps each learning's full text; the tool exposes ``compact``."""
 
 from __future__ import annotations
 

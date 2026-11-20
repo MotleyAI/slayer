@@ -1,6 +1,6 @@
-"""DEV-1853 — which side declares an edge is storage trivia.
+"""Which side declares an edge is storage trivia.
 
-The same semantic edge declared on either model answers every traversal,
+The same semantic edge declared on either dataset answers every traversal,
 reachability, SQL, and value question identically (byte-identical SQL on
 unnamed paths). This is the parity that lets stored mirror pairs collapse to
 one edge.

@@ -1,4 +1,4 @@
-"""DEV-1868 W3 — cross-model aggregate operands inside composites, executed
+"""W3 — cross-dataset aggregate operands inside composites, executed
 values (spec: queries/cross-model-aggregates, compose-in-expressions
 requirement). Characterization (task 1.2): every shape below already routes to
 the combined SELECT — the AGGREGATE-phase seam raise is unreachable from user

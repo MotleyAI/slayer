@@ -1,4 +1,4 @@
-"""One stored model or memory that cannot be loaded: typed load error, skip-and-warn enumeration, fail-closed answer picking (spec: models/document-isolation)."""
+"""One stored dataset or memory that cannot be loaded: typed load error, skip-and-warn enumeration, fail-closed answer picking (spec: models/document-isolation)."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ GOOD_MEMORIES = ("good-a", "good-b")
 
 
 def _bad_orders() -> dict:
-    """Join keyed on an expression column: fails construction, not repaired on load."""
+    """Relationship keyed on an expression field: fails construction, not repaired on load."""
     return {
         "version": 10, "name": BAD, "sql_table": "orders", "data_source": DS,
         "columns": [

@@ -3,7 +3,7 @@
 
 One EXISTS per root-adjacent reverse hop; conjuncts of a group are AND-ed in
 the same subquery; hop descriptors carry the oriented pairs and a stable
-per-node identity so repeated models bind distinct aliases.
+per-node identity so repeated datasets bind distinct aliases.
 """
 
 from __future__ import annotations

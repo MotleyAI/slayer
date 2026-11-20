@@ -472,7 +472,7 @@ class TestReaggregationOuter:
 
     def test_carrier_picks_the_transform_weight(self):
         bundle = _sales_bundle()
-        # The weight IS a transform constituent (not a column/aggregate).
+        # The weight IS a transform constituent (not a field/aggregate).
         bound = bind_expr(parse_expr(REAGG_RANK_COUNT),
                           scope=DatasetScope(population=bundle.population), bundle=bundle)
         assert isinstance(bound.value_key, AggregateKey)
@@ -526,7 +526,7 @@ class TestBindLevel:
             bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_time_bucketed_partition_key_granularity_in_fragment(self):
-        """A rank parameter partitioned by the same column at different
+        """A rank parameter partitioned by the same field at different
         granularities gets distinct canonical fragments — the fragment keeps a
         ``TimeTruncKey``'s granularity, as it already does for the resolved
         ``time_key``, so month- and year-bucketed aliases stay legible and stable."""

@@ -1,4 +1,4 @@
-"""Shared fixtures + SQL-shape helpers for the cross-model CTE test modules.
+"""Shared fixtures + SQL-shape helpers for the cross-dataset CTE test modules.
 
 Underscore-prefixed (like ``tests/_engine_helpers.py``) so pytest skips it during
 collection while ``from tests._cross_model_chain import ...`` still works.
@@ -7,15 +7,11 @@ Two groups live here:
 
 * **SQL-shape helpers** — ``_split_at_ranked_subquery`` and
   ``_joinback_on_predicate``, for splitting a ``_cm_*`` CTE body at the ranked
-  subquery and reading the grain join-back's ``ON`` predicate. These were copied
-  per-module until DEV-1728; the copies are now one definition (they were
-  byte-identical, so the duplication bought nothing). ``_norm`` /
-  ``_extract_cte_body`` are re-exported from ``tests/_engine_helpers.py``, which
-  DEV-1732 made the single home for the SQL-shape helpers that are not
-  cross-model-specific — same one-definition rule, one module up.
-* **The canonical join chain** — ``orders_x → customers_v2 → regions →
-  countries``, the fixture the DEV-1708 / DEV-1728 cross-model CTE tests render
-  against. ``_customers_v2`` carries the derived-column matrix those suites
+  subquery and reading the grain join-back's ``ON`` predicate. ``_norm`` /
+  ``_extract_cte_body`` are re-exported from ``tests/_engine_helpers.py``, the
+  single home for the SQL-shape helpers that are not cross-dataset-specific.
+* **The canonical relationship chain** — ``orders_x → customers_v2 → regions →
+  countries``, the fixture the cross-dataset CTE tests render against. ``_customers_v2`` carries the derived-field matrix those suites
   exercise: target-local (``ltv_x2``, ``ltv_third``), one-hop crossing
   (``deep_pop``, ``deep_pop_x2``, ``deep_weight``), two-hop crossing
   (``deep_gdp``), and a crossing derived TIME dim (``region_opened_eff``). Each
@@ -61,7 +57,7 @@ def _joinback_on_predicate(sql: str, *, dialect: str = "postgres") -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Model builders — chain: orders_x → customers_v2 → regions → countries.
+# Dataset builders — chain: orders_x → customers_v2 → regions → countries.
 # Postgres dialect for SQL-shape assertions (alias mangling is identity there).
 # --------------------------------------------------------------------------- #
 def _countries() -> SlayerDataset:
@@ -99,7 +95,7 @@ def _customers_v2(*, extra_columns=None) -> SlayerDataset:
         DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
         DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
         DatasetField(name="status", sql="status", datatype=DataType.STRING),
-        # Target-LOCAL derived dims (expand to customers_v2-only columns):
+        # Target-LOCAL derived dims (expand to customers_v2-only fields):
         DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
         DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INTEGER),
         # Derived, one-hop crossing (customers_v2 → regions):
@@ -108,7 +104,7 @@ def _customers_v2(*, extra_columns=None) -> SlayerDataset:
         DatasetField(name="deep_weight", sql="regions.weight", datatype=DataType.FLOAT),
         # Derived, TWO-hop crossing (customers_v2 → regions → countries):
         DatasetField(name="deep_gdp", sql="regions.countries.gdp", datatype=DataType.FLOAT),
-        # Derived TIME dim whose sql crosses a further join (DEV-1701):
+        # Derived TIME dim whose sql crosses a further relationship:
         DatasetField(name="region_opened_eff",
                sql="coalesce(regions.opened_at, signup_at)",
                datatype=DataType.DATETIME),

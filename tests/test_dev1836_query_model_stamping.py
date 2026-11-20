@@ -1,7 +1,7 @@
-"""Query-backed models carry provable uniqueness.
+"""Query-backed datasets carry provable uniqueness.
 
 Spec: openspec …/specs/models/join-cardinality — "Query-backed models carry
-their provable uniqueness". ``create_model_from_query`` stamps the result
+their provable uniqueness". ``create_dataset_from_query`` stamps the result
 grain's uniqueness only when the backing query provably deduplicates it:
 it aggregates, or is dimension-only with ``distinct_dimension_values=True``.
 """
@@ -48,7 +48,7 @@ class TestStamping:
         model = await engine.create_dataset_from_query(
             q(dimensions=["orders.status"]), "vm_dims",
         )
-        # A single-column grain is unique, not a primary key (not an identifier).
+        # A single-field grain is unique, not a primary key (not an identifier).
         assert _pk_names(model) == set()
         assert {c.name for c in model.fields if c.unique} == {"status"}
 
@@ -92,8 +92,8 @@ class TestStampedModelProvesJoins:
     async def test_metric_through_stamped_grain_keeps_exact_values(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Scenario's executed clause: a cross-model metric over the proven
-        join onto the query-backed model keeps exact per-dimension values."""
+        """Scenario's executed clause: a cross-dataset metric over the proven
+        relationship onto the query-backed dataset keeps exact per-dimension values."""
         await engine.create_dataset_from_query(
             q(dimensions=["orders.status", "orders.channel"],
               metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),

@@ -1,4 +1,4 @@
-"""DEV-1798 — a transform measure projected under two names surfaces BOTH.
+"""A transform metric projected under two names surfaces BOTH.
 
 The step-CTE emission used to record only ``public_aliases[0]``, so the outer
 SELECT re-emitted the first name for the second occurrence and silently dropped

@@ -1,4 +1,4 @@
-"""Element access: a list column is a keyless one-to-many child (spec: queries/list-children; semantics Axiom 3.2)."""
+"""Element access: a list field is a keyless one-to-many child (spec: queries/list-children; semantics Axiom 3.2)."""
 
 from __future__ import annotations
 

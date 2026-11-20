@@ -33,8 +33,8 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 _MONTH = [TimeDimension(field="orders.created_at", granularity="month")]
 
-# A bare ROW-column operand must fail closed with either error; both REJECT.
-# A row-column operand beside an aggregate now fails closed at the
+# A bare ROW-field operand must fail closed with either error; both REJECT.
+# A row-field operand beside an aggregate now fails closed at the
 # position typing pass (PositionTypingError names both failed typings).
 _ROW_OPERAND_REJECTED = PositionTypingError
 
@@ -487,7 +487,7 @@ class TestOrderOnlyCompositeLocal:
         _hidden_order_alias(sql)
 
 
-# Group 5 — composites whose operands cross a join. A cross-model operand lives
+# Group 5 — composites whose operands cross a relationship. A cross-dataset operand lives
 # in a ``_cm_`` CTE, so the composite must be owned by the combined SELECT.
 class TestOrderOnlyCompositeCrossModel:
     async def test_local_over_cross_model_order_only(self, engine) -> None:
@@ -644,7 +644,7 @@ class TestHiddenAliasUniqueness:
         )
         sql = await _sql(engine, query)
         assert not _duplicate_select_aliases(sql), (
-            f"a user measure named _cumsum_inner must not collide with the "
+            f"a user metric named _cumsum_inner must not collide with the "
             f"hidden transform slot.\nSQL:\n{sql}"
         )
         assert "_cumsum_inner" in _outer_select_columns(sql), sql
@@ -690,7 +690,7 @@ class TestWindowedOrderOnly:
         sql = await _sql(engine, query)
         # Windowed producers render under uniform ``_cm_`` naming.
         assert "_cm_" in sql, (
-            f"an order-only windowed measure needs its own _cm_ range-join CTE "
+            f"an order-only windowed metric needs its own _cm_ range-join CTE "
             f"— a plain SUM silently drops the window.\nSQL:\n{sql}"
         )
         assert "_w_time" in sql, sql
@@ -848,7 +848,7 @@ class TestWindowedOrderOnly:
 
 
 class TestWindowedStillGuarded:
-    """Boundaries: composite windowed in ``measures``, windowed/transform combos."""
+    """Boundaries: composite windowed in ``metrics``, windowed/transform combos."""
 
     async def test_windowed_in_declared_composite_measure_still_raises(self, engine) -> None:
         # Guard lifted: this now renders (scope-closed, no ``__regroup__`` leak),
@@ -864,7 +864,7 @@ class TestWindowedStillGuarded:
 
     async def test_transform_over_windowed_order_target_still_raises(self, engine) -> None:
         # Guard lifted: transform over a LOCAL windowed order target now renders;
-        # cross-model windowed is still guarded below.
+        # cross-dataset windowed is still guarded below.
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
@@ -885,14 +885,14 @@ class TestWindowedStillGuarded:
         )
         with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
-        # Cross-model windowed stays guarded — the host TD is not attributable
+        # Cross-dataset windowed stays guarded — the host TD is not attributable
         # from the target root, so the producer refuses the window.
         assert "The windowed aggregate" in str(ei.value), ei.value
         assert "attributable from" in str(ei.value), ei.value
 
     async def test_non_sum_avg_windowed_order_target_still_raises(self, engine) -> None:
         # Lifted: a local non-sum/avg windowed order target now renders
-        # (cross-model windowed stays guarded above).
+        # (cross-dataset windowed stays guarded above).
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
@@ -975,14 +975,14 @@ class TestStillGuarded:
         _hidden_order_alias(sql)
 
     @pytest.mark.parametrize(("formula", "error"), [
-        ("coalesce(sum(orders.amount), orders.id)", _ROW_OPERAND_REJECTED),  # scalar call with a row-column arg
+        ("coalesce(sum(orders.amount), orders.id)", _ROW_OPERAND_REJECTED),  # scalar call with a row-field arg
         # ... and a time-dimension arg, whose mismatched branch types are reported first
         ("coalesce(sum(orders.amount), orders.created_at)", ScalarOperandTypeError),
     ])
     async def test_scalar_call_with_row_operand_raises_not_stringified(
         self, engine, formula: str, error: type[Exception],
     ) -> None:
-        """A row-column operand inside a scalar call must raise, not be stringified."""
+        """A row-field operand inside a scalar call must raise, not be stringified."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -1356,7 +1356,7 @@ class TestMultiStage:
 # supersession stays visible and neither contract can silently regress.
 class TestSupersededByDev1703Phase1:
     async def test_grouped_row_column_order_max_wraps(self, exec_engine: SlayerQueryEngine) -> None:
-        """Phase 1 replaced the rejection: a grouped LOCAL row column orders on a
+        """Phase 1 replaced the rejection: a grouped LOCAL row field orders on a
         hidden ``<col>:max``. Seed: paid max = 2025-01-02, open = 2025-02-02, so
         DESC puts open first; a no-op sort would scramble that."""
         query = SlayerQuery(
@@ -1373,7 +1373,7 @@ class TestSupersededByDev1703Phase1:
     async def test_order_only_transform_in_raw_rows_mode_rejected(
         self, engine,
     ) -> None:
-        """Raw-rows mode rejects a measure-referencing order target: the inner
+        """Raw-rows mode rejects a metric-referencing order target: the inner
         aggregate induces a GROUP BY, so a 4-row table came back with 2 rows."""
         query = SlayerQuery(
             population="orders",

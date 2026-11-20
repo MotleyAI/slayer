@@ -1,5 +1,5 @@
-"""Every position that accepts an aggregation takes the functional spelling: query measures, filters, order,
-model measures (saved and hand-authored YAML), ModelExtension, inline source_model, source_queries stages,
+"""Every position that accepts an aggregation takes the functional spelling: query metrics, filters, order,
+dataset metrics (saved and hand-authored YAML), DatasetExtension, inline population, source_queries stages,
 transforms and arithmetic, and computed dimensions (with their guards)."""
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ def _q(**kw) -> SlayerQuery:
 
 
 # ===========================================================================
-# Query measures.
+# Query metrics.
 # ===========================================================================
 
 
@@ -148,7 +148,7 @@ class TestFilterPosition:
         await _dry(_q(metrics=["sum(orders.revenue)"], dimensions=["orders.status"], filter=["sum(orders.revenue) / count(orders.*) > 5"]))
 
     def test_construction_time_custom_agg_filter(self) -> None:
-        # No model context at construction — the unknown functional name defers to binding.
+        # No dataset context at construction — the unknown functional name defers to binding.
         q = SlayerQuery(
             population="orders",
             metrics=["my_agg(orders.price)"],
@@ -197,7 +197,7 @@ class TestOrderPosition:
 
 
 # ===========================================================================
-# Model measures — saved and hand-authored YAML.
+# Dataset metrics — saved and hand-authored YAML.
 # ===========================================================================
 
 
@@ -208,7 +208,7 @@ class TestModelMeasurePosition:
         assert "orders.rev" in f.columns
 
     async def test_hand_authored_yaml_measure(self, tmp_path) -> None:
-        # The functional formula is edited into the YAML directly (no save pass).
+        # The functional expression is edited into the YAML directly (no save pass).
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
         await storage.save_dataset(_orders(metrics=[DatasetMetric(name="rev", expression="max(revenue)")]))
@@ -225,7 +225,7 @@ class TestModelMeasurePosition:
 
 
 # ===========================================================================
-# ModelExtension and inline source_model.
+# DatasetExtension and inline population.
 # ===========================================================================
 
 

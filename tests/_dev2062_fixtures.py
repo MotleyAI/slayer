@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-2062 — a selected composite alongside a consumer containing it.
+"""Shared fixtures for a selected composite alongside a consumer containing it.
 
 Underscore-prefixed so pytest skips collection. ``orders.customer_id →
 customers.id`` is many-to-one; ``orders.aov`` is the saved ``sum(amount) / count(*)``.
@@ -39,7 +39,7 @@ from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 AOV = "sum(orders.amount) / count(orders.*)"
 CROSS_RATIO = "sum(orders.amount) / max(customers.score)"

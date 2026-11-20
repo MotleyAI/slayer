@@ -1,23 +1,23 @@
-"""DEV-1543 — ``distinct_dimension_values`` flag on ``SlayerQuery``.
+"""``distinct_dimension_values`` flag on ``SlayerQuery``.
 
 Default ``True`` preserves the current Cube.js-style auto-dedup behaviour
 (dim-only queries emit ``GROUP BY <dim aliases>``). Setting to ``False``
 emits a flat projection (``SELECT <dims/td-exprs> FROM ... WHERE ...
-ORDER BY ... LIMIT ...``) — no ``GROUP BY``. Any measure reference (in
-``measures``, ``filters``, or ``order``) is rejected with
+ORDER BY ... LIMIT ...``) — no ``GROUP BY``. Any metric reference (in
+``metrics``, ``filters``, or ``order``) is rejected with
 ``DistinctDimensionValuesError``.
 
 Layered validation:
-* Construction-time (Pydantic) — structural checks only: ``measures``
+* Construction-time (Pydantic) — structural checks only: ``metrics``
   non-empty rejected; both ``dimensions`` and ``time_dimensions`` empty
   rejected.
 * Compile-time — authoritative: ``filters`` / ``order`` parsed with
-  full model context (custom aggregations, named measures, post-variable
-  substitution); any measure-reference shape rejected here.
+  full dataset context (custom aggregations, named metrics, post-variable
+  substitution); any metric-reference shape rejected here.
 
 Both halves are live on the typed pipeline: the structural half in
 ``SlayerQuery``'s validator, the compile-time half in
-``stage_planner._reject_measure_refs_for_raw_rows`` plus the aggregate-bucket
+``bind_inputs._reject_metric_refs_for_raw_rows`` plus the aggregate-bucket
 guard in ``plan_query``.
 """
 
@@ -61,7 +61,7 @@ from tests._engine_helpers import _engine_generate
 # Known gap on the typed pipeline
 # ---------------------------------------------------------------------------
 
-# DEV-1703 Phase 3: the compile-time half of the DEV-1543 contract now has
+# The compile-time half of the ``distinct_dimension_values`` contract now has
 # a typed owner. ``stage_planner._reject_measure_refs_for_raw_rows`` runs
 # BEFORE binding (so the targeted error beats the binder's generic
 # "cannot resolve" / "function not allowed"), and a post-bind guard on
@@ -112,7 +112,7 @@ def _customers_dataset() -> SlayerDataset:
 
 async def _engine_with_storage() -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """An engine backed by a YAML store seeded with one ``test_ds``
-    datasource. Caller saves models then runs queries. ``tmp`` returned so
+    datasource. Caller saves datasets then runs queries. ``tmp`` returned so
     the test can ``.cleanup()`` afterwards.
     """
     tmp = tempfile.TemporaryDirectory()
@@ -131,11 +131,11 @@ async def _engine_with_storage() -> tuple[SlayerQueryEngine, tempfile.TemporaryD
 
 class TestConstructionRejects:
     """Cheap structural checks. Deep filter/order parsing moves to
-    query compilation, so cases that need model context live in
+    query compilation, so cases that need dataset context live in
     ``TestCompileRejects`` below."""
 
     def test_measures_non_empty_rejected(self) -> None:
-        """Case 1: ``measures`` non-empty + flag=False → reject at construct.
+        """Case 1: ``metrics`` non-empty + flag=False → reject at construct.
 
         Pydantic v2 wraps ``ValueError``-subclass exceptions (which
         ``DistinctDimensionValuesError`` is) raised in
@@ -193,7 +193,7 @@ class TestConstructionAccepts:
         assert q.distinct_dimension_values is False
 
     def test_dimensions_plus_time_dimensions(self) -> None:
-        """Case 11: dims + time_dims, no measures → builds."""
+        """Case 11: dims + time_dims, no metrics → builds."""
         q = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -216,7 +216,7 @@ class TestConstructionAccepts:
         assert q.distinct_dimension_values is False
 
     def test_scalar_filter_no_measure_ref(self) -> None:
-        """Case 13: filter that references only base columns → builds."""
+        """Case 13: filter that references only base fields → builds."""
         q = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -226,7 +226,7 @@ class TestConstructionAccepts:
         assert q.distinct_dimension_values is False
 
     def test_order_on_plain_column(self) -> None:
-        """Case 14: plain column order → builds."""
+        """Case 14: plain field order → builds."""
         q = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -248,7 +248,7 @@ class TestConstructionAccepts:
         assert q.distinct_dimension_values is False
 
     def test_quoted_string_with_colon_passes(self) -> None:
-        """Case 14b: quoted-string literal contains a colon — not a measure
+        """Case 14b: quoted-string literal contains a colon — not a metric
         ref. Must NOT be rejected by a naive colon-substring detector
         (Pydantic-time check)."""
         q = SlayerQuery(
@@ -266,7 +266,7 @@ class TestCompileAccepts:
 
     async def test_quoted_string_with_colon_survives_compile(self) -> None:
         """Case 14b (full path): the colon-in-quoted-string filter MUST
-        survive compilation too — the post-substitution measure-ref check
+        survive compilation too — the post-substitution metric-ref check
         must not produce a false positive on literal text."""
         model = _orders_dataset()
         q = SlayerQuery(
@@ -294,7 +294,7 @@ class TestCompileAccepts:
 
 
 # ---------------------------------------------------------------------------
-# Compile-time (semantic) — authoritative measure-reference check
+# Compile-time (semantic) — authoritative metric-reference check
 # ---------------------------------------------------------------------------
 
 
@@ -364,7 +364,7 @@ class TestCompileRejects:
         await self._expect_reject(q, model)
 
     async def test_order_on_bare_model_measure_name(self) -> None:
-        """Case 15: order column resolves to a saved ``ModelMeasure``."""
+        """Case 15: order field resolves to a saved ``DatasetMetric``."""
         model = _orders_dataset(
             metrics=[DatasetMetric(expression="sum(amount)", name="aov")],
         )
@@ -414,10 +414,10 @@ class TestCompileRejects:
             await _engine_generate(query=q, dataset=model)
 
     async def test_order_arithmetic_over_aggregations(self) -> None:
-        """Codex + CodeRabbit (PR #172): ``raw_formula`` of arithmetic
+        """Codex + CodeRabbit (PR #172): ``raw_expression`` of arithmetic
         over aggregations (``sum(revenue) / count(*)``) parses as
         ``ArithmeticField`` with ``agg_refs`` non-empty. Must reject in
-        raw-row mode — otherwise hidden aggregate measures get
+        raw-row mode — otherwise hidden aggregate metrics get
         materialised and ``GROUP BY`` returns."""
         model = _orders_dataset()
         q = SlayerQuery(
@@ -431,7 +431,7 @@ class TestCompileRejects:
 
     async def test_order_function_style_aggregate(self) -> None:
         """Case 16b: ``order=[{"column": "sum(amount)"}]`` — function-style
-        aggregate via raw_formula. (Equivalent to a measure reference.)"""
+        aggregate via raw_expression. (Equivalent to a metric reference.)"""
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
@@ -512,7 +512,7 @@ class TestErrorMessage:
         assert "sum(amount)" in msg or "order" in msg.lower()
 
     def test_construction_message_names_offending_field(self) -> None:
-        """Construction-time message points at ``measures`` or
+        """Construction-time message points at ``metrics`` or
         ``dimensions/time_dimensions``."""
         status_dim = QueryDimension(field="status")
         count_measure = QueryMetric(metric="count(*)")
@@ -610,13 +610,13 @@ class TestSQLGeneration:
 
 
 # ---------------------------------------------------------------------------
-# Cross-model + multi-stage
+# Cross-dataset + multi-stage
 # ---------------------------------------------------------------------------
 
 
 class TestCrossModelDimensions:
     async def test_cross_model_dimensions_no_dedup(self) -> None:
-        """Case 22: ``customers.region`` joins customers; with flag=False,
+        """Case 22: ``customers.region`` walks the relationship to customers; with flag=False,
         no GROUP BY → raw rows surface (duplicates preserved by SQL)."""
         engine, tmp = await _engine_with_storage()
         try:
@@ -717,8 +717,8 @@ def _seed_orders_db_at(db_path) -> None:
 
 
 def _orders_slayer_dataset_for(data_source: str) -> SlayerDataset:
-    """The shared ``SlayerModel`` used by both the async fixture and the
-    sync helper. Five columns; the ``id`` PK is restricted to count
+    """The shared ``SlayerDataset`` used by both the async fixture and the
+    sync helper. Five fields; the ``id`` PK is restricted to count
     aggregations per SLayer defaults but never used as such here."""
     return SlayerDataset(
         name="orders",
@@ -736,7 +736,7 @@ def _orders_slayer_dataset_for(data_source: str) -> SlayerDataset:
 
 @pytest.fixture
 async def sqlite_orders_env(tmp_path):
-    """Real SQLite + YAML storage seeded with the shared ``orders`` model.
+    """Real SQLite + YAML storage seeded with the shared ``orders`` dataset.
     The fixture returns the engine; tests use ``engine.storage`` when
     they need the underlying storage backend."""
     db_path = tmp_path / "orders.db"
@@ -844,7 +844,7 @@ class TestMCPSurface:
     async def test_mcp_query_list_outer_flag_false_with_measure_rejects(
         self, sqlite_orders_env,
     ) -> None:
-        """Case 26b: outer stage flag=False AND outer measure ref →
+        """Case 26b: outer stage flag=False AND outer metric ref →
         rejected. The MCP tool surfaces the error (raises or returns an
         error-shaped result — either is acceptable)."""
         engine = sqlite_orders_env
@@ -862,7 +862,7 @@ class TestMCPSurface:
                         {
                             "population": "raw_rows",
                             "dimensions": ["raw_rows.status"],
-                            # Outer has flag=False but also a measure → reject.
+                            # Outer has flag=False but also a metric → reject.
                             "metrics": [{"metric": "sum(raw_rows.amount)"}],
                             "distinct_dimension_values": False,
                         },

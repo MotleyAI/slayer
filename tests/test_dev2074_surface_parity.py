@@ -65,7 +65,7 @@ def _by(*models: SlayerDataset) -> dict[str, SlayerDataset]:
 
 
 def _unnamed_pair() -> list[SlayerDataset]:
-    """``orders`` declares two unnamed joins onto ``addresses``."""
+    """``orders`` declares two unnamed relationships onto ``addresses``."""
     return [
         _m("orders", cols=("status", "billing_id", "shipping_id"),
            joins=[_to("addresses", "billing_id"), _to("addresses", "shipping_id")]),

@@ -1,11 +1,11 @@
-"""DEV-1865 — shapes that were guarded and now compile by construction.
+"""Shapes that were guarded and now compile by construction.
 
 Executed on SQLite + DuckDB. Values are asserted differentially against the
 same query without the new filter (the spec's parity language), so the oracles
 do not re-hand-compute the engine's arithmetic.
 
-Currently-red: the cross-model partition filter raises the DEV-1824
-``NotImplementedError``; the OR-mixing shapes raise the DEV-1825 "separate
+Formerly guarded: the cross-dataset partition filter raised a
+``NotImplementedError``; the OR-mixing shapes raised the "separate
 filters" ``NotImplementedError``.
 """
 
@@ -28,7 +28,7 @@ RK_TIER = "customers.tier"
 
 
 class TestCrossModelPartitionedFilter:
-    """cross-model-aggregates: filter on a cross-model partitioned aggregate."""
+    """cross-model-aggregates: filter on a cross-dataset partitioned aggregate."""
 
     async def test_partition_key_among_dims_and_aggregate_not_selected(
         self, exec_engine,
@@ -87,8 +87,8 @@ class TestCrossModelPartitionedFilter:
 
 
 class TestLocalPartitionedFilter:
-    """partitioned-aggregates: the ordinary local measure-typed partitioned
-    filter route (already legal; pinned here in the DEV-1865 suite)."""
+    """partitioned-aggregates: the ordinary local metric-typed partitioned
+    filter route (already legal; pinned here)."""
 
     async def test_keep_rows_whose_partition_total_qualifies(self, exec_engine) -> None:
         base = q(
@@ -126,11 +126,11 @@ class TestLocalPartitionedFilter:
 
 
 class TestComputedDimAggregateMixing:
-    """partitioned-aggregates DEV-1825 lift: one predicate mixing a computed
+    """partitioned-aggregates lift: one predicate mixing a computed
     dimension's aggregate with another reference is legal."""
 
     async def test_mix_with_row_level_ref_types_as_field(self, exec_engine) -> None:
-        # `band` is the attached (row-scope) value; OR-ing it with a base column
+        # `band` is the attached (row-scope) value; OR-ing it with a base field
         # masks per base row before re-aggregation — a field-typed conjunct.
         dims = ["orders.region", "orders.city", {"field": BAND35, "alias": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
@@ -152,7 +152,7 @@ class TestComputedDimAggregateMixing:
 
     async def test_mix_with_plain_aggregate_types_as_measure(self, exec_engine) -> None:
         # OR-ing the computed-dim aggregate with a plain aggregate evaluates at
-        # query grain — a measure-typed conjunct that prunes cells only.
+        # query grain — a metric-typed conjunct that prunes cells only.
         dims = ["orders.region", "orders.city", {"field": BAND35, "alias": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
             dimensions=dims, metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
@@ -164,7 +164,7 @@ class TestComputedDimAggregateMixing:
         )), "orders.region", "orders.city")
         expected = {k for k, v in CITY_TOTAL.items() if v > 45}
         assert set(filtered) == expected
-        # Measure mask: surviving cells keep the unfiltered values.
+        # Metric mask: surviving cells keep the unfiltered values.
         for key, row in filtered.items():
             assert float(row["s"]) == pytest.approx(
                 float(unfiltered[key]["s"])

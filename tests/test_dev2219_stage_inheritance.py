@@ -1,4 +1,4 @@
-"""Stages inherit edges on pass-through key columns; cardinality re-derives from the grain; declared edges win.
+"""Stages inherit edges on pass-through key fields; cardinality re-derives from the grain; declared edges win.
 
 Spec: openspec …/specs/queries/multi-stage — "Stages inherit edges on pass-through keys",
 "Inherited edges re-derive their cardinality from the stage grain", "Declared edges win over inherited ones";

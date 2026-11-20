@@ -1,13 +1,13 @@
-"""Shared fixtures for DEV-1824 — the deferred ``partition_by=`` shapes
+"""Shared fixtures for the deferred ``partition_by=`` shapes
 (``window=``, ``first``/``last``, transform nesting, filter references) and the
 computed-dimension symmetry lifts.
 
-Reuses the DEV-1739 models and dataset verbatim (``tests/_dev1739_fixtures.py``:
+Reuses the ``_dev1739_fixtures`` datasets and seed data verbatim (``tests/_dev1739_fixtures.py``:
 ``orders`` with region/city/channel/ordered_at, ``orders → customers → regions``)
 and adds the hand-computed oracles for the newly lifted shapes.
 
-Oracle derivations (from the DEV-1739 rows)
--------------------------------------------
+Oracle derivations (from the ``_dev1739_fixtures`` rows)
+--------------------------------------------------------
 orders (id, cust, region, city, channel, amount, status, ordered_at):
    1  c1  North  CityA  web   10  ok    2024-01-10
    2  c1  North  CityA  app   20  ok    2024-01-20
@@ -34,7 +34,7 @@ TRAILING_45D_REGION   the duration-sensitive variant: 45d back from Feb's end
                       window boundary, so bucket-end conventions cannot flip
                       any value.
 REGION_LAST/_FIRST    amount:last/first(partition_by=region), ranked by
-                      ordered_at (model default_time_dimension): North last is
+                      ordered_at (dataset default_time_dimension): North last is
                       row 4 (Feb 15 → 30), first row 1 (Jan 10 → 10); South last
                       row 6 (Mar 5 → 25), first row 5 (25); NULL row 7 (60).
 REGION_MONTH_LAST     amount:last(partition_by=[region, ordered_at]) at month

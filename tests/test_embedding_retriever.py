@@ -1,5 +1,4 @@
-"""Unit tests for EmbeddingRetriever (DEV-1514, supersedes
-test_embeddings_service.py).
+"""Unit tests for EmbeddingRetriever (supersedes test_embeddings_service.py).
 
 Combines:
 
@@ -178,7 +177,7 @@ async def test_refresh_model_subtree_batches_all_children(
     warnings = await retriever.refresh_dataset_subtree(model)
     assert warnings == []
     assert len(recording_embed.calls) == 1
-    # model + 2 visible columns + 1 named measure + 1 agg = 5; hidden col skipped.
+    # dataset + 2 visible fields + 1 named metric + 1 agg = 5; hidden field skipped.
     assert len(recording_embed.calls[0]) == 5
 
     listed = await storage.list_embeddings(embedding_model_name="openai/x")
@@ -271,7 +270,7 @@ async def test_fetch_corpus_filters_by_active_model_name(
 
 
 # ---------------------------------------------------------------------------
-# Batched storage hot-path (DEV-1405)
+# Batched storage hot-path
 # ---------------------------------------------------------------------------
 
 
@@ -521,7 +520,7 @@ async def test_delete_model_hook_is_no_op_today(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    """Codex Finding 6 (sister case): delete_model hook leaves
+    """Codex Finding 6 (sister case): delete_dataset hook leaves
     embedding rows intact — storage owns the cascade."""
     retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
     model = _make_dataset()

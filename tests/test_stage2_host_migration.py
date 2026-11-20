@@ -1,16 +1,16 @@
-"""DEV-1706 Stage 2 — host-base migration characterization guards.
+"""Host-base migration characterization guards.
 
 These pin behavior that the ScopeFrame rewire MUST preserve byte-for-byte. They
 pass BEFORE the migration (they describe current behavior) and must keep passing
 AFTER it — they are the behavior-preservation gate, not feature tests.
 
 1. Join-order byte parity (Codex H3): a query mixing several join-registration
-   carriers (joined dim, WHERE filter, Column.filter, derived agg source) plus a
+   carriers (joined dim, WHERE filter, DatasetField.filter, derived agg source) plus a
    shared prefix must emit its LEFT JOINs in the same first-seen order after the
    collectors are replaced by the single resolver. The resolver's ``join_paths``
    OrderedSet must reproduce the collectors' insertion order, not just membership.
 
-2. The cross-model host-rooted placeholder (generator.py:5123) LIMIT-1 semantics
+2. The cross-dataset host-rooted placeholder (generator.py:5123) LIMIT-1 semantics
    (Codex H4 / D-J): a host-local filter crossing a join must still gate the whole
    result and collapse the host to a single row, with its join in scope.
 """
@@ -96,8 +96,8 @@ class TestJoinOrderParity:
     async def test_diamond_mixed_carriers_emit_deterministic_join_order(self) -> None:
         # A DIAMOND (orders → customers → regions AND orders → warehouses →
         # regions) reaches ``regions`` via two distinct path aliases
-        # (customers__regions vs warehouses__regions). DEV-1709: the derived
-        # agg SOURCE crossing the warehouses branch now ISOLATES host-rooted;
+        # (customers__regions vs warehouses__regions). The derived
+        # agg SOURCE crossing the warehouses branch ISOLATES host-rooted;
         # the row-level carriers (joined dim + multi-hop WHERE filter) stay in
         # the host ``_base``. Deterministic first-seen join order applies PER
         # SCOPE: the base emits customers, customers__regions; the isolation
@@ -145,7 +145,7 @@ class TestJoinOrderParity:
 
 class TestPlaceholderLimitOne:
     async def test_host_local_filter_keeps_limit_1(self) -> None:
-        # A cross-model measure (customers.balance:sum) drives the _cm_ path; a
+        # A cross-dataset metric (customers.balance:sum) drives the _cm_ path; a
         # host-local ROW filter (amount > 100, no join, not routed to the CTE)
         # forces the host-rooted placeholder (gen:5123) to fire with LIMIT 1 so
         # the CROSS JOIN to the scalar _cm_ does not duplicate the aggregate,
@@ -174,8 +174,8 @@ class TestPlaceholderLimitOne:
         assert_scope_closed(sql)
 
     async def test_host_local_crossing_filter_pulls_join_into_placeholder(self) -> None:
-        # D-J placeholder join registration (Round 6 / Codex): the cross-model
-        # measure (customers.balance:sum) empties the host base, and a host-local
+        # D-J placeholder join registration (Round 6 / Codex): the cross-dataset
+        # metric (customers.balance:sum) empties the host base, and a host-local
         # ROW filter that CROSSES a *different* join (shippers.code = 'X' — not
         # reachable from the customers CTE root, so not routed there) must pull
         # its LEFT JOIN into the placeholder FROM through the SAME single resolver
@@ -233,12 +233,12 @@ class TestPlaceholderLimitOne:
 
 class TestTypedJoinKeyMixedCaseQuoted:
     async def test_mixed_case_join_key_quoted_in_typed_on_clause(self) -> None:
-        # DEV-1645 regression guard on the TYPED pipeline: ``_build_from_and_joins``
+        # Mixed-case quoting regression guard on the TYPED pipeline: ``_build_from_and_joins``
         # builds the LEFT JOIN ON keys as AST (not via the legacy string-parse
         # path), so a mixed-case physical join key (``CustId``) must be quoted
         # there too — otherwise a case-folding backend resolves ``custid`` and
         # the query fails at execution (only the Postgres integration suite,
-        # which runs the typed engine, caught this; the DEV-1645 unit test uses
+        # which runs the typed engine, caught this; the original unit test uses
         # the legacy ``generate(enriched=)`` path and did not).
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",

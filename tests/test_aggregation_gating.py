@@ -1,9 +1,9 @@
-"""Query-time aggregation gating, with focus on cross-model resolution.
+"""Query-time aggregation gating, with focus on cross-dataset resolution.
 
-Cross-model measures (``sum(customers.id)``) must apply the same gate stack
-as local measures: PK rule, type-default eligibility, and `allowed_aggregations`
-whitelist. Today the cross-model path checks only ``NUMERIC_ONLY_AGGREGATIONS``
-against string columns, silently passing PK/type/whitelist violations through.
+Cross-dataset metrics (``sum(customers.id)``) must apply the same gate stack
+as local metrics: PK rule, type-default eligibility, and `allowed_aggregations`
+whitelist. Today the cross-dataset path checks only ``NUMERIC_ONLY_AGGREGATIONS``
+against string fields, silently passing PK/type/whitelist violations through.
 """
 
 import pytest
@@ -63,8 +63,8 @@ async def _generate_sql(
 
 
 def _orders_with_status() -> SlayerDataset:
-    """Orders model carrying a local TEXT column (``status``) and a numeric
-    ``rating`` column — for the DEV-1576 §3 error-split tests."""
+    """Orders dataset carrying a local TEXT field (``status``) and a numeric
+    ``rating`` field — for the unknown-vs-disallowed error-split tests."""
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -82,7 +82,7 @@ def _orders_with_status() -> SlayerDataset:
 
 class TestCrossModelGating:
     async def test_cross_model_pk_aggregation_rejected(self) -> None:
-        """``sum(customers.id)`` — PK column, sum is forbidden by the PK rule."""
+        """``sum(customers.id)`` — PK field, sum is forbidden by the PK rule."""
         orders = _orders_dataset()
         customers = _customers_dataset()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
@@ -122,7 +122,7 @@ class TestCrossModelGating:
         assert "MIN" in sql.upper()
 
     async def test_cross_model_whitelist_enforced(self) -> None:
-        """A whitelist on the joined column restricts further than type defaults.
+        """A whitelist on the joined field restricts further than type defaults.
         ``rating`` is NUMBER (sum is type-eligible) but the whitelist is ``["avg"]``,
         so ``sum(customers.rating)`` must raise.
         """
@@ -175,8 +175,8 @@ class TestCrossModelGating:
             )
 
     async def test_cross_model_custom_aggregation_allowed(self) -> None:
-        """A custom aggregation defined on the joined model bypasses
-        type-default eligibility (the formula determines applicability).
+        """A custom aggregation defined on the joined dataset bypasses
+        type-default eligibility (the expression determines applicability).
         """
         customers = _customers_dataset(
             extra_aggregations=[
@@ -195,8 +195,8 @@ class TestCrossModelGating:
 
 
 class TestStatAggregationEligibility:
-    """The new statistical aggregations (DEV-1317) must follow the same
-    eligibility rules as other built-ins: numeric-only types, PK columns
+    """The statistical aggregations must follow the same
+    eligibility rules as other built-ins: numeric-only types, PK fields
     rejected, missing required `other=` for `corr` raises a clear error.
     """
 
@@ -289,7 +289,7 @@ class TestStatAggregationEligibility:
     async def test_pk_column_rejects_stat_agg(
         self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
-        # PK columns are restricted to count/count_distinct regardless of type.
+        # PK fields are restricted to count/count_distinct regardless of type.
         customers = _customers_dataset()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             await _generate_sql(
@@ -348,13 +348,13 @@ class TestStatAggregationEligibility:
 
 
 class TestCrossModelColumnFilter:
-    """Codex Major 2: a Column.filter on a joined column must apply when
-    that column is referenced cross-model (e.g. ``sum(customers.completed_rev)``).
+    """Codex Major 2: a DatasetField.filter on a joined field must apply when
+    that field is referenced cross-dataset (e.g. ``sum(customers.completed_rev)``).
     """
 
     async def test_cross_model_column_filter_applied(self) -> None:
-        """When a joined-model column has ``filter``, it should appear inside
-        the aggregation as a CASE-WHEN — same as for local measures.
+        """When a joined-dataset field has ``filter``, it should appear inside
+        the aggregation as a CASE-WHEN — same as for local metrics.
         """
         customers = _customers_dataset(
             extra_columns=[
@@ -378,8 +378,8 @@ class TestCrossModelColumnFilter:
 
 
 class TestDev1576UnknownVsDisallowed:
-    """DEV-1576 §3 — split 'unknown aggregation name' from 'not allowed for
-    this column type'. Local (non-cross-model) path only.
+    """Split 'unknown aggregation name' from 'not allowed for
+    this field type'. Local (non-cross-dataset) path only.
     """
 
     async def test_unknown_name_raises_unknown_aggregation(self) -> None:
@@ -415,8 +415,8 @@ class TestDev1576UnknownVsDisallowed:
             )
 
     async def test_type_disallowed_keeps_not_applicable_wording(self) -> None:
-        # ``sum`` is a KNOWN aggregation but not eligible for a TEXT column —
-        # keep the existing 'not applicable to <TYPE> column' message.
+        # ``sum`` is a KNOWN aggregation but not eligible for a TEXT field —
+        # keep the existing 'not applicable to <TYPE> field' message.
         orders = _orders_with_status()
         customers = _customers_dataset()
         with pytest.raises(ValueError, match=r"not applicable to String field"):
@@ -438,8 +438,8 @@ class TestDev1576UnknownVsDisallowed:
         assert "Unknown function" not in str(exc.value)
 
     async def test_star_unknown_gets_standard_message(self) -> None:
-        # DEV-1826: the binder validates the aggregation NAME globally before
-        # any per-column gate, so ``bogus(*)`` gets the standard unknown-
+        # The binder validates the aggregation NAME globally before
+        # any per-field gate, so ``bogus(*)`` gets the standard unknown-
         # aggregation error instead of escaping to SQL generation (where it
         # used to surface as the star-specific message).
         orders = _orders_with_status()
@@ -452,8 +452,8 @@ class TestDev1576UnknownVsDisallowed:
             )
 
     async def test_custom_agg_known_but_disallowed_keeps_not_allowed(self) -> None:
-        # A custom aggregation known model-wide but absent from a column's
-        # allowed_aggregations whitelist → 'not allowed for column', NOT
+        # A custom aggregation known dataset-wide but absent from a field's
+        # allowed_aggregations whitelist → 'not allowed', NOT
         # 'Unknown function'.
         orders = SlayerDataset(
             name="orders",
@@ -485,7 +485,7 @@ class TestDev1576UnknownVsDisallowed:
 
     async def test_custom_agg_allowed_when_no_whitelist(self) -> None:
         # Guard: the unknown-name check must not break a legitimate custom
-        # aggregation on a column with no whitelist.
+        # aggregation on a field with no whitelist.
         orders = SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -521,9 +521,9 @@ class TestDev1576UnknownVsDisallowed:
     async def test_healed_alias_in_filter_reaches_having(
         self, raw: str, sql_fn: str,
     ) -> None:
-        # Binding-time healing must also fire on the filter path (DEV-1833
-        # migrated filters onto the typed parser): an aliased aggregation in a
-        # HAVING predicate heals just like a measure.
+        # Binding-time healing must also fire on the filter path (filters use
+        # the typed parser): an aliased aggregation in a
+        # HAVING predicate heals just like a metric.
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["orders.status"],
@@ -540,7 +540,7 @@ class TestDev1576UnknownVsDisallowed:
 
 
 class TestDev1576RoundAbsGeneration:
-    """DEV-1576 §2 — round()/abs() compile in a formula; Postgres needs a
+    """round()/abs() compile in an expression; Postgres needs a
     numeric CAST for 2-arg round (round(double precision, int) doesn't
     exist), while SQLite/DuckDB round natively over DOUBLE.
     """
@@ -593,8 +593,8 @@ class TestDev1576RoundAbsGeneration:
 
 
 class TestDev1576UnknownNamePrecedence:
-    """DEV-1576 §3 — the unknown-name guard fires BEFORE the PK / whitelist /
-    type gates, and the suggestion list reflects model-wide custom aggs."""
+    """The unknown-name guard fires BEFORE the PK / whitelist /
+    type gates, and the suggestion list reflects dataset-wide custom aggs."""
 
     def _orders_pk_whitelist_custom(self) -> SlayerDataset:
         return SlayerDataset(
@@ -657,7 +657,7 @@ class TestDev1576UnknownNamePrecedence:
 
 
 class TestDev1576CustomAggPrecedence:
-    """DEV-1576 (Codex): a model custom aggregation named like an alias key
+    """A dataset custom aggregation named like an alias key
     (countd/stddev/var/...) or a builtin casing must take precedence over
     alias healing — the heal must not silently shadow it."""
 
@@ -681,12 +681,12 @@ class TestDev1576CustomAggPrecedence:
             customers=_customers_dataset(),
             metrics=[{"metric": "countd(orders.amount)", "alias": "result"}],
         )
-        # The custom formula (… + 1) must win, not the healed builtin
+        # The custom expression (… + 1) must win, not the healed builtin
         # count_distinct (plain COUNT(DISTINCT …)).
         assert "+ 1" in sql
 
     async def test_alias_heals_when_no_colliding_custom_agg(self) -> None:
-        # Same query on a model WITHOUT a colliding custom agg still heals to
+        # Same query on a dataset WITHOUT a colliding custom agg still heals to
         # the builtin count_distinct.
         sql = await _generate_sql(
             orders=_orders_dataset(),

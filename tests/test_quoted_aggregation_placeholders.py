@@ -1,4 +1,4 @@
-"""Placeholders inside ordinary string literals of aggregation formulas (aggregations/formula-templates)."""
+"""Placeholders inside ordinary string literals of aggregation expressions (aggregations/formula-templates)."""
 
 from __future__ import annotations
 

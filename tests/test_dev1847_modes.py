@@ -96,7 +96,7 @@ class TestErrorMode:
         msg = str(ei.value)
         assert not isinstance(ei.value, NotImplementedError)
         # a genuine error-mode refusal, not the generic expression-nesting gate
-        # (whose message echoes 'partition_by' from the formula).
+        # (whose message echoes 'partition_by' from the expression).
         assert "nested inside the expression aggregated" not in msg
         assert "region" in msg
         assert "partition_by" in msg

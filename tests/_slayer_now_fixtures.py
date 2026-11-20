@@ -1,4 +1,4 @@
-"""Shared fixtures for ``SLAYER_NOW``: one seeded SQLite ``ev`` table, its model, and an id oracle."""
+"""Shared fixtures for ``SLAYER_NOW``: one seeded SQLite ``ev`` table, its dataset, and an id oracle."""
 
 from __future__ import annotations
 

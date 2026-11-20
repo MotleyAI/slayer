@@ -194,7 +194,7 @@ class TestOrderByTransformSharedWithDimension:
 
 class TestFilterOnAggregateOwnedByDimensionTransform:
     """The aggregate inside a dimension's transform is not itself row-attached, so a
-    filter on it is a measure-typed combined consumer."""
+    filter on it is a metric-typed combined consumer."""
 
     async def test_executes_at_query_grain(self, exec_engine):
         resp = await exec_engine.execute(sales_q(

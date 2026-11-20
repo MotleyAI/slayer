@@ -1,4 +1,4 @@
-"""List columns on a real Postgres: ingestion, list functions, element access and ``collect`` (spec:
+"""List fields on a real Postgres: ingestion, list functions, element access and ``collect`` (spec:
 models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)."""
 
 import pytest

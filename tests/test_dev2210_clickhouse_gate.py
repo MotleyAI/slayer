@@ -1,4 +1,4 @@
-"""A model filter read by association needs ClickHouse 25.4+, gated like a pushed-down query filter."""
+"""A dataset filter read by association needs ClickHouse 25.4+, gated like a pushed-down query filter."""
 
 from __future__ import annotations
 

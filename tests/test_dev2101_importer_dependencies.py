@@ -1,4 +1,4 @@
-"""Importers check saved-measure dependencies over the one Mode-B parser (design D8)."""
+"""Importers check saved-metric dependencies over the one Mode-B parser (design D8)."""
 
 from __future__ import annotations
 

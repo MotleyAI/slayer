@@ -1,13 +1,13 @@
-"""Shared fixtures for DEV-1835 — local family unification (bare windowed /
+"""Shared fixtures for local family unification (bare windowed /
 first-last onto the regroup primitive) + attach-dedup.
 
-Reuses the DEV-1739/1824/1837 models, dataset, and oracles verbatim and adds
+Reuses the ``_dev1739``/``_dev1824``/``_dev1837`` fixtures' datasets, seed data, and oracles verbatim and adds
 hand-computed oracles for the migrated families, the guard-dissolution shapes,
-and the union-grain broadcasts, plus a shipped-at model variant for the
-explicit-ranking-column cases.
+and the union-grain broadcasts, plus a shipped-at dataset variant for the
+explicit-ranking-field cases.
 
-Oracle derivations (from the DEV-1739 rows; row list in ``_dev1824_fixtures``)
-------------------------------------------------------------------------------
+Oracle derivations (from the ``_dev1739_fixtures`` rows; row list in ``_dev1824_fixtures``)
+-------------------------------------------------------------------------------------------
 CITY_WM        bare ``sum(amount, window='1y')`` at (region, city, month): the
                window spans the whole dataset, so each bucket carries the
                running (region, city) total: (N,CityA,Jan)=30 (N,CityB,Feb)=40
@@ -25,7 +25,7 @@ OK_W90         ``sum(ok_amount, window='90d')`` at (region, month) — row 6
                (hold) drops, so (S,Mar)=25 (vs 50 unfiltered): (N,Jan)=30
                (N,Feb)=100 (S,Jan)=25 (S,Mar)=25 (NULL,Mar)=60.
 OK_LAST        ``last(ok_amount)`` by region — the MASKED value at the newest row
-               (DEV-1832: Column.filter masks, it does not restrict the ranking):
+               (DatasetField.filter masks, it does not restrict the ranking):
                N=30 (newest N row is ok), S=NULL (S's newest row #6 is 'hold' →
                masked to NULL), NULL-region=60. The all-NULL ``last(nomatch)`` is
                the discriminating twin.
@@ -200,7 +200,7 @@ CHANGE_OVER_LAST = {("North", "2024-02"): 10.0}
 CHANGE_PCT_OVER_LAST = {("North", "2024-02"): 0.5}
 
 # --------------------------------------------------------------------------- #
-# Union-grain (DEV-1839 lift, task 3.7) oracles.
+# Union-grain oracles.
 # --------------------------------------------------------------------------- #
 UNION_WM_DIM = (
     "rank(sum(amount, window='90d', partition_by=region) - "
@@ -239,8 +239,8 @@ def cte_aliases(sql: str, prefix: str, *, dialect: str = "sqlite") -> List[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Shipped-at model variant — a second ranking timestamp for the explicit
-# ranking-column cases. Same rows as DEV-1739 plus ``shipped_at``.
+# Shipped-at dataset variant — a second ranking timestamp for the explicit
+# ranking-field cases. Same rows as ``_dev1739_fixtures`` plus ``shipped_at``.
 # --------------------------------------------------------------------------- #
 _SHIPPED_ROWS = [
     # (id, customer_id, region, city, channel, amount, status, ordered_at, shipped_at)
@@ -272,7 +272,7 @@ def shipped_orders_dataset() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             DatasetField(name="shipped_at", datatype=DataType.DATETIME),
-            # Derived column — the "every dimension kind" scenario (Codex F3).
+            # Derived field — the "every dimension kind" scenario (Codex F3).
             DatasetField(name="city_key", datatype=DataType.STRING, sql="LOWER(city)"),
         ],
         relationships=[
@@ -305,7 +305,7 @@ def _seed_shipped_duckdb(db_path: str) -> None:
 
 async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture over the shipped-at
-    model (mirrors ``_dev1739_fixtures.make_exec_engine``)."""
+    dataset (mirrors ``_dev1739_fixtures.make_exec_engine``)."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")

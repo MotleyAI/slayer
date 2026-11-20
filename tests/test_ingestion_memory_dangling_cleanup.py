@@ -1,4 +1,4 @@
-"""DEV-1428: defense-in-depth ingest-time dangling-ref cleanup.
+"""Defense-in-depth ingest-time dangling-ref cleanup.
 
 ``_refresh_memories_for_datasource`` walks each memory and drops refs
 that no longer resolve in storage. Transient lookup failures must NOT
@@ -27,7 +27,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 # Live-datasource introspection raises one of these when the seeded
-# SQLite file is empty / missing the ``orders`` table the test model
+# SQLite file is empty / missing the ``orders`` table the test dataset
 # claims to back. The test's intent is to validate the memory cleanup
 # pass, not the ingest itself, so we suppress these specific errors
 # (and re-raise everything else, so assertion / logic regressions are
@@ -73,7 +73,7 @@ class TestIngestDanglingRefCleanup:
     async def test_residual_refs_cleaned(
         self, storage: StorageBackend,
     ) -> None:
-        # Hand-inject a memory with a stale model ref.
+        # Hand-inject a memory with a stale dataset ref.
         m = await storage.save_memory(
             learning="x",
             entities=["mydb.orders.amount", "mydb.deleted_model"],
@@ -108,7 +108,7 @@ class TestIngestDanglingRefCleanup:
         )
         ds = await storage.get_datasource("mydb")
         assert ds is not None
-        # Force every cleanup-side get_model lookup to raise — the
+        # Force every cleanup-side get_dataset lookup to raise — the
         # cleanup pass must treat the raise as "ref intact". Patch the
         # specific storage instance rather than the ABC.
         async def _raise(*args, **kwargs):
@@ -120,7 +120,7 @@ class TestIngestDanglingRefCleanup:
                 storage=storage, datasource=ds,
             )
         except (_EXPECTED_INGEST_FAILURES + (RuntimeError,)):
-            # The patched ``get_model`` raises RuntimeError; the live
+            # The patched ``get_dataset`` raises RuntimeError; the live
             # ingest can additionally hit the missing-table sqlite
             # errors. Anything else means an assertion regression and
             # MUST fail the test.
@@ -135,8 +135,8 @@ class TestIngestDanglingRefCleanup:
     async def test_stale_query_emits_ingestion_error(
         self, storage: StorageBackend,
     ) -> None:
-        # Memory carries Memory.query referencing the existing column;
-        # drop the column to make the query stale.
+        # Memory carries Memory.query referencing the existing field;
+        # drop the field to make the query stale.
         attached = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(metric="sum(orders.amount)")],

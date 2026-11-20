@@ -143,7 +143,7 @@ class TestDataTypeBucket:
 
     def test_int_and_double_share_number_bucket(self) -> None:
         # Critical invariance — drift detection must NOT flag a
-        # persisted DOUBLE column against an INT live column (or vice versa)
+        # persisted DOUBLE field against an INT live column (or vice versa)
         # even though they're now distinct enum members.
         assert data_type_bucket(DataType.INTEGER) == "number"
         assert data_type_bucket(DataType.FLOAT) == "number"
@@ -215,7 +215,7 @@ class TestDiffSqlTableModel:
     def test_integer_vs_float_same_bucket(self) -> None:
         # INT and DOUBLE are now distinct enum members but share
         # the ``"number"`` bucket so drift detection does not false-positive
-        # when a persisted DOUBLE column is reported as INT by live
+        # when a persisted DOUBLE field is reported as INT by live
         # introspection (the v5 refinement step reconciles these without
         # raising drift).
         model = _orders_dataset()
@@ -293,11 +293,11 @@ class TestDiffSqlTableModel:
         assert "warehouses" in entry.remove.relationships
 
     def test_join_local_column_resolves_through_column_sql(self) -> None:
-        """``join.column_pairs[*][0]`` is a semantic column name; resolve to
-        the physical column via ``Column.sql`` before checking against the
+        """A relationship's ``from_columns`` entry is a semantic field name; resolve to
+        the physical column via ``DatasetField.sql`` before checking against the
         live table. CodeRabbit thread #103/r3196378686.
         """
-        # Model: ``customer_id`` semantic name maps to physical ``customer_fk``.
+        # Dataset: ``customer_id`` semantic name maps to physical ``customer_fk``.
         model = _orders_dataset(
             columns=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
@@ -324,9 +324,9 @@ class TestDiffSqlTableModel:
             dataset=model, live_table=live,
             available_datasets_in_ds={"orders", "customers"},
         )
-        # No drift — the join's local column resolves to ``customer_fk`` which
+        # No drift — the relationship's local field resolves to ``customer_fk`` which
         # is present in the live table. Without the fix, ``customer_id`` would
-        # be flagged as missing and the join wrongly dropped.
+        # be flagged as missing and the relationship wrongly dropped.
         assert entry is None
 
 
@@ -418,7 +418,7 @@ class TestDiffSqlModel:
 
 
 def _refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
-    """``_sql_model_source_refs`` with each table rendered and each column named."""
+    """``_sql_dataset_source_refs`` with each table rendered and each column named."""
     refs = _sql_dataset_source_refs(sql=sql, dialect=dialect)
     if refs is None:
         return None
@@ -523,8 +523,8 @@ class TestSqlModelSourceRefs:
 
 class TestCascadeRules:
     def test_rule_1_derived_column_referencing_dropped_column(self) -> None:
-        """A derived ``Column.sql`` referencing a column that was dropped is
-        itself dropped. Walks transitively across chains of derived columns.
+        """A derived ``DatasetField.sql`` referencing a field that was dropped is
+        itself dropped. Walks transitively across chains of derived fields.
         """
         model = _orders_dataset(
             columns=[
@@ -532,9 +532,9 @@ class TestCascadeRules:
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                # derived column referencing 'amount'
+                # derived field referencing 'amount'
                 DatasetField(name="amount_x2", sql="amount * 2", datatype=DataType.FLOAT),
-                # transitively-derived: refs another derived column
+                # transitively-derived: refs another derived field
                 DatasetField(name="amount_x4", sql="orders.amount_x2 * 2", datatype=DataType.FLOAT),
             ],
         )
@@ -555,8 +555,8 @@ class TestCascadeRules:
         assert set(entry.remove.fields) >= {"amount", "amount_x2", "amount_x4"}
 
     def test_rule_2_measure_referencing_dropped_column(self) -> None:
-        """A ``ModelMeasure.expression`` referencing dropped column or dropped
-        measure is itself dropped.
+        """A ``DatasetMetric.expression`` referencing a dropped field or dropped
+        metric is itself dropped.
         """
         model = _orders_dataset(
             metrics=[
@@ -580,12 +580,12 @@ class TestCascadeRules:
         assert set(entry.remove.metrics) >= {"total_amount", "aov"}
 
     def test_rule_2_funcstyle_joined_custom_agg_cascades(self) -> None:
-        """A ``ModelMeasure.expression`` using funcstyle over a custom
-        aggregation defined on a JOINED model (``rolling_avg(customers.score)``
+        """A ``DatasetMetric.expression`` using funcstyle over a custom
+        aggregation defined on a JOINED dataset (``rolling_avg(customers.score)``
         where ``rolling_avg`` lives on ``customers``) must extract
-        ``customers.score`` as a ref, so dropping that column cascades the
-        measure away. The cascade now walks the reachable join graph for
-        custom aggregation names instead of using the model's own aggs only.
+        ``customers.score`` as a ref, so dropping that field cascades the
+        metric away. The cascade now walks the reachable relationship graph for
+        custom aggregation names instead of using the dataset's own aggs only.
         """
         orders = _orders_dataset(
             joins=[
@@ -618,15 +618,15 @@ class TestCascadeRules:
             sql_table_diffs={"customers": (customers_edit, {"score"})},
             sql_diffs={},
         )
-        # orders.ravg must cascade because its formula references the
+        # orders.ravg must cascade because its expression references the
         # dropped customers.score.
         orders_entry = _entry_for("orders", out)
         assert isinstance(orders_entry, EditDatasetDelete), out
         assert "ravg" in set(orders_entry.remove.metrics), orders_entry
 
     def test_rule_3a_join_local_column_dropped(self) -> None:
-        """A ``Join`` whose ``local_column`` (= join_pairs[i][0]) was dropped
-        produces a ``drop_join`` on the source model.
+        """A ``DatasetRelationship`` whose ``from_columns`` field was dropped
+        produces a relationship removal on the source dataset.
         """
         model = _orders_dataset(
             joins=[
@@ -651,9 +651,9 @@ class TestCascadeRules:
         assert "customers" in entry.remove.relationships
 
     def test_rule_3b_target_foreign_column_dropped(self) -> None:
-        """A ``Join`` on model ``K`` whose ``target_model == M`` and whose
-        ``foreign_column`` (= join_pairs[i][1]) was dropped on M produces a
-        ``drop_join`` on K.
+        """A ``DatasetRelationship`` on dataset ``K`` whose ``to == M`` and whose
+        ``to_columns`` field was dropped on M produces a
+        relationship removal on K.
         """
         orders = _orders_dataset(
             joins=[
@@ -707,7 +707,7 @@ class TestCascadeRules:
         assert "status = 'completed'" not in entry.remove_filters
 
     def test_rule_5_cross_model_derived_reference(self) -> None:
-        """A derived column on model A whose SQL references ``customers.region``
+        """A derived field on dataset A whose SQL references ``customers.region``
         is cascade-dropped when ``customers.region`` is dropped.
         """
         orders = _orders_dataset(
@@ -715,7 +715,7 @@ class TestCascadeRules:
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                # derived cross-model ref
+                # derived cross-dataset ref
                 DatasetField(
                     name="customer_region",
                     sql="customers.region",
@@ -753,12 +753,12 @@ class TestCascadeRules:
         assert "customer_region" in orders_entry.remove.fields
 
     def test_rule_6_query_backed_model_transitive_whole_drop(self) -> None:
-        """A query-backed model whose ``source_queries`` chain transitively
-        references a dropped column / dropped model gets a ``WholeModelDelete``.
+        """A query-backed dataset whose ``source_queries`` chain transitively
+        references a dropped field / dropped dataset gets a ``WholeDatasetDelete``.
         Multi-stage chain (stage B refs stage A which refs dropped) is covered.
         """
         orders = _orders_dataset()
-        # Two-stage query-backed model: stage A reads from orders, stage B
+        # Two-stage query-backed dataset: stage A reads from orders, stage B
         # builds on stage A.
         qb = SlayerDataset(
             name="qb_orders_summary",
@@ -792,9 +792,9 @@ class TestCascadeRules:
     def test_rule_6_query_backed_stage_filter_with_aggregation_cascades(
         self,
     ) -> None:
-        """A query-backed model whose stage filter uses Mode B DSL constructs
+        """A query-backed dataset whose stage filter uses Mode B DSL constructs
         (``sum(revenue) > 100``, ``change(...) > 0``) must still trigger a
-        cascade drop when the underlying column is dropped. Regression for
+        cascade drop when the underlying field is dropped. Regression for
         Stage filters were once routed through the SQL-only ref
         extractor and returned ``[]``, so drift cascades were missed.
         """
@@ -826,8 +826,8 @@ class TestCascadeRules:
     def test_rule_6_query_backed_whole_drop_when_base_model_whole_dropped(
         self,
     ) -> None:
-        """If the underlying model gets a whole-drop (live table missing),
-        any query-backed model that references it transitively whole-drops.
+        """If the underlying dataset gets a whole-drop (live table missing),
+        any query-backed dataset that references it transitively whole-drops.
         """
         orders = _orders_dataset()
         qb = SlayerDataset(
@@ -850,15 +850,15 @@ class TestCascadeRules:
         assert isinstance(qb_entry, WholeDatasetDelete)
 
     def test_rule_7_pk_drop_does_not_cascade(self) -> None:
-        """PK drops don't cascade into derived columns / measures / filters."""
+        """PK drops don't cascade into derived fields / metrics / filters."""
         model = _orders_dataset(
             columns=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                # Derived column that *would* reference 'id' — but PK drops
-                # don't trigger cascade, so this column survives.
+                # Derived field that *would* reference 'id' — but PK drops
+                # don't trigger cascade, so this field survives.
                 DatasetField(name="id_doubled", sql="id * 2", datatype=DataType.FLOAT),
             ],
             metrics=[DatasetMetric(expression="count_distinct(id)", name="unique_ids")],
@@ -877,18 +877,18 @@ class TestCascadeRules:
         entry = _entry_for("orders", out)
         assert isinstance(entry, EditDatasetDelete)
         assert "id" in entry.remove.fields
-        # Cascade has not extended into derived columns / measures / filters
+        # Cascade has not extended into derived fields / metrics / filters
         assert "id_doubled" not in entry.remove.fields
         assert "unique_ids" not in entry.remove.metrics
 
 
 class TestCollapseRule:
     def test_whole_drop_preempts_edit_for_same_model(self) -> None:
-        """When a single model receives both an EditModelDelete and a
-        WholeModelDelete, only the WholeModelDelete is emitted."""
+        """When a single dataset receives both an EditDatasetDelete and a
+        WholeDatasetDelete, only the WholeDatasetDelete is emitted."""
         model = _orders_dataset()
-        # Live table missing → WholeModelDelete; meanwhile a column-bucket
-        # diff would also try to emit EditModelDelete via cascade. The
+        # Live table missing → WholeDatasetDelete; meanwhile a column-bucket
+        # diff would also try to emit EditDatasetDelete via cascade. The
         # collapse rule should leave only the whole-drop.
         whole = WholeDatasetDelete(dataset_name="orders", data_source="ds")
         out = compute_datasource_drops(
@@ -903,11 +903,11 @@ class TestCollapseRule:
 
 class TestCrossDatasourceBoundary:
     def test_cascade_does_not_cross_datasource(self) -> None:
-        """A cross-DS reference (model in DS A referencing model in DS B) is
+        """A cross-DS reference (dataset in DS A referencing dataset in DS B) is
         never followed by the cascade walker — drift keeps everything
-        within the parent model's data_source.
+        within the parent dataset's data_source.
         """
-        # Model in ds_a references customers from ds_b — this is invalid
+        # Dataset in ds_a references customers from ds_b — this is invalid
         # cross-DS but at the cascade layer we just don't follow it.
         orders_in_a = _orders_dataset(data_source="ds_a")
         customers_in_b = SlayerDataset(
@@ -925,7 +925,7 @@ class TestCrossDatasourceBoundary:
             data_source="ds_b",
             remove=RemoveSpec(fields=["region"]),
         )
-        # Run compute scoped to ds_a — orders_in_a is the only model.
+        # Run compute scoped to ds_a — orders_in_a is the only dataset.
         # Cascade should NOT see anything about customers in ds_b.
         out_a = compute_datasource_drops(
             datasets=[orders_in_a],
@@ -1055,8 +1055,8 @@ class TestValidateModelsEndToEnd:
         assert isinstance(orders_entry, WholeDatasetDelete)
 
     async def test_validate_models_is_read_only(self, workspace: Path) -> None:
-        """The validator must never mutate storage. Persisted models stay byte-
-        for-byte unchanged after a validate_models call.
+        """The validator must never mutate storage. Persisted datasets stay byte-
+        for-byte unchanged after a validate_datasets call.
         """
         engine, db_path = await self._setup(workspace)
         before = await engine.storage.get_dataset("orders", data_source="ds")
@@ -1137,7 +1137,7 @@ def _create_sqlite_with_mixed_storage(
 
 
 class TestValidateModelsSqliteProbe:
-    """validate_models on SQLite: the per-column probe runs against each persisted INT base column and
+    """validate_datasets on SQLite: the per-field probe runs against each persisted INT base field and
     reports a re-type finding when it disagrees with the persisted type."""
 
     @pytest.fixture
@@ -1157,7 +1157,7 @@ class TestValidateModelsSqliteProbe:
         metrics: list[DatasetMetric] | None = None,
         ds_type: str = "sqlite",
     ) -> tuple[SlayerQueryEngine, str]:
-        """Persist a sensordata model whose ``tempstabidx`` column is
+        """Persist a sensordata dataset whose ``tempstabidx`` field is
         declared INT but whose live values are controlled by ``values``."""
         db_path = str(workspace / "live.db")
         if ds_type == "sqlite":
@@ -1282,8 +1282,8 @@ class TestValidateModelsSqliteProbe:
                    for e in result)
 
     async def test_probe_failure_no_entry(self, workspace: Path) -> None:
-        """A failing probe returns None — validate_models must not emit a
-        drift entry for that column, and only log a WARNING."""
+        """A failing probe returns None — validate_datasets must not emit a
+        drift entry for that field, and only log a WARNING."""
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7],

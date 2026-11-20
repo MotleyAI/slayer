@@ -1,4 +1,4 @@
-"""The non-nesting ``whole_periods_only`` warning is judged per resolved column, whatever its spelling."""
+"""The non-nesting ``whole_periods_only`` warning is judged per resolved field, whatever its spelling."""
 
 from __future__ import annotations
 

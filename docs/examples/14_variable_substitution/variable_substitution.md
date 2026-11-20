@@ -115,7 +115,7 @@ Substitution currently applies to a query's **population dataset itself**; neste
 `source_queries` stages, relationship targets, and cross-dataset targets are a tracked
 follow-up.
 
-See [Variables in dataset SQL](../../concepts/models.md#variables-in-dataset-sql) and
+See [Variables in dataset SQL](../../concepts/datasets.md#variables-in-dataset-sql) and
 [Variables](../../concepts/queries.md#variables) for the reference
 details.
 

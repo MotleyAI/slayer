@@ -1,7 +1,7 @@
-"""DEV-1900 → DEV-1909 — the retired population-filter guard.
+"""The retired population-filter guard.
 
-The DEV-1900 interim guard raised whenever a fanning population filter met an
-aggregate inline over the population. DEV-1909 retires it: the fanning arm now
+The interim guard raised whenever a fanning population filter met an
+aggregate inline over the population. It is retired: the fanning arm now
 restricts the population by association (structural 420, derived 120), while the
 unanalyzable arm still fails closed through the new checker. To-one filters,
 dimension-only and producer-only queries stay unaffected. The comprehensive
@@ -30,7 +30,7 @@ from slayer.core.query import QueryMetric
 
 MODES = ["broadcast", "associate", "error"]
 SPEND_SUM_LOCAL = QueryMetric(metric="sum(customers.spend)", alias="w")   # local on customers
-ORDERS_AMOUNT_PRODUCER = QueryMetric(metric="sum(orders.amount)", alias="oa")  # cross-model producer
+ORDERS_AMOUNT_PRODUCER = QueryMetric(metric="sum(orders.amount)", alias="oa")  # cross-dataset producer
 
 #: producer-only orders.amount:sum over ok orders = 82 (EXISTS pushdown, no guard).
 PRODUCER_ONLY_AMOUNT = 82.0
@@ -71,7 +71,7 @@ class TestFanningPopulationFilterRestrictsByAssociation:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_aggregate_only_in_filter_restricts(self, engine, mode):
-        """The population aggregate lives only in a measure predicate
+        """The population aggregate lives only in a metric predicate
         (``sum(spend) > 1``): the fanning row filter still restricts by
         association, so tiers gold and silver survive without fanning."""
         resp = await engine.execute(cust_q(
@@ -84,7 +84,7 @@ class TestFanningPopulationFilterRestrictsByAssociation:
 class TestUnanalyzableStillFailsClosed:
     @pytest.mark.parametrize("mode", MODES)
     async def test_unanalyzable_filter_fails_closed(self, unparse_engine, mode):
-        """A filter on a derived column no dialect can analyse fails closed with a
+        """A filter on a derived field no dialect can analyse fails closed with a
         typed error, never routed as if it crossed nothing."""
         q = orders_q(
             metrics=[AMOUNT_SUM], filter=["customers.regions.unparseable > 0"],

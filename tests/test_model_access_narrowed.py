@@ -1,4 +1,4 @@
-"""Narrowed access: a model reading a tagged model its own tags do not cover warns on save and in validation."""
+"""Narrowed access: a dataset reading a tagged dataset its own tags do not cover warns on save and in validation."""
 
 from __future__ import annotations
 

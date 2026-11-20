@@ -10,7 +10,7 @@ Given a datasource configuration, `engine.ingest(ds)` (or `engine.ingest_sync(ds
 - **Metrics** generated from column types (see rules below)
 - **Relationships** derived from the table's own foreign key constraints (one `DatasetRelationship` per FK)
 
-No join-related SQL is baked into the datasets — relationships are resolved dynamically at query time via the [relationship graph](../05_joins/joins.md).
+No join-related SQL is baked into the datasets — relationships are resolved dynamically at query time via the [relationship graph](../05_relationships/relationships.md).
 
 ## FK graph discovery
 
@@ -27,7 +27,7 @@ Each table's own FK relationships become `DatasetRelationship` objects — one p
 
 That's it — only the table's own FKs. Tables reachable via multiple hops (e.g. `items → orders → customers`) are **not** stored in the relationships list. Instead, SLayer walks the relationship graph at query time: each intermediate dataset declares its own direct relationships, so the path `orders → customers → regions` is resolved by following `orders.relationships` to `customers`, then `customers.relationships` to `regions`.
 
-Diamond relationships — where the same table is reachable via multiple FK paths — are disambiguated by the path notation in the query. `customers.regions.name` and `warehouses.regions.name` each walk a different chain and produce distinct table aliases (`customers__regions` vs `warehouses__regions`). See the [relationships post](../05_joins/joins.md) for details on diamond relationships and how to recombine them.
+Diamond relationships — where the same table is reachable via multiple FK paths — are disambiguated by the path notation in the query. `customers.regions.name` and `warehouses.regions.name` each walk a different chain and produce distinct table aliases (`customers__regions` vs `warehouses__regions`). See the [relationships post](../05_relationships/relationships.md) for details on diamond relationships and how to recombine them.
 
 ## Dimension and metric generation
 

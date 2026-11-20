@@ -234,7 +234,7 @@ class TestTransforms:
 
 
 # --------------------------------------------------------------------------- #
-# Model-level declarations: consulted on the owning model.
+# Dataset-level declarations: consulted on the owning dataset.
 # --------------------------------------------------------------------------- #
 class TestOverrides:
     async def test_formula_override_on_owner_stays_null(self, dialect) -> None:
@@ -285,7 +285,7 @@ class TestOverrides:
 
 
 # --------------------------------------------------------------------------- #
-# Negated condition on a joined model does not mean "has none" (docs sentence).
+# Negated condition on a joined dataset does not mean "has none" (docs sentence).
 # --------------------------------------------------------------------------- #
 class TestNegatedJoinedFilter:
     async def test_negation_requires_a_matching_child(self, dialect) -> None:

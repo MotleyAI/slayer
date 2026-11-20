@@ -94,7 +94,7 @@ def _msg_aligned(a: str, b: str, *, fn: str) -> bool:
 
 
 def _outcome(query: SlayerQuery):
-    """``("ok", bound measure / filter / order roots)`` or ``("err", exception)``."""
+    """``("ok", bound metric / filter / order roots)`` or ``("err", exception)``."""
     try:
         env = elaborate_query(query=query, bundle=_bundle())
         plan_query(query=query, bundle=_bundle())

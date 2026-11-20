@@ -1,18 +1,17 @@
-"""DEV-1829 — the local partitioned-measure join-back migrates onto the regroup
+"""The local partitioned-metric join-back migrates onto the regroup
 primitive's ``attach_phase="combined"`` arm.
 
 Plan-level contracts (fail on the current tree, which still routes a local
-partitioned measure through the retired cross-model plan):
+partitioned metric through the retired cross-dataset plan):
 
-* a local partitioned MEASURE yields ``RegroupAttachPlan(attach_phase="combined")``
-  and NO cross-model plan; its producer is a host-rooted single SELECT;
+* a local partitioned METRIC yields ``RegroupAttachPlan(attach_phase="combined")``
+  and NO cross-dataset plan; its producer is a host-rooted single SELECT;
   the consumer keeps no partitioned aggregate slot (substituted to a placeholder);
 * same-partition-set interning — N distinct aggregates share ONE producer;
-* combined-attach coexistence with an isolated family (cross-model / windowed /
-  ranked / transform measure) plans and renders (lifted by DEV-1824);
+* combined-attach coexistence with an isolated family (cross-dataset / windowed /
+  ranked / transform metric) plans and renders;
 * row+combined coexistence (a computed dimension over one partition set plus a
-  partitioned measure over another) plans both attach phases and renders
-  (lifted by DEV-1824 task 3.2).
+  partitioned metric over another) plans both attach phases and renders.
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ def _count_isolated_ctes(sql: str) -> int:
 
 def _consumer_partition_agg_slots(planned) -> list:
     """Consumer aggregate slots that still carry a partition_by — must be empty
-    once the measure is desugared into a combined regroup producer."""
+    once the metric is desugared into a combined regroup producer."""
     return [
         s for s in planned.aggregate_slots
         if isinstance(s.key, AggregateKey) and s.key.partition_keys is not None
@@ -208,16 +207,16 @@ class TestSamePartitionSetInterning:
 
 
 class TestCoexistenceWithIsolatedFamilies:
-    """DEV-1824 (D11 / task 3.8) lifts the combined-attach coexistence guards:
-    a partitioned MEASURE (combined regroup attach) now composes with a
-    cross-model / windowed / ranked / transform measure through the shared
+    """The combined-attach coexistence guards are lifted:
+    a partitioned METRIC (combined regroup attach) now composes with a
+    cross-dataset / windowed / ranked / transform metric through the shared
     ``_render_with_combined_attaches`` join-back belt (executed-value coverage
     lives in ``tests/test_dev1824_partitioned_execution.py``). Row+combined
     coexistence stays deferred."""
 
     async def test_combined_attach_plus_cross_model_measure(self) -> None:
-        # Combined regroup attach (local partition) + a genuine cross-model
-        # measure (its own _cm_ CTE) — both are combined-SELECT join-backs.
+        # Combined regroup attach (local partition) + a genuine cross-dataset
+        # metric (its own _cm_ CTE) — both are combined-SELECT join-backs.
         q = _q(
             dimensions=["orders.region", "orders.city"],
             metrics=[
@@ -226,12 +225,12 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # DEV-1836: the cross-model measure now desugars into its OWN
+        # The cross-dataset metric now desugars into its OWN
         # target-rooted regroup producer, so it coexists as a SECOND combined
-        # attach rather than a top-level cross-model plan.
+        # attach rather than a top-level cross-dataset plan.
         assert len(planned.regroup_attach_plans) == 2
         # One local producer (rooted at the consumer → None) + one target-rooted
-        # cross-model producer rooted at ``customers``.
+        # cross-dataset producer rooted at ``customers``.
         roots = {rap.producer_root_dataset for rap in planned.regroup_attach_plans}
         assert roots == {None, "customers"}, roots
         assert "__regroup__" not in await gen(q)
@@ -245,7 +244,7 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # DEV-1835/DEV-1838: the windowed family desugars into its own regroup
+        # The windowed family desugars into its own regroup
         # producer (trailing-window kernel), so it coexists as a SECOND
         # combined attach, not as a top-level windowed plan.
         assert len(planned.regroup_attach_plans) == 2
@@ -264,7 +263,7 @@ class TestCoexistenceWithIsolatedFamilies:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # DEV-1835/DEV-1838: the ranked (first/last) family desugars into its
+        # The ranked (first/last) family desugars into its
         # own ranked-kernel producer, so it coexists as a SECOND combined
         # attach, not as a top-level ranked plan.
         assert len(planned.regroup_attach_plans) == 2
@@ -288,8 +287,8 @@ class TestCoexistenceWithIsolatedFamilies:
         assert "__regroup__" not in await gen(q)
 
     async def test_row_and_combined_attach_coexistence(self) -> None:
-        # DEV-1824 (task 3.2) — a computed dimension over one partition set (row
-        # attach) plus a partitioned MEASURE over another (combined attach)
+        # A computed dimension over one partition set (row
+        # attach) plus a partitioned METRIC over another (combined attach)
         # coexist: the row producer joins into ``_base``, the combined producer at
         # the combined SELECT. (Executed values: test_dev1824_partitioned_execution.)
         q = _q(

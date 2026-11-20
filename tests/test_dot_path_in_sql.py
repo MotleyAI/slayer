@@ -1,10 +1,10 @@
-"""DEV-1743 — the DOT_PATH_IN_SQL dotted→``__`` rewrite is RETIRED.
+"""The DOT_PATH_IN_SQL dotted→``__`` rewrite is RETIRED.
 
-Mode-A free SQL (``Column.sql`` / ``Column.filter`` / ``SlayerModel.filters``)
-is dotted-canonical: a dotted join path (``customers.regions.name``) is
+Mode-A free SQL (``DatasetField.sql`` / ``DatasetField.filter`` / ``SlayerDataset.filters``)
+is dotted-canonical: a dotted relationship path (``customers.regions.name``) is
 PRESERVED verbatim through the save path and resolved structurally at
-bind/generation time. Since DEV-1826 retired the last text-rewriting slack
-rule (FUNC_STYLE_AGG), no normalization pass touches model text at all —
+bind/generation time. With the last text-rewriting slack
+rule (FUNC_STYLE_AGG) retired, no normalization pass touches dataset text at all —
 these tests pin verbatim save-path preservation and that ``normalize_query``
 leaves Mode-B filter text alone.
 """
@@ -126,8 +126,8 @@ class TestModeASurfacesPreservedVerbatim:
         assert stored.filters == ["customers.regions.name IS NOT NULL"]
 
     async def test_model_measure_formula_preserved(self):
-        # ModelMeasure.expression is Mode-B (DSL); the dotted colon form is a
-        # join-path reference and must survive save verbatim.
+        # DatasetMetric.expression is Mode-B (DSL); the dotted colon form is a
+        # relationship-path reference and must survive save verbatim.
         m = _orders_with_customers_join(
             metrics=[
                 DatasetMetric(

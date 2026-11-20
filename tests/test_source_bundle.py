@@ -1,10 +1,10 @@
-"""Stage 2 (DEV-1450) — ResolvedSourceBundle: eagerly resolved query inputs (P11).
+"""ResolvedSourceBundle: eagerly resolved query inputs (P11).
 
 The orchestrator builds this once at the top of execute; the binder reads
 from it purely. No ContextVar machinery, no callback re-resolution.
 
 Per I2, ``source_model`` is ``Optional`` from day one so a future
-anchor-less mode is a type-additive change. DEV-1450 binder asserts
+anchor-less mode is a type-additive change. The binder asserts
 ``source_model is not None`` — the type-level optionality is the
 extension point.
 """
@@ -147,7 +147,7 @@ class TestAnchorlessReadiness:
             referenced_datasets=[_dataset("orders"), _dataset("customers")],
         )
         assert b.population is None
-        # The bundle still holds the set of referenced models that the
+        # The bundle still holds the set of referenced datasets that the
         # future global-join planner will operate over.
         assert len(b.referenced_datasets) == 2
 

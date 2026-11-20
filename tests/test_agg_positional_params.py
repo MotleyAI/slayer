@@ -2,7 +2,7 @@
 (spec: aggregations/functional-form — "Positional parameters fold onto
 declared parameter order"). ``percentile(x, 0.9)`` ≡ ``p=0.9`` for built-in,
 custom, and re-aggregation-outer spellings; duplicates and excess
-positionals fail closed; first/last ranking columns are untouched."""
+positionals fail closed; first/last ranking fields are untouched."""
 
 from __future__ import annotations
 

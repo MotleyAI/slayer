@@ -1,8 +1,8 @@
-"""Shared fixtures for DEV-1946 — a grained transform as an aggregation
+"""Shared fixtures for a grained transform as an aggregation
 parameter (``weight=rank(..., direction='desc')``, ``weight=cumsum(...)``).
 
-Raw-row oracles over the DEV-1840 orders→customers→regions graph and the
-DEV-1847 sales graph; every constant the delta scenarios cite is re-derived
+Raw-row oracles over the ``_dev1840_fixtures`` orders→customers→regions graph and the
+``_dev1847_fixtures`` sales graph; every constant the delta scenarios cite is re-derived
 here and pinned against the hand-typed literal by ``verify_oracles`` (the
 double-entry guard). SQL-null weighted-average semantics: ``SUM(v*w)`` is NULL
 when every term is NULL (an all-NULL cell like sales ``Void``), so the cell is
@@ -32,7 +32,7 @@ from tests._dev1859_fixtures import (
 from tests._dev1919_fixtures import RANKED, ranked_by_tier, ranked_global
 
 # --------------------------------------------------------------------------- #
-# Formula constants (one per delta scenario shape).
+# Expression constants (one per delta scenario shape).
 # --------------------------------------------------------------------------- #
 RANKED_POSITIONAL = ("weighted_avg(customers.spend, "
                      "rank(sum(orders.amount, partition_by=customers.regions.name), direction='desc'))")

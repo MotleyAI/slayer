@@ -63,7 +63,7 @@ class TestUnsafeInputs:
         _assert_clear(ei, "segments", remedy=True)
 
     async def test_column_filter_over_unproven_hop_errors(self, exec_backend):
-        """customers.vip_spend's Column.filter references segments.label."""
+        """customers.vip_spend's DatasetField.filter references segments.label."""
         _, engine = exec_backend
         query = q(
             dimensions=["orders.status"],
@@ -92,7 +92,7 @@ class TestUnsafeExplicitPartitionKeys:
     async def test_cross_model_partition_key_over_unsafe_hop_errors(
         self, exec_backend,
     ):
-        """F4 — a cross-model aggregate whose declared grain crosses the 1:N
+        """F4 — a cross-dataset aggregate whose declared grain crosses the 1:N
         edge: hard error naming the key and the remedy, never a fanning join."""
         _, engine = exec_backend
         query = q(

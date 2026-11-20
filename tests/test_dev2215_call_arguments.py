@@ -84,7 +84,7 @@ class TestKeywordOrComparison:
 
 
 # --------------------------------------------------------------------------- #
-# agg is reserved for measure evaluation
+# agg is reserved for metric evaluation
 # --------------------------------------------------------------------------- #
 class TestAggIsReserved:
     @pytest.mark.parametrize("query", [

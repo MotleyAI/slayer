@@ -1,4 +1,4 @@
-"""``SlayerQuery.extensions``: typed at construction, closed, one per model, advertised on every surface."""
+"""``SlayerQuery.extensions``: typed at construction, closed, one per dataset, advertised on every surface."""
 
 from __future__ import annotations
 

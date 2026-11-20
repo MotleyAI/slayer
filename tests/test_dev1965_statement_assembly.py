@@ -251,7 +251,7 @@ class TestWhereHaving:
         )
         _assert_grouped_conjuncts(select.args["where"].this, expected=2)
         _assert_grouped_conjuncts(select.args["having"].this, expected=2)
-        # The model filter's OR is the grouped WHERE of the model's filtered dataset.
+        # The dataset filter's OR is the grouped WHERE of the filtered dataset subquery.
         dataset = select.args["from_"].this
         assert isinstance(dataset, exp.Subquery), sql
         _assert_grouped_conjuncts(dataset.this.args["where"].this, expected=1)
@@ -266,7 +266,7 @@ class TestWhereHaving:
 
 
 # --------------------------------------------------------------------------- #
-# Query-backed model wraps compose over the unrewritten statement.
+# Query-backed dataset wraps compose over the unrewritten statement.
 
 
 # --------------------------------------------------------------------------- #

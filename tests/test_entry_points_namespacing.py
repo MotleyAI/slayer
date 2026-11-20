@@ -7,12 +7,12 @@ Storage-layer behavior is pinned in ``test_storage_namespacing.py`` and
 Surfaces covered:
 
 * MCP tools — ``set_datasource_priority`` / ``get_datasource_priority``;
-  ``edit_model`` / ``delete_model`` / ``create_model`` accept a ``data_source``
+  ``edit_dataset`` / ``delete_dataset`` / ``create_dataset`` accept a ``data_source``
   argument (``inspect`` a qualified reference); ambiguity errors mention both
   fixes (priority list + explicit arg).
-* HTTP API — ``GET /models/{name}?data_source=`` / ``DELETE`` / ``409`` on
+* HTTP API — ``GET /datasets/{name}?data_source=`` / ``DELETE`` / ``409`` on
   ambiguity; ``GET /datasources/priority`` / ``PUT /datasources/priority``.
-* Python client — ``client.get_model(name, data_source=...)`` and
+* Python client — ``client.get_dataset(name, data_source=...)`` and
   ``client.set_datasource_priority(...)``.
 
 The CLI surface is light glue around storage; covered indirectly by the
@@ -117,7 +117,7 @@ class TestMCPDatasourcePriority:
 
 
 # ---------------------------------------------------------------------------
-# MCP — edit_model / delete_model accept data_source; inspect a qualified reference
+# MCP — edit_dataset / delete_dataset accept data_source; inspect a qualified reference
 # ---------------------------------------------------------------------------
 
 
@@ -142,7 +142,7 @@ class TestMCPModelToolsDataSourceArg:
         users_b = await storage.get_dataset("users", data_source="db_b")
         assert users_a is not None
         assert users_a.description == "edited a"
-        # db_b's model is untouched.
+        # db_b's dataset is untouched.
         assert users_b is not None
         assert users_b.description != "edited a"
 
@@ -181,10 +181,10 @@ class TestMCPModelToolsDataSourceArg:
     async def test_inspect_model_helper_chain_scoped_to_data_source(
         self, mcp_server, storage: StorageBackend, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The helpers backing the model ``inspect`` (``_get_row_count``, sample
-        profiling, the sample-data query) all run ``engine.execute`` against the model.
+        """The helpers backing the dataset ``inspect`` (``_get_row_count``, sample
+        profiling, the sample-data query) all run ``engine.execute`` against the dataset.
         After v4 each of those calls must forward
-        ``data_source=model.data_source`` so the engine's bare-name resolution
+        ``data_source=dataset.data_source`` so the engine's bare-name resolution
         doesn't pick the sibling in another datasource. See PR #92 thread #7.
         """
         await storage.save_datasource(_ds("db_a"))
@@ -192,7 +192,7 @@ class TestMCPModelToolsDataSourceArg:
         await storage.save_dataset(_dataset("users", data_source="db_a"))
         await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        # Capture every engine.execute call made by the model inspect helpers.
+        # Capture every engine.execute call made by the dataset inspect helpers.
         captured: list[dict[str, Any]] = []
         original_execute = qe_mod.SlayerQueryEngine.execute
 
@@ -215,15 +215,15 @@ class TestMCPModelToolsDataSourceArg:
         )
 
         # Helpers should have called engine.execute at least once on the
-        # ``users`` model, and *every* such call must carry data_source="db_a".
+        # ``users`` dataset, and *every* such call must carry data_source="db_a".
         users_calls = [c for c in captured if c["population"] == "users"]
         assert users_calls, (
-            "expected model inspect helpers to run at least one ``users`` "
+            "expected dataset inspect helpers to run at least one ``users`` "
             f"query; got: {captured!r}"
         )
         bad = [c for c in users_calls if c["data_source_kwarg"] != "db_a"]
         assert not bad, (
-            "model inspect helper(s) called engine.execute on 'users' "
+            "dataset inspect helper(s) called engine.execute on 'users' "
             f"without data_source='db_a': {bad!r}"
         )
 
@@ -243,7 +243,7 @@ class TestMCPModelToolsDataSourceArg:
 
 
 # ---------------------------------------------------------------------------
-# HTTP API — model endpoints + datasource priority
+# HTTP API — dataset endpoints + datasource priority
 # ---------------------------------------------------------------------------
 
 

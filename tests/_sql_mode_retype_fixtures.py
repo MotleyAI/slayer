@@ -1,4 +1,4 @@
-"""An ``sql``-mode model whose stored non-list column now selects a live list (spec: models/schema-drift).
+"""An ``sql``-mode dataset whose stored non-list field now selects a live list (spec: models/schema-drift).
 
 Live table on every backend::
 
@@ -21,7 +21,7 @@ MODEL = "stale_sql"
 
 
 def sql_shapes(*, table: str, column: str, untypeable: str | None) -> list[Any]:
-    """``(sql, model column, element type after re-ingest)`` per projection shape; ``untypeable`` wraps the list in a
+    """``(sql, dataset field, element type after re-ingest)`` per projection shape; ``untypeable`` wraps the list in a
     call sqlglot cannot type, so only the database's result type tells it is a list."""
     shapes = [
         pytest.param(f"SELECT id, {column} FROM {table}", column, DataType.INTEGER, id="bare"),
@@ -38,7 +38,7 @@ def sql_shapes(*, table: str, column: str, untypeable: str | None) -> list[Any]:
 
 
 def stale_sql_dataset(*, sql: str, column: str, data_source: str) -> SlayerDataset:
-    """The model as stored before list columns: the list typed ``DOUBLE``."""
+    """The dataset as stored before list fields: the list typed ``DOUBLE``."""
     return SlayerDataset(name=MODEL, sql=sql, data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name=column, datatype=DataType.FLOAT, allowed_aggregations=["sum", "count"])])

@@ -1,4 +1,4 @@
-"""CLI ``slayer validate-models``, including the merged cardinality profiling."""
+"""CLI ``slayer validate-datasets``, including the merged cardinality profiling."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def workspace():
 
 
 # ---------------------------------------------------------------------------
-# Fixture: one datasource, two models, drift optionally seeded on each
+# Fixture: one datasource, two datasets, drift optionally seeded on each
 # ---------------------------------------------------------------------------
 
 
@@ -217,8 +217,8 @@ def test_json_without_cardinality_is_null(workspace: Path, capsys) -> None:
 
 def test_json_includes_join_safety_key(workspace: Path, capsys) -> None:
     """Automation reading JSON must see the same audit the text output prints.
-    DEV-1853 D9: one finding per edge with both orientations' provability — the
-    fixture's structurally proven join surfaces as an info row, never a
+    One finding per edge with both orientations' provability — the
+    fixture's structurally proven relationship surfaces as an info row, never a
     broadcast warning."""
     store = _setup(workspace)
     _run_validate_datasets(_args(store, format="json"))
@@ -253,7 +253,7 @@ def test_json_join_safety_reports_unproven_join(workspace: Path, capsys) -> None
 def test_json_serialises_drift_entries(workspace: Path, capsys) -> None:
     """Both ToDeleteEntry variants must round-trip through json.dumps."""
     store = _setup(workspace, drift_orders=True, drift_customers=True)
-    # A model whose whole table is gone -> WholeModelDelete.
+    # A dataset whose whole table is gone -> WholeDatasetDelete.
     run_sync(YAMLStorage(base_dir=store).save_dataset(SlayerDataset(
         name="vanished", sql_table="vanished", data_source="ds",
         fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
@@ -269,7 +269,7 @@ def test_json_serialises_drift_entries(workspace: Path, capsys) -> None:
 
 
 # ---------------------------------------------------------------------------
-# --model scoping
+# --dataset scoping
 # ---------------------------------------------------------------------------
 
 
@@ -293,7 +293,7 @@ def test_model_scopes_force_clean_mutations(workspace: Path, capsys) -> None:
 
 
 def test_force_clean_ignores_out_of_scope_residual(workspace: Path, capsys) -> None:
-    """Drift on a model outside --model must not print, nor force exit 1."""
+    """Drift on a dataset outside --dataset must not print, nor force exit 1."""
     store = _setup(workspace, drift_orders=True, drift_customers=True)
     _run_validate_datasets(_args(store, dataset="orders", force_clean=True, yes=True))
     out = capsys.readouterr().out

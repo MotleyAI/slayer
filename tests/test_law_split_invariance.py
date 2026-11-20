@@ -1,6 +1,6 @@
-"""LAW split-invariance (semantics.arc42.md §3 law 3, single-measure splits):
-a term's denotation never depends on sibling measures — removing any one
-measure leaves the group set and every shared cell value unchanged."""
+"""LAW split-invariance (semantics.arc42.md §3 law 3, single-metric splits):
+a term's denotation never depends on sibling metrics — removing any one
+metric leaves the group set and every shared cell value unchanged."""
 
 from __future__ import annotations
 

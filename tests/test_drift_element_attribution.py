@@ -34,7 +34,7 @@ INSERT INTO customers VALUES (1, 'US');
 INSERT INTO orders VALUES (1, 10.0, 1);
 """
 
-# Fails on SQLite for a non-drift reason: the derived column calls a function SQLite lacks.
+# Fails on SQLite for a non-drift reason: the derived field calls a function SQLite lacks.
 _DB_FAILURE = {"population": "t", "metrics": [{"metric": "sum(t.bad)"}]}
 
 

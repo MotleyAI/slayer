@@ -1,4 +1,4 @@
-"""A stored join target names its model's exact spelling: refused at save, repaired on load, fail-closed at query time
+"""A stored relationship target names its dataset's exact spelling: refused at save, repaired on load, fail-closed at query time
 (spec: queries/identifier-case)."""
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "met
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures and models
+# Fixtures and datasets
 # --------------------------------------------------------------------------- #
 @pytest.fixture(params=STORAGES)
 async def storage(request, tmp_path) -> StorageBackend:
@@ -305,10 +305,10 @@ async def test_an_ambiguous_stored_target_fails_closed_at_query_time(tmp_path, s
 
 
 # --------------------------------------------------------------------------- #
-# A stored join to the spine is dropped on load
+# A stored relationship to the spine is dropped on load
 # --------------------------------------------------------------------------- #
 def _ev_doc(*, joins: list[dict]) -> dict:
-    """No time axis: two temporal columns and no declared default."""
+    """No time axis: two temporal fields and no declared default."""
     return {
         "version": PRE_REPAIR, "name": "ev", "sql_table": "orders", "data_source": DS,
         "columns": [

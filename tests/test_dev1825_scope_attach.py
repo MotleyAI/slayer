@@ -1,7 +1,7 @@
-"""DEV-1825 — ``ScopeFrame.attached_fields`` fail-closed anchor (Codex F4).
+"""``ScopeFrame.attached_fields`` fail-closed anchor (Codex F4).
 
 A reserved-leaf placeholder resolves by EXACT registry membership first; a
-non-prefixed column is unaffected by the registry; a prefixed leaf that misses
+non-prefixed field is unaffected by the registry; a prefixed leaf that misses
 the registry RAISES rather than emitting ``orders."__regroup__…"``.
 """
 
@@ -65,9 +65,9 @@ class TestAttachedColumnAnchor:
             scope.resolve(missing)
 
     def test_prefixed_leaf_without_active_regroup_anchors_normally(self) -> None:
-        # Codex F4: with no regroup active (empty registry) a column that only
+        # Codex F4: with no regroup active (empty registry) a field that only
         # collides with the reserved prefix is NOT a placeholder — it anchors as
-        # an ordinary column, never fail-closed. The prefix is fenced at plan
+        # an ordinary field, never fail-closed. The prefix is fenced at plan
         # time only when a regroup is planned; here nothing is attached.
         scope = _scope()
         ref = FieldKey(path=(), leaf="__regroup__legacy_col")

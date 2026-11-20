@@ -1,6 +1,6 @@
 """A derived fanning dimension routes through the mode axis.
 
-A dimension naming a derived column whose definition crosses the 1:N
+A dimension naming a derived field whose definition crosses the 1:N
 ``regions → region_events`` hop is unattributable exactly as a structural
 fanning dimension is: broadcast (default, warning naming the hop, the metric
 repeated), associate (per-cell over distinct root entities), or error. An
@@ -84,7 +84,7 @@ class TestAssociate:
 
 
 class TestErrorMode:
-    """Local and cross-model refusals proven separately — a combined query could
+    """Local and cross-dataset refusals proven separately — a combined query could
     stop at the first metric and never exercise the other."""
 
     async def test_local_metric_refuses(self, engine):

@@ -97,7 +97,7 @@ async def test_first_last_partitioned_cross_model(pg: tuple[SlayerQueryEngine, D
 # Ingestion keeps case-only-distinct columns apart
 # --------------------------------------------------------------------------- #
 async def _ingest(engine: SlayerQueryEngine, ds: DatasourceConfig, table: str) -> tuple[SlayerDataset, str]:
-    """The ingested model and the report's structured warnings (everything but the models) as text."""
+    """The ingested dataset and the report's structured warnings (everything but the datasets) as text."""
     report = await ingestion.ingest_datasource_report_async(ds, client=engine.client_for(ds), include_tables=[table])
     (model,) = [mdl for mdl in report.datasets if mdl.name == table]
     return model, json.dumps(report.model_dump(mode="json", exclude={"datasets"}), default=str)

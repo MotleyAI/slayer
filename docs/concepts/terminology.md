@@ -30,7 +30,7 @@ Key terms used throughout SLayer documentation and code.
 
 ## Queries
 
-**Metric entry** — An expression entry in `SlayerQuery.metrics`. Defined by an expression string. Examples: aggregated field reference (`"sum(orders.revenue)"`), `*`-count (`"count(orders.*)"`), arithmetic on aggregated metrics (`"sum(orders.revenue) / count(orders.*)"`), transform function (`"cumsum(sum(orders.revenue))"`), or named-expression reference (`"orders.aov"`). Supports an optional `label` for human-readable display. See [Expressions](formulas.md).
+**Metric entry** — An expression entry in `SlayerQuery.metrics`. Defined by an expression string. Examples: aggregated field reference (`"sum(orders.revenue)"`), `*`-count (`"count(orders.*)"`), arithmetic on aggregated metrics (`"sum(orders.revenue) / count(orders.*)"`), transform function (`"cumsum(sum(orders.revenue))"`), or named-expression reference (`"orders.aov"`). Supports an optional `label` for human-readable display. See [Expressions](expressions.md).
 
 **Label** — An optional human-readable display name for a metric entry, dimension, or time dimension. Separate from the technical `alias`, which is used as the result column key. Example: `{"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov", "label": "Average Order Value"}`.
 

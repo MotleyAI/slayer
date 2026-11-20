@@ -626,7 +626,7 @@ def expand_derived_refs_sync(
     visited = visited or ()
     # Reserved-word qualifiers (``grant.amount``) parse as an unsupported
     # ``Command`` unless quoted, so the reference would be invisible to the
-    # resolver (no join registered). Prequote first — idempotent, so callers
+    # resolver (no relationship path registered). Prequote first — idempotent, so callers
     # that already prequoted (the Mode-A door) are unaffected.
     sql = prequote_reserved_identifiers(sql, dialect=dialect)
     parsed = sqlglot.parse_one(sql, dialect=dialect)

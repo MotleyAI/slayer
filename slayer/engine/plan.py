@@ -132,7 +132,7 @@ def _stage_scope_and_bundle_unframed(
     stage_dataset: Optional[SlayerDataset],
 ) -> "Tuple[DatasetScope, ResolvedSourceBundle]":
     src = query.population
-    # Only the siblings the stage names join its graph; a spliced stored dataset is a dataset, not a sibling.
+    # Only the siblings the stage names enter its graph; a spliced stored dataset is a dataset, not a sibling.
     reads = stage_sibling_reads(query=query, siblings=set(stage_schemas), displays=bundle.stage_displays)
     reads |= _inherited_targets(start={*reads, src} if isinstance(src, str) else reads, stage_schemas=stage_schemas)
     named = {n: s for n, s in stage_schemas.items() if (n in reads or n in bundle.query_backed) and n != src}

@@ -1,8 +1,8 @@
 """End-to-end: import the anonymized RrDrivers JS fixture and execute it on
-DuckDB (in-process, DEV-1730 acceptance bar).
+DuckDB (in-process).
 
 Proves the FILTER_PARAMS-bearing single-CTE-chain cube is not just representable
-but *executable* as a SLayer sql-mode model: required date pushdown, optional
+but *executable* as a SLayer sql-mode dataset: required date pushdown, optional
 categorical IN pushdowns, and the required-omitted clean raise.
 """
 import os

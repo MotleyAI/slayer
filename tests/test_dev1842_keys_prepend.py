@@ -4,7 +4,7 @@
 per-path transform; ``strip`` (existing, byte-identical) and the new ``prepend``
 are thin wrappers over it. ``prepend_value_key(key, *, host_path)`` is the
 inverse of ``reroot_value_key(key, target_path=host_path)``: it prefixes every
-embedded join path with ``host_path``, re-anchoring a target-local bound tree
+embedded relationship path with ``host_path``, re-anchoring a target-local bound tree
 into the host's coordinate system.
 
 Strip cases pin today (``reroot_value_key`` exists); prepend cases fail until

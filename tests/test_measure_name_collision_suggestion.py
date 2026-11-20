@@ -1,4 +1,4 @@
-"""A measure name colliding with a source column suggests a free name."""
+"""A metric name colliding with a source field suggests a free name."""
 
 from __future__ import annotations
 

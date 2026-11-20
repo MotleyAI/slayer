@@ -1,4 +1,4 @@
-"""Executed values for target-rooted cross-model producers
+"""Executed values for target-rooted cross-dataset producers
 (SQLite + DuckDB).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Target-rooted
@@ -156,7 +156,7 @@ class TestBroadcast:
 
 class TestProducerShapes:
     async def test_filtered_target_column_restricts_the_metric(self, exec_backend):
-        """gold_spend (Column.filter local to the target) with a safe grain."""
+        """gold_spend (DatasetField.filter local to the target) with a safe grain."""
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.regions.name"],
@@ -183,7 +183,7 @@ class TestProducerShapes:
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_filter_only_cm_filters_groups(self, exec_backend):
-        """A hidden (filter-only) cross-model aggregate use."""
+        """A hidden (filter-only) cross-dataset aggregate use."""
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"], metrics=[M],
@@ -197,7 +197,7 @@ class TestProducerShapes:
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_two_targets_in_one_expression(self, exec_backend):
-        """Local and cross-model aggregates compose arithmetically."""
+        """Local and cross-dataset aggregates compose arithmetically."""
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],

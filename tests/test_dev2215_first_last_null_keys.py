@@ -42,7 +42,7 @@ def has_null_flag(item: exp.Expr) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Plain, partitioned and cross-model
+# Plain, partitioned and cross-dataset
 # --------------------------------------------------------------------------- #
 async def test_null_keys_are_skipped_in_both_directions(engine: SlayerQueryEngine) -> None:
     await check_events(engine)
@@ -65,7 +65,7 @@ async def test_partitioned_on_the_home_model(engine: SlayerQueryEngine) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Windowed (the DEV-1915 trailing-window seed)
+# Windowed (the trailing-window seed)
 # --------------------------------------------------------------------------- #
 async def test_windowed_explicit_ranking_column_with_null_keys(windowed: SlayerQueryEngine) -> None:
     resp = await windowed.execute(W.q(time_dimensions=W.month_td(), metrics=[

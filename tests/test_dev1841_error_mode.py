@@ -1,4 +1,4 @@
-"""DEV-1841 task 2.2 — ``to_many_handling: "error"`` replaces the strict gate:
+"""``to_many_handling: "error"`` replaces the strict gate:
 every silent-semantics event the strict flag rejected still errors, now for
 local aggregates too; pushed filters and attributable queries still pass.
 
@@ -45,7 +45,7 @@ async def exec_backend_amb(request):
 
 class TestErrorModeRefusesBroadcast:
     async def test_cross_model_broadcast_errors(self, exec_backend):
-        """Scenario: broadcast-would-happen errors — cross-model."""
+        """Scenario: broadcast-would-happen errors — cross-dataset."""
         _, engine = exec_backend
         query = error_q(dimensions=["orders.status"], metrics=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -68,7 +68,7 @@ class TestErrorModeRefusesBroadcast:
 
 class TestErrorModeRefusesExcludedFilters:
     async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
-        """DEV-1935: a mixed disjunction no longer errors in error mode — it
+        """A mixed disjunction no longer errors in error mode — it
         restricts the producer by semi-join (gold 160, silver 230, bronze 40)."""
         _, engine = exec_backend
         resp = await engine.execute(error_q(

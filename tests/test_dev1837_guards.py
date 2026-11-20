@@ -1,10 +1,10 @@
 """Guard rework (design D5) — both directions.
 
 Lifted direction: a row regroup attach (computed dimension) with a transform
-measure renders in both chains; the old catch-all arm is gone from the
+metric renders in both chains; the old catch-all arm is gone from the
 source, and the windowed/ranked arm is lifted (its absence is
-scanned in tests/test_dev1835_guards.py); the cross-model arm is lifted
-(row-attach × cross-model now broadcasts); the CTE-body arms are lifted
+scanned in tests/test_dev1835_guards.py); the cross-dataset arm is lifted
+(row-attach × cross-dataset now broadcasts); the CTE-body arms are lifted
 (nested attaches hoist — the positive contract below and
 the residue scan in tests/test_dev1838_cte_body_lifts.py). Also pinned: the
 two stale stage_planner issue refs re-pointed (D5).
@@ -110,7 +110,7 @@ class TestLiftedDirection:
         assert "__regroup__" not in sql, sql
 
     async def test_band_with_partitioned_and_transform_renders(self) -> None:
-        """The cross-model chain's lifted direction (Codex F8 — behavioral
+        """The cross-dataset chain's lifted direction (Codex F8 — behavioral
         negative alongside the source scan)."""
         sql = await gen(q(
             dimensions=["orders.region", BAND],
@@ -153,8 +153,8 @@ class TestRemainingArmsExactMessages:
         assert "__regroup__" not in sql, sql
 
     async def test_cross_model_measure_arm_is_lifted(self) -> None:
-        """The band × cross-model arm is lifted: it renders (the cross-model
-        measure broadcasts across the host-derived band) and the old arm message
+        """The band × cross-dataset arm is lifted: it renders (the cross-dataset
+        metric broadcasts across the host-derived band) and the old arm message
         is gone from the sources."""
         sql = await gen(q(
             dimensions=["orders.region", BAND],
@@ -223,7 +223,7 @@ class TestStalePlannerRefsRepointed:
     ) -> None:
         # The blanket "cross-model source in a computed dimension" guard is
         # lifted; the residual check is attributability — `region` is a host
-        # column, unreachable from the customers root.
+        # field, unreachable from the customers root.
         cband = (
             "CASE WHEN sum(customers.spend, partition_by=orders.region) > 100 "
             "THEN 1 ELSE 0 END"

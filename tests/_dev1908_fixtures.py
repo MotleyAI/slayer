@@ -1,10 +1,10 @@
-"""Shared fixtures for DEV-1908 — reverse-hop cancellation for definition defaults.
+"""Shared fixtures for reverse-hop cancellation for definition defaults.
 
-Extends the DEV-1900 ``orders → customers → regions → region_events`` graph with a
+Extends the ``_dev1900_fixtures`` ``orders → customers → regions → region_events`` graph with a
 to-one ``regions → countries`` hop (PK-covered ``regions.country_id``; its inverse
-fans), plus ``orders.ship_region_id`` (an inline ``ModelExtension`` edge
+fans), plus ``orders.ship_region_id`` (an inline ``DatasetExtension`` edge
 ``ship_region`` → regions) and ``orders.cost`` (``amount * 2``). Dataset extensions
-(DEV-1900 dataset reused verbatim): countries (id, name, gdp) = 1 North 1000 |
+(``_dev1900_fixtures`` dataset reused verbatim): countries (id, name, gdp) = 1 North 1000 |
 2 South 2000; regions.country_id North→1 South→2; orders.ship_region_id = each
 order's customer's region (NULL where none).
 """
@@ -63,7 +63,7 @@ def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
 
 
 def countries_dataset() -> SlayerDataset:
-    """``countries`` + the aggregations whose defaults name a model on the path
+    """``countries`` + the aggregations whose defaults name a dataset on the path
     to them (``regions``, ``regions.customers``, …) — each cancels."""
     return SlayerDataset(
         name="countries", data_source="test", sql_table="countries",
@@ -107,7 +107,7 @@ def countries_dataset() -> SlayerDataset:
 
 
 def dev1908_datasets() -> List[SlayerDataset]:
-    """DEV-1900 graph + ``regions → countries`` and the cancellation
+    """``_dev1900_fixtures`` graph + ``regions → countries`` and the cancellation
     aggregations. Host first (orders)."""
     models = dev1900_datasets()
 
@@ -144,7 +144,7 @@ def dev1908_datasets() -> List[SlayerDataset]:
         Aggregation(name="wavg_pop_expr", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight",
                                              sql="customers.regions.pop * 1")]),
-        # A non-join qualifier default → fails closed at typing.
+        # A non-relationship qualifier default → fails closed at typing.
         Aggregation(name="wnowhere", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="nowhere.col")]),
     ])
@@ -154,7 +154,7 @@ def dev1908_datasets() -> List[SlayerDataset]:
 
 
 # --------------------------------------------------------------------------- #
-# Dual-engine seed: reuse the DEV-1900 seed, then add countries + the columns.
+# Dual-engine seed: reuse the ``_dev1900_fixtures`` seed, then add countries + the columns.
 # --------------------------------------------------------------------------- #
 def _seed_sqlite(db_path: str) -> None:
     _dev1900_fixtures._seed_sqlite(db_path)  # noqa: SLF001 — shared base seed
@@ -190,7 +190,7 @@ def _seed_duckdb(db_path: str) -> None:
 async def make_exec_engine(
     request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
-    """Body for a ``params=["sqlite", "duckdb"]`` fixture (DEV-1943 door)."""
+    """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
@@ -222,7 +222,7 @@ def signup_month_td() -> List[TimeDimension]:
 
 
 def ship_region_extension() -> DatasetExtension:
-    """orders inline-extended with a named ``ship_region`` join to regions."""
+    """orders inline-extended with a named ``ship_region`` relationship to regions."""
     return DatasetExtension(dataset="orders", relationships=[
         DatasetRelationship(to="regions", from_columns=["ship_region_id"], to_columns=["id"],
                   name="ship_region", cardinality=RelationshipCardinality.MANY_TO_ONE)])

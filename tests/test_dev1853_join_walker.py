@@ -1,8 +1,8 @@
-"""DEV-1853 — the shared bidirectional walker (``slayer/core/join_walker.py``).
+"""The shared bidirectional walker (``slayer/core/join_walker.py``).
 
-One traversal substrate: any declared join is a symmetric edge, traversed in
+One traversal substrate: any declared relationship is a symmetric edge, traversed in
 either direction with oriented pairs and cardinality; ambiguity fails closed;
-edge names resolve before model names.
+edge names resolve before dataset names.
 """
 
 from __future__ import annotations
@@ -223,7 +223,7 @@ class TestWalk:
                     datasets_by_name=models) is None
 
     def test_revisit_is_guarded(self) -> None:
-        # DEV-1952: a revisit is a typed circular refusal, not a silent ``None``.
+        # A revisit is a typed circular refusal, not a silent ``None``.
         models = self._chain()
         with pytest.raises(CircularRelationshipPathError):
             walk(root=models["regions"], path=("customers", "regions"),

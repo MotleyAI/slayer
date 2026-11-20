@@ -1,6 +1,6 @@
 """The total reroot visitor over the ValueKey union.
 
-Rerooting was once done by SERIALIZING typed keys back to formula text and
+Rerooting was once done by SERIALIZING typed keys back to expression text and
 re-parsing them into a nested ``SlayerQuery``. That was replaced with typed
 re-rooting via ``reroot_value_key(key, *, target_path)`` — a visitor that is:
 
@@ -97,7 +97,7 @@ class TestLeafKinds:
         assert reroot_value_key(key, target_path=TARGET) == key
 
     def test_time_trunc_key_reroots_its_column(self) -> None:
-        """``TimeTruncKey`` carries its path on the WRAPPED column, which is
+        """``TimeTruncKey`` carries its path on the WRAPPED field, which is
         why ``walk_value_keys`` needs a special case for it — the visitor must
         not inherit that blind spot."""
         out = reroot_value_key(

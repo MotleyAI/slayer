@@ -4,7 +4,7 @@ The deferred-shape guards (window= / first / last / nested-transform /
 in-filter) must fire on the ORIGINAL value-key trees, BEFORE the generalized
 regroup desugar substitutes partitioned aggregates away — otherwise a substituted
 placeholder would hide the shape and the guard would silently pass. Pinned both
-directions: a guarded partitioned-measure filter still raises even with a
+directions: a guarded partitioned-metric filter still raises even with a
 legitimate computed-dimension regroup active, and a legitimate computed-dimension
 filter is NOT wrongly rejected by the reordered guard.
 """
@@ -27,11 +27,11 @@ def _q(**kw) -> SlayerQuery:
 
 
 class TestDeferredMeasureShapesStillRaise:
-    """Each deferred partitioned-MEASURE shape raises the pinned error
+    """Each deferred partitioned-METRIC shape raises the pinned error
     after the migration (the guard runs on the pre-substitution snapshot)."""
 
     async def test_window_plus_partition_lifted(self) -> None:
-        # A LOCAL window=+partition_by measure renders via a
+        # A LOCAL window=+partition_by metric renders via a
         # windowed producer at the (partition ∪ active-TD) grain (D5); executed
         # values in test_dev1824_partitioned_execution.py::TestWindowPlusPartition.
         q = _q(
@@ -80,7 +80,7 @@ class TestDeferredMeasureShapesStillRaise:
 
 class TestSharedAggregateRowPlusCombined:
     """A partitioned aggregate used BOTH inside a computed dimension (row attach)
-    AND as a selected measure (combined attach). This coexistence is
+    AND as a selected metric (combined attach). This coexistence is
     lifted: discovery keeps it in BOTH sets, and it ships as duplicate
     producers (D10 — cross-phase dedup is Stage 2)."""
 
@@ -98,11 +98,11 @@ class TestSharedAggregateRowPlusCombined:
 
 class TestGrainGuardsPreserved:
     """The grain guards (``ValueError``) must survive the migration —
-    a partitioned MEASURE key stays STRICT (must be a query dimension), and the
-    kept cross-model narrow path (D2) still rejects an out-of-grain partition."""
+    a partitioned METRIC key stays STRICT (must be a query dimension), and the
+    kept cross-dataset narrow path (D2) still rejects an out-of-grain partition."""
 
     async def test_non_dimension_partition_key_raises(self) -> None:
-        # A measure's partition_by must be a query dimension; the generalized
+        # A metric's partition_by must be a query dimension; the generalized
         # discovery must NOT relax this to the computed-dimension leniency.
         q = _q(
             dimensions=["orders.region"],
@@ -116,7 +116,7 @@ class TestGrainGuardsPreserved:
 
     async def test_cross_model_partition_outside_grain_raises(self) -> None:
         # An explicit partition key must be attributable from the
-        # aggregate's root — `region` is a host column, unreachable from customers.
+        # aggregate's root — `region` is a host field, unreachable from customers.
         q = _q(
             dimensions=["orders.region", "customers.tier"],
             metrics=[QueryMetric(

@@ -45,7 +45,7 @@ _EXCLUDED_APP = "orders.channel = 'app' OR customers.regions.name = '__none__'"
 
 class TestPushedFilterEntryIdentity:
     """The mixed-OR host filter pushes into every producer; entries
-    are keyed (location, measure, filter text) — one per measure, never one per
+    are keyed (location, metric, filter text) — one per metric, never one per
     consumer, nested producers included."""
 
     async def test_same_filter_pushed_into_two_producers_names_each_measure(
@@ -61,8 +61,8 @@ class TestPushedFilterEntryIdentity:
         ]
 
     async def test_nested_producers_each_push_the_filter(self, exec_backend):
-        """The computed dimension's nested producer and the cross-model
-        measure's producer both push the host conjunct — one entry each; the
+        """The computed dimension's nested producer and the cross-dataset
+        metric's producer both push the host conjunct — one entry each; the
         metric counts the customers with an app order (c1, c3), unfanned."""
         _, engine = exec_backend
         resp = await engine.execute(q(
@@ -83,7 +83,7 @@ class TestPushedFilterEntryIdentity:
         self, exec_backend,
     ):
         """F7 traversal proof: the ONLY producer here is the computed
-        dimension's (rooted at regions); the sole measure is local. A collector
+        dimension's (rooted at regions); the sole metric is local. A collector
         that never walks nested plans reports nothing."""
         _, engine = exec_backend
         resp = await engine.execute(q(
@@ -108,7 +108,7 @@ class TestPushedFilterEntryIdentity:
 class TestBroadcastDedup:
     async def test_roles_dedup_but_distinct_aggregates_do_not(self, exec_backend):
         """One broadcast warning per distinct aggregate: cm appears in three
-        roles (measure, filter, order) and pop in one — two warnings total."""
+        roles (metric, filter, order) and pop in one — two warnings total."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["orders.status"], metrics=[M, CM, POP],

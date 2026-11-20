@@ -1,8 +1,8 @@
-"""DEV-1714 Stage 10 — integration VALUE tests for duration-windowed measures.
+"""Integration VALUE tests for duration-windowed metrics.
 
 These exercise the windowed range-join primitive against real in-process
 databases (DuckDB + SQLite, no Docker) and assert hand-computed rolling-90d
-VALUES — the class of coverage that catches the DEV-1496 "silent wrong
+VALUES — the class of coverage that catches the "silent wrong
 results" failure mode that SQL-shape assertions alone cannot.
 
 Window arithmetic (window='90d', monthly buckets; 2024 is a leap year):
@@ -60,8 +60,8 @@ def _orders_dataset() -> SlayerDataset:
     )
 
 
-# DEV-1733 — a SECOND table shaped so that ordering by a composite OVER a
-# windowed measure cannot be satisfied by any of the ways the feature can be
+# A SECOND table shaped so that ordering by a composite OVER a
+# windowed metric cannot be satisfied by any of the ways the feature can be
 # built wrong. ``_ORDERS`` above cannot do this: January's rolling value equals
 # its plain sum (all January rows fall inside January's own window), and Feb and
 # Mar both have one row, so no composite over a count can reorder them.
@@ -110,7 +110,7 @@ def _composite_orders_dataset() -> SlayerDataset:
 
 def _key(row, suffix: str) -> str:
     """The single result-column key ending with ``suffix`` (result keys are
-    ``model.column`` — e.g. ``orders.created_at`` / ``orders.rev_90d``)."""
+    ``dataset.field`` — e.g. ``orders.created_at`` / ``orders.rev_90d``)."""
     return next(k for k in row if k.endswith(suffix))
 
 
@@ -213,8 +213,8 @@ class TestWindowedMeasureValues:
         This used to come back NULL, and was pinned as a documented consequence:
         the ``_src`` join-back inside the windowed producer CTE compared the grain with a
         plain ``=``, and ``NULL = NULL`` is not TRUE, so the group matched no
-        rows. The outer join-back and the cross-model join-back were already
-        null-safe, so the answer depended on which isolation shape a measure
+        rows. The outer join-back and the cross-dataset join-back were already
+        null-safe, so the answer depended on which isolation shape a metric
         landed in. The inner comparison is now null-safe too, which is what makes
         the value appear.
 
@@ -253,9 +253,9 @@ class TestWindowedMeasureValues:
 
 @pytest.mark.integration
 class TestHiddenOrderOnlyWindowedValues(object):
-    """DEV-1733 — a windowed measure used ONLY as an ORDER BY target.
+    """A windowed metric used ONLY as an ORDER BY target.
 
-    Before DEV-1733 this shape silently rendered a PLAIN ``SUM`` (the window
+    This shape once silently rendered a PLAIN ``SUM`` (the window
     was dropped), so the rows came back in the wrong order with no error.
     These assert the ROLLING value drives the sort, against real engines —
     the trailing-window arithmetic is the part SQLite is a weak proxy for.
@@ -315,7 +315,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
     async def test_order_only_windowed_inside_composite(
         self, windowed_engine: SlayerQueryEngine,
     ) -> None:
-        """S-b: a windowed measure inside an order-only composite.
+        """S-b: a windowed metric inside an order-only composite.
 
         Runs against ``orders_c``, whose rows are shaped so that the correct
         answer is reachable ONLY by dividing the ROLLING sum — see the
@@ -342,7 +342,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
     async def test_composite_dataset_rolling_values_are_as_derived(
         self, windowed_engine: SlayerQueryEngine,
     ) -> None:
-        """Control for the test above: declare the same windowed measure so its
+        """Control for the test above: declare the same windowed metric so its
         ROLLING values are directly observable. If this drifts, the composite
         ordering expectation is derived from stale arithmetic rather than a real
         regression."""
@@ -362,7 +362,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
     async def test_hidden_and_public_windowed_together(
         self, windowed_engine: SlayerQueryEngine,
     ) -> None:
-        """A declared windowed measure plus a DIFFERENT order-only windowed
+        """A declared windowed metric plus a DIFFERENT order-only windowed
         one — two windowed producer CTEs, one projected and one trimmed, both correct."""
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
@@ -393,7 +393,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
 
         The discrimination is therefore structural as well: the ORDER BY must
         reference the windowed CTE's column. A plain-``SUM`` regression (the
-        DEV-1733 defect, where the window was silently dropped) emits no windowed
+        window silently dropped) emits no windowed
         range-join (``_w_value``) at all, so it cannot satisfy that no matter how
         the rows tie.
         """
@@ -433,7 +433,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
 
 
 # =========================================================================== #
-# DEV-1732 — frame-bound equivalence VALUE tests.
+# Frame-bound equivalence VALUE tests.
 #
 # The acceptance criterion in its strongest form: a `date_range` and an
 # equivalent explicit filter must produce IDENTICAL numbers, verified against
@@ -543,7 +543,7 @@ def _by_month(result, suffix: str) -> dict:
 
 @pytest.mark.integration
 class TestFrameBoundEquivalenceValues:
-    """DEV-1732: the two spellings of a time frame must agree numerically."""
+    """The two spellings of a time frame must agree numerically."""
 
     async def _windowed_by_month(
         self, engine: SlayerQueryEngine, *, date_range=None, filters=None,
@@ -558,8 +558,8 @@ class TestFrameBoundEquivalenceValues:
     async def test_date_range_and_explicit_filter_agree(
         self, frame_bound_engine: SlayerQueryEngine,
     ) -> None:
-        """The headline acceptance criterion. Before DEV-1732 the explicit
-        spelling truncated ``_src`` to March, yielding 900 instead of 1400."""
+        """The headline acceptance criterion. The explicit spelling once
+        truncated ``_src`` to March, yielding 900 instead of 1400."""
         via_range = await self._windowed_by_month(
             frame_bound_engine, date_range=_MARCH_ONLY,
         )
@@ -596,10 +596,10 @@ class TestFrameBoundEquivalenceValues:
         The frame ends 2024-03-15, mid-March, but March's ``bucket_end`` is
         2024-04-01 — so the trailing window legitimately reaches row 5
         (2024-03-20), which is past the caller's stated end. That widening is
-        exactly what ``date_range`` already does; DEV-1732's contract is that
+        exactly what ``date_range`` already does; the contract is that
         the explicit spelling does the same thing, not something safer.
 
-        1400 (includes row 5), not 900 (the pre-DEV-1732 truncated answer).
+        1400 (includes row 5), not 900 (the old truncated answer).
         """
         via_range = await self._windowed_by_month(
             frame_bound_engine, date_range=_MID_BUCKET_END,
@@ -613,8 +613,8 @@ class TestFrameBoundEquivalenceValues:
     async def test_time_shift_prev_agrees_across_spellings(
         self, frame_bound_engine: SlayerQueryEngine,
     ) -> None:
-        """The same rule in the shifted CTE. Before DEV-1732 the explicit
-        spelling truncated the shifted CTE to March rows, so March's ``prev``
+        """The same rule in the shifted CTE. The explicit spelling once
+        truncated the shifted CTE to March rows, so March's ``prev``
         came back NULL while the ``date_range`` spelling gave February's 300."""
         async def _prev(*, date_range=None, filters=None):
             query = SlayerQuery(

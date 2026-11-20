@@ -1,4 +1,4 @@
-"""DEV-1892 — the full home rule (Axiom 2): a cross-model aggregate roots at the
+"""The full home rule (Axiom 2): a cross-dataset aggregate roots at the
 dataset determining every input, in every mode; a source beyond the home renders
 inline as a host-locus aggregate joining the to-one path. Executed oracles +
 shape pins. Spec: queries/attribution-modes, queries/semantics."""
@@ -106,7 +106,7 @@ class TestBroadcastHomeRule:
 
 class TestHostLocusSourceRendering:
     async def test_filtered_source_with_home_above_it(self, filter_engine):
-        """A measure-local filter (north_spend) renders from the host home, joining the customers→regions hop."""
+        """A metric-local filter (north_spend) renders from the host home, joining the customers→regions hop."""
         resp = await filter_engine.execute(bcast_q(
             dimensions=["orders.status"],
             metrics=[QueryMetric(
@@ -116,7 +116,7 @@ class TestHostLocusSourceRendering:
             assert float(vals[status]) == pytest.approx(expected)
 
     async def test_source_owned_default_beyond_source(self, filter_engine):
-        """A source-owned default over a to-one path (wsum4 scale=regions.pop) resolves on the source model and joins its hop."""
+        """A source-owned default over a to-one path (wsum4 scale=regions.pop) resolves on the source dataset and joins its hop."""
         resp = await filter_engine.execute(bcast_q(
             dimensions=["orders.status"],
             metrics=[QueryMetric(
@@ -129,7 +129,7 @@ class TestHostLocusSourceRendering:
 class TestHomeRootingPlanShape:
     def test_associate_entity_key_is_the_home_entity(self) -> None:
         """C in associate mode deduplicates by the home (customers) entity — the
-        key in the home-rooted producer's own (root) coordinates (DEV-1910)."""
+        key in the home-rooted producer's own (root) coordinates."""
         planned = plan_query(
             query=assoc_q(dimensions=["orders.status"],
                           metrics=[QueryMetric(metric=_C_BROADCAST, alias="w")]),
@@ -150,8 +150,8 @@ class TestHomeRootingPlanShape:
 
 class TestDerivedColumnEdgeCases:
     async def test_derived_dotted_default_expands(self, derived_default_engine):
-        """A to-one-path default to a DERIVED column expands its SQL (pop*2), not a
-        bare (nonexistent) column reference."""
+        """A to-one-path default to a DERIVED field expands its SQL (pop*2), not a
+        bare (nonexistent) field reference."""
         resp = await derived_default_engine.execute(assoc_q(
             dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum5(customers.spend)", alias="w")]))
@@ -160,7 +160,7 @@ class TestDerivedColumnEdgeCases:
             assert float(vals[status]) == pytest.approx(expected)
 
     async def test_fanning_derived_source_fails_closed(self) -> None:
-        """A host-locus source whose Column.sql crosses a fanning hop is rejected,
+        """A host-locus source whose DatasetField.sql crosses a fanning hop is rejected,
         never emitted as a multiplying join."""
         query = bcast_q(dimensions=["orders.status"], metrics=[QueryMetric(
             metric="weighted_avg(customers.bad_spend, weight=orders.amount)", alias="w")])
@@ -171,7 +171,7 @@ class TestDerivedColumnEdgeCases:
 
 class TestCardinalityInvariant:
     async def test_adding_broadcast_measure_keeps_rows_and_siblings(self, orders_engine):
-        """Adding the broadcast C measure keeps the status rows and amount:sum sibling values (semantics Law 7)."""
+        """Adding the broadcast C metric keeps the status rows and amount:sum sibling values (semantics Law 7)."""
         base = await orders_engine.execute(bcast_q(
             dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="tot")]))

@@ -70,7 +70,7 @@ class TestDataTypeIsOpaque:
         assert dt.is_opaque is False
 
     def test_unknown_has_no_default_aggregations(self) -> None:
-        # An opaque column can't be aggregated at all, so it must not appear
+        # An opaque field can't be aggregated at all, so it must not appear
         # in the type-default eligibility table.
         assert DataType.OPAQUE not in DEFAULT_AGGREGATIONS_BY_TYPE
 
@@ -84,7 +84,7 @@ class TestDefaultAggregationsByType:
         assert "avg" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INTEGER]
 
     def test_text_set_unchanged(self) -> None:
-        # Mirror of the old STRING set, plus DEV-1595's count_distinct_approx
+        # Mirror of the old STRING set, plus count_distinct_approx
         # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE).
         assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.STRING] == frozenset({
             "count", "count_distinct", "count_distinct_approx",

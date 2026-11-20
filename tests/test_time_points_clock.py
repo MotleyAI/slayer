@@ -18,7 +18,7 @@ D = datetime
 
 
 def _recent_dataset() -> SlayerDataset:
-    """A query-backed model whose own filter uses a relative token."""
+    """A query-backed dataset whose own filter uses a relative token."""
     return SlayerDataset(
         name="recent", data_source="test",
         source_queries=[SlayerQuery.model_validate({
@@ -52,7 +52,7 @@ async def test_clock_read_once_per_execution(backend) -> None:
         clock.calls = 0
         resp = await engine.execute(_stages())
     assert clock.calls == 1
-    # Every stage and the spliced model resolve against 2026-09-29: [2026-06-01, 2026-09-01).
+    # Every stage and the spliced dataset resolve against 2026-09-29: [2026-06-01, 2026-09-01).
     assert resp.data[0]["total"] == pytest.approx(float(sum(ids_in(D(2026, 6, 1), D(2026, 9, 1)))))
 
 

@@ -1,6 +1,6 @@
 """Unrelated-dataset seeds, engines, row helpers and the emitted-SQL product-hop checker.
 
-Main seed (datasource ``test``), with no join path between ``customers`` and ``events``::
+Main seed (datasource ``test``), with no relationship path between ``customers`` and ``events``::
 
     customers (id, city, tenant): 1 A t1 | 2 A t1 | 3 B t2
     events    (id, amount, created_at, kind, user_id, tenant):

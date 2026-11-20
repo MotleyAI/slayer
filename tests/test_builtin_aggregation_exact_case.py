@@ -1,4 +1,4 @@
-"""A built-in aggregation name resolves only to a model definition of exactly its lowercase name
+"""A built-in aggregation name resolves only to a dataset definition of exactly its lowercase name
 (spec: models/aggregation-names)."""
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
-"""End-to-end engine behavior for Mode-A optional blocks (DEV-1730).
+"""End-to-end engine behavior for Mode-A optional blocks.
 
 Blocks + list-valued IN pushdowns are exercised against a real file-backed
 SQLite datasource, asserting on RESULT DATA. Also pins the substitution
-fast-path boundary (the documented DEV-1625 required-only-zero-vars hole).
+fast-path boundary (the documented required-only-zero-vars hole).
 """
 import tempfile
 
@@ -51,7 +51,7 @@ def _sum(resp, alias: str) -> float:
 
 
 def _block_dataset() -> SlayerDataset:
-    # sql-mode model whose WHERE carries an optional IN-list block.
+    # sql-mode dataset whose WHERE carries an optional IN-list block.
     return SlayerDataset(
         name="orders",
         sql="SELECT * FROM orders WHERE 1=1 AND {? region IN ({regions}) ?}",
@@ -145,7 +145,7 @@ async def test_dimension_query_over_block_model_resolves_types():
 
 
 def test_blockfree_empty_vars_leaves_model_untouched():
-    # DEV-1625 brace-literal protection: no vars + no block -> no substitution.
+    # Brace-literal protection: no vars + no block -> no substitution.
     model = SlayerDataset(
         name="m", sql="SELECT * FROM t WHERE tags = '{1,2,3}'", data_source="ds",
     )
@@ -155,7 +155,7 @@ def test_blockfree_empty_vars_leaves_model_untouched():
 
 
 def test_blockfree_required_var_zero_vars_is_untouched_not_raised():
-    # The documented boundary hole: a block-free model whose only placeholder is
+    # The documented boundary hole: a block-free dataset whose only placeholder is
     # a *declared-looking* required var, called with zero variables, is left
     # untouched (NOT raised) — substitution only runs when vars OR a block exist.
     model = SlayerDataset(
@@ -216,7 +216,7 @@ async def test_get_result_column_types_probes_scalar_and_date_and_list_contexts(
 
 
 def test_block_bearing_empty_vars_collapses_block():
-    # A block-bearing model must collapse even when zero variables are supplied.
+    # A block-bearing dataset must collapse even when zero variables are supplied.
     model = SlayerDataset(
         name="m",
         sql="SELECT * FROM t WHERE 1=1 AND {? region IN ({regions}) ?}",

@@ -56,7 +56,7 @@ def _by_month(resp) -> dict:
 
 
 class TestShapeALocalTimeShift:
-    """(a) local ``time_shift(sum(amount))`` beside a cross-model sibling."""
+    """(a) local ``time_shift(sum(amount))`` beside a cross-dataset sibling."""
 
     async def test_prev_amount_sum_and_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(metrics=[
@@ -73,7 +73,7 @@ class TestShapeALocalTimeShift:
         assert by["2024-01"]["prev"] is None
         assert float(by["2024-02"]["prev"]) == pytest.approx(15.0)
         assert float(by["2024-03"]["prev"]) == pytest.approx(24.0)
-        # The cross-model sibling is unaffected by the shift: customers.spend:sum
+        # The cross-dataset sibling is unaffected by the shift: customers.spend:sum
         # has no shared grain with the month axis, so it broadcasts the
         # all-customers total (100 + 200 + 50 = 350) across every month — the
         # same value the shift machinery must not perturb.
@@ -104,7 +104,7 @@ class TestShapeBHostRootedCrossingFragment:
     ) -> None:
         """A local ``sum(amount)`` beside the crossing wscaled shift must keep its
         true per-month value — the fragment's 1:N-safe join lives only in the
-        crossing measure's own CTEs, never multiplying the sibling."""
+        crossing metric's own CTEs, never multiplying the sibling."""
         resp = await exec_engine.execute(_q(metrics=[
             QueryMetric(metric="sum(orders.amount)", alias="s"),
             QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
@@ -116,7 +116,7 @@ class TestShapeBHostRootedCrossingFragment:
 
 
 class TestChangeDesugars:
-    """``change`` = current − prior. With a LOCAL inner beside a cross-model
+    """``change`` = current − prior. With a LOCAL inner beside a cross-dataset
     sibling (the shape the guard lift naturally enables — the chain's outer
     arithmetic-materialization step renders the subtraction), it must produce the
     period-over-period delta."""
@@ -173,9 +173,9 @@ class TestChangeOverCrossingFragmentInner:
 
 
 class TestSiblingProtectionUnderFanOut:
-    """The crossing measure's join is 1:N (``orders → line_items``). If it leaked
+    """The crossing metric's relationship is 1:N (``orders → line_items``). If it leaked
     into the host base, a sibling ``sum(amount)`` would be MULTIPLIED by the
-    line-item count. Isolation keeps the fan-out inside the crossing measure's
+    line-item count. Isolation keeps the fan-out inside the crossing metric's
     own CTEs, so the sibling stays true — a claim only a fan-out dataset can
     actually test (Codex F1)."""
 
@@ -264,7 +264,7 @@ class TestDateRangeFrameBoundOmitted:
     async def test_feb_prev_reads_january_outside_range(self, exec_engine) -> None:
         # Restrict to Feb–Mar; Feb's prior (January) is outside the range but the
         # shifted CTE reads raw, so Feb.prev = Jan's 15 (local sum). A sibling
-        # cross-model measure keeps the query on the cross-model chain.
+        # cross-dataset metric keeps the query on the cross-dataset chain.
         resp = await exec_engine.execute(SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(

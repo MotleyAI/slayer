@@ -1,10 +1,10 @@
-"""A dotted saved-measure reference is bound-tree-
-identical to the hand-written host-prefixed formula.
+"""A dotted saved-metric reference is bound-tree-
+identical to the hand-written host-prefixed expression.
 
 Each ``EQUIV_PAIRS`` entry pairs a dotted spelling (``customers.aov``) with its
 hand-expanded twin. The guarantee is total: identical generated SQL (byte-for-
 byte) AND identical executed values on SQLite and DuckDB, across composite,
-nested-saved, self-qualified, nested-join, column-filter, partitioned, transform,
+nested-saved, self-qualified, nested-relationship, field-filter, partitioned, transform,
 mixed local+dotted, and computed-dimension-source forms.
 """
 
@@ -37,7 +37,7 @@ async def exec_backend(request):
 
 def _needs_time(expression: str) -> bool:
     # The transform pair's DOTTED spelling (``customers.spend_run``) hides its
-    # cumsum behind the measure name, so match the pair as well as the literal.
+    # cumsum behind the metric name, so match the pair as well as the literal.
     return "cumsum" in expression or expression in TRANSFORM_PAIR
 
 
@@ -77,7 +77,7 @@ class TestExecutedValueEquality:
         dotted_resp = await engine.execute(_metric_query(dotted))
         hand_resp = await engine.execute(_metric_query(hand))
         assert _canon(dotted_resp) == _canon(hand_resp)
-        # The measure actually projected a value (not an all-NULL degenerate).
+        # The metric actually projected a value (not an all-NULL degenerate).
         assert any(r.get("x") is not None for r in dotted_resp.data)
 
 
@@ -123,7 +123,7 @@ class TestExecutedValuesAgainstOracles:
 
 
 class TestComputedDimensionSource:
-    """1.1 — a dotted saved measure used inside a computed-dimension expression
+    """1.1 — a dotted saved metric used inside a computed-dimension expression
     (the aggregate carries ``partition_by=`` as computed dimensions require)."""
 
     _HAND = ("CASE WHEN sum(customers.spend, partition_by=customers.tier) > 100 "
@@ -149,8 +149,8 @@ class TestComputedDimensionSource:
 
 
 class TestUnsafeInputParity:
-    """1.2 — a column filter crossing the OWNER's UNPROVEN join inherits the
-    cross-model unsafe-input rejection. The dotted spelling raises the SAME error
+    """1.2 — a field filter crossing the OWNER's UNPROVEN relationship inherits the
+    cross-dataset unsafe-input rejection. The dotted spelling raises the SAME error
     as the hand-written form (parity is 'both raise', not 'same values')."""
 
     @pytest.mark.parametrize("label", list(PARITY_ERROR_PAIRS))

@@ -1,4 +1,4 @@
-"""Reachability and shortest routes over the bidirectional join multigraph (``slayer.core.relationship_search``).
+"""Reachability and shortest routes over the two-way relationship multigraph (``slayer.core.relationship_search``).
 
 Every declared edge is traversable in both directions and parallel edges between
 one pair are distinct routes. ``shortest_route`` returns the executable hop-token
@@ -75,7 +75,7 @@ class TestReachability:
         assert _reach(models, "order_items") == {"order_items", "orders"}
 
     def test_edge_to_unknown_target_is_skipped(self) -> None:
-        # Join target not in the loaded model set → edge dropped, no crash.
+        # Relationship target not in the loaded dataset set → edge dropped, no crash.
         models = [_m("orders", [_left("missing")])]
         assert _reach(models, "orders") == {"orders"}
 

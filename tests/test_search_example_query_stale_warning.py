@@ -1,4 +1,4 @@
-"""DEV-1428: example_query stale-Memory.query warning.
+"""example_query stale-Memory.query warning.
 
 When an example_queries result's attached ``Memory.query`` references an
 entity that has since vanished, the search service emits a warning naming
@@ -23,8 +23,8 @@ class TestExampleQueryStaleWarning:
     async def test_stale_query_emits_warning_but_surfaces_memory(
         self, storage: StorageBackend,
     ) -> None:
-        # Save a memory carrying a query referencing the existing column,
-        # then remove the referenced column so the query is now stale.
+        # Save a memory carrying a query referencing the existing field,
+        # then remove the referenced field so the query is now stale.
         attached = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(metric="sum(orders.amount)")],
@@ -34,7 +34,7 @@ class TestExampleQueryStaleWarning:
             entities=["mydb.orders.amount"],
             query=attached,
         )
-        # Drop the referenced column, leaving the memory's Memory.query
+        # Drop the referenced field, leaving the memory's Memory.query
         # dangling.
         existing = await storage.get_dataset("orders", data_source="mydb")
         assert existing is not None

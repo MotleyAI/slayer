@@ -5,11 +5,11 @@ module docstring for the four-step blessing loop); only the matrix differs. This
 one targets exactly what PR 4 rewires and what PRs 5-6 will move next:
 
 * every ORDER BY render path the single resolver replaced — host base, the
-  hidden-slot outer trim wrap, the combined cross-model SELECT, the windowed
+  hidden-slot outer trim wrap, the combined cross-dataset SELECT, the windowed
   CTE, and the transform chain's outer wrap;
 * the host-grain (``locus="host"``) wrap in both directions, which is where a
   regression would silently sort every group by one global value;
-* the re-rooted cross-model CTE with reachable / host-local / unreachable
+* the re-rooted cross-dataset CTE with reachable / host-local / unreachable
   filters, since re-rooting is what PR 5 builds on;
 * both transform chains, whose WITH clause is now assembled rather than
   spliced, across the dialects that mangle dotted aliases at emission.
@@ -88,7 +88,7 @@ def _cases() -> dict:
             metrics=[{"metric": "sum(orders.amount, window='90d')", "alias": "w"}],
             order=[{"field": "w", "direction": "desc"}],
         ),
-        # A windowed measure WITH a well-formed date_range mints a
+        # A windowed metric WITH a well-formed date_range mints a
         # date-range filter routed via ``date_range_fids`` (the src-row-phase
         # gate the coupling re-derives). Pins the emitted BETWEEN so capturing
         # the minted fid set instead of re-deriving it stays byte-identical.
@@ -123,7 +123,7 @@ def _cases() -> dict:
             dimensions=["orders.status"], metrics=rev,
             order=[{"field": "customers.regions.name", "direction": "desc"}],
         ),
-        # --- D9: a derived column whose sql crosses, both groupings ---
+        # --- D9: a derived field whose sql crosses, both groupings ---
         "order/grouped_derived_crossing": _q(
             dimensions=["orders.status"], metrics=rev,
             order=[{"field": "orders.cust_region", "direction": "asc"}],
@@ -201,7 +201,7 @@ def _cases() -> dict:
                 {"metric": "consecutive_periods(sum(orders.amount))", "alias": "streak_b"},
             ],
         ),
-        # Two aggregates of one column in the base CTE surface in
+        # Two aggregates of one field in the base CTE surface in
         # plan order, not hash-seed order.
         "chain/multi_agg_base_order": _q(
             time_dimensions=_MONTH,
@@ -300,7 +300,7 @@ def test_ordering_cases_actually_emit_an_order_by(baseline) -> None:
 
 
 def test_reroot_cases_actually_reroot(baseline) -> None:
-    """Vacuity guard for the reroot half. ``_cm_`` marks a cross-model rerooted
+    """Vacuity guard for the reroot half. ``_cm_`` marks a cross-dataset rerooted
     alias; its absence means the shape stopped re-rooting and the entry silently
     pins a forward plan instead."""
     for key, value in baseline.items():

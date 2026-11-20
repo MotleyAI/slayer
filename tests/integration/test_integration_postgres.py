@@ -80,7 +80,7 @@ def _drop_module_db(postgresql_proc, db_name):
 @pytest.fixture(scope="module")
 def _pg_env_storage(postgresql_proc, tmp_path_factory):
     """Module-scoped: per-module Postgres DB with seeded customers/orders, plus
-    a YAMLStorage with the orders + customers models pre-saved. Returns the
+    a YAMLStorage with the orders + customers datasets pre-saved. Returns the
     storage instance — the per-test ``pg_env`` fixture wraps a fresh engine
     around it (engines bind to their event loop, see slayer/database/client.py:144).
     """
@@ -148,7 +148,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
 
                 DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
-                # A genuine DOUBLE PRECISION expression column.
+                # A genuine DOUBLE PRECISION expression field.
                 # ``amount`` is NUMERIC, so ``round(sum(amount), 2)`` works on
                 # Postgres natively; the non-bare DOUBLE-typed sql gets wrapped
                 # in CAST(... AS DOUBLE PRECISION), so SUM yields double and
@@ -416,7 +416,7 @@ class TestPostgresQueries:
 
 @pytest.fixture
 async def pg_cross_dataset_env(postgresql):
-    """Postgres env with orders + customers (with score) and explicit join."""
+    """Postgres env with orders + customers (with score) and explicit relationship."""
     cur = postgresql.cursor()
     cur.execute("""
         CREATE TABLE customers (
@@ -490,7 +490,7 @@ async def pg_cross_dataset_env(postgresql):
 @pytest.mark.integration
 class TestCrossModelAndMultistage:
     async def test_cross_model_measure(self, pg_cross_dataset_env: SlayerQueryEngine) -> None:
-        """Cross-model measure: monthly order count + avg customer score."""
+        """Cross-dataset metric: monthly order count + avg customer score."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -518,7 +518,7 @@ class TestCrossModelAndMultistage:
         assert result.data[0]["monthly._count"] == 3
 
     async def test_create_model_from_query(self, pg_cross_dataset_env: SlayerQueryEngine) -> None:
-        """Save a query as a permanent model, then query it."""
+        """Save a query as a permanent dataset, then query it."""
         source = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -534,7 +534,7 @@ class TestCrossModelAndMultistage:
         assert result.data[0]["pg_monthly._count"] == 3
 
     async def test_sql_dimension(self, pg_cross_dataset_env: SlayerQueryEngine) -> None:
-        """SQL expression dimension via ModelExtension with Postgres."""
+        """SQL expression dimension via DatasetExtension with Postgres."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", alias="tier")],
@@ -561,7 +561,7 @@ def pg_ingest_env(postgresql_proc) -> Iterator[PgIngestEnv]:
     """Set up tables with FK relationships and ingest via rollup.
 
     Module-scoped: tests destructure ``(models, ds, _)`` and build their own
-    ephemeral storage from the returned models — they never mutate the fixture
+    ephemeral storage from the returned datasets — they never mutate the fixture
     state. Saves the ~0.32s/call SQLAlchemy reflection across 11 tests.
     """
     conn, db_name = _create_module_db(postgresql_proc)
@@ -620,7 +620,7 @@ def pg_ingest_env(postgresql_proc) -> Iterator[PgIngestEnv]:
 
 @pytest.fixture
 async def pg_ingest_engine(pg_ingest_env: PgIngestEnv, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
-    """A per-test engine over the ingested models."""
+    """A per-test engine over the ingested datasets."""
     models, ds, _ = pg_ingest_env
     async with pg_query_engine(ds, base_dir=str(tmp_path), datasets=models) as engine:
         yield engine
@@ -629,24 +629,24 @@ async def pg_ingest_engine(pg_ingest_env: PgIngestEnv, tmp_path) -> AsyncIterato
 @pytest.mark.integration
 class TestRollupIngestion:
     def test_orders_has_own_columns_only(self, pg_ingest_env: PgIngestEnv) -> None:
-        """After ingestion, models only have their own columns (no flattened joined dims)."""
+        """After ingestion, datasets only have their own fields (no flattened joined dims)."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
         col_names = [c.name for c in orders.fields]
-        # Should have own columns only.
+        # Should have own fields only.
         assert "id" in col_names
         assert "customer_id" in col_names
-        # In v2, every non-joined column appears once (numeric columns included).
+        # In v2, every non-joined field appears once (numeric fields included).
         assert "amount" in col_names
-        # Joined dimensions are resolved via join graph, not pre-flattened.
+        # Joined dimensions are resolved via relationship graph, not pre-flattened.
         assert not any("." in name for name in col_names)
 
     def test_orders_uses_sql_table_with_joins(self, pg_ingest_env: PgIngestEnv) -> None:
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
-        # Models with joins use sql_table (not baked sql) + explicit joins
+        # Datasets with relationships use sql_table (not baked sql) + explicit relationships
         assert orders.sql_table is not None
         assert orders.sql is None
         assert len(orders.relationships) > 0
@@ -660,9 +660,9 @@ class TestRollupIngestion:
         assert regions.sql is None
 
     def test_orders_has_no_named_measures_after_ingest(self, pg_ingest_env: PgIngestEnv) -> None:
-        """v2 auto-ingest leaves model.measures (formula list) empty.
+        """v2 auto-ingest leaves dataset.metrics (expression list) empty.
 
-        Row-level columns live on .columns; named-formula measures are an
+        Row-level fields live on .fields; named-expression metrics are an
         opt-in library users populate themselves.
         """
         models, _, _ = pg_ingest_env
@@ -776,7 +776,7 @@ class TestRollupIngestion:
         assert "regions" in result.sql
 
     def test_orders_has_joins_metadata(self, pg_ingest_env: PgIngestEnv) -> None:
-        """Ingested models should have only direct join metadata."""
+        """Ingested datasets should have only direct relationship metadata."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
@@ -787,20 +787,20 @@ class TestRollupIngestion:
         # Multi-hop targets (regions) are NOT baked in — resolved at query time
         assert "regions" not in join_targets
 
-        # Each join has at least one join pair
+        # Each relationship has at least one key pair
         for j in orders.relationships:
             assert len(j.column_pairs) >= 1
             for pair in j.column_pairs:
                 assert len(pair) == 2  # [source_dim, target_dim]
 
     def test_regions_has_no_joins(self, pg_ingest_env: PgIngestEnv) -> None:
-        """Models with no FK references should have empty joins."""
+        """Datasets with no FK references should have empty relationships."""
         models, _, _ = pg_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.relationships == []
 
     async def test_joins_serialize_to_yaml(self, pg_ingest_env: PgIngestEnv) -> None:
-        """Joins should survive YAML round-trip."""
+        """Relationships should survive YAML round-trip."""
         models, ds, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
@@ -909,7 +909,7 @@ class TestPostgresStatAggregations:
         )
 
     async def test_corr_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        # CORR(amount, customer_id) — uses two existing columns.
+        # CORR(amount, customer_id) — uses two existing fields.
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "corr(total, other=customer_id)"}],
@@ -954,12 +954,12 @@ class TestPostgresStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
     async def test_log10_round_trip_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        """A `log10(amount)` formula must execute correctly on
+        """A `log10(amount)` expression must execute correctly on
         Postgres (native single-arg LOG10) and the emitted SQL must contain
         `log10(...)` rather than the canonicalised `LOG(10, ...)`."""
-        # Add a Column.sql with log10 to the existing orders model. The
+        # Add a DatasetField.sql with log10 to the existing orders dataset. The
         # fixture's storage already has the table populated, so we just save
-        # the model with the extra column.
+        # the dataset with the extra field.
         existing = await pg_env.storage.get_dataset("orders")
         assert existing is not None
         cols = list(existing.fields) + [
@@ -1004,7 +1004,7 @@ class TestPostgresStatAggregations:
 
 @pytest.fixture
 async def planets_pg_env(postgresql):
-    """Planets fixture (Postgres): a Column.sql with `row_number() over (...)`."""
+    """Planets fixture (Postgres): a DatasetField.sql with `row_number() over (...)`."""
     cur = postgresql.cursor()
     cur.execute(
         """
@@ -1066,7 +1066,7 @@ async def planets_pg_env(postgresql):
 
 @pytest.mark.integration
 async def test_filter_on_windowed_column_postgres_raises(planets_pg_env):
-    """Postgres parity: filtering a windowed Column.sql
+    """Postgres parity: filtering a windowed DatasetField.sql
     raises (use rank-family transforms instead)."""
     engine = planets_pg_env
     query = SlayerQuery(
@@ -1078,13 +1078,13 @@ async def test_filter_on_windowed_column_postgres_raises(planets_pg_env):
         await engine.execute(query)
 
 # ---------------------------------------------------------------------------
-# Cross-model derived ``Column.sql`` chaining (Postgres)
+# Cross-dataset derived ``DatasetField.sql`` chaining (Postgres)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 async def pg_derived_chain_env(postgresql):
-    """Postgres A→B fixture with a derived column on B referenced by A."""
+    """Postgres A→B fixture with a derived field on B referenced by A."""
     cur = postgresql.cursor()
     cur.execute("CREATE TABLE b_tbl (id INTEGER PRIMARY KEY, foo_raw NUMERIC)")
     cur.execute(
@@ -1217,9 +1217,9 @@ class TestPostgresDev1576Heals:
 # ---------------------------------------------------------------------------
 # Compiler must emit valid Postgres SQL.
 #   Flavor A — ORDER BY on an unprojected/renamed column.
-#   Flavor B — mixed-case identifiers (Column.sql, filters, JOIN ON) must be
+#   Flavor B — mixed-case identifiers (DatasetField.sql, filters, JOIN ON) must be
 #              double-quoted so Postgres does not fold them to lowercase.
-# The models below deliberately write identifiers UNQUOTED (as an OTF agent
+# The datasets below deliberately write identifiers UNQUOTED (as an OTF agent
 # naturally would); the fix is what makes these queries execute.
 # ---------------------------------------------------------------------------
 
@@ -1269,7 +1269,7 @@ def _pg_dev1645_storage(postgresql_proc, tmp_path_factory):
         clusters_model = SlayerDataset(
             name="clusters", sql_table="clusters", data_source="testpg",
             fields=[
-                # PK column name is mixed-case and written UNQUOTED in the model.
+                # PK column name is mixed-case and written UNQUOTED in the dataset.
                 DatasetField(name="CLSTR_PIN", sql="CLSTR_PIN", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
             ],
@@ -1286,7 +1286,7 @@ def _pg_dev1645_storage(postgresql_proc, tmp_path_factory):
                 DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.INTEGER),
                 DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
             ],
-            # Join key CLSTR_PIN written UNQUOTED (the fake_account_15 repro).
+            # Relationship key CLSTR_PIN written UNQUOTED (the fake_account_15 repro).
             relationships=[DatasetRelationship(to="clusters", from_columns=["clu_ref"], to_columns=["CLSTR_PIN"])],
         )
         run_sync(storage.save_dataset(clusters_model))
@@ -1308,7 +1308,7 @@ class TestDev1645ValidPostgres:
     async def test_flavor_b_mixed_case_column_sql_executes(
         self, pg_dev1645: SlayerQueryEngine,
     ) -> None:
-        """Filter on a derived column whose SQL references mixed-case StateFlag
+        """Filter on a derived field whose SQL references mixed-case StateFlag
         (the fake_account_23 repro) — must execute, not raise UndefinedColumn."""
         query = SlayerQuery.model_validate({
             "population": "accounts",
@@ -1321,7 +1321,7 @@ class TestDev1645ValidPostgres:
     async def test_flavor_b_mixed_case_join_key_executes(
         self, pg_dev1645: SlayerQueryEngine,
     ) -> None:
-        """Cross-model dimension across a join whose key is mixed-case CLSTR_PIN
+        """Cross-dataset dimension across a relationship whose key is mixed-case CLSTR_PIN
         (the fake_account_15 repro) — must execute."""
         query = SlayerQuery.model_validate({
             "population": "accounts",
@@ -1336,7 +1336,7 @@ class TestDev1645ValidPostgres:
     async def test_flavor_a_orderby_nonprojected_column_executes(
         self, pg_dev1645: SlayerQueryEngine,
     ) -> None:
-        """Raw-row query ordering by a base column that is not in the projection
+        """Raw-row query ordering by a base field that is not in the projection
         (the mental_healths_1 / organ_transplant_13 repro) — must execute."""
         query = SlayerQuery(
             population="accounts",
@@ -1351,7 +1351,7 @@ class TestDev1645ValidPostgres:
         self, pg_dev1645: SlayerQueryEngine,
     ) -> None:
         """Phase 1: a GROUPED query ordering by an unprojected LOCAL
-        row column materialises a hidden ``max(created_at)`` wrap. Verified on
+        row field materialises a hidden ``max(created_at)`` wrap. Verified on
         real Postgres — the shape must both execute and sort correctly.
 
         Latest created_at per acct_form: Human 2024-03-01, Bot 2024-01-15 —
@@ -1372,7 +1372,7 @@ class TestDev1645ValidPostgres:
     async def test_ungrouped_joined_column_order_executes(
         self, pg_dev1645: SlayerQueryEngine,
     ) -> None:
-        """Phase 1: a RAW-ROWS query ordering by a JOINED column pulls
+        """Phase 1: a RAW-ROWS query ordering by a JOINED field pulls
         the join (Law 1) and split-emits ``clusters.score``. Verified on real
         Postgres — the split reference must bind, which is exactly what the
         composite ``"clusters.score"`` form failed to do.
@@ -1395,13 +1395,13 @@ class TestDev1645ValidPostgres:
 
 
 # ---------------------------------------------------------------------------
-# Reserved-word model name executes live against Postgres.
+# Reserved-word dataset name executes live against Postgres.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
     """Module-scoped Postgres DB with a reserved-word ("Grant") table joined to
-    "Merchant", plus a YAMLStorage with a `grant` model (reserved name) that
+    "Merchant", plus a YAMLStorage with a `grant` dataset (reserved name) that
     joins to `merchant`. Exercises alias/qualifier + join_cond quoting
     end-to-end."""
     conn, db_name = _create_module_db(postgresql_proc)
@@ -1427,9 +1427,9 @@ def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
                 (3, "org_b", 50, 2, "2024-02-10 09:00:00"),
             ],
         )
-        # A non-reserved root (usage) joining TO the reserved `grant` model —
-        # exercises join discovery + execution of a derived column that
-        # references a reserved joined model.
+        # A non-reserved root (usage) joining TO the reserved `grant` dataset —
+        # exercises relationship discovery + execution of a derived field that
+        # references a reserved joined dataset.
         cur.execute("""
             CREATE TABLE usage (
                 id INTEGER PRIMARY KEY,
@@ -1474,7 +1474,7 @@ def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INTEGER),
                 DatasetField(name="qty", sql="qty", datatype=DataType.INTEGER),
-                # derived column referencing the reserved joined model `grant`
+                # derived field referencing the reserved joined dataset `grant`
                 DatasetField(name="bumped", sql="grant.amount + 1", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="grant", from_columns=["grant_id"], to_columns=["id"])],
@@ -1498,7 +1498,7 @@ async def pg_reserved(_pg_reserved_storage) -> AsyncIterator[SlayerQueryEngine]:
 class TestPostgresReservedWordModel:
     async def test_standalone_grant_dims_count_executes(self, pg_reserved: SlayerQueryEngine) -> None:
         """The exact repro: a dims + *:count query on the `grant`
-        model must execute (previously: syntax error at or near "grant")."""
+        dataset must execute (previously: syntax error at or near "grant")."""
         query = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
@@ -1509,7 +1509,7 @@ class TestPostgresReservedWordModel:
         assert sum(r["grant._count"] for r in result.data) == 3
 
     async def test_join_from_grant_executes(self, pg_reserved: SlayerQueryEngine) -> None:
-        """Join FROM the reserved model on a camelCase FK (`merchantId`)."""
+        """Join FROM the reserved dataset on a camelCase FK (`merchantId`)."""
         query = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["merchant.name"],
@@ -1533,8 +1533,8 @@ class TestPostgresReservedWordModel:
     async def test_query_backed_model_with_reserved_short_executes(
         self, pg_reserved: SlayerQueryEngine,
     ) -> None:
-        """``query_engine._query_as_model`` fix: a cross-model measure
-        renamed to a reserved word (``order``) becomes a virtual-model column
+        """``query_engine._query_as_model`` fix: a cross-dataset metric
+        renamed to a reserved word (``order``) becomes a virtual-dataset field
         exposed via ``... AS "order"`` in the wrapped SQL; it must quote and
         execute."""
         query = SlayerQuery.model_validate({
@@ -1559,9 +1559,9 @@ class TestPostgresReservedWordModel:
     async def test_derived_column_referencing_reserved_join_executes(
         self, pg_reserved: SlayerQueryEngine,
     ) -> None:
-        """A derived column on a non-reserved root that
-        references a reserved joined model (`grant.amount + 1`) must both DISCOVER
-        the join and execute — previously the join was silently dropped."""
+        """A derived field on a non-reserved root that
+        references a reserved joined dataset (`grant.amount + 1`) must both DISCOVER
+        the relationship and execute — previously the join was silently dropped."""
         query = SlayerQuery.model_validate({
             "population": "usage",
             "dimensions": ["bumped"],

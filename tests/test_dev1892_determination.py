@@ -1,7 +1,7 @@
 """The generalised determination helper, spec'd in
 queries/semantics › "Outer dimension seeded by a nested-path entity key" and
 "A nested-path non-key grain field seeds nothing beyond itself": a joined
-model's unique key in the inner grain seeds a to-one chain (the deliberate
+dataset's unique key in the inner grain seeds a to-one chain (the deliberate
 expansion — attributable, no warning), while a non-key grain field seeds only
 itself.
 """
@@ -40,7 +40,7 @@ class TestNestedPathKeySeed:
     ])
     async def test_joined_key_seeds_attribution(self, exec_engine, dim, col, oracle):
         """Scenario: outer dimension seeded by a nested-path entity key — the
-        inner grain contains customers.id, so a column of that model and one
+        inner grain contains customers.id, so a field of that dataset and one
         reached from it over a to-one hop are attributable exactly, with NO
         broadcast warning (the previous rule broadcast them)."""
         resp = await exec_engine.execute(chain_q(
@@ -73,7 +73,7 @@ class TestNestedPathNonKeyDoesNotSeed:
     async def test_non_key_grain_field_seeds_nothing_beyond_itself(self, exec_engine):
         """Scenario: a nested-path non-key grain field seeds nothing beyond
         itself — inner grain customers.region_id does not pin a customer, so a
-        sibling column of the same model (customers.id) stays unattributable and
+        sibling field of the same dataset (customers.id) stays unattributable and
         broadcasts with a warning. (Its join-key hop to regions.name IS seeded —
         the deliberate expansion — and is covered separately.)"""
         resp = await exec_engine.execute(chain_q(

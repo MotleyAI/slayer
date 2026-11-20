@@ -1,8 +1,8 @@
-"""DEV-1892 task 1.3 — plan-structure pins for the lifted parameter: the kernel
+"""Plan-structure pins for the lifted parameter: the kernel
 carries ``picked_params``; a weight aggregate's partition keys need not be query
 dimensions (the combined-consumer exemption extends to args/kwargs); the operand
 carrier is one producer; the emitted SQL is scope-closed; adding the weighted
-measure is cardinality-neutral.
+metric is cardinality-neutral.
 
 Spec: queries/partitioned-aggregates — "Parameter partition keys need not be
 query dimensions"; queries/semantics — "Aggregation parameters are typed by the

@@ -1,16 +1,16 @@
-"""Shared fixtures for DEV-1832 — cross-model expression aggregation.
+"""Shared fixtures for cross-dataset expression aggregation.
 
 Three graphs in one seeded database:
 
-* **Graph A** — the DEV-1840/1900 ``orders → customers → regions
-  (→ region_events, 1:N fanning) / stores`` graph, extended with the columns
-  DEV-1832 exercises: ``orders.cost/quantity/weight``, ``customers.discount``,
+* **Graph A** — the ``_dev1900_fixtures`` ``orders → customers → regions
+  (→ region_events, 1:N fanning) / stores`` graph, extended with the fields
+  exercised here: ``orders.cost/quantity/weight``, ``customers.discount``,
   the filtered ``customers.north_spend`` (``spend`` where ``regions.name =
   'North'``), and a customers-owned ``wsum`` custom aggregation. Used for the
-  home-dataset, cross-model-expression and filtered-joined-leaf scenarios.
-* **Graph B** — the DEV-1847 denormalized ``sales`` model (region, city,
+  home-dataset, cross-dataset-expression and filtered-joined-leaf scenarios.
+* **Graph B** — the ``_dev1847_fixtures`` denormalized ``sales`` dataset (region, city,
   product, amount, quantity, unit_price, filtered ``q_amount``). Its
-  re-aggregation / mixed-source oracles are re-used verbatim; DEV-1832 adds the
+  re-aggregation / mixed-source oracles are re-used verbatim; this module adds the
   filtered-operand and transform-constituent oracles over it.
 * **monthly** — a tiny ``(region, ordered_at, amount)`` table so the grained-
   transform (cumsum) constituent oracle is a clean two-region running total.
@@ -53,7 +53,7 @@ from tests._dev1900_fixtures import (
 from tests._engine_helpers import _engine_generate
 
 # --------------------------------------------------------------------------- #
-# Models.
+# Datasets.
 # --------------------------------------------------------------------------- #
 def monthly_dataset() -> SlayerDataset:
     """One row per (region, month); a clean running-total substrate."""
@@ -86,7 +86,7 @@ def monthly_multi_dataset() -> SlayerDataset:
 
 
 def _extend_graph_a(datasets: List[SlayerDataset]) -> None:
-    """Add DEV-1832's columns/aggregations to the DEV-1900 graph in place."""
+    """Add this module's fields/aggregations to the ``_dev1900_fixtures`` graph in place."""
     orders = next(m for m in datasets if m.name == "orders")
     orders.fields.extend([
         DatasetField(name="cost", datatype=DataType.FLOAT),
@@ -96,7 +96,7 @@ def _extend_graph_a(datasets: List[SlayerDataset]) -> None:
     cust = next(m for m in datasets if m.name == "customers")
     cust.fields.extend([
         DatasetField(name="discount", datatype=DataType.FLOAT),
-        # Filtered joined-model leaf: spend restricted to North customers.
+        # Filtered joined-dataset leaf: spend restricted to North customers.
         DatasetField(name="north_spend", datatype=DataType.FLOAT, sql="spend",
                filter="regions.name = 'North'"),
     ])
@@ -105,7 +105,7 @@ def _extend_graph_a(datasets: List[SlayerDataset]) -> None:
     cust.aggregations.append(Aggregation(
         name="wsum", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="spend")]))
-    # Expression defaults: one naming a shallower (root-side) model, one local.
+    # Expression defaults: one naming a shallower (root-side) dataset, one local.
     cust.aggregations.append(Aggregation(
         name="wsum_expr", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="stores.rent * 2")]))
@@ -115,7 +115,7 @@ def _extend_graph_a(datasets: List[SlayerDataset]) -> None:
 
 
 def dev1832_datasets() -> List[SlayerDataset]:
-    """Graph A (extended DEV-1900) + the ``sales``, ``monthly`` and
+    """Graph A (extended ``_dev1900_fixtures``) + the ``sales``, ``monthly`` and
     ``monthly_multi`` graphs."""
     models = dev1900_datasets()
     _extend_graph_a(models)
@@ -165,7 +165,7 @@ def month_td(population: Optional[str] = None) -> List[TimeDimension]:
 
 
 def bundle(datasets: Optional[List[SlayerDataset]] = None) -> ResolvedSourceBundle:
-    """A ``ResolvedSourceBundle`` rooted at the first model (default: sales,
+    """A ``ResolvedSourceBundle`` rooted at the first dataset (default: sales,
     the plan-structure root)."""
     datasets = datasets if datasets is not None else [sales_dataset(), *dev1832_datasets()]
     return ResolvedSourceBundle(
@@ -220,7 +220,7 @@ _ORDERS_ROWS = [
     (9, 6, "ok", "web", 12.0, "2024-04-10", "A", 2, 6.0, 2.0, 2.0),
     (10, 1, "ok", "web", 3.0, "2024-01-25", "B", 2, 1.0, 1.0, 1.0),
 ]
-# (id, region, city, product, amount, quantity, unit_price) — DEV-1847 verbatim.
+# (id, region, city, product, amount, quantity, unit_price) — ``_dev1847_fixtures`` verbatim.
 _SALES_ROWS = [
     (1, "North", "Alpha", "P", 10.0, 2.0, 4.0),
     (2, "North", "Alpha", "P", 10.0, 2.0, 8.0),
@@ -366,11 +366,11 @@ HOST_DISCOUNT_BY_STATUS = {"ok": 39.0, "new": 50.0}
 #: customers, NULL elsewhere; the filter crosses customers → regions (to-one).
 NORTH_SPEND_EXPR_BY_STATUS = {"ok": -325.0, "new": -205.0}
 #: sum(customers.discount * avg(amount, partition_by=status)) by status — a
-#: joined-model row leaf times a same-grain attached average, homed at orders.
+#: joined-dataset row leaf times a same-grain attached average, homed at orders.
 JOINED_ROWLEAF_MIXED_BY_STATUS = {"ok": 2952.0 / 7.0, "new": 2975.0 / 3.0}
 
 # Graph B (sales, q_amount) --------------------------------------------------
-#: q_amount:sum single-column value (SUM(CASE WHEN product='Q' THEN amount END)).
+#: q_amount:sum single-field value (SUM(CASE WHEN product='Q' THEN amount END)).
 QAMT_SUM = 250.0
 #: wavg(q_amount, weight=quantity) (custom, reads every weight): value masked, weight NOT —
 #: every row's quantity divides. A weight masked by the source filter gives WEIGHT_MASKED_WRONG.
@@ -378,7 +378,7 @@ WAVG_QAMT_WEIGHT_QTY = 750.0 / 34.0
 WAVG_QAMT_WEIGHT_QTY_WRONG = 750.0 / 11.0
 #: weighted_avg(q_amount, weight=quantity) skips the NULL (non-Q) values' weights: Q quantities only.
 WEIGHTED_AVG_QAMT_WEIGHT_QTY = 750.0 / 11.0
-#: weighted_avg(amount, weight=q_amount): the filtered column used as a weight
+#: weighted_avg(amount, weight=q_amount): the filtered field used as a weight
 #: IS masked (NULL on non-Q rows).
 WAVG_AMOUNT_WEIGHT_QAMT = 80.4
 #: group by q_amount: non-Q rows fall into the NULL group; count per cell.
@@ -418,7 +418,7 @@ LAG_SUM_BY_MONTH = {"2024-02": 15.0, "2024-03": 20.0}
 LEAD_SUM_BY_MONTH = {"2024-01": 35.0, "2024-02": 30.0}
 CONSEC_SUM_BY_MONTH = {"2024-01": 0, "2024-02": 2, "2024-03": 2}
 
-# DEV-1928: re-aggregation constituents in a mixed row source (X per region-month as
+# Re-aggregation constituents in a mixed row source (X per region-month as
 # above). last(X) collapses to the region's latest value (North 30 / South 15 / West
 # NULL), min(X, partition_by=region) to its minimum (North 10 / South 5 / West NULL);
 # each broadcasts onto the region's rows, times the row amount, summed per month.
@@ -444,18 +444,18 @@ MIXED_COMBINED_BY_REGION_MONTH = {
 #: (region, month) cells → North 4/2/1, South 5/3, West NULL; summed per month.
 WINDOWED_INNER_BY_MONTH = {"2024-01": 9.0, "2024-02": 5.0, "2024-03": 1.0}
 #: sum(cumsum(amount:sum(partition_by=[customers.tier, ordered_at]))) rooted at orders,
-#: by month — the to-one cross-model partition key (customers.tier is determined from
+#: by month — the to-one cross-dataset partition key (customers.tier is determined from
 #: orders): amount:sum per (tier, month), cumsum per tier over months, summed per month.
 XMODEL_TIER_CUMSUM_BY_MONTH = {"2024-01": 33.0, "2024-02": 55.0, "2024-03": 85.0,
                                "2024-04": 120.0}
 
-# DEV-1928 axiom compliance (monthly_multi, two rows per cell). A pure re-aggregation
+# Re-aggregation axiom compliance (monthly_multi, two rows per cell). A pure re-aggregation
 # — no row leaf — is a second-order aggregation whose home is the operand dataset
 # (Axiom 2.4), so it counts each (region, month) CELL once, never the two base rows.
 #: sum(rank(amount:sum(window='90d', partition_by=region))): cells North 10/30,
 #: South 5/20 → ranks DESC 3/1, 4/2 → summed per month over the four cells.
 WINDOWED_MULTI_BY_MONTH = {"2024-01": 7.0, "2024-06": 3.0}
-#: A ROW leaf flips the home back to the model rows: sum(amount * min(X, partition_by=
+#: A ROW leaf flips the home back to the dataset rows: sum(amount * min(X, partition_by=
 #: region)) sums over all eight rows — each amount times its region's minimum cell.
 MIXED_MULTI_BY_MONTH = {"2024-01": 125.0, "2024-06": 400.0}
 

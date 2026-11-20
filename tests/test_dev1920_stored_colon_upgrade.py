@@ -72,7 +72,7 @@ class TestVersions:
         assert CURRENT_VERSIONS["Memory"] == 13
 
 
-#: (stored measure formula, the formula it loads as).
+#: (stored metric expression, the expression it loads as).
 MODEL_MEASURES = [
     ("amount:sum", "sum(amount)"),
     ("*:count", "count(*)"),
@@ -197,7 +197,7 @@ class TestExecution:
         assert rows(await run(storage, extended)) == [{"orders.m": 150.0}]
 
 
-#: The stored measures and computed dimensions of the key scenario, with the keys ``main`` returned for them.
+#: The stored metrics and computed dimensions of the key scenario, with the keys ``main`` returned for them.
 KEYED_DIMENSIONS = [
     {"name": "amount_sum_partition_by_region", "expression": "amount:sum(partition_by=region)"},
     {"name": "iif_amount_sum_partition_by_002eb04b_gh_other",

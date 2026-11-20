@@ -53,7 +53,7 @@ async def exec_engine(request):
 
 
 def _filtered_datasets() -> list:
-    """``monthly`` with the model-level filter ``amount > 5`` (drops South Jan and West Feb)."""
+    """``monthly`` with the dataset-level filter ``amount > 5`` (drops South Jan and West Feb)."""
     models = dev1832_datasets()
     next(m for m in models if m.name == "monthly").filters.append("monthly.amount > 5")
     return models

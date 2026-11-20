@@ -1,4 +1,4 @@
-"""DEV-1859 tasks 1.1–1.3 — executed-value tests for mixed row/attached
+"""Executed-value tests for mixed row/attached
 aggregation sources (SQLite + DuckDB). The smoke class re-derives every oracle
 constant from the widened rows and passes today; every feature class fails
 until the mixed source compiles at row grain.
@@ -331,7 +331,7 @@ class TestCountFamily:
 
 class TestCrossModelConstituent:
     async def test_cross_model_inner_constituent_executes(self, exec_engine):
-        """Requirement: attached constituents may be cross-model."""
+        """Requirement: attached constituents may be cross-dataset."""
         resp = await exec_engine.execute(SlayerQuery(
             population="customers",
             dimensions=[QueryDimension(field="customers.region_id")],
@@ -347,7 +347,7 @@ class TestCrossModelConstituent:
 class TestFilterAndOrderPositions:
     async def test_filter_position_prunes_without_altering_values(self, exec_engine):
         """Scenario: Filter and order positions — the filter types as a
-        measure, pruning rows with surviving values unchanged."""
+        metric, pruning rows with surviving values unchanged."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region"], filter=[f"{MIXED_SUM} > 40"],
             metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
@@ -462,7 +462,7 @@ class TestWindowedConstituent:
 
     async def test_windowed_inner_executed_values(self, exec_engine_1846):
         """Scenario: each bucket carries the hand-computed row-weighted value —
-        the raw-row oracle, cross-checked against the plain windowed measure."""
+        the raw-row oracle, cross-checked against the plain windowed metric."""
         resp = await exec_engine_1846.execute(SlayerQuery(
             population="sales", time_dimensions=month_td(),
             metrics=[QueryMetric(metric=self._FORMULA, alias="m"),

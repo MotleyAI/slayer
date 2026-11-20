@@ -1,4 +1,4 @@
-"""A ``{var}`` in a model's Mode-A text binds as a literal node, never as spliced text.
+"""A ``{var}`` in a dataset's Mode-A text binds as a literal node, never as spliced text.
 
 Spec: queries/variables › Mode-A surfaces bind variables as literals; models/save-validation;
 models/column-filters › Variables substitute into both fields.
@@ -142,7 +142,7 @@ _FLOORED = DatasetField(name="big", sql="amount", filter="amount >= {floor}", da
 _TAGGED = DatasetField(name="tagged", sql="name || '{suffix}'", datatype=DataType.STRING)
 _FLAGGED = DatasetField(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.FLOAT)
 
-#: (model, formula, variables) — one hostile value per Mode-A surface.
+#: (dataset, expression, variables) — one hostile value per Mode-A surface.
 _HOSTILE = {
     "column-sql": (lambda: _table_dataset(extra=(_SCALED,)), "sum(orders.scaled)", {"k": _HOSTILE_SCALAR}),
     "column-filter": (lambda: _table_dataset(extra=(_FLOORED,)), "sum(orders.big)", {"floor": _HOSTILE_PREDICATE}),
@@ -209,7 +209,7 @@ class TestLiteralValuesBind:
         assert await env.value(model, _query("orders", "sum(both)", variables={"k": 2, "floor": 25})) == 140
 
 
-#: (field, model) pairs whose placeholder stands in a non-literal position.
+#: (field, dataset) pairs whose placeholder stands in a non-literal position.
 _NON_LITERAL = {
     "model-sql-table": _sql_dataset("SELECT * FROM {table}"),
     "column-function-name": _table_dataset(extra=(DatasetField(name="c", sql="{f}(amount)", datatype=DataType.FLOAT),)),

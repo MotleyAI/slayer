@@ -153,7 +153,7 @@ class TestJoinedPartitionKeyFilter:
 
 
 # --------------------------------------------------------------------------- #
-# Shape B — an order key beside a first/last measure.
+# Shape B — an order key beside a first/last metric.
 # --------------------------------------------------------------------------- #
 class TestOrderKeyBesideRankedMeasure:
     @pytest.mark.parametrize("order_col", ["orders.city", "customers.regions.name"])

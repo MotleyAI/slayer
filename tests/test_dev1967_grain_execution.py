@@ -1,4 +1,4 @@
-"""Stage outputs carry their provable uniqueness: sibling stand-ins and query-backed models, executed."""
+"""Stage outputs carry their provable uniqueness: sibling stand-ins and query-backed datasets, executed."""
 
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ class TestSiblingJoins:
         assert broadcast_warnings(default) == []
 
     async def test_extension_over_sibling_keeps_its_grain(self, engine) -> None:
-        # The extension adds a join; orders → c is the inverted hop onto c's grain.
+        # The extension adds a relationship; orders → c is the inverted hop onto c's grain.
         ext = {
             "dataset": "c",
             "relationships": [{"to": "orders", "from_columns": ["id"], "to_columns": ["customer_id"]}],
@@ -169,7 +169,7 @@ class TestQueryBacked:
 
 
 class TestAggregateValuedGrainMember:
-    """Grain ``(status, ct)``: a join on ``status`` alone is unproven, never multiplied."""
+    """Grain ``(status, ct)``: a relationship on ``status`` alone is unproven, never multiplied."""
 
     async def _dataset(self, engine: SlayerQueryEngine) -> SlayerDataset:
         return await engine.create_dataset_from_query(SlayerQuery.model_validate({

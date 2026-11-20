@@ -1,7 +1,7 @@
-"""DEV-1945: the ranking key of a ``first``/``last`` is a closure-judged input.
+"""The ranking key of a ``first``/``last`` is a closure-judged input.
 
 Explicit argument or implicitly resolved (temporal row dimension, time dimension's
-raw column, model ``default_time_dimension``), host-rooted, target-rooted and
+raw field, dataset ``default_time_dimension``), host-rooted, target-rooted and
 windowed alike: a key crossing a hop that is not provably to-one fails closed with
 the existing input-safety messages, naming the aggregate by its canonical alias;
 safe keys keep executing, a derived key rendering as its plain expansion with no
@@ -138,7 +138,7 @@ class TestFixture:
 
 
 # --------------------------------------------------------------------------- #
-# 1.2 Implicit model default across an unproven hop
+# 1.2 Implicit dataset default across an unproven hop
 # --------------------------------------------------------------------------- #
 class TestImplicitDefaultRefused:
     @pytest.mark.parametrize("mode", MODES)

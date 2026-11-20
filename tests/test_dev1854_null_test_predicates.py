@@ -1,4 +1,4 @@
-"""DEV-1854 — ``consecutive_periods`` over null-test predicates (``is None`` /
+"""``consecutive_periods`` over null-test predicates (``is None`` /
 ``is not None``), executed on SQLite + DuckDB against
 ``tests/_dev1846_fixtures.py``. Store B's March ``sum(hi_rev)`` is NULL (no row
 clears the >15 filter); store A's never is.
@@ -94,7 +94,7 @@ class TestNullTestExecution:
         assert int(by[("B", "2024-03")]["streak"]) == 0
 
     async def test_dimension_is_not_null(self, exec_engine) -> None:
-        """A null test over a grouped dimension column: store is never NULL →
+        """A null test over a grouped dimension field: store is never NULL →
         both streaks 1, 2, 3."""
         resp = await exec_engine.execute(_q(
             dimensions=["sales.store"],

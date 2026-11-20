@@ -1,4 +1,4 @@
-"""Shared fixtures for model filters as filtered datasets: the ``orders`` / ``returns`` / ``shipments`` tables and their models.
+"""Shared fixtures for dataset filters as filtered datasets: the ``orders`` / ``returns`` / ``shipments`` tables and their datasets.
 
 orders    (id, status, amount, ordered_at): 1 done 100 2024-01-10 | 2 done 200 2024-02-10 | 3 done 300 2024-03-10
                                             | 4 open 400 2024-02-20
@@ -82,7 +82,7 @@ def _orders(name: str, **kw: Any) -> SlayerDataset:
 
 
 def table_datasets() -> list[SlayerDataset]:
-    """Every table- and SQL-backed model of the fixture."""
+    """Every table- and SQL-backed dataset of the fixture."""
     to_shipments = [_to("shipments", pairs=("id", "order_ref"))]
     return [
         _orders("orders"),
@@ -110,7 +110,7 @@ def table_datasets() -> list[SlayerDataset]:
 
 
 def query_backed_dataset() -> SlayerDataset:
-    """``done_orders_qb``: a query-backed model over ``orders``, filtered to done orders."""
+    """``done_orders_qb``: a query-backed dataset over ``orders``, filtered to done orders."""
     return SlayerDataset(
         name="done_orders_qb", data_source="test", filters=["status = 'done'"],
         source_queries=[SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.id", "orders.status"]})],
@@ -119,7 +119,7 @@ def query_backed_dataset() -> SlayerDataset:
 
 @contextlib.asynccontextmanager
 async def filtered_engine(backend: str, request: pytest.FixtureRequest) -> AsyncGenerator[SlayerQueryEngine]:
-    """An engine over the fixture tables on ``backend`` holding every fixture model."""
+    """An engine over the fixture tables on ``backend`` holding every fixture dataset."""
     if backend == "postgres":
         info = request.getfixturevalue("postgresql_proc")
         base_dir = str(request.getfixturevalue("tmp_path") / "store")

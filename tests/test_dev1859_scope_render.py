@@ -1,11 +1,11 @@
-"""DEV-1859 task 4.6 — generator scope-render guards (design decision 15). The
+"""Generator scope-render guards (design decision 15). The
 one renderer (`_render_expression_source_sql` via `scope.resolve`) must register
-a constituent's join exactly ONCE; the risk is a derived-column source that
-crosses a join being rendered twice (private resolver + kwarg join-registration
+a constituent's join exactly ONCE; the risk is a derived-field source that
+crosses a relationship being rendered twice (private resolver + kwarg join-registration
 pass). These lock the invariant across the §5.4 re-cut.
 
 Spec: openspec …/specs/queries/partitioned-aggregates — "Mixed sources carry the
-full expression-source surface" (cross-model constituents).
+full expression-source surface" (cross-dataset constituents).
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ def _join_count_to(sql: str, table: str) -> int:
 
 
 def _derived_ref_datasets():
-    """corders.cust_rid is a DERIVED column reading customers.rid1 — itself a
-    DERIVED column — across the corders→customers join."""
+    """corders.cust_rid is a DERIVED field reading customers.rid1 — itself a
+    DERIVED field — across the corders→customers relationship."""
     sales, regions, customers, corders = (
         sales_dataset(), regions_dataset(), customers_dataset(), corders_dataset())
     customers.fields.append(

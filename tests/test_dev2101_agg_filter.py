@@ -30,7 +30,7 @@ async def engine(request):
 
 
 async def _filtered_equals_restricted(engine: SlayerQueryEngine, expression: str, **kw) -> None:
-    """``formula FILTER (WHERE paid)`` equals ``formula`` over a query restricted to the paid rows."""
+    """``expression FILTER (WHERE paid)`` equals ``expression`` over a query restricted to the paid rows."""
     filtered = await engine.execute(q(metrics=[m(f"{expression} FILTER (WHERE {PAID})")], **kw))
     restricted = await engine.execute(q(metrics=[m(expression)], filter=[PAID], **kw))
     key = lambda r: tuple(str(v) for k, v in sorted(r.items()) if k != "v")  # noqa: E731

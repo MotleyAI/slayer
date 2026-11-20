@@ -1,18 +1,18 @@
-"""DEV-1909 — the query population's row filters restrict by association.
+"""The query population's row filters restrict by association.
 
 A row-level filter conjunct reaching the population root only across a fanning
 (or unproven) hop restricts the population by a correlated semi-join (EXISTS) on
 the host base query, so every aggregate over the population rows — inline or in a
 host-rooted regroup producer (partitioned, windowed, first/last, host-grain wrap,
 nested) — counts each population row once, in every ``to_many_handling`` mode and
-whatever the query selects. The DEV-1900 interim guard is retired: its fanning
+whatever the query selects. The interim fanning-filter guard is retired: its fanning
 arm becomes the semi-join, its unanalyzable arm a typed error, and an out-of-scope
 conjunct (OR/NOT mixing local and cross-path refs, or several branches) fails
 closed only when it would multiply the population.
 
 Covers ``queries/semantics`` (Filters restrict by association or fail loudly;
 Grain guarantee) and ``queries/cross-model-aggregates`` (Producer filter routing).
-Executed dual-engine (SQLite + DuckDB) against the DEV-1900 fixture graph.
+Executed dual-engine (SQLite + DuckDB) against the ``_dev1900_fixtures`` graph.
 """
 
 from __future__ import annotations
@@ -170,8 +170,8 @@ class TestOrderWrapInheritsPopulation:
 
 
 class TestWindowedDerivedFanningAxisFailsClosed:
-    """Decision 12 is closure-aware: a windowed measure whose active time axis is a
-    host-local derived column — pathless in its own coordinates, but whose SQL
+    """Decision 12 is closure-aware: a windowed metric whose active time axis is a
+    host-local derived field — pathless in its own coordinates, but whose SQL
     crosses a fanning hop — fails closed in every mode. The bare host-path is empty
     (reads as safe); only the dependency closure reveals the fan."""
 
@@ -198,8 +198,8 @@ class TestWindowedDerivedFanningAxisFailsClosed:
 
 class TestMultiMeasureProducerNamesEveryMeasure:
     """A host-rooted producer carrying several public aggregates under one
-    population semi-join reports a semi_join_pushed entry for EACH measure, not
-    just the first (DEV-1909)."""
+    population semi-join reports a semi_join_pushed entry for EACH metric, not
+    just the first."""
 
     async def test_every_producer_measure_named(self, backend):
         _, engine = backend
@@ -279,7 +279,7 @@ class TestToOneStaysInline:
 class TestProducersInheritDisposition:
     async def test_partitioned_by_tier(self, backend):
         """sum(spend, partition_by=tier) · ok = gold 190 / silver 230 (never 290);
-        two entries: the producer measure and the population (no aggregate)."""
+        two entries: the producer metric and the population (no aggregate)."""
         dialect, engine = backend
         q = cust_q(dimensions=["customers.tier"], metrics=[PARTITIONED], filter=[OK])
         resp = await engine.execute(q)
@@ -406,7 +406,7 @@ class TestRawRowMode:
 
 
 class TestOutOfScopeNowPushed:
-    """DEV-1935: the out-of-scope OR-mix conjunct no longer fails closed or drops —
+    """The out-of-scope OR-mix conjunct no longer fails closed or drops —
     it restricts the population/producer by a boolean-total semi-join."""
 
     async def test_dims_only_keeps_applying(self, backend):
@@ -460,8 +460,8 @@ class TestUnanalyzableFailsClosed:
     @pytest.mark.parametrize("with_measure", [True, False])
     @pytest.mark.parametrize("mode", MODES)
     async def test_unanalyzable_dependency(self, unparse_backend, with_measure, mode):
-        """A filter on a derived column no dialect can parse fails closed, with or
-        without an aggregate, in every mode — naming the filter and the column."""
+        """A filter on a derived field no dialect can parse fails closed, with or
+        without an aggregate, in every mode — naming the filter and the field."""
         _, engine = unparse_backend
         kw = {"filter": ["customers.regions.unparseable > 0"], "to_many_handling": mode}
         q = (orders_q(metrics=[AMOUNT_SUM], **kw) if with_measure
@@ -476,7 +476,7 @@ class TestUnanalyzableFailsClosed:
 
 class TestUnaffectedShapes:
     async def test_dimension_only_query_unaffected(self, backend):
-        """A fanning filter with no measures executes, restricted by association."""
+        """A fanning filter with no metrics executes, restricted by association."""
         _, engine = backend
         resp = await engine.execute(cust_q(dimensions=["customers.tier"], filter=[OK]))
         assert {r["customers.tier"] for r in resp.data} == {"gold", "silver"}
@@ -485,7 +485,7 @@ class TestUnaffectedShapes:
 class TestBoundaryAssociationArmUntouched:
     async def test_association_producer_gets_no_population_semi_join(self, backend):
         """associate spend:sum by orders.status filtered orders.amount in (20,30):
-        new 100 / ok 150 (dev-1910, unchanged) and no population entry is added."""
+        new 100 / ok 150 (unchanged) and no population entry is added."""
         _, engine = backend
         resp = await engine.execute(cust_q(
             dimensions=["orders.status"], metrics=[SPEND],

@@ -1,7 +1,7 @@
 """Shared fixtures for re-aggregation outer-grain attribution against the operand dataset.
 
 Graph (datasource ``test``): ``account_snapshots`` → ``customers`` many-to-one, so a query
-rooted at ``customers`` reaches every ``account_snapshots`` column (and its month bucket)
+rooted at ``customers`` reaches every ``account_snapshots`` field (and its month bucket)
 only across the fanning ``customers → account_snapshots`` hop.
 
 * Ann (1) holds accounts 10 and 11, Bob (2) account 20, Cy (3) has no snapshots, Dee (4)

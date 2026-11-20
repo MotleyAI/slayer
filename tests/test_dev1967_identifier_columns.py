@@ -1,4 +1,4 @@
-"""Only a model's sole primary-key column is an identifier; composite-key members are ordinary columns."""
+"""Only a dataset's sole primary-key field is an identifier; composite-key members are ordinary fields."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def _col(*, dataset: SlayerDataset, name: str) -> DatasetField:
 
 
 async def _sampled(*, dataset: SlayerDataset, engine, names: tuple[str, ...] | None = None) -> dict[str, str | None]:
-    """Profile ``model`` (or just ``names``) through the owner; ``{column: sampled}``."""
+    """Profile ``dataset`` (or just ``names``) through the owner; ``{field: sampled}``."""
     cols = [c for c in dataset.fields if names is None or c.name in names]
     outcome = await ensure_samples_fresh(dataset=dataset, fields=cols, engine=engine, storage=engine.storage)
     return {c.name: c.sampled for c in outcome.fields}

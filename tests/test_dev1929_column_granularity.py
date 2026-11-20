@@ -1,7 +1,7 @@
-"""A model column carries a time-bucket ``granularity``, and a finer /
-non-nesting time dimension over a bucketed model column — hand-set, query-backed
+"""A dataset field carries a time-bucket ``granularity``, and a finer /
+non-nesting time dimension over a bucketed dataset field — hand-set, query-backed
 cache, or sibling-stage stand-in — is the same typed re-bucketing error as over a
-stage column. Same or nesting-coarser still binds and executes.
+stage field. Same or nesting-coarser still binds and executes.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ async def _dryrun_engine(datasets: list[SlayerDataset]) -> SlayerQueryEngine:
 
 
 def _by_bucket(rows: list[dict]) -> dict:
-    """Map ``created_at`` bucket (first 10 chars) → the row's single measure value."""
+    """Map ``created_at`` bucket (first 10 chars) → the row's single metric value."""
     out: dict = {}
     for r in rows:
         date_k = next(k for k in r if k.endswith("created_at"))
@@ -103,7 +103,7 @@ async def _call(server, *, name: str, arguments: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Construction — Column.granularity field + non-temporal validator (task 2.1).
+# Construction — DatasetField.granularity + non-temporal validator (task 2.1).
 # ---------------------------------------------------------------------------
 class TestColumnConstruction:
     @pytest.mark.parametrize("t", [DataType.DATETIME, DataType.DATE])
@@ -147,7 +147,7 @@ class TestColumnConstruction:
 
 
 # ---------------------------------------------------------------------------
-# Binder + checker — the ModelScope arm reads Column.granularity (task 2.2);
+# Binder + checker — the DatasetScope arm reads DatasetField.granularity (task 2.2);
 # the re-bucketing message is generalised, no "upstream stage" (task 2.3).
 # ---------------------------------------------------------------------------
 class TestBinderAndChecker:
@@ -205,7 +205,7 @@ class TestBinderAndChecker:
 
 
 # ---------------------------------------------------------------------------
-# Query-backed cache stamping (task 2.4) — cache columns + persistence.
+# Query-backed cache stamping (task 2.4) — cache fields + persistence.
 # ---------------------------------------------------------------------------
 class TestQueryBackedCache:
     async def test_bucketed_column_stamped_and_persisted(self) -> None:
@@ -233,7 +233,7 @@ class TestQueryBackedCache:
                 name="raw_ts",
             )
             assert all(c.granularity is None for c in plain.fields)
-            # A time dimension over the unbucketed cached column still binds.
+            # A time dimension over the unbucketed cached field still binds.
             await engine.execute(query=SlayerQuery.model_validate({
                 "population": "raw_ts",
                 "time_dimensions": [{"field": "raw_ts.created_at", "granularity": "day"}],
@@ -335,7 +335,7 @@ class TestQueryBackedExecuted:
 
 
 # ---------------------------------------------------------------------------
-# Hand-set granularity — executed (bare) and plan-time (dotted join path).
+# Hand-set granularity — executed (bare) and plan-time (dotted relationship path).
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("backend", BACKENDS)
 class TestHandSetExecuted:
@@ -410,7 +410,7 @@ class TestSiblingStandIns:
         assert _col(synth, "rev").granularity is None
 
     def test_dotted_ref_to_sibling_standin_reads_the_bucket(self) -> None:
-        # A stage joining a sibling resolves it as a synthetic referenced model;
+        # A stage joining a sibling resolves it as a synthetic referenced dataset;
         # a dotted time dimension over it reads the stamped granularity.
         schema = StageSchema(relation_name="s1", fields=[
             StageField(name="created_at", sql_alias="created_at", public_alias="created_at",
@@ -478,7 +478,7 @@ class TestSiblingStandIns:
 
 
 # ---------------------------------------------------------------------------
-# One message for a bucketed stage column and a bucketed model column (task 2.3).
+# One message for a bucketed stage field and a bucketed dataset field (task 2.3).
 # ---------------------------------------------------------------------------
 class TestUnifiedMessage:
     async def test_stage_and_model_columns_share_one_message(self) -> None:
@@ -538,7 +538,7 @@ class TestIngestion:
 
 
 # ---------------------------------------------------------------------------
-# MCP model tools round-trip the granularity (task 2.6).
+# MCP dataset tools round-trip the granularity (task 2.6).
 # ---------------------------------------------------------------------------
 class TestMCPSurfaces:
     async def _server(self, tmp: str):

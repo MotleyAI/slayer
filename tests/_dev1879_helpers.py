@@ -1,4 +1,4 @@
-"""Shared model fixtures for the unnamed-formula-measure naming tests."""
+"""Shared dataset fixtures for the unnamed-expression-metric naming tests."""
 
 from __future__ import annotations
 

@@ -1,14 +1,14 @@
-"""DEV-1746 §5.7 — the null-safe grain doctrine (B1 + B2).
+"""§5.7 — the null-safe grain doctrine (B1 + B2).
 
 Two ratified behaviour changes, one shared mechanism.
 
-**B1 — the ``_wm_`` INNER grain goes null-safe.** A windowed measure's ``_wm_``
+**B1 — the ``_wm_`` INNER grain goes null-safe.** A windowed metric's ``_wm_``
 CTE joins its ``_src`` row subquery back to ``_base`` on the query grain. That
 inner comparison is a plain ``=``, so a group whose dimension is NULL never
 matches and silently receives NULL instead of its real windowed value. The outer
 ``_wm_`` join-back and the ``_cm_`` join-back are already null-safe, so today
 SLayer disagrees with itself about NULL-grain semantics depending on which
-isolation shape a measure lands in. Both ``_wm_`` comparison sites are asserted
+isolation shape a metric lands in. Both ``_wm_`` comparison sites are asserted
 here, as §5.7 requires.
 
 **B2 — grain join-backs are built as AST, not by string re-parse.** The join-back
@@ -79,7 +79,7 @@ async def exec_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 def _windowed_query() -> SlayerQuery:
-    """Windowed measure grouped by a NULLABLE dimension + a month bucket."""
+    """Windowed metric grouped by a NULLABLE dimension + a month bucket."""
     return SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="orders.status")],
@@ -105,7 +105,7 @@ def _windowed_chain_query() -> SlayerQuery:
 
 
 def _cm_shared_grain_query() -> SlayerQuery:
-    """Cross-model measure grouped by a grain shared with the target."""
+    """Cross-dataset metric grouped by a grain shared with the target."""
     return SlayerQuery(
         population="orders_x",
         dimensions=[QueryDimension(field="customers_v2.status")],
@@ -159,7 +159,7 @@ class TestB1WindowedInnerGrainNullSafe:
         join-back is already null-safe; this pins it so B1's inner-site change
         cannot regress it.
 
-        MIGRATED (DEV-1835): the local windowed measure is desugared into a
+        MIGRATED: the local windowed metric is desugared into a
         regroup producer that renders as a ``_cm_`` CTE, so the outer join-back
         is now onto a ``_cm_`` producer (the inner ``_src`` range join is
         unchanged)."""
@@ -260,7 +260,7 @@ class TestB2JoinBackBuiltAsAst:
     ) -> None:
         """B2 covers the windowed join-back too — it shares the same builder.
 
-        MIGRATED (DEV-1835): the windowed measure is desugared into a regroup
+        MIGRATED: the windowed metric is desugared into a regroup
         producer rendered as a ``_cm_`` CTE, so the join-back qualifier is now a
         ``_cm_`` alias."""
         sql = await _gen(_windowed_chain_query(), dialect=dialect)
@@ -282,17 +282,17 @@ class TestB2JoinBackBuiltAsAst:
     async def test_join_backs_are_built_as_ast_not_string_round_trip(
         self,
     ) -> None:
-        """B2, production-path proof: both the cross-model and windowed-measure
+        """B2, production-path proof: both the cross-dataset and windowed-metric
         grain join-backs render as null-safe AST ``LEFT JOIN``s. The legacy
         string re-parse helper (``_null_safe_join_pair_sql``) was deleted in
-        PR 6 (DEV-1749); these shapes are what its successor emits — assert the
+        PR 6; these shapes are what its successor emits — assert the
         ON predicate is null-safe, not merely that a LEFT JOIN exists.
         """
         cm_sql = await _gen(_cm_shared_grain_query(), dialect="postgres")
         assert "LEFT JOIN _cm_" in cm_sql, cm_sql
         cm_on = _norm(joinback_on_predicate_for(cm_sql, prefix="_cm_", dialect="postgres"))
         assert "IS NOT DISTINCT FROM" in cm_on, cm_on
-        # MIGRATED (DEV-1835): the desugared windowed measure renders as a
+        # MIGRATED: the desugared windowed metric renders as a
         # ``_cm_`` producer, so its grain join-back is a ``_cm_`` LEFT JOIN.
         wm_sql = await _gen(_windowed_chain_query(), dialect="postgres")
         assert "LEFT JOIN _cm_" in wm_sql, wm_sql
@@ -318,7 +318,7 @@ class TestGrainSemantics:
         )
         sql = await _gen(query, dialect="postgres")
         assert "CROSS JOIN _cm_" in _norm(sql), (
-            f"an empty-grain cross-model aggregate must CROSS JOIN:\n{sql}"
+            f"an empty-grain cross-dataset aggregate must CROSS JOIN:\n{sql}"
         )
         with pytest.raises(AssertionError):
             joinback_on_predicate_for(sql, prefix="_cm_", dialect="postgres")

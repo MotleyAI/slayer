@@ -50,13 +50,13 @@ from slayer.ir.bound import BoundExpr
 from slayer.engine.compile import projection, stages
 
 
-# Fixtures — a seeded store whose model contains the colliding name shapes.
+# Fixtures — a seeded store whose dataset contains the colliding name shapes.
 
 
 async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryEngine:
-    """orders -> customers, seeded, with collision-bait columns: ``Rev``/``rev``
+    """orders -> customers, seeded, with collision-bait fields: ``Rev``/``rev``
     (case-only pair over revx/revy) and ``customers__revenue`` (a filtered-local
-    isolated aggregate colliding with the cross-model ``customers.revenue_sum``)."""
+    isolated aggregate colliding with the cross-dataset ``customers.revenue_sum``)."""
     d = base_dir
     db_path = os.path.join(d, "b4.db")
     with transaction(db_path) as con:
@@ -119,7 +119,7 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
-                # __-name carve-out + join-crossing filter => filtered-local
+                # __-name carve-out + relationship-crossing filter => filtered-local
                 # isolation (its own _cm_ CTE).
                 DatasetField(
                     name="customers__revenue",
@@ -163,7 +163,7 @@ async def _isolated_then_combined(
     metrics: List[QueryMetric],
     dimension: str = "status",
 ) -> None:
-    """Self-calibrating: each measure alone, then together must reproduce every isolated value."""
+    """Self-calibrating: each metric alone, then together must reproduce every isolated value."""
     isolated: dict = {}
     for m in metrics:
         resp = await engine.execute(
@@ -174,7 +174,7 @@ async def _isolated_then_combined(
             )
         )
         assert len(resp.data) == 1, resp.data
-        # The single non-dimension key is this measure's value.
+        # The single non-dimension key is this metric's value.
         row = resp.data[0]
         keys = [k for k in row if not k.endswith(f".{dimension}")]
         assert len(keys) == 1, (m.metric, list(row))
@@ -191,17 +191,17 @@ async def _isolated_then_combined(
     combined = resp.data[0]
     for key, value in isolated.items():
         assert key in combined, (
-            f"measure {key!r} vanished when rendered alongside the others: "
+            f"metric {key!r} vanished when rendered alongside the others: "
             f"{list(combined)}"
         )
         assert combined[key] == value, (
-            f"measure {key!r} changed value when rendered alongside the "
+            f"metric {key!r} changed value when rendered alongside the "
             f"others: alone={value!r}, together={combined[key]!r} — the "
             f"hallmark of two slots collapsing onto one CTE."
         )
 
 
-# B4 — cross-model CTE names through the allocator.
+# B4 — cross-dataset CTE names through the allocator.
 
 
 class TestCrossModelCteNameAllocation:
@@ -236,14 +236,14 @@ class TestCrossModelCteNameAllocation:
                 f"CTE names fold together within one WITH scope on a "
                 f"case-folding dialect: {scope_names}"
             )
-        # Two cross-model aggregates => two _cm_ CTEs, not one shared.
+        # Two cross-dataset aggregates => two _cm_ CTEs, not one shared.
         names = _cte_names(resp.sql)
         assert len([n for n in names if n.startswith("_cm_")]) == 2, names
 
     async def test_sanitisation_collision_keeps_both_plans(
         self, engine,
     ) -> None:
-        """seen_cm collision-as-identity: a cross-model and a filtered-local
+        """seen_cm collision-as-identity: a cross-dataset and a filtered-local
         aggregate sanitise to one ``_cm_`` name; both must survive with own values."""
         await _isolated_then_combined(
             engine,
@@ -286,7 +286,7 @@ class TestCrossModelCteNameAllocation:
     async def test_hidden_cross_model_agg_under_a_transform_keeps_its_alias(
         self, engine,
     ) -> None:
-        """A hidden cross-model aggregate feeding a transform must project under its
+        """A hidden cross-dataset aggregate feeding a transform must project under its
         own canonical alias — a stale value emits the alias twice in one SELECT."""
         resp = await engine.execute(
             SlayerQuery(
@@ -302,7 +302,7 @@ class TestCrossModelCteNameAllocation:
                     QueryMetric(
                         metric="cumsum(sum(customers.revenue))", alias="run",
                     ),
-                    # A second cross-model aggregate, so a leaked alias differs.
+                    # A second cross-dataset aggregate, so a leaked alias differs.
                     QueryMetric(metric="sum(customers.Rev)", alias="rv"),
                 ],
                 to_many_handling="broadcast",
@@ -321,7 +321,7 @@ class TestCrossModelCteNameAllocation:
             dups = {a: n for a, n in Counter(names).items() if n > 1}
             assert not dups, (
                 f"an output alias is emitted more than once in one SELECT — a "
-                f"cross-model aggregate was projected under another measure's "
+                f"cross-dataset aggregate was projected under another metric's "
                 f"name: {dups}\n{resp.sql}"
             )
         # …and the hidden aggregate still carries its own canonical alias.
@@ -473,10 +473,10 @@ class TestAllocatorRouting:
         assert alloc.allocate_cte(cm) != cm
 
 
-# C7 — the bespoke name families, exercised against hostile user columns.
+# C7 — the bespoke name families, exercised against hostile user fields.
 
 
-# Internal minted names C7 moves onto the allocator. All are legal user column
+# Internal minted names C7 moves onto the allocator. All are legal user field
 # names, so each is a reachable collision.
 _INTERNAL_NAMES = [
     "_placeholder",   # empty-base grain projection
@@ -496,7 +496,7 @@ _INTERNAL_NAMES = [
 
 
 async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
-    """A store whose ``orders`` model carries a user column named like an internal alias."""
+    """A store whose ``orders`` dataset carries a user field named like an internal alias."""
     d = base_dir
     db_path = os.path.join(d, "hostile.db")
     with transaction(db_path) as con:
@@ -537,8 +537,8 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
 
 
 class TestInternalNamesDoNotCollideWithUserColumns:
-    """Every internal name must survive a user column of that name: the query runs
-    and the user's column returns its values. Parity guards, all pass today."""
+    """Every internal name must survive a user field of that name: the query runs
+    and the user's field returns its values. Parity guards, all pass today."""
 
     @pytest.mark.parametrize("column", _INTERNAL_NAMES)
     async def test_user_column_named_like_an_internal_alias(
@@ -603,7 +603,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         "column", ["_w_dim_0", "_w_td_0", "_w_time", "_w_value"],
     )
     async def test_windowed_families_survive_the_name(self, column, tmp_path) -> None:
-        """A duration-windowed measure is the only shape that builds the ``_w_*`` aliases."""
+        """A duration-windowed metric is the only shape that builds the ``_w_*`` aliases."""
         engine = await _hostile_engine(
             column=column, base_dir=str(tmp_path),
         )

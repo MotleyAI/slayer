@@ -173,7 +173,7 @@ def test_rewrite_emitted_sql_false_positive_on_single_backticked_dotted_path() -
     d = BigqueryDialect()
     sql = "SELECT 1 FROM `my_dataset.my_table`"
     # Known false positive — the regex matches dot-bearing backticked text
-    # regardless of position. Users must avoid this form in Column.sql.
+    # regardless of position. Users must avoid this form in DatasetField.sql.
     out = d.rewrite_emitted_sql(sql)
     assert out == "SELECT 1 FROM `my_dataset___my_table`", (
         f"Documented constraint changed (now safer or different shape?): {out}"
@@ -226,9 +226,9 @@ def test_decode_corrupts_no_dot_key_with_triple_underscore() -> None:
     [
         "orders._count",                # simple
         "orders.products.category",     # multi-hop
-        "orders.my___metric",           # ___ in leaf (user-named measure)
+        "orders.my___metric",           # ___ in leaf (user-named metric)
         "a.b.c___d",                    # ___ mid-string
-        "orders.customers.regions.population_sum",  # multi-hop cross-model
+        "orders.customers.regions.population_sum",  # multi-hop cross-dataset
     ],
 )
 def test_round_trip_preserves_legitimate_underscores(original: str) -> None:
@@ -271,7 +271,7 @@ async def test_bigquery_outer_wrap_uses_backticks_for_aliases() -> None:
 
 
 def _minimal_orders_dataset() -> SlayerDataset:
-    """Helper: the two-column model the generator-dispatch test renders."""
+    """Helper: the two-field dataset the generator-dispatch test renders."""
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -388,7 +388,7 @@ class TestEngineDecodeIntegration:
     """End-to-end: stub client returns mangled keys; engine decodes them before packaging into ``SlayerResponse``."""
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
-        # ``count(*)`` measure has alias ``orders._count`` (canonical, with
+        # ``count(*)`` metric has alias ``orders._count`` (canonical, with
         # leading underscore). Encoding: ``.`` -> ``___``, no other change
         # (no pre-existing ``___`` to escape). Result: ``orders____count``
         # (3 underscores from the dot + 1 from ``_count`` = 4 underscores).
@@ -501,7 +501,7 @@ def test_build_engine_with_non_object_credentials_json_raises(payload: str) -> N
 async def _build_labeled_bigquery_engine(
     rows: list[dict],
 ) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory, DatasourceConfig]:
-    """Like ``_build_bigquery_engine`` but the ``status`` column carries a label."""
+    """Like ``_build_bigquery_engine`` but the ``status`` field carries a label."""
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     ds = DatasourceConfig(name="bq", type="bigquery", database="proj.dataset")
@@ -580,7 +580,7 @@ async def test_get_result_column_types_decodes_bigquery_mangled_probe_keys() -> 
 
 
 async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None:
-    """The virtual model's rename wrapper references the mangled inner aliases."""
+    """The virtual dataset's rename wrapper references the mangled inner aliases."""
     engine, tmp, _ = await _build_bigquery_engine(rows=[])
     try:
         model = SlayerDataset(
@@ -844,7 +844,7 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
     [("orders.created_at", "orders___created_at"), ("max(orders.amount)", "orders___amount_max")],
 )
 async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias: str) -> None:
-    """No empty backtick qualifier; the alias keeps its model prefix (public or hidden)."""
+    """No empty backtick qualifier; the alias keeps its dataset prefix (public or hidden)."""
     sql = await gen(cumsum_chain(order=[{"field": column, "direction": "desc"}]),
                     dialect="bigquery")
     assert "``" not in sql, f"empty identifier emitted: {sql}"
@@ -852,7 +852,7 @@ async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias:
 
 
 async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
-    """A computed measure ordered by time renders a valid BigQuery outer wrap."""
+    """A computed metric ordered by time renders a valid BigQuery outer wrap."""
     model = SlayerDataset(
         name="orders",
         sql_table="orders",

@@ -1,4 +1,4 @@
-"""Aggregates are virtual models: an attached aggregate equals the same aggregate
+"""Aggregates are virtual datasets: an attached aggregate equals the same aggregate
 materialised on its own, NULL grain cell included, however the query is rooted.
 Executed on SQLite + DuckDB.
 
@@ -171,7 +171,7 @@ class TestSpellingInvariantAssociation:
     ])
     async def test_orders_rooted_null_cell_holds_the_orderless_customer(
             self, null_engine, formula):
-        """NULL-status cell = c1 (owner) + c7 (no orders) = 155 in every measure spelling."""
+        """NULL-status cell = c1 (owner) + c7 (no orders) = 155 in every metric spelling."""
         resp = await null_engine.execute(q(_orders_assoc(
             metrics=[{"metric": formula, "alias": "c"}])))
         _assert_cells(cells(resp, "orders.status", "c"), SPEND_BY_STATUS)

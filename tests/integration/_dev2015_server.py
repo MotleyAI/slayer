@@ -1,4 +1,4 @@
-"""Server-backend seed, models and checks for the time spine and custom granularities."""
+"""Server-backend seed, datasets and checks for the time spine and custom granularities."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def _on(dataset: SlayerDataset, *, data_source: str, **update: Any) -> SlayerDat
 
 
 def server_datasets(*, data_source: str) -> list[SlayerDataset]:
-    """DATE axes: the spine models, ``events`` and ``fy_orders``."""
+    """DATE axes: the spine datasets, ``events`` and ``fy_orders``."""
     return [
         *(_on(x, data_source=data_source) for x in spine_datasets()),
         _on(events_dataset(), data_source=data_source),

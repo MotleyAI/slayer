@@ -1,5 +1,5 @@
 """Design D2 — attached inputs are opaque to discovery: a local aggregate whose
-attached input's inner crosses a join compiles inline, the input row-attached
+attached input's inner crosses a relationship compiles inline, the input row-attached
 through its own producer. Value-identical to the host-rooted plan it replaces.
 Executed on SQLite + DuckDB."""
 
@@ -33,7 +33,7 @@ _REGION_SPEND = "sum(customers.spend, partition_by=customers.regions.name)"
 SOURCE = f"sum(orders.amount * {_REGION_SPEND})"
 KWARG = f"weighted_avg(orders.amount, weight={_REGION_SPEND})"
 TRANSFORM = f"weighted_avg(orders.amount, weight=rank({_REGION_SPEND}, direction='desc'))"
-#: host column masked to North customers: its own closure crosses to regions.
+#: host field masked to North customers: its own closure crosses to regions.
 NORTH_OUTER = f"sum(orders.north_amount * {_REGION_SPEND})"
 NORTH_INNER = "weighted_avg(orders.amount, weight=sum(orders.north_amount, partition_by=orders.channel))"
 
@@ -121,7 +121,7 @@ class TestCrossingAttachedInputInline:
 
 class TestOwnClosureStillJudged:
     def test_outer_own_filter_crossing_keeps_host_rooted_producer(self):
-        """A ``Column.filter`` riding the outer's own ``ColumnSqlKey`` source still
+        """A ``DatasetField.filter`` riding the outer's own ``FieldSqlKey`` source still
         crosses: opacity covers attached inputs only."""
         planned = _plan(NORTH_OUTER, datasets=_north_datasets())
         assert len(_host_rooted_wrapping(planned, "sum")) == 1

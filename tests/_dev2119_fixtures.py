@@ -1,4 +1,4 @@
-"""Shared fixtures for row-level expressions in every column position.
+"""Shared fixtures for row-level expressions in every field position.
 
 Underscore-prefixed so pytest skips collection. ``orders → customers`` is proven
 many-to-one (``customers.id`` is a primary key); ``accounts`` (the customers table)
@@ -22,7 +22,7 @@ balances (id customer_id balance updated_at created_at):
    4 2  50 2025-01-15  2025-01-10 | 5 2  70 NULL        2025-01-20 | 6 2  80 2025-01-18  2025-01-05
 regions (id code manager): 1 EU Ann | 2 US Bob | 3 EU Cy
 
-``EFF`` = ``coalesce(shipped_at, created_at)``; the derived column ``orders.eff`` holds it.
+``EFF`` = ``coalesce(shipped_at, created_at)``; the derived field ``orders.eff`` holds it.
 """
 
 from __future__ import annotations
@@ -122,7 +122,7 @@ CREATED_MONTH_COUNT = {"2024-12": 1, "2025-01": 2, "2025-02": 2, "2025-03": 1}
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -240,7 +240,7 @@ async def engine_for(
 
 async def emit(query: SlayerQuery | list[SlayerQuery | dict], *, dialect: str,
                datasets: Optional[Iterable[SlayerDataset]] = None) -> str:
-    """Dry-run SQL over the dev2119 models on ``dialect`` (asserts it parses there)."""
+    """Dry-run SQL over the dev2119 datasets on ``dialect`` (asserts it parses there)."""
     first, *rest = list(datasets) if datasets is not None else dev2119_datasets()
     return await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect)
 

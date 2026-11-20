@@ -1,5 +1,5 @@
 """Plan structure — the planner assigns every value one materialisation
-stage (``BASE < PRODUCER < COMBINED < DERIVED(level)``) and a needs-column
+stage (``BASE < PRODUCER < COMBINED < DERIVED(level)``) and a ``needs_field``
 flag, and rejects a plan that references a later stage or leaves a value
 unstaged. This is the harness for python.engine.arc42.md P6 (phase/stage is a property of
 the value, not re-derived from text at render time).
@@ -118,7 +118,7 @@ def _transforms_read(key, by_key: dict) -> list:
 
 
 # A spread of shapes the ordering/staging invariants must hold across —
-# measures, filter predicates and ORDER-BY keys, since every value the plan
+# metrics, filter predicates and ORDER-BY keys, since every value the plan
 # carries (mask and order slots included) must be staged.
 _INVARIANT_QUERIES = [
     dict(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")]),
@@ -131,7 +131,7 @@ _INVARIANT_QUERIES = [
     # filter predicate over a transform composite (a mask slot must be staged)
     dict(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
          filter=[f"change({CM}) + sum(orders.amount) > 0"]),
-    # a row-typed and a measure-typed mask together
+    # a row-typed and a metric-typed mask together
     dict(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
          filter=["orders.amount > 5", "sum(orders.amount) > 50"]),
     # ORDER-BY key over a transform composite (an order slot must be staged)
@@ -334,7 +334,7 @@ class TestTransparentCompositeLevels:
 
 
 # --------------------------------------------------------------------------- #
-# needs_column — operands needed later are materialised as columns (spec).
+# needs_field — operands needed later are materialised as columns (spec).
 # --------------------------------------------------------------------------- #
 class TestNeedsColumn:
     def test_hidden_operand_of_failing_composite_is_projected(self) -> None:
@@ -359,7 +359,7 @@ class TestNeedsColumn:
         assert agg.needs_field is True
 
     def test_measure_mask_over_hidden_last_marks_the_chain(self) -> None:
-        """A measure mask over a hidden ``last(change(x))`` marks ``last`` (mask
+        """A metric mask over a hidden ``last(change(x))`` marks ``last`` (mask
         dep) and its ``time_shift`` (read by a later level) as columns."""
         pq = _plan(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
                    filter=["last(change(sum(orders.amount))) < 0"])

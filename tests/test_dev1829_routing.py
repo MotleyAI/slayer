@@ -1,4 +1,4 @@
-"""DEV-1829 (F5) — routing of partitioned measures through the combined attach:
+"""F5 — routing of partitioned metrics through the combined attach:
 ORDER-BY-only targets, composites, in-filter rejection, duplicate aliases,
 pagination, and the response-contract guarantee that no placeholder / producer
 column leaks into result keys / columns / warnings."""
@@ -107,7 +107,7 @@ class TestOrderOnlyPartitionedAggregate:
 
 class TestInFilterOverComposite:
     async def test_filter_over_partitioned_composite_lifted(self) -> None:
-        # DEV-1824 (task 3.6 / D7) — a single predicate combining a plain
+        # A single predicate combining a plain
         # aggregate with a partitioned one resolves entirely at the combined
         # scope (both after aggregation + attachment); it renders at the outer
         # WHERE with no placeholder leak.

@@ -1,13 +1,13 @@
 """SLayer must quote SQL reserved words used as identifiers.
 
-A model whose name is a reserved word (``grant``, ``order``, ``user``,
+A dataset whose name is a reserved word (``grant``, ``order``, ``user``,
 ``group``, ``select``, ...) was unqueryable because the query builder derived
-the table **alias** from the model name and emitted it — plus every column
+the table **alias** from the dataset name and emitted it — plus every column
 **qualifier** — UNQUOTED. Postgres (and others) reject the bare reserved word.
 
 Two defect layers, fixed by two mechanisms keyed off one ``SLAYER_RESERVED_KEYWORDS``:
 
-* **AST-emit paths** (base FROM alias + qualifiers, cross-model CTEs, physical
+* **AST-emit paths** (base FROM alias + qualifiers, cross-dataset CTEs, physical
   names): ``install_reserved_keywords()`` unions the set into every dialect
   generator's ``RESERVED_KEYWORDS`` so sqlglot's ``identifier_sql`` quotes them.
 * **String-concatenation → re-parse paths** (``join_cond``, ``measure.filter_sql``,
@@ -67,9 +67,9 @@ async def _gen(
     extra_datasets: list[SlayerDataset] | None = None,
     dialect: str = "postgres",
 ) -> str:
-    """Generate SQL for ``query``/``model`` through the typed engine pipeline.
+    """Generate SQL for ``query``/``dataset`` through the typed engine pipeline.
 
-    ``extra_models`` registers the join targets ``model`` reaches, so join
+    ``extra_datasets`` registers the relationship targets ``dataset`` reaches, so relationship
     resolution has the same storage-backed context the legacy
     ``storage=``-flavoured helper used to provide."""
     return await _engine_generate(
@@ -293,7 +293,7 @@ class TestReservedAliasQuoting:
 
 
 # ---------------------------------------------------------------------------
-# 7-11. String-reparse paths on a reserved base model (typed engine pipeline)
+# 7-11. String-reparse paths on a reserved base dataset (typed engine pipeline)
 # ---------------------------------------------------------------------------
 
 class TestReservedStringReparsePaths:
@@ -376,7 +376,7 @@ class TestReservedStringReparsePaths:
         assert '"grant".amount > 0' in sql, sql
 
     async def test_column_level_filter_case_when(self) -> None:
-        """A ``Column.filter`` measure emits ``SUM(CASE WHEN ... END)`` whose
+        """A ``DatasetField.filter`` metric emits ``SUM(CASE WHEN ... END)`` whose
         predicate is parsed via the ``measure.filter_sql`` sites — the reserved
         qualifier inside the CASE WHEN must be quoted."""
         install_reserved_keywords(SQLGLOT_NAMES)
@@ -417,12 +417,12 @@ class TestReservedStringReparsePaths:
 
 
 # ---------------------------------------------------------------------------
-# 13. Reserved JOINED model reached from a NON-reserved root
+# 13. Reserved JOINED dataset reached from a NON-reserved root
 # ---------------------------------------------------------------------------
 
 def _orders_joined_to_grant() -> tuple[SlayerDataset, SlayerDataset]:
-    """`orders` (non-reserved root) joined to the reserved `grant` model.
-    Returns ``(orders, grant)`` — the root first, its join target second."""
+    """`orders` (non-reserved root) joined to the reserved `grant` dataset.
+    Returns ``(orders, grant)`` — the root first, its relationship target second."""
     grant = SlayerDataset(
         name="grant", sql_table='"Grant"', data_source="api",
         fields=[
@@ -551,12 +551,12 @@ class TestPrequoteHelper:
 
 
 # ---------------------------------------------------------------------------
-# 15/16. Query-backed reserved short + derived Column.sql referencing reserved join
+# 15/16. Query-backed reserved short + derived DatasetField.sql referencing reserved relationship
 # ---------------------------------------------------------------------------
 
 def _orders_derived_grant_datasets() -> tuple[SlayerDataset, SlayerDataset]:
-    """`orders` (non-reserved root) with a derived column ``bumped = grant.amount
-    + 1`` joined to the reserved `grant` model. Returns ``(orders, grant)``."""
+    """`orders` (non-reserved root) with a derived field ``bumped = grant.amount
+    + 1`` joined to the reserved `grant` dataset. Returns ``(orders, grant)``."""
     grant = SlayerDataset(
         name="grant", sql_table='"Grant"', data_source="api",
         fields=[
@@ -586,9 +586,9 @@ class TestReservedInComputedPaths:
         orders, grant = _orders_derived_grant_datasets()
         q = _bumped_query()
         sql = _norm(await _gen(q, orders, extra_datasets=[grant]))
-        # The reserved joined model must be JOINED (not just referenced): a
-        # quoted qualifier in the expanded derived-column SQL must still be
-        # discovered by join-path resolution (Codex review).
+        # The reserved joined dataset must be JOINED (not just referenced): a
+        # quoted qualifier in the expanded derived-field SQL must still be
+        # discovered by relationship-path resolution (Codex review).
         assert 'LEFT JOIN "Grant" AS "grant"' in sql, sql
         assert 'ON orders.grant_id = "grant".id' in sql, sql
         assert '"grant".amount' in sql, sql
@@ -599,7 +599,7 @@ class TestReservedInComputedPaths:
         self, dialect: str,
     ) -> None:
         """The reserved qualifier is emitted with the dialect's quote char
-        (`` `grant` `` on MySQL/BigQuery, ``[grant]`` on T-SQL); join-path
+        (`` `grant` `` on MySQL/BigQuery, ``[grant]`` on T-SQL); relationship-path
         discovery must still find it on every dialect (Codex review)."""
         install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_derived_grant_datasets()
@@ -625,7 +625,7 @@ class TestReservedInComputedPaths:
 
 
 # ---------------------------------------------------------------------------
-# 17. Assemble-and-parse smoke across the query shapes on a reserved model
+# 17. Assemble-and-parse smoke across the query shapes on a reserved dataset
 # ---------------------------------------------------------------------------
 
 class TestGeneratedSqlAlwaysParses:

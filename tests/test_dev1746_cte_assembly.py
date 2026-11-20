@@ -1,6 +1,6 @@
-"""DEV-1746 §5.6 — WITH-chain assembly in topological order.
+"""§5.6 — WITH-chain assembly in topological order.
 
-The cross-model paths splice their WITH chain out of f-strings::
+The cross-dataset paths splice their WITH chain out of f-strings::
 
     cte_strs = [f"{name} AS (\\n{sql}\\n)" for name, sql in all_ctes[:-1]]
     sql = f"WITH {', '.join(cte_strs)}\\n{combined_select_sql}"
@@ -19,12 +19,12 @@ folding, and would silently mis-order rather than fail (Codex D3).
 
 ``assert_unique_cte_names`` stays as the belt: the assembler is responsible for
 ORDER, the belt for name collisions, including the case-folding collisions that
-only appear on dialects that fold (DEV-1726).
+only appear on dialects that fold.
 
-Scope note: per the PR's ruling only the CROSS-MODEL sites adopt the assembler
-in this PR (the combined tail and the cross-model transform chain). The local
-single-model transform chain keeps its splice until PR 4, so the engine-level
-tests here use cross-model shapes.
+Scope note: per the PR's ruling only the CROSS-DATASET sites adopt the assembler
+in this PR (the combined tail and the cross-dataset transform chain). The local
+single-dataset transform chain keeps its splice until PR 4, so the engine-level
+tests here use cross-dataset shapes.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ def _windowed_query() -> SlayerQuery:
 
 
 def _mixed_query() -> SlayerQuery:
-    """Cross-model AND windowed in one query — the mix §5.6 names."""
+    """Cross-dataset AND windowed in one query — the mix §5.6 names."""
     return SlayerQuery(
         population="orders_x",
         dimensions=[QueryDimension(field="orders_x.status")],
@@ -224,7 +224,7 @@ class TestWithChainAssembler:
         assert out.sql().startswith('WITH m("MixedCase", k) AS'), out.sql()
 
     def test_case_folding_duplicates_are_rejected(self) -> None:
-        """DEV-1726: two names differing only in case collide on a folding
+        """Two names differing only in case collide on a folding
         dialect. The belt catches it in emitted SQL; the assembler must not be
         the thing that introduces it."""
         entries = [self._entry("dup", []), self._entry("DUP", [])]
@@ -235,7 +235,7 @@ class TestWithChainAssembler:
 
 
 # =========================================================================== #
-# Engine-level: the assembled chain for real cross-model shapes.
+# Engine-level: the assembled chain for real cross-dataset shapes.
 # =========================================================================== #
 class TestAssembledChainForRealQueries:
 
@@ -248,7 +248,7 @@ class TestAssembledChainForRealQueries:
         assert names.index("_base") < names.index(cm[0]), names
 
     async def test_windowed_cte_follows_the_base_it_reads(self) -> None:
-        """MIGRATED (DEV-1835): a local windowed measure is desugared into a
+        """MIGRATED: a local windowed metric is desugared into a
         regroup producer that renders as a self-contained ``_cm_`` CTE (it
         inlines its own base subquery rather than reading the outer ``_base``).
         It still emits after ``_base`` via the assembler's insertion-order
@@ -260,8 +260,8 @@ class TestAssembledChainForRealQueries:
         assert names.index("_base") < names.index(wm[0]), names
 
     async def test_mixed_cross_model_and_windowed_chain_is_ordered(self) -> None:
-        """MIGRATED (DEV-1835): the windowed measure is desugared and now renders
-        as a ``_cm_`` producer alongside the genuine cross-model ``_cm_`` CTE, so
+        """MIGRATED: the windowed metric is desugared and now renders
+        as a ``_cm_`` producer alongside the genuine cross-dataset ``_cm_`` CTE, so
         the chain carries both producers after ``_base`` (distinguished by
         name)."""
         sql = await _gen(_mixed_query(), dialect="postgres")
@@ -269,21 +269,21 @@ class TestAssembledChainForRealQueries:
         assert names[0] == "_base", names
         cm = [n for n in names if n.startswith("_cm_")]
         assert any("window" in n for n in cm), names        # desugared windowed
-        assert any("lifetime_value" in n for n in cm), names  # cross-model
+        assert any("lifetime_value" in n for n in cm), names  # cross-dataset
 
     async def test_two_independent_cross_model_ctes_follow_declaration_order(
         self,
     ) -> None:
         """The tiebreak, end to end: two ``_cm_`` CTEs that do not depend on
-        each other appear in measure-declaration order."""
+        each other appear in metric-declaration order."""
         sql = await _gen(_two_cross_dataset_metrics_query(), dialect="postgres")
         names = [n for n in cte_names_in_order(sql) if n.startswith("_cm_")]
         assert len(names) == 2, f"expected two _cm_ CTEs, got {names}"
         assert "sum" in names[0], (
-            f"the first _cm_ CTE is not the sum measure: {names}"
+            f"the first _cm_ CTE is not the sum metric: {names}"
         )
         assert "avg" in names[1], (
-            f"the second _cm_ CTE is not the avg measure: {names}"
+            f"the second _cm_ CTE is not the avg metric: {names}"
         )
 
     @pytest.mark.parametrize("dialect", DIALECTS)
@@ -341,7 +341,7 @@ class TestAssembledChainForRealQueries:
         )
         sql = await _gen(_mixed_query(), dialect="postgres")
         assert calls, (
-            "the cross-model WITH chain was assembled without the shared "
+            "the cross-dataset WITH chain was assembled without the shared "
             f"assembler — the f-string splice is still in use:\n{sql}"
         )
         entries = calls[-1]
@@ -353,7 +353,7 @@ class TestAssembledChainForRealQueries:
         )
         assert all(isinstance(e.depends_on, list) for e in entries), entries
         names = {e.name for e in entries}
-        # MIGRATED (DEV-1835): the windowed measure is desugared into a regroup
+        # MIGRATED: the windowed metric is desugared into a regroup
         # producer that renders as a self-contained ``_cm_`` CTE, so it arrives
         # as a ``_cm_`` entry (it inlines its own base and declares no ``_base``
         # dependency — earlier the ``_wm_`` CTE read ``_base`` and declared it).

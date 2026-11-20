@@ -1,4 +1,4 @@
-"""Expression ranking keys, values and column-valued parameters (spec: aggregations/functional-form, aggregations/expression-aggregation)."""
+"""Expression ranking keys, values and field-valued parameters (spec: aggregations/functional-form, aggregations/expression-aggregation)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ AVG_B = 14 / 3
 
 
 def _datasets() -> list[SlayerDataset]:
-    """The dev2119 models plus a ``wsum`` custom aggregation and an ``order_facts`` host reaching ``accounts``."""
+    """The dev2119 datasets plus a ``wsum`` custom aggregation and an ``order_facts`` host reaching ``accounts``."""
     models = dev2119_datasets()
     orders = next(x for x in models if x.name == "orders")
     orders.aggregations.append(Aggregation(
@@ -166,7 +166,7 @@ class TestRankedExpressionValue:
 
 
 # --------------------------------------------------------------------------- #
-# Column-valued parameters
+# Field-valued parameters
 # --------------------------------------------------------------------------- #
 class TestExpressionParameters:
     async def test_expression_weight_named_and_positional(self, engine: SlayerQueryEngine) -> None:

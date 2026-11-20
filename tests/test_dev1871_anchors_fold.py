@@ -1,7 +1,7 @@
-"""DEV-1871 — anchors derive from the saved-measure-excluding classification.
+"""Anchors derive from the saved-metric-excluding classification.
 
 Covers the ``queries/population`` datasource-scoping delta: a filter reference
-resolving to a saved measure (including via a named join) contributes no anchor
+resolving to a saved metric (including via a named relationship) contributes no anchor
 to datasource scoping or sibling-stage detection, plus guard pins on the
 two-phase restructure.
 """
@@ -27,7 +27,7 @@ class TestSavedMeasureAnchors:
         self, storage
     ) -> None:
         """Spec: Saved-measure filter does not steer datasource scoping —
-        ``tickets.reporter.handled`` (foreign datasource, named join) must
+        ``tickets.reporter.handled`` (foreign datasource, named relationship) must
         contribute no anchor, so scoping matches the filterless query."""
         choice = await infer_population(
             query=SlayerQuery(
@@ -43,7 +43,7 @@ class TestSavedMeasureAnchors:
         self, storage
     ) -> None:
         """Spec: Saved-measure name colliding with a sibling stage — the
-        sibling diagnostic must not fire off a saved-measure-only anchor."""
+        sibling diagnostic must not fire off a saved-metric-only anchor."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
@@ -59,7 +59,7 @@ class TestFoldPins:
     async def test_real_column_sharing_aggregation_name_keeps_its_anchor(
         self, storage
     ) -> None:
-        """Column precedence: ``agents.score`` is a real column (despite the
+        """Field precedence: ``agents.score`` is a real field (despite the
         same-named custom aggregation), so its anchor stays and cross-datasource
         scoping still fails closed."""
         query = SlayerQuery(

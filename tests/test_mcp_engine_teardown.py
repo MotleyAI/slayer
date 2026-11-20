@@ -1,4 +1,4 @@
-"""DEV-1656: the SLayer MCP server exposes its per-task query engine for
+"""The SLayer MCP server exposes its per-task query engine for
 caller-controlled teardown.
 
 ``create_mcp_server`` attaches its closure ``SlayerQueryEngine`` to the
@@ -63,8 +63,8 @@ def _lite_datasource(db: Path) -> DatasourceConfig:
 
 
 async def _seed_storage(workspace: Path, *, with_sql_mode: bool = False) -> YAMLStorage:
-    """A YAML store with a ``lite`` sqlite datasource, a ``sql_table`` model
-    ``t`` and (optionally) a ``sql``-mode model ``sv`` over the same table."""
+    """A YAML store with a ``lite`` sqlite datasource, a ``sql_table`` dataset
+    ``t`` and (optionally) a ``sql``-mode dataset ``sv`` over the same table."""
     db = _make_sqlite_db(workspace)
     storage = YAMLStorage(base_dir=str(workspace / "store"))
     await storage.save_datasource(_lite_datasource(db))
@@ -255,7 +255,7 @@ class TestAcloseNoOpSafeAndReusable:
 
 
 class TestSqlModeDriftClientReachable:
-    """DEV-1656 / Codex finding #1: the ``sql``-mode schema-drift path opens a
+    """The ``sql``-mode schema-drift path opens a
     ``SlayerSQLClient`` that must be cached on the shared engine so teardown
     reaches it (otherwise it leaks an asyncpg pool on Postgres)."""
 
@@ -294,7 +294,7 @@ class TestSqlModeDriftClientReachable:
         server = create_mcp_server(storage=storage)
         engine = server._slayer_engine
 
-        # Query the sql-mode model — caches a client under the datasource key.
+        # Query the sql-mode dataset — caches a client under the datasource key.
         assert await _query_count(server, source_dataset="sv") == 3
         assert len(engine._sql_clients) == 1
         key = next(iter(engine._sql_clients.keys()))

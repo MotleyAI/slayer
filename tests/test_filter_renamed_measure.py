@@ -1,8 +1,8 @@
-"""Filter / ORDER BY on a raw aggregation formula must
-resolve to the user-assigned alias when the same node renames the measure.
+"""Filter / ORDER BY on a raw aggregation expression must
+resolve to the user-assigned alias when the same node renames the metric.
 
-Bug: filter ``"count_distinct(operbotdetref) >= 5"`` paired with a measure
-``{"formula": "count_distinct(operbotdetref)", "name": "robot_count"}`` was
+Bug: filter ``"count_distinct(operbotdetref) >= 5"`` paired with a metric
+``{"metric": "count_distinct(operbotdetref)", "alias": "robot_count"}`` was
 rendered as ``WHERE per_robot_stats.operbotdetref_count_distinct >= 5``
 (canonical alias) — but the inner SELECT exposes only
 ``per_robot_stats.robot_count`` (user alias), so the query failed at
@@ -10,9 +10,9 @@ execution. Expected: filter resolves to the user alias and surfaces as
 ``HAVING COUNT(DISTINCT operbotdetref) >= 5``.
 
 Companion tickets surfaced during spec'ing:
-* DEV-1445 — cross-model agg refs in filters with rename (deferred scope).
-* DEV-1446 — transform-wrapped agg refs of a renamed measure produce a
-  duplicate ``legacy enriched-measure`` (pre-existing dedup bug).
+* DEV-1445 — cross-dataset agg refs in filters with rename (deferred scope).
+* DEV-1446 — transform-wrapped agg refs of a renamed metric produce a
+  duplicate ``legacy enriched-metric`` (pre-existing dedup bug).
 """
 
 import pytest
@@ -46,8 +46,8 @@ class TestFilterRenamedMeasureRemap:
     """The fix: filter `agg(col)` with a same-node rename resolves to user alias."""
 
     async def test_filter_renamed_measure_resolves_to_alias(self) -> None:
-        """Exact bug shape: filter uses the raw aggregation formula; same node
-        renames the measure. The rendered SQL must apply the predicate to the
+        """Exact bug shape: filter uses the raw aggregation expression; same node
+        renames the metric. The rendered SQL must apply the predicate to the
         actual aggregate (HAVING COUNT(DISTINCT customer_id) >= 5), NOT to a
         non-existent canonical alias `customer_id_count_distinct`.
         """
@@ -67,9 +67,9 @@ class TestFilterRenamedMeasureRemap:
             f"renamed alias must appear in projection:\n{sql}"
         )
         # Must NOT reference the canonical alias anywhere — that column is
-        # never selected once the measure is renamed.
+        # never selected once the metric is renamed.
         assert "customer_id_count_distinct" not in sql, (
-            f"canonical alias must not leak when measure is renamed:\n{sql}"
+            f"canonical alias must not leak when metric is renamed:\n{sql}"
         )
         # Predicate must surface as HAVING against the actual aggregate.
         assert "HAVING" in sql, f"filter on aggregate must be HAVING:\n{sql}"
@@ -96,7 +96,7 @@ class TestFilterRenamedMeasureRemap:
         assert "customer_id_count_distinct" not in sql
 
     async def test_filter_unrenamed_measure_uses_canonical(self) -> None:
-        """Regression: when the measure is NOT renamed, filter on the
+        """Regression: when the metric is NOT renamed, filter on the
         aggregation resolves to the canonical alias as before.
         """
         model = _orders_dataset()
@@ -140,7 +140,7 @@ class TestFilterRenamedMeasureRemap:
         assert "orders.amount_sum" not in sql, (
             f"renamed canonical leaked:\n{sql}"
         )
-        # Canonical for the unrenamed measure surfaces.
+        # Canonical for the unrenamed metric surfaces.
         assert "customer_id_count_distinct" in sql
 
     async def test_filter_renamed_measure_classified_as_having_not_where(
@@ -179,7 +179,7 @@ class TestOrderByRenamedMeasureRemap:
 
     async def test_order_by_renamed_measure_canonical_form(self) -> None:
         """``order=["count_distinct(customer_id) desc"]`` with a renamed
-        measure must resolve to the user alias, not to a non-existent
+        metric must resolve to the user alias, not to a non-existent
         canonical column.
         """
         model = _orders_dataset()
@@ -227,7 +227,7 @@ class TestRemapEdgeCases:
         """The filter remap is identifier-
         level only — canonical-name matches inside quoted string literals
         must NOT be rewritten. Example: filter ``first(country) = 'country_first'``
-        with the measure renamed to ``primary_country`` must remap the
+        with the metric renamed to ``primary_country`` must remap the
         first occurrence (the alias) but leave the literal
         ``'country_first'`` alone, otherwise the filter compares the
         renamed-alias column to itself instead of the original constant.
@@ -263,9 +263,9 @@ class TestRemapEdgeCases:
         [
             # Two plain aggregates.
             ("sum(orders.amount)", "avg(orders.profit)"),
-            # Two arithmetic / non-aggregate measures — CodeRabbit + Codex
-            # round 4: the duplicate-name check must cover all measure
-            # kinds, not just the local legacy aggregated-measure node rename branch.
+            # Two arithmetic / non-aggregate metrics — CodeRabbit + Codex
+            # round 4: the duplicate-name check must cover all metric
+            # kinds, not just the local legacy aggregated-metric node rename branch.
             ("sum(orders.amount) / 100", "avg(orders.profit) * 2"),
         ],
         ids=["plain_agg", "arithmetic"],
@@ -276,11 +276,11 @@ class TestRemapEdgeCases:
         formula_b: str,
     ) -> None:
         """Two
-        query measures sharing the same explicit ``name`` would otherwise
+        query metrics sharing the same explicit ``alias`` would otherwise
         silently collapse to one alias, making filter/ORDER BY refs bind
-        to whichever measure was processed first. The pre-pass validator
-        must reject the collision regardless of measure shape — plain
-        aggregates, cross-model aggregates, or arithmetic /
+        to whichever metric was processed first. The pre-pass validator
+        must reject the collision regardless of metric shape — plain
+        aggregates, cross-dataset aggregates, or arithmetic /
         transform expressions.
         """
         model = SlayerDataset(
@@ -335,9 +335,9 @@ class TestRemapEdgeCases:
         self,
     ) -> None:
         """If the canonical agg alias
-        of a renamed measure literally shadows a source ``Column`` on the
-        model, the filter ``agg(col) <op> N`` is ambiguous (it
-        could mean the renamed aggregate or the source column). Refuse
+        of a renamed metric literally shadows a source ``DatasetField`` on the
+        dataset, the filter ``agg(col) <op> N`` is ambiguous (it
+        could mean the renamed aggregate or the source field). Refuse
         the query at enrichment time rather than silently picking one and
         producing surprising SQL.
         """
@@ -349,7 +349,7 @@ class TestRemapEdgeCases:
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                # Pathological: a real column whose name happens to equal
+                # Pathological: a real field whose name happens to equal
                 # the canonical alias of ``sum(amount)``.
                 DatasetField(name="amount_sum", sql="amount_sum", datatype=DataType.FLOAT),
             ],
@@ -358,7 +358,7 @@ class TestRemapEdgeCases:
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
             # Rename triggers the collision check: canonical
-            # ``amount_sum`` already names a source column.
+            # ``amount_sum`` already names a source field.
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="revenue")],
         )
         with pytest.raises(ValueError, match=r"shadows a source field"):
@@ -368,10 +368,10 @@ class TestRemapEdgeCases:
         self,
     ) -> None:
         """Codex F3 (test-review): pin the Mode B/DSL-only boundary. A
-        ``SlayerModel.filters`` entry (Mode A SQL) must survive query
-        enrichment untouched even when the query renames a measure that
+        ``SlayerDataset.filters`` entry (Mode A SQL) must survive query
+        enrichment untouched even when the query renames a metric that
         would otherwise feed into ``canonical_to_user_name``. The remap
-        helper is only invoked for query filters; model filters go through
+        helper is only invoked for query filters; dataset filters go through
         ``parse_sql_predicate`` and never see canonical-agg aliases.
         """
         model = SlayerDataset(
@@ -385,7 +385,7 @@ class TestRemapEdgeCases:
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="deleted_at", sql="deleted_at", datatype=DataType.DATETIME),
             ],
-            # Plain Mode A model filter.
+            # Plain Mode A dataset filter.
             filters=["deleted_at IS NULL"],
         )
         query = SlayerQuery(
@@ -397,27 +397,27 @@ class TestRemapEdgeCases:
             ],
         )
         sql = await _generate(query, model)
-        # The model-level (Mode A) filter must surface in the WHERE of the
-        # model's filtered dataset, unchanged by the query-side measure rename.
+        # The dataset-level (Mode A) filter must surface in the WHERE of the
+        # dataset's filtered source, unchanged by the query-side metric rename.
         where = _dataset_where_text(sql)
         assert "deleted_at" in where, (
-            f"model filter dropped from WHERE clause:\nWHERE={where!r}\nSQL:\n{sql}"
+            f"dataset filter dropped from WHERE clause:\nWHERE={where!r}\nSQL:\n{sql}"
         )
         assert "num_customers" not in where, (
-            f"model-level (Mode A) filter must not be remapped to the "
-            f"query measure alias:\nWHERE={where!r}"
+            f"dataset-level (Mode A) filter must not be remapped to the "
+            f"query metric alias:\nWHERE={where!r}"
         )
         assert "IS NULL" in where.upper(), (
-            f"model filter shape altered:\nWHERE={where!r}"
+            f"dataset filter shape altered:\nWHERE={where!r}"
         )
 
     async def test_query_measure_name_collides_with_source_column_raises(
         self,
     ) -> None:
-        """Codex F2: ``{"formula": "sum(amount)", "name": "status"}`` where
-        ``status`` is a source column must raise at enrichment with a clear
+        """Codex F2: ``{"metric": "sum(amount)", "alias": "status"}`` where
+        ``status`` is a source field must raise at enrichment with a clear
         message — otherwise alias-form filters silently bind to the source
-        column instead of the renamed measure.
+        field instead of the renamed metric.
         """
         model = _orders_dataset()
         query = SlayerQuery(

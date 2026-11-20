@@ -1,4 +1,4 @@
-"""DEV-1542: byte-equivalence golden snapshots.
+"""Byte-equivalence golden snapshots.
 
 Per Codex finding #4, the existing ``TestMultiDialectGeneration`` suite
 in ``tests/test_sql_generator.py`` mostly checks substrings, not full SQL
@@ -113,7 +113,7 @@ _BASIC_QUERY = SlayerQuery(
             '  `orders.status` ASC',
         ),
         (
-            # DEV-1571 Bug 2: T-SQL bracketed dotted aliases are mangled
+            # T-SQL bracketed dotted aliases are mangled
             # via TsqlDialect.rewrite_emitted_sql so T-SQL's ORDER BY
             # resolver can match the SELECT alias. ``orders.status``
             # encodes to ``orders___status``; ``orders._count`` (with
@@ -214,7 +214,7 @@ _TRUNC_QUERY = SlayerQuery(
             "  `orders.created_at` ASC",
         ),
         (
-            # DEV-1571 Bug 2: bracketed dotted aliases mangled.
+            # Bracketed dotted aliases mangled.
             "tsql",
             "SELECT\n"
             "  DATETRUNC(month, orders.created_at) AS [orders___created_at],\n"
@@ -468,7 +468,7 @@ async def test_byte_equivalence_time_shift_postgres(orders_dataset: SlayerDatase
     # Postgres uses INTERVAL '1 MONTH' arithmetic
     assert "INTERVAL '1 MONTH'" in sql
     assert "DATE_TRUNC('MONTH'" in sql
-    # The shifted CTE is named after the measure
+    # The shifted CTE is named after the metric
     assert "shifted_rev_prev AS (" in sql
     # Self-join CTE wires base ↔ shifted by the time-dim alias
     assert "LEFT JOIN shifted_rev_prev" in sql
@@ -489,7 +489,7 @@ async def test_byte_equivalence_time_shift_tsql(orders_dataset: SlayerDataset) -
     # the base's (already truncated) bucket start.
     assert "DATEADD(MONTH, -1, base.[orders___created_at])" in sql
     assert "INTERVAL" not in sql
-    # DEV-1571 Bug 1: T-SQL accepts WITH only as a statement prefix, so the
+    # T-SQL accepts WITH only as a statement prefix, so the
     # CTE chain must be hoisted onto the outer statement rather than left
     # inside ``FROM (...) AS _outer``.
     assert "DATETRUNC(month, " in sql
@@ -519,7 +519,7 @@ _CUMSUM_QUERY = SlayerQuery(
         # Postgres / SQLite quote with ANSI double quotes.
         ("postgres", 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")'),
         ("sqlite", 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")'),
-        # T-SQL quotes with brackets AND DEV-1571 Bug 2 mangles the
+        # T-SQL quotes with brackets AND mangles the
         # dotted aliases to underscore form so the ORDER BY resolver
         # can match the SELECT alias.
         ("tsql", "SUM([orders___revenue_sum]) OVER (ORDER BY [orders___created_at])"),
@@ -529,14 +529,14 @@ async def test_byte_equivalence_cumsum_window_emission(
     dialect: str, expected_window: str, orders_dataset: SlayerDataset
 ) -> None:
     """Cumsum emits the same OVER (ORDER BY ...) window shape on every
-    dialect; only the identifier quoting (and DEV-1571 mangling on T-SQL)
+    dialect; only the identifier quoting (and alias mangling on T-SQL)
     differs."""
     sql = await _gen(dialect, _CUMSUM_QUERY, orders_dataset)
     assert expected_window in sql
 
 
 # ---------------------------------------------------------------------------
-# json_extract via Column.sql — covers SQLite JSON-rewrite + the per-dialect
+# json_extract via DatasetField.sql — covers SQLite JSON-rewrite + the per-dialect
 # emission differences (Postgres JSON_EXTRACT_PATH, T-SQL ISNULL(JSON_QUERY/VALUE))
 # ---------------------------------------------------------------------------
 
@@ -573,10 +573,10 @@ async def test_byte_equivalence_json_extract_sqlite_uses_function_form(
     """SQLite's JSON-extract rewrite produces the
     JSON_EXTRACT(orders.blob, '$.k') function form (not the ``->``
     operator) — required so equality matches against bare-string literals
-    work. DEV-1331.
+    work.
 
     The typed pipeline qualifies bare column references inside
-    ``Column.sql`` with the owning model's alias, so the argument is
+    ``DatasetField.sql`` with the owning dataset's alias, so the argument is
     ``orders.blob`` rather than the legacy generator's unqualified
     ``blob``. Same column, same table — ``FROM public.orders AS orders``
     is the only relation in scope."""
@@ -590,7 +590,7 @@ async def test_byte_equivalence_json_extract_postgres_uses_path_form(
     orders_dataset_with_json: SlayerDataset,
 ) -> None:
     """Postgres emits JSON_EXTRACT_PATH(orders.blob, 'k') — sqlglot's
-    translation, with the typed pipeline's model-alias qualification on
+    translation, with the typed pipeline's dataset-alias qualification on
     the bare ``blob`` reference."""
     sql = await _gen("postgres", _JSON_QUERY, orders_dataset_with_json)
     assert "JSON_EXTRACT_PATH(orders.blob, 'k')" in sql
@@ -601,7 +601,7 @@ async def test_byte_equivalence_json_extract_tsql_uses_isnull_pair(
 ) -> None:
     """T-SQL emits ISNULL(JSON_QUERY(...), JSON_VALUE(...)) — handles both
     object and scalar paths. As on the other dialects, the typed pipeline
-    qualifies the bare ``blob`` reference with the model alias.
+    qualifies the bare ``blob`` reference with the dataset alias.
 
     NOTE: the typed pipeline currently emits this pair wrapped in a
     redundant outer ``ISNULL(<pair>, <pair>)``. That doubling is a
@@ -609,8 +609,7 @@ async def test_byte_equivalence_json_extract_tsql_uses_isnull_pair(
     ``ISNULL(JSON_QUERY, JSON_VALUE)``, which re-parses to
     ``Coalesce(JSONExtract, JSONExtractScalar)`` and re-renders doubled),
     NOT intended emission — it is deliberately *not* asserted here so a
-    fix does not have to touch this test. See the DEV-1703 migration
-    report."""
+    fix does not have to touch this test."""
     sql = await _gen("tsql", _JSON_QUERY, orders_dataset_with_json)
     assert (
         "ISNULL(JSON_QUERY(orders.blob, '$.k'), JSON_VALUE(orders.blob, '$.k'))"

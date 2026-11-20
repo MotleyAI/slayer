@@ -1,4 +1,4 @@
-"""A formula-backed definition of a built-in aggregation is the model's own at every site (spec: aggregations/collect)."""
+"""An expression-backed definition of a built-in aggregation is the dataset's own at every site (spec: aggregations/collect)."""
 
 from __future__ import annotations
 

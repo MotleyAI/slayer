@@ -590,7 +590,7 @@ class TestTimeTruncWidening:
 
 
 # ---------------------------------------------------------------------------
-# Join-path discovery descends expression sources (task 3.5)
+# Relationship-path discovery descends expression sources (task 3.5)
 # ---------------------------------------------------------------------------
 def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -653,7 +653,7 @@ class TestJoinDiscoveryExpressionSources:
         assert ("customers",) in _paths_for(key)
 
     def test_time_trunc_inside_a_source_crosses_via_its_column(self) -> None:
-        # B1: the trunc's crossing lives on its wrapped column.
+        # B1: the trunc's crossing lives on its wrapped field.
         joined_tt = TimeTruncKey(
             source=FieldKey(path=("customers",), leaf="balance"),
             granularity=TimeGranularity.MONTH,
@@ -697,7 +697,7 @@ def _status_orders_dataset() -> SlayerDataset:
 
 class TestHavingValidationWiring:
     async def test_ungrouped_bare_column_beside_aggregate_splits_by_typing(self) -> None:
-        # The AND splits per conjunct — measure half → HAVING,
+        # The AND splits per conjunct — metric half → HAVING,
         # ungrouped field half → WHERE — instead of the old HAVING rejection.
         query = SlayerQuery(
             population="orders",

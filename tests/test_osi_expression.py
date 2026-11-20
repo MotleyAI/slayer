@@ -1,12 +1,12 @@
-"""OSI metric/field expression -> SLayer formula transform (slayer/importers/aggregates.py).
+"""OSI metric/field expression -> SLayer expression transform (slayer/importers/aggregates.py).
 
 ``convert_expression`` walks a SQL aggregation expression with sqlglot and emits a
-SLayer functional-syntax formula, materializing hidden derived Columns for non-bare
+SLayer functional-syntax expression, materializing hidden derived fields for non-bare
 aggregate operands, and clean-failing anything inexpressible.
 
-Callbacks (so the transform is model-agnostic and unit-testable in isolation):
-- ``owner_of(qualifier, column) -> model | None``  which dataset owns a column
-- ``ref_of(model, column) -> anchor-relative dotted ref | None``  (None = unreachable)
+Callbacks (so the transform is dataset-agnostic and unit-testable in isolation):
+- ``owner_of(qualifier, column) -> dataset | None``  which dataset owns a column
+- ``ref_of(dataset, column) -> anchor-relative dotted ref | None``  (None = unreachable)
 """
 
 import pytest
@@ -19,7 +19,7 @@ from slayer.core.syntax import parse_expr
 from slayer.importers.aggregates import convert_expression, expression_refusal
 from slayer.sql.dialects import dialect_for_ds_type
 
-# Single-model context: everything is owned by "orders"; refs are local (bare).
+# Single-dataset context: everything is owned by "orders"; refs are local (bare).
 OWNER = lambda q, c: "orders"          # noqa: E731
 REF = lambda m, c: c                    # noqa: E731
 
@@ -85,7 +85,7 @@ def test_constant_times_agg():
     assert _run("0.9 * SUM(amount)").expression == "0.9 * sum(amount)"
 
 
-# ───────────────────── derived-column materialization ───────────────────────
+# ───────────────────── derived-field materialization ───────────────────────
 
 @pytest.mark.parametrize(("expr", "inline"), [
     ("SUM(quantity * amount)", "sum(quantity * amount)"),
@@ -232,7 +232,7 @@ def test_sum_distinct_clean_fails():
     assert not _run("AVG(DISTINCT amount)").ok
 
 
-# ───────────────────────── cross-model refs ────────────────────────────────
+# ───────────────────────── cross-dataset refs ────────────────────────────────
 
 def test_qualified_column_emits_dotted_ref():
     owner = lambda q, c: "customers"  # noqa: E731
@@ -244,7 +244,7 @@ def test_qualified_column_emits_dotted_ref():
 
 def test_unreachable_ref_clean_fails():
     owner = lambda q, c: "regions"  # noqa: E731
-    ref = lambda m, c: None          # noqa: E731  (no join path from anchor)
+    ref = lambda m, c: None          # noqa: E731  (no relationship path from anchor)
     r = _run("SUM(regions.population)", owner_of=owner, ref_of=ref)
     assert not r.ok
     assert r.reason

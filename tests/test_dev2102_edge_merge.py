@@ -1,4 +1,4 @@
-"""An extension join is matched against the edges between its two models, in either orientation, on its key pairs."""
+"""An extension relationship is matched against the edges between its two datasets, in either orientation, on its key pairs."""
 
 from __future__ import annotations
 

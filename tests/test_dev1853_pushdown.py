@@ -1,9 +1,9 @@
-"""DEV-1853 — filter pushdown over the shared walker.
+"""Filter pushdown over the shared walker.
 
 Semi-join correlation resolves through the same bidirectional traversal as
-every other hop: no declared reverse join is needed, an ambiguous correlation
+every other hop: no declared reverse relationship is needed, an ambiguous correlation
 hop errors in both modes (never dropped), a named edge carries the
-correlation, and reverse round-trip saved measures stay rejected.
+correlation, and reverse round-trip saved metrics stay rejected.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ class TestNamedEdgeTargetPathPushesDown:
         self, named_engine,
     ) -> None:
         # The filter ref rides the aggregate's named-edge prefix (D3): it must
-        # bind to the reverse chain node, not resolve the token as a model.
+        # bind to the reverse chain node, not resolve the token as a dataset.
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
             metrics=[{"metric": "sum(orders.billing_customer.regions.pop)",

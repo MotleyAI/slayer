@@ -443,6 +443,6 @@ class MariadbDialect(MysqlDialect):
             raise UnsupportedServerFunctionError(
                 summary="TRY_CAST to a number (and comparing or computing text with numbers) is not supported on "
                 "MariaDB yet.",
-                suggestion="Run it on MySQL, or express it in the model's own SQL (Column.sql).",
+                suggestion="Run it on MySQL, or express it in the field's own SQL (DatasetField.sql).",
             )
         return super().build_try_cast(value, to)

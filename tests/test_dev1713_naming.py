@@ -1,18 +1,18 @@
-"""DEV-1713 Stage 9 — full naming module: result-key / flat-name contract.
+"""Full naming module: result-key / flat-name contract.
 
 These tests are the Step-4 (tests-first) red state for Stage 9. They pin the
 caller-facing contract the naming module owns:
 
-* D3 (DEV-1495 bug 1): a joined DIMENSION — base OR derived, single- OR
+* D3: a joined DIMENSION — base OR derived, single- OR
   multi-hop — surfaces under the DOTTED final-stage key
-  (``orders.customers.revenue``), matching cross-model MEASURES and the
+  (``orders.customers.revenue``), matching cross-dataset METRICS and the
   documented result-key contract, NOT the flat ``orders.customers__revenue``.
-* Bare named-measure aliasing: a query referencing a saved measure by bare
-  name surfaces under the measure NAME, not the formula-derived canonical.
-* DEV-1692: multiple arithmetic-wrapped ``time_shift`` calls in one query
+* Bare named-metric aliasing: a query referencing a saved metric by bare
+  name surfaces under the metric NAME, not the expression-derived canonical.
+* Multiple arithmetic-wrapped ``time_shift`` calls in one query
   render collision-free CTE names.
 * Multi-stage DAG: INNER stages keep the flat ``__`` bind names while a FINAL
-  stage that reaches through a join emits dotted keys (the two never mix).
+  stage that reaches through a relationship emits dotted keys (the two never mix).
 
 Execution tests run against a seeded file-backed SQLite so result-KEY shape is
 verified on real returned rows, not just the emitted SQL.
@@ -58,7 +58,7 @@ def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> List[str]:
 
 
 # ===========================================================================
-# Seeded engine: orders -> customers -> regions, with derived columns.
+# Seeded engine: orders -> customers -> regions, with derived fields.
 # ===========================================================================
 
 
@@ -150,7 +150,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 # ---------------------------------------------------------------------------
-# D3 — joined dimension keys are dotted (DEV-1495 bug 1)
+# D3 — joined dimension keys are dotted
 # ---------------------------------------------------------------------------
 
 
@@ -185,7 +185,7 @@ class TestJoinedDimensionDottedKeys:
         assert "customers.regions.name" in resp.data[0]
 
     async def test_joined_base_dimension_key_is_dotted(self, engine: SlayerQueryEngine) -> None:
-        """Guard: a joined BASE column dimension (``ColumnKey`` with a path)
+        """Guard: a joined BASE field dimension (``ColumnKey`` with a path)
         was already dotted; the D3 fix must not regress it."""
         query = SlayerQuery(
             population="orders",
@@ -219,7 +219,7 @@ class TestJoinedDimensionDottedKeys:
         assert "customers.regions.name" in dry.sql
 
     async def test_cross_model_measure_key_still_dotted(self, engine: SlayerQueryEngine) -> None:
-        """Guard: cross-model MEASURES already surfaced dotted
+        """Guard: cross-dataset METRICS already surfaced dotted
         (``orders.customers.revenue_sum``); the fix keeps that."""
         query = SlayerQuery(
             population="orders",
@@ -230,9 +230,9 @@ class TestJoinedDimensionDottedKeys:
         assert "customers.revenue_sum" in resp.columns, resp.columns
 
     async def test_order_by_joined_dimension_in_cross_model_query(self, engine: SlayerQueryEngine) -> None:
-        """Guard: the cross-model (combined) ORDER BY path also sorts a joined
+        """Guard: the cross-dataset (combined) ORDER BY path also sorts a joined
         dimension by its dotted key and executes cleanly (no flat-alias
-        mismatch), alongside a cross-model measure."""
+        mismatch), alongside a cross-dataset metric."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
@@ -245,8 +245,8 @@ class TestJoinedDimensionDottedKeys:
         assert "customers.revenue_sum" in resp.columns
 
     async def test_time_dimension_over_joined_column_dotted(self, engine: SlayerQueryEngine) -> None:
-        """Codex F9: a time dimension over a JOINED column keeps the dotted
-        leaf key (no granularity suffix), matching a base-column TD."""
+        """Codex F9: a time dimension over a JOINED field keeps the dotted
+        leaf key (no granularity suffix), matching a base-field TD."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -269,12 +269,12 @@ class TestJoinedDimensionDottedKeys:
         derived joined dim surfaces in ``attributes.dimensions`` under the
         DOTTED key iff both producers agree on the dotted form.
 
-        Uses only LOCAL measures: a derived joined dim combined with a
-        cross-model measure (a derived cross-model shared grain) now renders —
-        DEV-1728 removed the DEV-1708 raise; that combination is covered
+        Uses only LOCAL metrics: a derived joined dim combined with a
+        cross-dataset metric (a derived cross-dataset shared grain) now renders;
+        that combination is covered
         end-to-end in tests/test_dev1728_derived_shared_grain.py. The naming
-        agreement this test pins needs no cross-model measure, so it stays
-        focused on the local-measure shape."""
+        agreement this test pins needs no cross-dataset metric, so it stays
+        focused on the local-metric shape."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.rev_x2")],  # labeled -> surfaces
@@ -296,15 +296,15 @@ class TestJoinedDimensionDottedKeys:
     async def test_all_slot_types_generator_and_response_agree(self, engine: SlayerQueryEngine) -> None:
         """Codex F6 (per slot-key type): local ColumnKey dim, joined ColumnKey
         dim, joined ColumnSqlKey (derived) dim, joined TimeTruncKey, local
-        aggregate, cross-model aggregate, and star-count. The generator's SQL
+        aggregate, cross-dataset aggregate, and star-count. The generator's SQL
         aliases (``_full_alias_for_slot``) and response_meta's keys
         (``_slot_result_keys``) — the two independent producers the shared
         decomposition helper unifies — must agree on the dotted form for every
         one.
 
         Two queries, not one: kept split for focused per-slot-type naming
-        coverage. The plain derived joined dim + cross-model aggregate
-        combination now renders (DEV-1728 removed the DEV-1708 raise) and is
+        coverage. The plain derived joined dim + cross-dataset aggregate
+        combination now renders and is
         covered end-to-end in tests/test_dev1728_derived_shared_grain.py; this
         test stays split so each slot-type's key agreement is pinned in
         isolation."""
@@ -363,7 +363,7 @@ class TestJoinedDimensionDottedKeys:
                 ],
                 metrics=[
                     QueryMetric(metric="sum(orders.amount)"),          # local aggregate
-                    QueryMetric(metric="sum(customers.revenue)"),  # cross-model aggregate
+                    QueryMetric(metric="sum(customers.revenue)"),  # cross-dataset aggregate
                     QueryMetric(metric="count(orders.*)", alias="n"),   # star-count
                 ],
             ),
@@ -378,8 +378,8 @@ class TestJoinedDimensionDottedKeys:
         )
 
     async def test_result_key_contract_quartet(self, engine) -> None:
-        """The acceptance quartet in one query: local measure, star-count,
-        multi-hop joined dim, and a user-renamed measure."""
+        """The acceptance quartet in one query: local metric, star-count,
+        multi-hop joined dim, and a user-renamed metric."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
@@ -412,7 +412,7 @@ async def _new_sql(*, storage, stages, dialect="sqlite") -> str:
 
 class TestMultiStageNaming:
     async def test_inner_stage_flat_bind_still_works(self, engine: SlayerQueryEngine) -> None:
-        """A 2-stage DAG: the inner stage reaches through a join and exposes
+        """A 2-stage DAG: the inner stage reaches through a relationship and exposes
         the joined dim under the FLAT downstream name (``customers__region_id``),
         which the root binds. Inner stages must stay flat (contract unchanged)."""
         storage = engine.storage
@@ -428,7 +428,7 @@ class TestMultiStageNaming:
             metrics=[QueryMetric(metric="max(stage1.amount_sum)", alias="peak")],
         )
         sql = await _new_sql(storage=storage, stages=[stage1, root])
-        # The inner stage CTE carries the FLAT column name.
+        # The inner stage CTE carries the FLAT field name.
         assert "customers__region_id" in sql, sql
         # And it executes and returns the expected root keys.
         resp = await engine.execute([stage1, root])
@@ -447,7 +447,7 @@ class TestMultiStageNaming:
         s1 = SlayerQuery(
             name="s1",
             population="orders",
-            dimensions=[QueryDimension(field="customers.rev_x2")],  # inner: derived join
+            dimensions=[QueryDimension(field="customers.rev_x2")],  # inner: derived, across a relationship
             metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         s2 = SlayerQuery(
@@ -484,7 +484,7 @@ class TestMultiStageNaming:
 
 
 # ---------------------------------------------------------------------------
-# Bare named-measure SELECT-alias naming
+# Bare named-metric SELECT-alias naming
 # ---------------------------------------------------------------------------
 
 
@@ -494,9 +494,9 @@ class TestFlattenerDelegation:
     body. The typed pipeline's flattener is ``build_flat_rename_wrapper``
     (the ``_alias_to_short_local`` successor: same
     strip-source-relation-then-``__``-flatten contract for stage CTEs and the
-    query-backed virtual-model wrap).
+    query-backed virtual-dataset wrap).
 
-    DEV-1485 Stage D: the companion guard over the legacy virtual-model
+    The companion guard over the legacy virtual-dataset
     closure (``_alias_to_short`` inside ``SlayerQueryEngine._query_as_model``)
     is gone with the legacy enrichment stack, leaving ONE flattener to own."""
 
@@ -533,8 +533,8 @@ class TestBareNamedMeasureResultKey:
         assert "orders.revenue_sum" not in cols, cols
 
     async def test_explicit_name_overrides_saved_name(self) -> None:
-        """Guard (Codex F4): an explicit ``name`` on the query measure wins
-        over the saved measure's own name."""
+        """Guard (Codex F4): an explicit ``name`` on the query metric wins
+        over the saved metric's own name."""
         model = _orders_named_dataset(
             metrics=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
         )
@@ -548,7 +548,7 @@ class TestBareNamedMeasureResultKey:
         assert "orders.rev_total" not in cols
 
     async def test_bare_named_measure_order_by_with_dimension(self) -> None:
-        """The DEV-1443 shape: ORDER BY the bare measure name resolves to the
+        """ORDER BY the bare metric name resolves to the
         emitted alias even with a dimension present."""
         model = _orders_named_dataset(
             metrics=[DatasetMetric(name="companies", expression="count_distinct(revenue)")]
@@ -564,9 +564,9 @@ class TestBareNamedMeasureResultKey:
         assert "revenue_count_distinct" not in sql, sql
 
     async def test_self_qualified_saved_measure_ref_matches_bare(self) -> None:
-        """Codex F4 (qualified ref): a SELF-qualified saved-measure reference
-        (``orders.rev_total`` on source model ``orders``) resolves at binding
-        as the bare form, so it preserves the measure NAME exactly like the bare reference — the
+        """Codex F4 (qualified ref): a SELF-qualified saved-metric reference
+        (``orders.rev_total`` on source dataset ``orders``) resolves at binding
+        as the bare form, so it preserves the metric NAME exactly like the bare reference — the
         two are equivalent, not divergent. Pinned so the equivalence is
         explicit."""
         model = _orders_named_dataset(
@@ -582,13 +582,13 @@ class TestBareNamedMeasureResultKey:
         assert "orders.revenue_sum" not in cols
 
     def test_measure_named_like_column_is_rejected_at_model_build(self) -> None:
-        """Codex F4 (collision): a saved measure whose name equals a column
-        name is impossible to construct — columns and measures share one
-        namespace, guarded at model validation. This is why the bare-named-
-        measure fix can never make a measure name shadow a selected dim of
-        the same name: such a pair cannot exist on one model."""
-        # Build the colliding measure outside the raises block so only the
-        # model-construction call can throw (Sonar S5778 — one throwing
+        """Codex F4 (collision): a saved metric whose name equals a field
+        name is impossible to construct — fields and metrics share one
+        namespace, guarded at dataset validation. This is why the bare-named-
+        metric fix can never make a metric name shadow a selected dim of
+        the same name: such a pair cannot exist on one dataset."""
+        # Build the colliding metric outside the raises block so only the
+        # dataset-construction call can throw (Sonar S5778 — one throwing
         # invocation per exception assertion).
         colliding = DatasetMetric(name="status", expression="sum(revenue)")
         with pytest.raises(ValueError, match="name collision"):
@@ -596,16 +596,16 @@ class TestBareNamedMeasureResultKey:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1692 — duplicate time_shift CTE de-collision
+# Duplicate time_shift CTE de-collision
 # ---------------------------------------------------------------------------
 
 
 class TestTimeShiftCteDecollision:
     async def test_three_arithmetic_time_shifts_unique_ctes(self) -> None:
-        """Three arithmetic-wrapped ``time_shift`` measures in one query must
+        """Three arithmetic-wrapped ``time_shift`` metrics in one query must
         each get a distinct join-back CTE name over their one shared relation. Proven with a
         regex over the emitted SQL — independent of ``assert_unique_cte_names``
-        (which has its own unit coverage) so this pins the DEV-1692 REGRESSION
+        (which has its own unit coverage) so this pins the de-collision REGRESSION
         even if the helper is absent."""
         model = SlayerDataset(
             name="orders",
@@ -657,10 +657,10 @@ class TestTimeShiftCteDecollision:
 
     async def test_hidden_time_shift_alias_avoids_user_column(self) -> None:
         """Codex (PR #269): the hidden time_shift alias placeholder
-        (``_time_shift_inner``) must not shadow a real user measure literally
+        (``_time_shift_inner``) must not shadow a real user metric literally
         named ``_time_shift_inner`` — the transform allocator reserves the
         projected aliases, so the hidden one is bumped to a distinct name and
-        the arithmetic reads its own shift, not the user column."""
+        the arithmetic reads its own shift, not the user metric."""
         model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -679,7 +679,7 @@ class TestTimeShiftCteDecollision:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                # A user measure whose name collides with the hidden placeholder.
+                # A user metric whose name collides with the hidden placeholder.
                 QueryMetric(metric="sum(orders.revenue)", alias="_time_shift_inner"),
                 QueryMetric(
                     metric="sum(orders.revenue) - time_shift(sum(orders.revenue), -1, 'month')",
@@ -689,14 +689,14 @@ class TestTimeShiftCteDecollision:
         )
         sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql, dialect="postgres")
-        # The user measure keeps its own key.
+        # The user metric keeps its own key.
         assert "_time_shift_inner" in cols, cols
         # The hidden shift alias was bumped off the user's name, not collided.
         assert "_time_shift_inner_2" in sql, sql
 
     async def test_two_consecutive_periods_unique_ctes(self) -> None:
-        """DEV-1692 (sibling of time_shift): two arithmetic-wrapped
-        consecutive_periods measures are hidden inner slots that share the
+        """Sibling of time_shift: two arithmetic-wrapped
+        consecutive_periods metrics are hidden inner slots that share the
         placeholder ``_consecutive_periods_inner`` — their cp_reset/cp_value
         CTEs and value aliases must be de-collided, exactly like time_shift."""
         model = SlayerDataset(

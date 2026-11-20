@@ -1,4 +1,4 @@
-"""Datasets with no join path from the population: the product hop ``P × D``, read only through aggregates and one-sided filters."""
+"""Datasets with no relationship path from the population: the product hop ``P × D``, read only through aggregates and one-sided filters."""
 
 from __future__ import annotations
 

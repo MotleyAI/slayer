@@ -1,8 +1,8 @@
-"""DEV-1954 — stale path spellings resolve across stage boundaries (slack rule).
+"""Stale path spellings resolve across stage boundaries (slack rule).
 
-A flat name written against a non-canonical spelling of an upstream column's path
+A flat name written against a non-canonical spelling of an upstream field's path
 (``customers__regions__rname`` for the canonical ``customers__hr__rname``) binds to
-that column with one ``STALE_PATH_SPELLING`` warning per referencing position; an
+that field with one ``STALE_PATH_SPELLING`` warning per referencing position; an
 exact name wins and an ambiguous respelling fails as an unknown reference.
 """
 
@@ -35,7 +35,7 @@ AMOUNT_BY_NAME = {"North": 100.0, "South": 20.0, None: 47.0}
 
 def _with_query_backed(datasets: List[SlayerDataset]) -> List[SlayerDataset]:
     """+ ``region_amounts`` (query-backed on orders) and ``regions.qb_label``
-    reading its column by the stale spelling over a ``regions`` join."""
+    reading its field by the stale spelling over a ``regions`` relationship."""
     regions = next(m for m in datasets if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
         to="region_amounts", from_columns=["id"], to_columns=["customers__region_id"]))
@@ -72,7 +72,7 @@ async def unnamed_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 def _ambiguous_qb_datasets() -> List[SlayerDataset]:
     """+ ``pq`` projecting both parallel edges and ``regions.amb`` reading it by the
-    stale spelling (a respelling of two ``pq`` columns)."""
+    stale spelling (a respelling of two ``pq`` fields)."""
     models = _parallel_datasets()
     regions = next(m for m in models if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
@@ -117,7 +117,7 @@ def _assert_one_stale(resp) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Emitted stage schemas carry each column's respellings.
+# Emitted stage schemas carry each field's respellings.
 # --------------------------------------------------------------------------- #
 class TestStageColumnRespellings:
     @staticmethod

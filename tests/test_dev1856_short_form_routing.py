@@ -37,7 +37,7 @@ from tests._engine_helpers import make_seeded_sqlite_engine
 from slayer.storage.base import StorageBackend
 
 
-# Column / model helpers
+# Field / dataset helpers
 
 def _norm(s: str) -> str:
     return " ".join(s.split())
@@ -120,7 +120,7 @@ async def _chain_engine(tmp_path, **knobs) -> SlayerQueryEngine:
 
 
 async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
-    """Chain models bound to a populated SQLite file: three invoices fold to
+    """Chain datasets bound to a populated SQLite file: three invoices fold to
     Ann=30 (10+20) and Bob=30 through Subscription → Customer → Consumer."""
     db_path = os.path.join(str(tmp_path), "data.db")
     with transaction(db_path) as con:
@@ -504,7 +504,7 @@ class TestRejectionTaxonomy:
 
 class TestBrokenChains:
     async def test_dataset_anchor_with_route_resolves(self, tmp_path) -> None:
-        """``Customer.Consumer.name`` from a root with no direct Customer join: ``Customer`` is an anchor reached by
+        """``Customer.Consumer.name`` from a root with no direct Customer relationship: ``Customer`` is an anchor reached by
         its only to-one path, then the explicit route."""
         engine = await _chain_engine(tmp_path)
         q = _q(dimensions=["Customer.Consumer.name"])
@@ -513,7 +513,7 @@ class TestBrokenChains:
         assert "Customer.Consumer.name" in cols
 
     async def test_broken_later_hop_suggests_short_form(self, tmp_path) -> None:
-        """``Subscription.Consumer.name`` — first hop is a real join, second is not;
+        """``Subscription.Consumer.name`` — first hop is a real relationship, second is not;
         still a broken chain, suggests the routable short form."""
         engine = await _chain_engine(tmp_path)
         q = _q(dimensions=["Subscription.Consumer.name"])
@@ -615,7 +615,7 @@ class TestTypeAndOpaque:
         return {c.name: c.datatype for c in saved.fields}
 
     async def test_routed_dimension_type_preserved(self, tmp_path) -> None:
-        """A routed dimension's virtual column has the full-path column's type (email is TEXT); its name follows its
+        """A routed dimension's virtual field has the full-path field's type (email is TEXT); its name follows its
         key."""
         engine = await _chain_engine(tmp_path)
         short = await self._virtual_columns(engine, SlayerQuery.model_validate({
@@ -633,7 +633,7 @@ class TestTypeAndOpaque:
             k: v for k, v in full.items() if k != "Subscription__Customer__Consumer__email"}
 
     async def test_opaque_routed_dimension_rejected(self, tmp_path) -> None:
-        """A routed dimension onto an opaque (Opaque) column is rejected for
+        """A routed dimension onto an opaque (Opaque) field is rejected for
         GROUP BY, exactly as the full path would be."""
         engine = await _chain_engine(tmp_path)
         q = _q(dimensions=["Consumer.geo"])
@@ -681,8 +681,8 @@ class TestSavedMeasureRouting:
         sqlglot.parse_one(resp.sql, dialect="postgres")
 
     async def test_rerooted_saved_measure_nested_routing_round_trips(self, tmp_path) -> None:
-        """A re-rooted short-form saved measure (``Consumer.aov`` is itself a nested
-        ``sum(amount) / count(*)`` formula) persists and re-resolves on reload."""
+        """A re-rooted short-form saved metric (``Consumer.aov`` is itself a nested
+        ``sum(amount) / count(*)`` expression) persists and re-resolves on reload."""
         engine = await _chain_engine(tmp_path)
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice", "dimensions": ["Invoice.status"],
@@ -721,7 +721,7 @@ class TestScoping:
 
     async def test_downstream_stage_dotted_ref_stays_illegal(self, tmp_path) -> None:
         """A short form in a downstream stage (flat schema) is never routed past the stage
-        boundary: it names a model no join path reaches from the stage, read only through aggregates."""
+        boundary: it names a dataset no relationship path reaches from the stage, read only through aggregates."""
         engine = await _chain_engine(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
@@ -738,7 +738,7 @@ class TestScoping:
             await engine.execute(query=[inner, outer], dry_run=True)
 
     async def test_declared_join_absent_target_stays_unknown_ref(self, tmp_path) -> None:
-        """A dotted ref whose first hop IS a declared join but whose target is absent
+        """A dotted ref whose first hop IS a declared relationship but whose target is absent
         from the datasource bundle stays ``UnknownReferenceError`` — never routed."""
         models = _chain_datasets()
         invoice = next(m for m in models if m.name == "Invoice")
@@ -780,7 +780,7 @@ class TestSchemaDriftRouting:
         )
 
     def _drop_intervening_join(self, datasets: list[SlayerDataset]):
-        """Drop the intervening ``Customer → Consumer`` join — the routed short
+        """Drop the intervening ``Customer → Consumer`` relationship — the routed short
         form ``Consumer.email`` traverses it, so its removal must cascade."""
         edit = EditDatasetDelete(
             dataset_name="Customer", data_source="test",

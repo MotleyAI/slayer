@@ -1,7 +1,7 @@
-"""Outermost SELECT must project exactly user-declared dims+measures.
+"""Outermost SELECT must project exactly user-declared dims+metrics.
 
 These tests pin the contract that the rendered outermost SELECT projects
-only the user-declared ``dimensions + time_dimensions + measures`` of the
+only the user-declared ``dimensions + time_dimensions + metrics`` of the
 final stage, in declared order — never the intermediate columns that the
 engine hoists into CTEs for SQL feasibility (window functions, scalar
 arithmetic over aggregates, ORDER BY aggregates, filter post-conditions).
@@ -109,7 +109,7 @@ def funds_dataset() -> SlayerDataset:
 
 @pytest.fixture
 def orders_dataset() -> SlayerDataset:
-    """Generic orders model used by edge-case tests."""
+    """Generic orders dataset used by edge-case tests."""
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -129,7 +129,7 @@ def orders_dataset() -> SlayerDataset:
 
 async def _save_test_datasource(storage: YAMLStorage) -> None:
     """Persist a sqlite ``test`` datasource so dry-run/
-    execute paths can resolve a dialect for any model whose
+    execute paths can resolve a dialect for any dataset whose
     ``data_source='test'``."""
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
@@ -138,7 +138,7 @@ async def _save_test_datasource(storage: YAMLStorage) -> None:
 
 @pytest.fixture
 async def orders_customers_engine(tmp_path):
-    """A storage + engine with orders→customers join for cross-model tests."""
+    """A storage + engine with an orders→customers relationship for cross-dataset tests."""
     storage = YAMLStorage(base_dir=str(tmp_path))
     await _save_test_datasource(storage)
     await storage.save_dataset(SlayerDataset(
@@ -170,7 +170,7 @@ class TestProjectionTrimRepros:
         self, funds_dataset: SlayerDataset,
     ) -> None:
         """Repro (1): ORDER BY ``sum(expensenet)`` with one declared dim and no
-        declared measure must project exactly ``[funds.geozone]`` — the
+        declared metric must project exactly ``[funds.geozone]`` — the
         aggregate must not leak into the outer projection."""
         query = SlayerQuery(
             population="funds",
@@ -244,7 +244,7 @@ class TestProjectionOrder:
         self, orders_dataset: SlayerDataset,
     ) -> None:
         """Outer SELECT emits columns in declared order: dims first (in
-        declared order), then measures (in declared order). Not alphabetical."""
+        declared order), then metrics (in declared order). Not alphabetical."""
         query = SlayerQuery(
             population="orders",
             # Intentionally non-alphabetical
@@ -272,7 +272,7 @@ class TestProjectionOrder:
     ) -> None:
         """Time dimensions are always public — they appear in the outer
         projection alongside regular dimensions, in
-        ``dimensions + time_dimensions + measures`` declared order."""
+        ``dimensions + time_dimensions + metrics`` declared order."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -284,23 +284,23 @@ class TestProjectionOrder:
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        # Exact projection: dim, then time-dim, then measure, in declared order.
+        # Exact projection: dim, then time-dim, then metric, in declared order.
         assert outer_cols == ["orders.status", "orders.created_at", "rows"], (
-            f"Outer SELECT must project [dim, time_dim, measure] in declared "
+            f"Outer SELECT must project [dim, time_dim, metric] in declared "
             f"order.\ngot: {outer_cols}\nSQL:\n{sql}"
         )
 
 
 # Group C — Window-transform argument reuse (structural equality).
 # Spec rule 4: when a window transform's argument structurally equals an
-# already-declared measure's canonical inner expression, reuse that
+# already-declared metric's canonical inner expression, reuse that
 # alias inside OVER(...) and skip the duplicate hoist.
 class TestWindowArgReuse:
-    # 12 of the 13 spec-listed window transforms have a single measure as
+    # 12 of the 13 spec-listed window transforms have a single metric as
     # their inner argument — those are the ones where structural-equality
     # reuse fires when ``sum(revenue)`` is independently declared. The 13th,
     # ``consecutive_periods``, takes a boolean predicate (``sum(revenue) > 0``)
-    # rather than a single measure; its projection-trim contract is exercised
+    # rather than a single metric; its projection-trim contract is exercised
     # by ``test_consecutive_periods_projection_trim`` further down.
     @pytest.mark.parametrize(
         "transform_formula,measure_name",
@@ -326,9 +326,9 @@ class TestWindowArgReuse:
         measure_name: str,
     ) -> None:
         """When the inner ``sum(revenue)`` is independently declared as a
-        named measure, the outer SELECT projects exactly the dim + named
-        measure + transform measure, and the OVER (...) clause references
-        the declared measure's alias rather than a freshly-hoisted intermediate.
+        named metric, the outer SELECT projects exactly the dim + named
+        metric + transform metric, and the OVER (...) clause references
+        the declared metric's alias rather than a freshly-hoisted intermediate.
         """
         query = SlayerQuery(
             population="orders",
@@ -348,14 +348,14 @@ class TestWindowArgReuse:
             f"{transform_formula}: outer SELECT must be {expected}, got {outer_cols}.\n"
             f"SQL:\n{sql}"
         )
-        # No `_inner_*` duplicate hoist of the inner measure.
+        # No `_inner_*` duplicate hoist of the inner metric.
         assert "_inner_" not in sql, (
             f"{transform_formula}: no _inner_* duplicate hoist expected.\nSQL:\n{sql}"
         )
         # The reused alias (orders.total) must appear inside the SQL — it
         # is the OVER clause's reference target.
         assert '"total"' in sql, (
-            f"{transform_formula}: declared measure alias 'orders.total' must "
+            f"{transform_formula}: declared metric alias 'orders.total' must "
             f"be referenced (typically inside OVER (...)).\nSQL:\n{sql}"
         )
 
@@ -363,7 +363,7 @@ class TestWindowArgReuse:
         self, orders_dataset: SlayerDataset,
     ) -> None:
         """The 13th transform — ``consecutive_periods`` — takes a boolean
-        predicate, not a single measure, so structural-equality reuse does
+        predicate, not a single metric, so structural-equality reuse does
         not naturally fire. The projection-trim contract still applies: the
         outer SELECT projects only the declared dim + time-dim + ``streak``,
         and the staged ``cp_reset_*`` / ``cp_value_*`` CTE columns stay
@@ -394,8 +394,8 @@ class TestOrderByPolicy:
     async def test_order_by_named_measure_uses_alias(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """When order column matches a declared measure name, ORDER BY
-        renders via that measure's alias."""
+        """When the order field matches a declared metric name, ORDER BY
+        renders via that metric's alias."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -412,7 +412,7 @@ class TestOrderByPolicy:
     async def test_order_by_unbound_agg_not_projected(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """An unbound ORDER BY aggregate (no matching declared measure) must
+        """An unbound ORDER BY aggregate (no matching declared metric) must
         NOT leak into the outer projection — the outer SELECT projects only
         the declared dim. The typed pipeline orders by the aggregate inline
         (``ORDER BY SUM(orders.amount)``); whether it's inline or hoisted as a
@@ -586,7 +586,7 @@ class TestEdgeCases:
     async def test_measure_only_query(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """Measure-only queries project exactly the declared measures."""
+        """Metric-only queries project exactly the declared metrics."""
         query = SlayerQuery(
             population="orders",
             metrics=[
@@ -627,7 +627,7 @@ class TestEdgeCases:
     async def test_named_override_alias(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """Explicit ``name`` on a measure → projection uses the user's name."""
+        """Explicit ``alias`` on a metric → projection uses the user's name."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -642,7 +642,7 @@ class TestEdgeCases:
     async def test_star_count_named_measure(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """``{"formula": "*:count", "name": "rows"}`` projects as ``orders.rows``."""
+        """``{"metric": "count(*)", "alias": "rows"}`` projects as ``orders.rows``."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
@@ -655,8 +655,8 @@ class TestEdgeCases:
     async def test_rank_inside_arithmetic_reuses_named_arg(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """A formula like ``rank(sum(revenue), direction='desc') + 1`` whose inner argument is
-        already a declared named measure must reuse that alias and not
+        """An expression like ``rank(sum(revenue), direction='desc') + 1`` whose inner argument is
+        already a declared named metric must reuse that alias and not
         re-materialize the inner aggregate."""
         query = SlayerQuery(
             population="orders",
@@ -673,14 +673,14 @@ class TestEdgeCases:
         outer_cols = _outer_select_columns(sql)
         assert outer_cols == ["orders.created_at", "total", "rank_plus_one"]
         assert "_inner_" not in sql, (
-            f"No _inner_* duplicate expected when arg is a declared measure.\n"
+            f"No _inner_* duplicate expected when arg is a declared metric.\n"
             f"SQL:\n{sql}"
         )
 
     async def test_cross_model_dotted_dimension_projection(
         self, orders_customers_engine,
     ) -> None:
-        """A dim referenced via a join path (``customers.revenue``) projects
+        """A dim referenced via a relationship path (``customers.revenue``) projects
         under the full dotted path, and no extra join-scaffolding columns
         leak into the outer SELECT."""
         engine, orders = orders_customers_engine
@@ -692,7 +692,7 @@ class TestEdgeCases:
         resp = await engine.execute(query, dry_run=True)
         sql = resp.sql or ""
         outer_cols = _outer_select_columns(sql)
-        # The dim alias for the joined column is "orders.customers.revenue".
+        # The dim alias for the joined field is "orders.customers.revenue".
         assert "customers.revenue" in outer_cols
         assert "n" in outer_cols
         # Nothing else.
@@ -728,7 +728,7 @@ class TestMultiStageSourceQueries:
         )
         resp = await engine.execute(query=[inner, outer], dry_run=True)
         sql_str = resp.sql or ""
-        # Outer-stage projection: trimmed to its declared dims + measures.
+        # Outer-stage projection: trimmed to its declared dims + metrics.
         assert resp.columns == ["inner_stage.status", "top_rank"], (
             f"Outer stage of source_queries must obey the trim rule.\n"
             f"got: {resp.columns}\nSQL:\n{sql_str}"
@@ -752,7 +752,7 @@ class TestMultiDialectProjectionTrim:
         self, dialect: str, funds_dataset: SlayerDataset,
     ) -> None:
         """Across every tier-1 dialect, the outer SELECT column count equals
-        ``len(dimensions) + len(measures)`` for repro (2)."""
+        ``len(dimensions) + len(metrics)`` for repro (2)."""
         query = SlayerQuery(
             population="funds",
             dimensions=[QueryDimension(field="funds.geozone")],
@@ -776,16 +776,16 @@ class TestStagedProjectionTrim:
     async def test_query_backed_wrap_keeps_full_projection(
         self, tmp_path, funds_dataset: SlayerDataset,
     ) -> None:
-        """When a query is wrapped as a query-backed virtual model (the typed
-        ``_expand_query_backed_model`` path via ``create_model_from_query``),
+        """When a query is wrapped as a query-backed virtual dataset (the typed
+        ``_expand_query_backed_dataset`` path via ``create_dataset_from_query``),
         the inner SQL must keep every hoisted alias — otherwise the
-        virtual-model column list references columns that have been
+        virtual-dataset field list references columns that have been
         trimmed out of the subquery."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
         await storage.save_dataset(funds_dataset)
         engine = SlayerQueryEngine(storage=storage)
-        # Save the repro-(2) query as a query-backed model. Internally this
+        # Save the repro-(2) query as a query-backed dataset. Internally this
         # routes through the typed query-backed expansion.
         query = SlayerQuery(
             population="funds",
@@ -793,7 +793,7 @@ class TestStagedProjectionTrim:
             metrics=[QueryMetric(metric="rank(sum(funds.expensenet), direction='desc')", alias="expense_rank")],
         )
         model = await engine.create_dataset_from_query(query=query, name="ranked_funds", save=True)
-        # The model's `columns` (derived from the wrapped query's projection)
+        # The dataset's `fields` (derived from the wrapped query's projection)
         # must include the hoisted ``expensenet_sum`` intermediate, or its
         # rendered SQL must project that alias.
         col_names = {c.name for c in (model.fields or [])}
@@ -801,9 +801,9 @@ class TestStagedProjectionTrim:
         assert "funds.expensenet_sum" in col_names or "expensenet_sum" in col_names or "expensenet_sum" in sql, (
             f"query-backed wrap must keep the hoisted ``expensenet_sum`` "
             f"alias accessible to downstream stages.\n"
-            f"columns: {col_names}\nSQL:\n{sql}"
+            f"fields: {col_names}\nSQL:\n{sql}"
         )
-        # And the wrapper's column for ``expense_rank`` must of course be
+        # And the wrapper's field for ``expense_rank`` must of course be
         # present too.
         assert "expense_rank" in col_names or "expense_rank" in col_names
 
@@ -832,7 +832,7 @@ class TestStagedProjectionTrim:
         sql_str = resp.sql or ""
         assert resp.columns == ["ranked.status", "top_r"]
         # The inner stage exposes the hoisted intermediate (revenue_sum +
-        # the rank measure ``r``).
+        # the rank metric ``r``).
         assert "revenue_sum" in sql_str or '"orders.revenue_sum"' in sql_str
         assert '"orders.r"' in sql_str or "ranked.r" in sql_str
 
@@ -840,7 +840,7 @@ class TestStagedProjectionTrim:
 # Group J — Provenance and public-projection helper.
 class TestProvenance:
     """The typed-pipeline notion of "user-declared" is membership in the
-    trimmed OUTER projection: a declared dim/measure/transform/expression
+    trimmed OUTER projection: a declared dim/metric/transform/expression
     surfaces in the outermost SELECT, while auto-extracted hidden entries
     (order-by aggregates, filter-transform inner args) are trimmed out. The
     legacy ``user_declared`` flag / ``the legacy public-projection helper`` helper /
@@ -851,7 +851,7 @@ class TestProvenance:
     async def test_declared_measure_in_outer_projection_hidden_trimmed(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """A declared measure surfaces in the outer SELECT; order-by /
+        """A declared metric surfaces in the outer SELECT; order-by /
         filter-extracted hidden aggregates do NOT."""
         query = SlayerQuery(
             population="orders",
@@ -875,7 +875,7 @@ class TestProvenance:
     async def test_declared_expression_in_outer_projection(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """A declared scalar formula (``sum(revenue) / count(*)``) surfaces in
+        """A declared scalar expression (``sum(revenue) / count(*)``) surfaces in
         the outer SELECT under its user alias."""
         query = SlayerQuery(
             population="orders",
@@ -909,7 +909,7 @@ class TestProvenance:
     async def test_declared_cross_model_measure_in_outer_projection(
         self, orders_customers_engine,
     ) -> None:
-        """A declared cross-model measure (``sum(customers.revenue)``) surfaces
+        """A declared cross-dataset metric (``sum(customers.revenue)``) surfaces
         in the outer SELECT under its caller-facing key."""
         engine, _orders = orders_customers_engine
         query = SlayerQuery(
@@ -920,7 +920,7 @@ class TestProvenance:
         resp = await engine.execute(query, dry_run=True)
         outer_cols = _outer_select_columns(resp.sql or "")
         assert any("cust_rev" in c for c in outer_cols), (
-            f"declared cross-model measure must surface in the outer SELECT.\n"
+            f"declared cross-dataset metric must surface in the outer SELECT.\n"
             f"got: {outer_cols}\nSQL:\n{resp.sql}"
         )
 
@@ -928,7 +928,7 @@ class TestProvenance:
         self, orders_dataset: SlayerDataset,
     ) -> None:
         """The outer SELECT projects exactly the declared dims +
-        time_dimensions + measures in declaration order, excluding the
+        time_dimensions + metrics in declaration order, excluding the
         auto-extracted order-by aggregate."""
         query = SlayerQuery(
             population="orders",
@@ -962,7 +962,7 @@ class TestProvenance:
     async def test_provenance_merge_when_order_by_matches_declared(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """When the user declares ``{"formula":"revenue:sum","name":"total"}``
+        """When the user declares ``{"metric":"sum(revenue)","alias":"total"}``
         AND orders by ``sum(revenue)``, the entries merge: the declared alias
         (``orders.total``) is reused, no phantom ``orders.revenue_sum``."""
         query = SlayerQuery(
@@ -983,7 +983,7 @@ class TestProvenance:
             f"alias — no phantom 'orders.revenue_sum'.\nSQL:\n{sql}"
         )
         assert sql.upper().count("SUM(") == 1, (
-            f"merged order-by + declared measure must emit one SUM aggregate:\n{sql}"
+            f"merged order-by + declared metric must emit one SUM aggregate:\n{sql}"
         )
 
 
@@ -1060,7 +1060,7 @@ class TestWrapperLayering:
         # Outer projection trimmed.
         outer_cols = _outer_select_columns(sql)
         assert outer_cols == ["orders.created_at", "total"], (
-            f"Outer SELECT must project only declared dim + measure.\n"
+            f"Outer SELECT must project only declared dim + metric.\n"
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
         # AST: outermost is a Select with trim projection + order + limit.
@@ -1089,13 +1089,13 @@ class TestWrapperLayering:
         )
 
 
-# Group M — Cross-model / isolated ORDER BY hoisted, not projected.
+# Group M — Cross-dataset / isolated ORDER BY hoisted, not projected.
 class TestCrossModelOrderBy:
     async def test_order_by_cross_model_agg_hoisted_not_projected(
         self, orders_customers_engine,
     ) -> None:
-        """ORDER BY a cross-model aggregate (``sum(customers.revenue)``) with
-        no matching declared measure: the aggregate is hoisted as a hidden
+        """ORDER BY a cross-dataset aggregate (``sum(customers.revenue)``) with
+        no matching declared metric: the aggregate is hoisted as a hidden
         internal CTE column, the outer ORDER BY references it via the
         hidden alias by name (NOT inline as a SUM(...) expression), and
         the outer SELECT does NOT project it."""
@@ -1113,8 +1113,8 @@ class TestCrossModelOrderBy:
             f"Outer SELECT must project only [orders.status].\n"
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
-        # The hidden cross-model alias must appear in the SQL (as a CTE
-        # column or as an alias in an inner SELECT). Cross-model measure
+        # The hidden cross-dataset alias must appear in the SQL (as a CTE
+        # column or as an alias in an inner SELECT). Cross-dataset metric
         # aliases follow the ``<source>.<target>__<col>_<agg>`` pattern;
         # accept either path-aliased or dotted-prefixed forms.
         all_aliases = _all_aliases_in_sql(sql)
@@ -1123,14 +1123,14 @@ class TestCrossModelOrderBy:
             if "revenue_sum" in a or "sum(revenue)" in a
         ]
         assert hidden_candidates, (
-            f"Hidden cross-model aggregate alias must appear in the SQL.\n"
+            f"Hidden cross-dataset aggregate alias must appear in the SQL.\n"
             f"aliases: {all_aliases}\nSQL:\n{sql}"
         )
         # Outermost ORDER BY references one of those hidden aliases by name,
         # not as an inline expression.
         order_refs = _outer_order_by_references(sql)
         assert any(r in hidden_candidates for r in order_refs), (
-            f"Outermost ORDER BY must reference the hidden cross-model "
+            f"Outermost ORDER BY must reference the hidden cross-dataset "
             f"alias by name (not inline).\n"
             f"refs: {order_refs}\nhidden candidates: {hidden_candidates}\n"
             f"SQL:\n{sql}"
@@ -1149,8 +1149,8 @@ class TestWindowChainReuse:
     async def test_structural_reuse_inline_subagg_collapses(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """``m1={"formula":"revenue:sum","name":"total"}`` plus
-        ``m2={"formula":"rank(revenue:sum, direction='desc')","name":"r"}`` → ``r``'s OVER
+        """``m1={"metric":"sum(revenue)","alias":"total"}`` plus
+        ``m2={"metric":"rank(sum(revenue), direction='desc')","alias":"r"}`` → ``r``'s OVER
         references ``total``'s alias (orders.total), no inner duplicate."""
         query = SlayerQuery(
             population="orders",
@@ -1169,7 +1169,7 @@ class TestWindowChainReuse:
         # No `_inner_*` hoist of the inner sum.
         assert "_inner_" not in sql
         # OVER (...) DESC must reference the orders.total alias (since the
-        # rank arg structurally equals the declared 'total' measure).
+        # rank arg structurally equals the declared 'total' metric).
         # Look for an OVER clause that mentions "orders.total" near it.
         over_match = re.search(r"OVER\s*\([^)]*\)", sql)
         assert over_match is not None
@@ -1252,7 +1252,7 @@ class TestCallSitesAndContractPins:
             offset=20,
         )
         sql = await _generate(query, orders_dataset)
-        # Outer SELECT projects only declared dim + measure.
+        # Outer SELECT projects only declared dim + metric.
         outer_cols = _outer_select_columns(sql)
         assert outer_cols == ["orders.status", "total"], (
             f"Outer projection wrong: {outer_cols}\nSQL:\n{sql}"
@@ -1271,7 +1271,7 @@ class TestDimAndTimeDimClash:
     async def test_dim_and_time_dim_resolving_to_same_alias_rejected(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """A query that lists the same column as both a regular dimension
+        """A query that lists the same field as both a regular dimension
         and a time dimension produces ambiguous aliases — reject at
         enrichment time with a concrete ``ValueError``. Catching the
         narrow exception type prevents the test from silently masking
@@ -1307,8 +1307,8 @@ class TestDuplicateUserDeclaredCanonical:
     async def test_two_qfields_same_canonical_different_names_multi_alias(
         self, orders_dataset: SlayerDataset,
     ) -> None:
-        """Two measures with the same canonical aggregation but different
-        ``name`` overrides intern to one slot and project under BOTH names,
+        """Two metrics with the same canonical aggregation but different
+        ``alias`` overrides intern to one slot and project under BOTH names,
         backed by a single ``SUM(amount)``."""
         query = SlayerQuery(
             population="orders",
@@ -1358,7 +1358,7 @@ class TestOuterOrderByQualifierStripping:
         reference uses the bare alias (which ``_outer`` exposes).
         """
         engine, _ = orders_customers_engine
-        # Cross-model measure forces the combined-CTE path; an unbound
+        # Cross-dataset metric forces the combined-CTE path; an unbound
         # ORDER BY aggregate adds a hidden hoist that forces the wrap.
         query = SlayerQuery(
             population="orders",

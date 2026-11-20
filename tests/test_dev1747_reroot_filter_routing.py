@@ -1,4 +1,4 @@
-"""No silent filter drops when a cross-model CTE is re-rooted at its target (B6/D6/D7)."""
+"""No silent filter drops when a cross-dataset CTE is re-rooted at its target (B6/D6/D7)."""
 from __future__ import annotations
 
 import ast
@@ -29,7 +29,7 @@ import inspect
 from slayer.engine.cardinality import relationship_safety
 from slayer.engine.compile import stages
 
-#: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
+#: Cross-dataset aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
 _CROSS_MODEL_MEASURE = {"metric": "sum(customers.spend)", "alias": "cs"}
 
 #: Reachable from the re-rooted target (``customers -> regions``).
@@ -49,7 +49,7 @@ FILTER_TARGET_ATTRIBUTE = "customers.tier == 'gold'"
 #: Aggregate-phase predicate over the isolated aggregate; not host-evaluable, so it must STAY routed to the CTE.
 FILTER_AGGREGATE_REF = "sum(customers.spend) > 500"
 
-#: A HOST-ROOTED shape (``cte_root_model == "orders"``): order by a derived crossing column — the filtered-local helpers live only on this route.
+#: A HOST-ROOTED shape (``cte_root_model == "orders"``): order by a derived crossing field — the filtered-local helpers live only on this route.
 _HOST_ROOTED_QUERY = SlayerQuery.model_validate({
     "population": "orders",
     "dimensions": [QueryDimension(field="orders.status")],
@@ -73,14 +73,14 @@ def _attaches(*filters: str):
         a for a in plan.regroup_attach_plans
         if a.producer_root_dataset == "customers"
     ]
-    assert attaches, "no target-rooted cross-model producer was planned"
+    assert attaches, "no target-rooted cross-dataset producer was planned"
     return attaches
 
 
 def _sole_attach(*filters: str):
     attaches = _attaches(*filters)
     assert len(attaches) == 1, (
-        f"expected one cross-model producer, got {len(attaches)}"
+        f"expected one cross-dataset producer, got {len(attaches)}"
     )
     return attaches[0]
 
@@ -196,7 +196,7 @@ class TestMixedOrPushes:
         assert FILTER_MIXED_OR in group.filter_texts
 
     async def test_one_pushed_entry_per_producer_per_execute(self) -> None:
-        """Every producer pushes the filter: one ``semi_join_pushed`` entry per measure (cs, pop), no Python warning."""
+        """Every producer pushes the filter: one ``semi_join_pushed`` entry per metric (cs, pop), no Python warning."""
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
@@ -364,7 +364,7 @@ class TestFilteredLocalDispatchAccounting:
         )
 
     def test_a_target_grain_aggregate_does_not_take_that_route(self) -> None:
-        """The contrast: a genuine cross-model measure must keep the TARGET-rooted producer, or its value silently becomes per-host-group."""
+        """The contrast: a genuine cross-dataset metric must keep the TARGET-rooted producer, or its value silently becomes per-host-group."""
         plan = plan_query(
             query=SlayerQuery(
                 population="orders",
@@ -395,7 +395,7 @@ class TestFilteredLocalDispatchAccounting:
 
 
 class TestRerootedFilterStillNarrowsTheHost:
-    """A re-rooted plan has no forward CTE, so ``where``/``having`` routing ids must NOT tell the host base to skip a host-evaluable filter — else excluded rows return with a NULL measure. Row-level tests; the plan-level ones passed throughout."""
+    """A re-rooted plan has no forward CTE, so ``where``/``having`` routing ids must NOT tell the host base to skip a host-evaluable filter — else excluded rows return with a NULL metric. Row-level tests; the plan-level ones passed throughout."""
 
     @staticmethod
     async def _rows_and_warnings(*filters: str):
@@ -443,7 +443,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         )
 
     async def test_the_excluded_regions_do_not_come_back_as_nulls(self) -> None:
-        """The symptom is a row present with a NULL measure — a count assertion alone would not catch it."""
+        """The symptom is a row present with a NULL metric — a count assertion alone would not catch it."""
         rows = await self._rows(FILTER_REACHABLE)
         leaked = [
             r for r in rows
@@ -452,7 +452,7 @@ class TestRerootedFilterStillNarrowsTheHost:
             )
         ]
         assert not leaked, (
-            f"regions the filter excludes are present with a NULL measure: "
+            f"regions the filter excludes are present with a NULL metric: "
             f"{leaked}"
         )
 
@@ -461,10 +461,10 @@ class TestRerootedFilterStillNarrowsTheHost:
         rows = await self._rows(FILTER_REACHABLE)
         assert len(rows) == 1, rows
         assert rows[0]["rev"] == 11.0, (
-            f"the surviving group's own measure changed: {rows[0]}"
+            f"the surviving group's own metric changed: {rows[0]}"
         )
         assert rows[0]["cs"] == ALPHA_SPEND_ALL, (
-            f"the cross-model measure changed: {rows[0]}"
+            f"the cross-dataset metric changed: {rows[0]}"
         )
 
     async def test_a_host_local_filter_still_narrows_the_host(self) -> None:
@@ -504,7 +504,7 @@ class TestRerootedFilterStillNarrowsTheHost:
             f"{sorted(by_region)}"
         )
         assert by_region[REGION_A_LOW]["cs"] == ALPHA_SPEND_GOLD, (
-            f"Alpha's cross-model spend is {by_region[REGION_A_LOW]['cs']}, "
+            f"Alpha's cross-dataset spend is {by_region[REGION_A_LOW]['cs']}, "
             f"not {ALPHA_SPEND_GOLD} — the re-rooted CTE aggregated an "
             f"UNFILTERED target population (unfiltered total is "
             f"{ALPHA_SPEND_ALL})"
@@ -539,7 +539,7 @@ class TestRerootedAggregateRefFilter:
         assert _lower_positions(plan).outer_where_ids, "the predicate is applied nowhere"
 
     async def test_it_restricts_rows_by_the_aggregate_predicate(self) -> None:
-        """Only Alpha's ``sum(customers.spend)`` clears 500, so it is the sole surviving group — others dropped, not returned with a NULL measure."""
+        """Only Alpha's ``sum(customers.spend)`` clears 500, so it is the sole surviving group — others dropped, not returned with a NULL metric."""
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
@@ -595,7 +595,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
     async def test_a_row_phase_filter_matches_the_no_cross_model_answer(
         self,
     ) -> None:
-        """Adding a cross-model measure must not change which rows a filter keeps — the invariant the host-skip broke."""
+        """Adding a cross-dataset metric must not change which rows a filter keeps — the invariant the host-skip broke."""
         plain = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [QueryDimension(field="customers.regions.name")],
@@ -611,7 +611,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         assert (
             [r["rev"] for r in plain_rows]
             == [r["rev"] for r in mixed_rows]
-        ), "the sibling local measure changed when a cross-model one was added"
+        ), "the sibling local metric changed when a cross-dataset one was added"
 
     async def test_applying_at_the_host_does_not_fan_out_a_sibling(self) -> None:
         """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``sum(amount)`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
@@ -629,6 +629,6 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
             f"'rush' tags only orders 1 and 2, both status A: {sorted(by_status)}"
         )
         assert by_status["A"]["rev"] == GROUP_A_AMOUNT, (
-            f"the sibling local measure fanned out: "
+            f"the sibling local metric fanned out: "
             f"{by_status['A']['rev']} != {GROUP_A_AMOUNT}"
         )

@@ -1,11 +1,12 @@
-"""DEV-1952 — a derived ``Column.sql`` / ``Column.filter`` whose join path revisits
-a model already on it is a typed circular refusal, not a silent ``0.0``.
+"""A derived ``DatasetField.sql`` / ``DatasetField.filter`` whose
+relationship path revisits a dataset already on it is a typed circular refusal,
+not a silent ``0.0``.
 
-The shared walker (``core/join_walker.py::walk``) raises ``CircularJoinPathError``
+The shared walker (``core/relationship_walker.py::walk``) raises ``CircularRelationshipPathError``
 on a revisit (``None`` now means only an unknown/unloaded hop); best-effort
 consumers catch it and keep today's answer, while the two doors that classify a
-user-typed definition fail closed. Save time rejects the model with
-``DerivedColumnCircularError`` from both save doors; query time refuses a stored
+user-typed definition fail closed. Save time rejects the dataset with
+``DerivedFieldCircularError`` from both save doors; query time refuses a stored
 circular definition in every position with the base class; the binder's
 query-typed circular refusal adopts the same class.
 
@@ -65,7 +66,7 @@ DS = "ds"
 
 
 # --------------------------------------------------------------------------- #
-# Save-time model builders (``regions ← customers ← orders``; spend on customers,
+# Save-time dataset builders (``regions ← customers ← orders``; spend on customers,
 # so ``regions.customers.spend`` from customers revisits customers).
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
@@ -165,7 +166,7 @@ class TestErrorVocabulary:
         assert "references 'regions.customers.spend'" in msg
         assert "revisits dataset 'customers'" in msg
         assert "not a field of 'customers'" in msg
-        # Both remedy arms: reference the column directly, or aggregate on the via.
+        # Both remedy arms: reference the field directly, or aggregate on the via.
         assert "Reference the field on 'customers'" in msg
         assert "declare the aggregate on 'regions'" in msg
         assert "reaches 'customers'" in msg
@@ -181,9 +182,9 @@ def _chain() -> dict[str, SlayerDataset]:
 
 
 def _self_relationship_dataset() -> SlayerDataset:
-    """A model carrying a named ``parent`` self-join edge, built via
-    ``model_construct`` to bypass ``SlayerModel._reject_self_relationships`` — a real
-    self-join is rejected at construction, so save/query paths never see one;
+    """A dataset carrying a named ``parent`` self-relationship edge, built via
+    ``model_construct`` to bypass ``SlayerDataset._reject_self_relationships`` — a real
+    self-relationship is rejected at construction, so save/query paths never see one;
     this exercises the walker's first-hop revisit guard in isolation."""
     return SlayerDataset.model_construct(
         name="customers", data_source="test", sql_table="customers",
@@ -278,8 +279,8 @@ class TestBestEffortConsumersUnchanged:
             datasets_by_name=models) is None
 
     def test_resolve_default_qualifier_path_cancels(self) -> None:
-        # The definition-default door resolves through the cancelling walk
-        # (DEV-1908): a revisiting default cancels back to the dataset on the
+        # The definition-default door resolves through the cancelling walk:
+        # a revisiting default cancels back to the dataset on the
         # path and never surfaces the circular signal.
         models = _chain()
         assert resolve_default_qualifier_path(
@@ -305,7 +306,7 @@ class TestBestEffortConsumersUnchanged:
 
 class TestExpansionDoorRevisit:
     """The strict expansion door re-raises a revisit with the complete pre-strip
-    reference and the column whether it surfaces from the direct walk or from the
+    reference and the field whether it surfaces from the direct walk or from the
     legacy ``a__b`` split-alias probe (which walks the naive split)."""
 
     def test_legacy_split_alias_revisit_keeps_full_spelling(self) -> None:
@@ -499,8 +500,8 @@ class TestSaveTimeEngineDoor:
     async def test_transitive_revisit_names_the_inner_column(self, tmp_path) -> None:
         # ``chain`` (declared first, so the engine expands it before the inner one)
         # references the revisiting ``revisit_spend``. Both doors name the inner
-        # column that actually revisits, with an identical message — the engine
-        # must not attribute the cycle to the outer referring column.
+        # field that actually revisits, with an identical message — the engine
+        # must not attribute the cycle to the outer referring field.
         storage = _storage(tmp_path)
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
@@ -522,8 +523,8 @@ class TestSaveTimeEngineDoor:
         assert str(storage_exc) == str(engine_exc)
 
     async def test_model_filter_surface_propagates_base_error(self, tmp_path) -> None:
-        # A model-level filter that revisits propagates the base error, not the
-        # derived-column one (it is not a column surface).
+        # A dataset-level filter that revisits propagates the base error, not the
+        # derived-field one (it is not a field surface).
         storage = _storage(tmp_path)
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
@@ -697,7 +698,7 @@ class TestQueryTimeBackstop:
 
     async def test_query_typed_spelling_same_class(self, qengine) -> None:
         # The binder builds its own reference fields; pin only the class, the
-        # revisited model, and that the message names the circular path.
+        # revisited dataset, and that the message names the circular path.
         exc = await _assert_circular(
             qengine, _orders_q(metrics=[QueryMetric(
                 metric="sum(customers.regions.customers.spend)", alias="w")]),
@@ -732,7 +733,7 @@ class TestBinderParity:
         assert not isinstance(exc, DerivedFieldCircularError)
 
     def test_leading_self_prefix_keeps_full_spelling(self) -> None:
-        # C14's ``_strip_self_prefix`` drops a leading same-model prefix for
+        # C14's ``_strip_self_prefix`` drops a leading same-dataset prefix for
         # resolution, but the circular error keeps the complete reference as
         # spelled (bound directly, before the query layer's own prefix strip).
         bundle = ResolvedSourceBundle(
@@ -751,8 +752,8 @@ class TestBinderParity:
 # --------------------------------------------------------------------------- #
 # Section G — behaviour-unchanged regressions (design Risks): a composed via-host
 # reroot path still resolves by association (never a new raise), and definition
-# defaults still resolve owner-first with root fallback. Reuse the DEV-1900 /
-# DEV-1931 graphs and their oracles; these pass before and after the fix.
+# defaults still resolve owner-first with root fallback. Reuse the ``_dev1900_fixtures`` /
+# ``_dev1931_fixtures`` graphs and their oracles; these pass before and after the fix.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def reroot_engine(request):

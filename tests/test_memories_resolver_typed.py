@@ -1,7 +1,7 @@
 """Memory entity-extraction via the typed Mode-B parser.
 
-``_formula_entity_tokens(parsed)`` yields the entity *tokens* a measure
-formula references — aggregations as ``(source, agg)`` pairs and
+``_formula_entity_tokens(parsed)`` yields the entity *tokens* a metric
+expression references — aggregations as ``(source, agg)`` pairs and
 bare / dotted refs as their textual form — which ``extract_entities_from_query``
 then feeds one-by-one into ``resolve_entity``. No binding, no scope: the
 resolver does its own canonicalisation downstream.
@@ -39,7 +39,7 @@ class TestFormulaEntityTokens:
         assert _tokens("cumsum(sum(amount))") == [("amount", "sum")]
 
     def test_transform_partition_by_opaque(self) -> None:
-        # partition_by columns are opaque — only the inner value surfaces.
+        # partition_by fields are opaque — only the inner value surfaces.
         assert _tokens("cumsum(sum(amount), partition_by=region)") == [("amount", "sum")]
 
     def test_scalar_call_bare_ref(self) -> None:
@@ -52,12 +52,12 @@ class TestFormulaEntityTokens:
         assert _tokens("change(sum(amount)) > 0") == [("amount", "sum")]
 
     def test_bare_ref_yields_name(self) -> None:
-        # Bare named-measure / column ref surfaces as its textual name so
-        # the resolver can canonicalise it (e.g. to ``<ds>.<model>.aov``).
+        # Bare named-metric / field ref surfaces as its textual name so
+        # the resolver can canonicalise it (e.g. to ``<ds>.<dataset>.aov``).
         assert _tokens("aov") == ["aov"]
 
     def test_weighted_avg_kwarg_column_not_yielded(self) -> None:
-        # Only the aggregated source surfaces; the weight column is opaque.
+        # Only the aggregated source surfaces; the weight field is opaque.
         assert _tokens("weighted_avg(price, weight=quantity)") == [("price", "weighted_avg")]
 
     def test_dotted_bare_ref(self) -> None:
@@ -69,5 +69,5 @@ class TestFormulaEntityTokens:
 
     def test_expression_source_yields_operand_refs(self) -> None:
         # An aggregated expression is not itself an entity — its operand
-        # columns surface individually.
+        # fields surface individually.
         assert _tokens("sum(amount - cost)") == ["amount", "cost"]

@@ -123,7 +123,7 @@ def _normalised(value: Any, *, target: str) -> Any:
 
 
 async def check_try_cast_targets(engine: SlayerQueryEngine, *, dataset: str) -> None:
-    """Every ``TRY_CAST_TARGET_CASES`` row in one query over any non-empty ``model``."""
+    """Every ``TRY_CAST_TARGET_CASES`` row in one query over any non-empty ``dataset``."""
     resp = await engine.execute(SlayerQuery.model_validate({"population": dataset, "metrics": try_cast_metrics()}))
     assert len(resp.data) == 1, resp.data
     row = resp.data[0]

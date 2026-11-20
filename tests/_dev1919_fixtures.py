@@ -1,5 +1,5 @@
-"""Shared fixtures for DEV-1919 — an attached input's producer is rooted at its
-own home in every ``to_many_handling`` mode. Raw-row oracles over the DEV-1840
+"""Shared fixtures for an attached input's producer rooted at its
+own home in every ``to_many_handling`` mode. Raw-row oracles over the
 dataset (``tests/_dev1840_fixtures``), the double-entry reference the executed
 suite asserts against.
 """
@@ -49,7 +49,7 @@ UNPARSE_PARAM = ("weighted_avg(customers.spend, weight=sum("
 #: the parameter's own key crosses the fanning regions → region_events hop (dev1900 graph).
 OWN_FAN_BADPOP = ("weighted_avg(orders.amount, weight=sum(customers.regions.pop, "
                   "partition_by=customers.regions.bad_pop))")
-#: a host-safe key, unattributable only from the parameter's cross-model home.
+#: a host-safe key, unattributable only from the parameter's cross-dataset home.
 OWN_FAN_STATUS = "weighted_avg(orders.amount, weight=sum(customers.spend, partition_by=orders.status))"
 #: the outer home (customers) does not determine the parameter's grain member.
 UNDETERMINED_PARAM = "weighted_avg(customers.spend, weight=sum(customers.spend, partition_by=orders.status))"

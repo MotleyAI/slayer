@@ -202,20 +202,20 @@ def mentions(result: ConversionResult, name: str, *, severity: str | None = None
 
 
 def unconverted(result: ConversionResult, metric: str) -> bool:
-    """True when ``metric`` is reported as unconverted and is on no model."""
+    """True when ``metric`` is reported as unconverted and is on no dataset."""
     on_a_model = any(meas.name == metric for model in result.datasets for meas in model.metrics)
     return not on_a_model and any(e.metric_name == metric for e in result.unconverted_metrics)
 
 
 def metric_home(result: ConversionResult, metric: str) -> SlayerDataset:
     homes = [model for model in result.datasets if any(meas.name == metric for meas in model.metrics)]
-    assert len(homes) == 1, f"measure {metric!r} on {[h.name for h in homes]}"
+    assert len(homes) == 1, f"metric {metric!r} on {[h.name for h in homes]}"
     return homes[0]
 
 
 async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
                 dialect: str = "duckdb") -> list[dict[str, Any]]:
-    """Save the imported models over ``db`` and run one query, disposing every engine."""
+    """Save the imported datasets over ``db`` and run one query, disposing every engine."""
     engine = await build_exec_engine(str(db), dialect=dialect, datasets=result.datasets, datasource=DATASOURCE)
     try:
         response = await engine.execute(payload)
@@ -227,7 +227,7 @@ async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
 
 async def scalar(*, result: ConversionResult, db: Path, dataset: str, expression: str,
                  dialect: str = "duckdb") -> Any:
-    """The single value of ``formula`` over ``model``."""
+    """The single value of ``expression`` over ``dataset``."""
     rows = await query(result=result, db=db, dialect=dialect,
                        payload={"population": dataset, "metrics": [{"metric": expression, "alias": "v"}]})
     assert len(rows) == 1

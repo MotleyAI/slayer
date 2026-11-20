@@ -81,7 +81,7 @@ def _data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# The spine model and its reserved name
+# The spine dataset and its reserved name
 # ---------------------------------------------------------------------------
 
 class TestReservedName:

@@ -7,7 +7,7 @@ with ``$SLAYER_SNOWFLAKE_CONNECTION``).
 The session-scoped fixture creates a uniquely-named transient schema, seeds the
 standard orders / customers / products / regions tables (with FK ``REFERENCES``
 clauses — Snowflake stores them informationally, the Inspector returns them,
-auto-ingestion discovers joins), runs the full test matrix, and drops the
+auto-ingestion discovers relationships), runs the full test matrix, and drops the
 schema on teardown. A ``SELECT 1`` warm-up runs once at fixture entry to
 absorb warehouse-suspend latency.
 """
@@ -286,8 +286,8 @@ def sf_engine(sf_datasource: DatasourceConfig, sf_transient_schema):
 
 @pytest.fixture
 def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
-    """YAMLStorage with the four standard models pre-saved.
-    Caller adds joins where needed."""
+    """YAMLStorage with the four standard datasets pre-saved.
+    Caller adds relationships where needed."""
     storage = YAMLStorage(base_dir=str(tmp_path))
     run_sync(storage.save_datasource(sf_datasource))
 
@@ -394,7 +394,7 @@ def test_query_with_dimension(sf_storage_with_datasets) -> None:
 
 
 def test_dev1933_regex_literal_model_column(sf_storage_with_datasets: StorageBackend) -> None:
-    """A model column holding a ``(?:...)`` regex literal and a ``%``
+    """A dataset field holding a ``(?:...)`` regex literal and a ``%``
     LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     orders = run_sync(sf_storage_with_datasets.get_dataset("orders"))
@@ -415,7 +415,7 @@ def test_dev1933_regex_literal_model_column(sf_storage_with_datasets: StorageBac
 
 
 def test_rollup_join_via_explicit_joins(sf_storage_with_datasets) -> None:
-    """Cross-model measure: orders.customers.regions.name (multi-hop join).
+    """Cross-dataset metric: orders.customers.regions.name (multi-hop relationship path).
 
     Seed data: customers 1+3 live in US, customer 2 lives in EU, region 3
     (APAC) has no customers — and the LEFT JOIN chain starts at orders, so
@@ -707,25 +707,25 @@ def test_session_overrides_apply_to_metadata_reads(sf_transient_schema) -> None:
 
 def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None:
     """Snowflake stores FK constraints declaratively and exposes them via
-    Inspector. Auto-ingestion should pick them up and produce models with
-    ``joins:`` entries. Pins the corrected behavior post-spec v2: Snowflake
+    Inspector. Auto-ingestion should pick them up and produce datasets with
+    ``relationships:`` entries. Pins the corrected behavior post-spec v2: Snowflake
     is NOT in the no-FK list.
 
     Coverage:
       - orders → customers (FK on customer_id)
       - orders → products (FK on product_id)
       - customers → regions (second-hop FK on region_id)
-      - source/target column names on each join
+      - source/target column names on each relationship
     """
     schema_to_introspect = sf_transient_schema
     models = run_sync(_ingest(sf_datasource, schema=schema_to_introspect))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name.get("orders")
     customers = by_name.get("customers")
-    assert orders is not None, f"orders model not ingested. Got: {list(by_name)}"
-    assert customers is not None, f"customers model not ingested. Got: {list(by_name)}"
+    assert orders is not None, f"orders dataset not ingested. Got: {list(by_name)}"
+    assert customers is not None, f"customers dataset not ingested. Got: {list(by_name)}"
 
-    # orders → customers / products. ModelJoin stores join_pairs as
+    # orders → customers / products. DatasetRelationship stores column_pairs as
     # [[source_col, target_col], ...]; flatten the first pair for the
     # standard single-column FK case.
     def _first_pair(j: DatasetRelationship) -> tuple[str, str]:
@@ -754,7 +754,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
 
 
 def test_auto_ingest_imports_comments(sf_datasource, sf_transient_schema) -> None:
-    """Snowflake table/column comments must land on model/column descriptions."""
+    """Snowflake table/column comments must land on dataset/field descriptions."""
     models = run_sync(_ingest(sf_datasource, schema=sf_transient_schema))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name["orders"]
@@ -824,7 +824,7 @@ def test_quoted_lowercase_identifier_fails(sf_engine) -> None:
     '''``"orders"`` (quoted, lowercase) FAILS — quoted identifiers are
     case-sensitive on Snowflake, and the stored name is uppercase. Pins
     the documented identifier-casing caveat: users writing
-    ``"Revenue"`` in Column.sql on Snowflake must match storage exactly.
+    ``"Revenue"`` in DatasetField.sql on Snowflake must match storage exactly.
     '''
     with sf_engine.connect() as conn:
         stmt = sa.text('SELECT COUNT(*) FROM "orders"')
@@ -834,7 +834,7 @@ def test_quoted_lowercase_identifier_fails(sf_engine) -> None:
 
 def test_inspector_returns_lowercase_column_names(sf_engine, sf_transient_schema) -> None:
     """``snowflake-sqlalchemy`` Inspector lowercases by default. SLayer's
-    ingestion relies on this for round-tripping ``Column.name`` with the
+    ingestion relies on this for round-tripping ``DatasetField.name`` with the
     SQL the generator emits. Pass the schema explicitly — the Inspector
     doesn't pick up the per-connection ``USE SCHEMA`` from the listener."""
     inspector = sa.inspect(sf_engine)
@@ -848,8 +848,8 @@ def test_inspector_returns_lowercase_column_names(sf_engine, sf_transient_schema
 def test_inspector_returns_lowercase_fk_metadata(sf_engine, sf_transient_schema) -> None:
     """FK introspection casing — referred_table and referred_columns are
     lowercase, matching get_table_names / get_columns output, so the FK
-    resolution in ingestion produces models whose join targets match
-    other models' names by string equality."""
+    resolution in ingestion produces datasets whose relationship targets match
+    other datasets' names by string equality."""
     inspector = sa.inspect(sf_engine)
     fks = inspector.get_foreign_keys("orders", schema=sf_transient_schema)
     by_referred = {fk["referred_table"]: fk for fk in fks}
@@ -860,8 +860,8 @@ def test_inspector_returns_lowercase_fk_metadata(sf_engine, sf_transient_schema)
 
 
 def test_query_result_keys_use_lowercase(sf_storage_with_datasets) -> None:
-    """Result-column keys returned by SlayerQueryEngine use the model's
-    lowercase column names (not Snowflake's uppercase storage form).
+    """Result-column keys returned by SlayerQueryEngine use the dataset's
+    lowercase field names (not Snowflake's uppercase storage form).
     Pins the user-facing API: `result.rows[0]["orders.status"]` works,
     `result.rows[0]["ORDERS.STATUS"]` would silently miss."""
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
@@ -885,7 +885,7 @@ def test_query_result_keys_use_lowercase(sf_storage_with_datasets) -> None:
 # QUOTED DDL (``"StateFlag"``) is stored with genuinely mixed case, so an
 # UNQUOTED reference (which folds to ``STATEFLAG``) fails to resolve — exactly
 # the upper-folding mirror of the Postgres bug. The fix quotes it, so the
-# model (which writes ``StateFlag`` unquoted, as an OTF agent would) executes.
+# dataset (which writes ``StateFlag`` unquoted, as an OTF agent would) executes.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -927,7 +927,7 @@ def sf_dev1645_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
 
 
 def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
-    """Filter on a derived column referencing UNQUOTED mixed-case StateFlag —
+    """Filter on a derived field referencing UNQUOTED mixed-case StateFlag —
     must execute on Snowflake (upper-folding), proving universal quoting is
     correct there too."""
     engine = SlayerQueryEngine(storage=sf_dev1645_storage)
@@ -990,7 +990,7 @@ def test_dev2120_variant_column(sf_dev2120_storage) -> None:
 
 
 # ---------------------------------------------------------------------------
-# List columns: untyped ARRAY element inference (spec: models/list-columns, queries/list-functions,
+# List fields: untyped ARRAY element inference (spec: models/list-columns, queries/list-functions,
 # queries/list-children, aggregations/collect)
 # ---------------------------------------------------------------------------
 
@@ -1219,7 +1219,7 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         tags = model.get_field("tags")
         assert tags is not None
         assert tags.element_type is DataType.INTEGER
-        assert tags.sql == '"tags"'
+        assert tags.definition_sql == '"tags"'
         engine = SlayerQueryEngine(storage=storage)
         try:
             rows = run_sync(engine.execute({"population": "lower_items", "dimensions": ["qty"]})).data

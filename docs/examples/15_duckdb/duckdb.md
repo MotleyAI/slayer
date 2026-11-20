@@ -18,7 +18,7 @@ Each notebook shows, from scratch, how to define a view over a remote file in Du
   dimension; and
 - a **ranking transform in a metric** — `rank(sum(weather.precipitation), direction='desc')` to order the
   months by rainfall, one of SLayer's query-time
-  [transforms](../../concepts/formulas.md).
+  [transforms](../../concepts/expressions.md).
 
 Both of these are defined at query time, showing how SLayer frees you from having to pre-configure every little thing you want to query.
 

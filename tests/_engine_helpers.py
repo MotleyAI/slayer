@@ -11,7 +11,7 @@ Helpers:
   and contains no nested ``WITH`` clause. Lifted from the legacy
   ``test_sql_generator.py`` ``_validating_generate`` wrapper.
 * :func:`_engine_generate` — builds a fresh ephemeral ``YAMLStorage`` +
-  ``SlayerQueryEngine`` for a single ``SlayerModel``, runs the supplied
+  ``SlayerQueryEngine`` for a single ``SlayerDataset``, runs the supplied
   ``SlayerQuery`` with ``dry_run=True``, and returns the emitted SQL.
   Mirrors the legacy ``_generate(query, model)`` semantics on the
   typed pipeline.
@@ -144,7 +144,7 @@ async def seeded_exec_engine(
     clock: Optional[Callable[[], datetime]] = None,
     datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
-    """The one seeded executing-engine context: seeds a temp db (``seed(db_path)``), registers ``models``
+    """The one seeded executing-engine context: seeds a temp db (``seed(db_path)``), registers ``datasets``
     against a ``dialect``-typed datasource, and yields ``(engine, db_path)``, owned by ``owned_query_engine``
     so no engine outlives its file."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -182,7 +182,7 @@ async def make_seeded_sqlite_engine(
 
 
 def datasets_bundle(datasets_by_name: dict[str, SlayerDataset], *, dialect: str = "postgres") -> ResolvedSourceBundle:
-    """A rootless bundle over a model map, for unit tests over plain keys."""
+    """A rootless bundle over a dataset map, for unit tests over plain keys."""
     return ResolvedSourceBundle(dialect=dialect, referenced_datasets=list(datasets_by_name.values()))
 
 
@@ -220,18 +220,18 @@ async def _engine_generate(
     clock: Optional[Callable[[], datetime]] = None,
     datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    """Build a fresh ``YAMLStorage`` + ``SlayerQueryEngine`` for ``model``,
+    """Build a fresh ``YAMLStorage`` + ``SlayerQueryEngine`` for ``dataset``,
     run ``query`` with ``dry_run=True``, and return the emitted SQL.
 
     Each call creates and tears down its own temporary directory so callers
-    can freely compare two model variants (with vs without a saved measure,
-    etc.) without storage cross-talk. ``extra_models`` is an optional list
-    of additional ``SlayerModel`` instances to register in the same store
-    (e.g. join targets sharing ``model.data_source``).
+    can freely compare two dataset variants (with vs without a saved metric,
+    etc.) without storage cross-talk. ``extra_datasets`` is an optional list
+    of additional ``SlayerDataset`` instances to register in the same store
+    (e.g. relationship targets sharing ``dataset.data_source``).
 
-    ``validate=False`` skips save-time derived-column cycle
+    ``validate=False`` skips save-time derived-field cycle
     detection for the few migrated tests that feed intentionally-shaped
-    models the cycle validator would otherwise reject. ``datasource_fields``
+    datasets the cycle validator would otherwise reject. ``datasource_fields``
     adds extra ``DatasourceConfig`` fields.
     """
     with tempfile.TemporaryDirectory() as d:
@@ -272,7 +272,7 @@ def _where_text(sql: str, *, dialect: str = "postgres") -> str:
 
 
 def _dataset_where_text(sql: str, *, dialect: str = "postgres") -> str:
-    """Rendered WHERE of the outermost SELECT's FROM when it is a model's filtered dataset ('' if none)."""
+    """Rendered WHERE of the outermost SELECT's FROM when it is a dataset's filtered subquery ('' if none)."""
     source = _outer_select(sql, dialect=dialect).args["from_"].this
     where = source.this.args.get("where") if isinstance(source, exp.Subquery) else None
     return where.this.sql(dialect=dialect) if where is not None else ""
@@ -311,13 +311,13 @@ def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
 
 
 def _extract_src_body(sql: str) -> str:
-    """Pull out the ``_src`` subquery body from a generated window-measure SQL.
+    """Pull out the ``_src`` subquery body from a generated window-metric SQL.
 
     Resilient when the outer query also contains other LEFT JOIN (...) blocks
-    (e.g. cross-model measure subqueries): anchors on the ``\\n) AS _src`` suffix
+    (e.g. cross-dataset metric subqueries): anchors on the ``\\n) AS _src`` suffix
     and reverse-searches for the matching ``LEFT JOIN (\\n`` before it. Multiple
-    windowed measures emit SIBLING ``) AS _src`` closes (never nested); anchor on
-    the LAST so the reverse search pairs it with the last measure's opening.
+    windowed metrics emit SIBLING ``) AS _src`` closes (never nested); anchor on
+    the LAST so the reverse search pairs it with the last metric's opening.
 
     The missing-anchor assertion is not reachable with today's generator output
     (CodeRabbit): without it the helper silently returns a slice from an
@@ -379,7 +379,7 @@ async def orders_agg_sql(
     expression: str, *, dialect: str = "postgres",
     aggregations: Optional[list[Aggregation]] = None,
 ) -> str:
-    """Whitespace-normalised SQL for one ``formula`` measure over a flat ``orders`` model
+    """Whitespace-normalised SQL for one ``expression`` metric over a flat ``orders`` dataset
     (``amount``, ``quantity``, ``status`` and the masked ``completed_amount``)."""
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",

@@ -40,7 +40,7 @@ def _sales(**kw) -> SlayerQuery:
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
-        # W1 — cross-model ranked × partition_by, every position.
+        # W1 — cross-dataset ranked × partition_by, every position.
         "w1/last_tier_measure": _orders(
             dimensions=["customers.tier"],
             metrics=[{"metric": LAST_TIER, "alias": "l"}],
@@ -60,7 +60,7 @@ def _cases() -> dict:
             metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
             order=[{"field": LAST_TIER, "direction": "desc"}],
         ),
-        # W2 — cross-model partitioned inners under transforms.
+        # W2 — cross-dataset partitioned inners under transforms.
         "w2/cumsum_part_tier": _orders(
             dimensions=["customers.tier"], time_dimensions=_MONTH,
             metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],

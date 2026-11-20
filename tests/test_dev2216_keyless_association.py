@@ -261,7 +261,7 @@ class TestRowIdentity:
 
 
 class TestPrimaryKeyWithNullableUnique:
-    """A primary key, not a nullable unique column, deduplicates the home."""
+    """A primary key, not a nullable unique field, deduplicates the home."""
 
     async def test_sql_is_not_numbered(self) -> None:
         sales, tags = keyed_sales_datasets()

@@ -1,4 +1,4 @@
-"""Save-time aggregation-formula parse check at every engine create/edit door."""
+"""Save-time aggregation-expression parse check at every engine create/edit door."""
 
 from __future__ import annotations
 

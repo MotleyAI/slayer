@@ -1,10 +1,10 @@
-"""DEV-1832 task 1.4 — executed cross-model expression aggregation.
+"""Executed cross-dataset expression aggregation.
 
 Every ``#### Scenario`` of ``aggregations/expression-aggregation`` › *Row-level
 expressions can be aggregated* and the execution/typing scenarios of *Expression
 source typing*, plus ``queries/cross-model-aggregates``. Executed on SQLite and
-DuckDB. Same-model shapes and fully-attached / mixed shapes already compile;
-the cross-model shapes now compile too — all pass here as regression guards.
+DuckDB. Same-dataset shapes and fully-attached / mixed shapes already compile;
+the cross-dataset shapes now compile too — all pass here as regression guards.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ async def exec_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_net(request):
-    """Engine whose orders carry a derived ``net`` column and a ``my_agg``."""
+    """Engine whose orders carry a derived ``net`` field and a ``my_agg``."""
     models = dev1832_datasets()
     orders = next(m for m in models if m.name == "orders")
     orders.fields.append(DatasetField(name="net", datatype=DataType.FLOAT, sql="amount - cost"))
@@ -108,7 +108,7 @@ def _cells(resp, dim: str, name: str, root: str = "orders") -> dict:
 
 
 async def _val(engine, expression: str, **q) -> dict:
-    """{status cell: value} for a single measure grouped by status."""
+    """{status cell: value} for a single metric grouped by status."""
     resp = await engine.execute(
         orders_q(dimensions=["orders.status"], metrics=[QueryMetric(metric=expression, alias="m")], **q))
     return _cells(resp, "status", "m")
@@ -127,7 +127,7 @@ def _two_branch_by_status() -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Row-level expressions can be aggregated — same-model (regression guards).
+# Row-level expressions can be aggregated — same-dataset (regression guards).
 # --------------------------------------------------------------------------- #
 class TestSameModelExpressions:
     async def test_arithmetic_expression(self, exec_backend):
@@ -173,7 +173,7 @@ class TestSameModelExpressions:
 
 
 # --------------------------------------------------------------------------- #
-# Cross-model expression sources (the lifted boundary — fail on current tree).
+# Cross-dataset expression sources (the lifted boundary — fail on current tree).
 # --------------------------------------------------------------------------- #
 class TestCrossModelExpressions:
     async def test_host_homed_expression(self, exec_backend):
@@ -213,7 +213,7 @@ class TestCrossModelExpressions:
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="a"),
                       QueryMetric(metric="sum(orders.amount - customers.discount, window='90d')", alias="m")]))
         assert len(withw.data) == len(base.data)
-        # Every bucket has orders, so the trailing-window measure is non-NULL throughout.
+        # Every bucket has orders, so the trailing-window metric is non-NULL throughout.
         assert all(row["m"] is not None for row in withw.data)
 
     async def test_filter_position_prunes_only(self, exec_backend):
@@ -259,7 +259,7 @@ class TestCrossModelExpressions:
             await gen(query)
 
     async def test_target_homed_scope_closed_no_placeholder_leak(self):
-        # The cross-model producer closes its scope and leaks no internal placeholder.
+        # The cross-dataset producer closes its scope and leaks no internal placeholder.
         sql = await gen(orders_q(
             dimensions=["customers.tier"],
             metrics=[QueryMetric(metric="sum(customers.spend - customers.regions.pop)", alias="m")]))
@@ -298,7 +298,7 @@ class TestExpressionSourceTyping:
         with pytest.raises(ValueError, match="(?i)unproven relationship hop|fanning") as ei:
             await gen(query)
         assert not re.search(r"DEV-\d+", str(ei.value))
-        # A source-leaf crossing names the cross-model spelling as the remedy.
+        # A source-leaf crossing names the cross-dataset spelling as the remedy.
         assert "region_events" in str(ei.value)
         assert "Aggregate the target field directly" in str(ei.value)
 
@@ -316,7 +316,7 @@ class TestExpressionSourceTyping:
         assert "ROW_NUMBER" in (await gen(query)).upper()
 
     async def test_fully_attached_source_accepted(self, exec_backend):
-        # Regression guard (DEV-1847): the expression gate must not reject it.
+        # Regression guard: the expression gate must not reject it.
         resp = await exec_backend.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(metric="avg(sum(sales.amount, partition_by=[sales.city, sales.region]))", alias="m")]))
@@ -325,7 +325,7 @@ class TestExpressionSourceTyping:
         assert got == pytest.approx(AVG_CITY_TOTAL_BY_REGION)
 
     async def test_mixed_row_and_attached_source_accepted(self, exec_backend):
-        # Regression guard (DEV-1859).
+        # Regression guard.
         resp = await exec_backend.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(metric="sum(sales.quantity * avg(sales.unit_price, partition_by=sales.product))", alias="m")]))

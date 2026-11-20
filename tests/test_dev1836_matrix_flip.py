@@ -1,5 +1,5 @@
 """The compatibility-matrix cells flip: row regroup attaches
-coexist with cross-model measures, cross-model sources become legal in
+coexist with cross-dataset metrics, cross-dataset sources become legal in
 computed dimensions, and intermediate-hop dimensions execute (design D4, F3).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Cross-model aggregates
@@ -78,7 +78,7 @@ async def _dry_scope_closed(engine, query, dialect) -> None:
 
 
 class TestRowAttachWithCrossModelMeasure:
-    """The former generator guard: row regroup attach × cross-model measure."""
+    """The former generator guard: row regroup attach × cross-dataset metric."""
 
     async def test_band_dim_with_cm_executes(self, exec_backend):
         dialect, engine = exec_backend
@@ -92,7 +92,7 @@ class TestRowAttachWithCrossModelMeasure:
         assert float(by[(0,)]["m"]) == pytest.approx(
             AMOUNT_BY_CHANNEL["app"],
         )
-        # The band derives from host-local columns: unattributable → broadcast.
+        # The band derives from host-local fields: unattributable → broadcast.
         for row in resp.data:
             assert float(row["cm"]) == pytest.approx(SPEND_TOTAL)
         await _dry_scope_closed(engine, query, dialect)
@@ -118,7 +118,7 @@ class TestRowAttachWithCrossModelMeasure:
             )
 
     async def test_rank_dim_with_cm_executes(self, exec_backend):
-        """Transform-root dimension family × cross-model measure."""
+        """Transform-root dimension family × cross-dataset metric."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"field": "rank(sum(orders.amount, partition_by=orders.channel), direction='desc')",
@@ -134,7 +134,7 @@ class TestRowAttachWithCrossModelMeasure:
             assert float(row["cm"]) == pytest.approx(SPEND_TOTAL)
 
     async def test_mixed_dim_with_cm_executes(self, exec_backend):
-        """Union-grain (mixed) dimension family × cross-model measure."""
+        """Union-grain (mixed) dimension family × cross-dataset metric."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
@@ -154,8 +154,8 @@ class TestRowAttachWithCrossModelMeasure:
             assert float(by[mr]["cm"]) == pytest.approx(SPEND_TOTAL), mr
 
     def test_cm_rides_the_regroup_primitive(self):
-        """Plan structure: the migrated cross-model measure is a combined-phase
-        regroup attach; the bespoke cross-model plan list is empty/gone."""
+        """Plan structure: the migrated cross-dataset metric is a combined-phase
+        regroup attach; the bespoke cross-dataset plan list is empty/gone."""
         planned = plan_query(
             query=q(dimensions=[LOCAL_BAND], metrics=[M, CM]), bundle=_bundle(),
         )
@@ -164,7 +164,7 @@ class TestRowAttachWithCrossModelMeasure:
 
 
 class TestCrossModelSourceInComputedDimension:
-    """The former stage_planner guard: a cross-model aggregate source inside a
+    """The former stage_planner guard: a cross-dataset aggregate source inside a
     computed dimension needs a target-rooted producer."""
 
     async def test_spend_band_dimension_executes(self, exec_backend):
@@ -181,7 +181,7 @@ class TestCrossModelSourceInComputedDimension:
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_spend_band_coexists_with_cm_measure(self, exec_backend):
-        """The D4 load-bearing cell: the cross-model measure's producer groups
+        """The D4 load-bearing cell: the cross-dataset metric's producer groups
         by a computed dimension whose own producer nests inside it."""
         dialect, engine = exec_backend
         query = q(

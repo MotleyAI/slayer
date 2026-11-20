@@ -1,8 +1,8 @@
-"""DEV-1740 Part A — conditionals executed on SQLite AND DuckDB.
+"""Part A — conditionals executed on SQLite AND DuckDB.
 
-A conditional over an aggregate is a POST/AGGREGATE-phase measure (it bands
+A conditional over an aggregate is a POST/AGGREGATE-phase metric (it bands
 whole groups); nested conditionals give an ordinal. A CASE living in a
-``Column.sql`` (Mode-A raw SQL) must keep working — pinned so Part A does not
+``DatasetField.sql`` (Mode-A raw SQL) must keep working — pinned so Part A does not
 regress the existing escape hatch. Expectations are hand-computed from
 ``tests/_dev1740_fixtures.py``.
 """
@@ -165,7 +165,7 @@ class TestOrderByCaseComposite:
 
 class TestConditionalOverCrossModelAggregate:
     async def test_case_over_joined_measure(self, exec_engine) -> None:
-        # CASE over a cross-model aggregate (customers.spend:sum lives in a _cm_
+        # CASE over a cross-dataset aggregate (customers.spend:sum lives in a _cm_
         # CTE). By tier: gold=150 → 0, silver=500 → 1.
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
@@ -200,8 +200,8 @@ class TestConditionalNestedInScalarCall:
 
 class TestCaseInModelFormula:
     async def test_case_in_a_model_measure_formula(self, exec_engine) -> None:
-        # A CASE living in a model-level measure formula (added via extension),
-        # referenced by name — pins "valid in model formulas".
+        # A CASE living in a dataset-level metric expression (added via extension),
+        # referenced by name — pins "valid in dataset expressions".
         resp = await exec_engine.execute(SlayerQuery(
             population="orders",
             extensions=[DatasetExtension.model_validate({
@@ -232,7 +232,7 @@ class TestIifWrongArityAtBind:
 
 class TestConditionalFilterPullsJoin:
     async def test_case_over_joined_column_in_filter(self, exec_engine) -> None:
-        # A ROW-phase CASE over a JOINED column in a filter must pull the
+        # A ROW-phase CASE over a JOINED field in a filter must pull the
         # customers join (gold customers 1 & 3 → orders 1, 2, 5, 6 — all EU).
         resp = await exec_engine.execute(_q(
             dimensions=["orders.region"],
@@ -288,7 +288,7 @@ class TestChangeOverComputedDimension:
 
 class TestCaseInColumnSql:
     async def test_mode_a_case_column_still_executes(self, exec_engine: SlayerQueryEngine) -> None:
-        # A CASE in Column.sql (raw SQL) grouped as a dimension — the existing
+        # A CASE in DatasetField.sql (raw SQL) grouped as a dimension — the existing
         # escape hatch, pinned against Part A regressions. Row 9 (amount 6000)
         # is the only per-row band 1; everything else bands 0.
         base = orders_dataset()

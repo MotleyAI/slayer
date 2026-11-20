@@ -1,5 +1,5 @@
-"""Cross-model first/last × partition_by, executed values in every
-position (spec: queries/partitioned-aggregates, cross-model ranked requirement).
+"""Cross-dataset first/last × partition_by, executed values in every
+position (spec: queries/partitioned-aggregates, cross-dataset ranked requirement).
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ class TestDimensionPosition:
 class TestRanklessTargetStaysTyped:
     async def test_no_ranking_column_is_a_clear_error(self, exec_engine: SlayerQueryEngine) -> None:
         # customers has no default_time_dimension and, with a second temporal
-        # column, no sole-column default: the typed ranking-time error names the remedy.
+        # field, no sole-field default: the typed ranking-time error names the remedy.
         customers = await exec_engine.storage.get_dataset("customers")
         assert customers is not None
         await exec_engine.storage.save_dataset(customers.model_copy(update={"fields": [

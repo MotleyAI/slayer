@@ -62,7 +62,7 @@ from slayer.ir.planned import ValueSlot
 
 
 # ===========================================================================
-# Model graph + generation helper (dry_run, one bundle covers every shape).
+# Dataset graph + generation helper (dry_run, one bundle covers every shape).
 # ===========================================================================
 def _orders() -> SlayerDataset:
     return SlayerDataset(
@@ -226,7 +226,7 @@ class TestOptionalScopeFailsClosed:
 
 class TestScopeFrameColumnType:
     """``ScopeFrame.field_type(ref)`` gives the renderer the declared type for
-    the filter-CAST policy, using the same model lookup as resolution."""
+    the filter-CAST policy, using the same dataset lookup as resolution."""
 
     def test_local_column_type(self) -> None:
         assert _scope().field_type(FieldKey(leaf="amount")) is DataType.FLOAT
@@ -603,7 +603,7 @@ class TestMixedCaseShiftedCteParity:
 class TestContainsAggregateEquivalence:
     """The composite live call site swaps ``_build_agg``'s ``is_agg`` bool for
     ``contains_aggregate(key)``. They agree on the composite shapes: an
-    arithmetic-of-aggregates contains an aggregate; a pure column/literal
+    arithmetic-of-aggregates contains an aggregate; a pure field/literal
     composite does not (so it is not routed into GROUP BY / HAVING)."""
 
     def test_arithmetic_of_aggregates_contains_aggregate(self) -> None:

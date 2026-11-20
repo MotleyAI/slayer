@@ -1,4 +1,4 @@
-"""Schema drift drops exactly the broken edge and replays through model editing."""
+"""Schema drift drops exactly the broken edge and replays through dataset editing."""
 
 from __future__ import annotations
 

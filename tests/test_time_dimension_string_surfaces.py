@@ -106,7 +106,7 @@ class TestSchemaAdvertisesString:
 
 class TestStoredQuerySurface:
     async def test_stored_query_document_accepts_string_entry(self, storage: StorageBackend) -> None:
-        """A query-backed model whose stored document carries the string form
+        """A query-backed dataset whose stored document carries the string form
         loads and runs identically to the explicit form."""
         model = SlayerDataset.model_validate({
             "name": "monthly_rev", "data_source": "test",

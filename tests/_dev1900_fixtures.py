@@ -1,9 +1,9 @@
-"""Shared fixtures for DEV-1900 — fail-closed safety for path-bearing derived
+"""Shared fixtures for fail-closed safety for path-bearing derived
 refs crossing fanning hops.
 
-Extends the DEV-1840 ``orders → customers → regions`` graph with a 1:N
-``regions → region_events`` hop and derived columns that cross it, so every
-input role (positional arg, kwarg, definition default, dimension, measure-level
+Extends the ``_dev1840_fixtures`` ``orders → customers → regions`` graph with a 1:N
+``regions → region_events`` hop and derived fields that cross it, so every
+input role (positional arg, kwarg, definition default, dimension, metric-level
 filter, re-aggregation parameter) can be exercised over a genuinely fanning
 derived definition. One hand-computed dataset seeded into SQLite AND DuckDB;
 every oracle below derives from it.
@@ -16,8 +16,8 @@ region_events.value`` crosses it; ``bad_pop2 = bad_pop * 2`` chains through it;
 region_events of equal value, so ``bad_pop`` is single-valued per region (one
 dimension cell) yet the hop still fans — the multiplying join is observable.
 
-Dataset (region_events; the rest is the DEV-1840 dataset verbatim)
-------------------------------------------------------------------
+Dataset (region_events; the rest is the ``_dev1840_fixtures`` dataset verbatim)
+-------------------------------------------------------------------------------
 region_events (id, region_id, value): 1 r1 50 | 2 r1 50 | 3 r2 30
   → bad_pop:     North 100+50 = 150   South 200+30 = 230   (region-less → NULL)
   → derived_pop: North 200            South 400
@@ -57,7 +57,7 @@ from tests._dev1840_fixtures import (
 from tests._dev1841_fixtures import associated_warnings, pushed_filter_infos
 
 # --------------------------------------------------------------------------- #
-# Models — one rich graph; tests select the role via the measure / dimension.
+# Datasets — one rich graph; tests select the role via the metric / dimension.
 # --------------------------------------------------------------------------- #
 _REGION_EVENTS_ROWS = [(1, 1, 50.0), (2, 1, 50.0), (3, 2, 30.0)]
 
@@ -82,7 +82,7 @@ def _customers(datasets: List[SlayerDataset]) -> SlayerDataset:
 
 
 def dev1900_datasets() -> List[SlayerDataset]:
-    """DEV-1840 graph + region_events, the fanning derived columns, and the
+    """``_dev1840_fixtures`` graph + region_events, the fanning derived fields, and the
     customer aggregations that name them. Host first (orders)."""
     models = dev1840_datasets()
     regions = _regions(models)
@@ -97,7 +97,7 @@ def dev1900_datasets() -> List[SlayerDataset]:
     regions.fields.append(
         DatasetField(name="derived_pop", datatype=DataType.FLOAT, sql="pop * 2"))
     # A region-owned aggregation whose weight defaults to the BARE owner-local
-    # derived column bad_pop (which crosses the fanning hop) — the bare-default
+    # derived field bad_pop (which crosses the fanning hop) — the bare-default
     # counterpart to customers' dotted wsumx.
     regions.aggregations.append(Aggregation(
         name="wbadbare", expression="SUM({value} * {weight})",
@@ -136,7 +136,7 @@ def home_path_datasets() -> List[SlayerDataset]:
 
 
 def unparseable_derived_datasets() -> List[SlayerDataset]:
-    """Pathological derived columns on regions: ``unparseable`` (no dialect
+    """Pathological derived fields on regions: ``unparseable`` (no dialect
     parses it → closure is tri-state None, never empty) and ``cyc`` (self-
     referential → the closure's cycle guard raises). ``wunparse`` names the
     unparseable one as a weight, so an aggregate over it must fail closed."""
@@ -151,7 +151,7 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
         name="wunparse", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.unparseable")]))
     # An unparseable EXPRESSION default: expr_refs is (None,), so no single
-    # column can be named — the input closure is None but the diagnostic returns
+    # field can be named — the input closure is None but the diagnostic returns
     # None (the check_input_dependencies_analyzable unnameable arm).
     customers.aggregations.append(Aggregation(
         name="wexpr_unparse", expression="SUM({value} * {weight})",
@@ -163,7 +163,7 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
 
 
 # --------------------------------------------------------------------------- #
-# Dual-engine seed (DEV-1840 tables used by the graph + region_events).
+# Dual-engine seed (``_dev1840_fixtures`` tables used by the graph + region_events).
 # --------------------------------------------------------------------------- #
 def _seed_sqlite(db_path: str) -> None:
     with transaction(db_path) as con:
@@ -244,7 +244,7 @@ def cust_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-# The fanning derived dimension, its cross-model / local metrics, and the two
+# The fanning derived dimension, its cross-dataset / local metrics, and the two
 # re-aggregation shapes, spelled once.
 BAD_POP = "customers.regions.bad_pop"
 AMOUNT_SUM = QueryMetric(metric="sum(amount)", alias="amt")
@@ -258,7 +258,7 @@ REAGG_BAD = QueryMetric(
 
 
 def bad_pop_vals(resp, metric: str) -> dict:
-    """``{bad_pop value: measure value}`` over ``resp.data`` (bad_pop cell key)."""
+    """``{bad_pop value: metric value}`` over ``resp.data`` (bad_pop cell key)."""
     return {k[0]: v[metric] for k, v in rows_by(resp, BAD_POP).items()}
 
 
@@ -268,14 +268,14 @@ def bad_pop_vals(resp, metric: str) -> dict:
 #: North customers c1,c2,c6 orders = 10+20+3 + 30+25 + 12 = 100; South c3,c5 =
 #: 5+15 = 20; region-less c4 (o6=40) + orphan o8 (7) = 47. Each order once.
 ASSOC_AMOUNT_BY_BAD_POP = {150.0: 100.0, 230.0: 20.0, None: 47.0}
-#: Cross-model spend, each customer once: North c1+c2+c6 = 280; South c3+c5+c7
+#: Cross-dataset spend, each customer once: North c1+c2+c6 = 280; South c3+c5+c7
 #: = 195 (c7 has zero orders); region-less c4 = 40.
 ASSOC_SPEND_BY_BAD_POP = {150.0: 280.0, 230.0: 195.0, None: 40.0}
 #: The multiplying join doubles North's two same-value events (100→200, 280→560).
 ASSOC_AMOUNT_NORTH_FAN_DEFECT = 200.0
 ASSOC_SPEND_NORTH_FAN_DEFECT = 560.0
 #: Broadcast repeats the ungrouped grand total per cell: local amount = all 10
-#: orders = 167; cross-model spend = every customer once = 280+195+40 = 515.
+#: orders = 167; cross-dataset spend = every customer once = 280+195+40 = 515.
 BROADCAST_AMOUNT_TOTAL = 167.0
 BROADCAST_SPEND_TOTAL = 515.0
 
@@ -283,7 +283,7 @@ BROADCAST_SPEND_TOTAL = 515.0
 #: (100·200 + 20·400) / (200 + 400) = 28000 / 600.
 REAGG_DERIVED_POP_WAVG = 28000.0 / 600.0
 
-#: To-one measure-level population filter (customers.tier='gold') stays inline:
+#: To-one metric-level population filter (customers.tier='gold') stays inline:
 #: gold c1(33)+c3(5)+c6(12)+c7(0) = 50.
 TO_ONE_FILTER_AMOUNT = 50.0
 
@@ -292,7 +292,7 @@ TO_ONE_FILTER_AMOUNT = 50.0
 #: spelling produces this today; the definition default must match it (gap 4).
 HOME_WIDEN_VALUE = 67000.0
 
-#: DEV-1909 targets (DEV-1900 makes both RAISE): distinct customers with an 'ok'
+#: Association targets: distinct customers with an 'ok'
 #: order = c1+c2+c3+c5+c6 = 420 (the inline-fan defect double-counts c1's two ok
 #: orders → 520); orders whose region passes bad_pop>0 = 167 − 47 = 120 (the
 #: fan defect over North's two events → 220).
@@ -301,7 +301,7 @@ POP_FILTER_STRUCTURAL_FAN_DEFECT = 520.0
 POP_FILTER_DERIVED_ASSOC = 120.0
 POP_FILTER_DERIVED_FAN_DEFECT = 220.0
 
-# --- DEV-1909 host-rooted regroup producers under the same 'ok' population ---
+# --- Host-rooted regroup producers under the same 'ok' population ---
 #: sum(spend, partition_by=tier) by tier; the fan defect double-counts c1's two
 #: ok orders in gold (190 -> 290).
 POP_FILTER_PARTITIONED_BY_TIER = {"gold": 190.0, "silver": 230.0}

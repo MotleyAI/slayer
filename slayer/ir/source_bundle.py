@@ -74,7 +74,7 @@ class ResolvedSourceBundle(BaseModel):
     datasource_type: Optional[str] = None
     # Minted stage identity → its user-facing spelling.
     stage_displays: Dict[str, StageDisplay] = Field(default_factory=dict)
-    # Stored query-backed datasets the statement may splice, including result joins.
+    # Stored query-backed datasets the statement may splice, including relationships to query results.
     query_backed: Dict[str, SlayerDataset] = Field(default_factory=dict)
     # Query-backed datasets whose stages are being planned, outermost first.
     splice_chain: Tuple[str, ...] = ()
