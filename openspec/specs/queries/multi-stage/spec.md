@@ -9,9 +9,8 @@ is ordered and validated so every stage can read the siblings it references.
 ### Requirement: Stages are ordered by every sibling reference
 A multi-stage query list SHALL be ordered so each stage follows every sibling it
 references — as its `population`, as an extension's `dataset`, as the `to` of one
-of its extensions' relationships, or as a dataset named by any reference in any of its
-expressions (dimensions, metrics, filters, order), except a reference whose first segment
-spells a relationship of its population or of its extensions — regardless of the order or the
+of its extensions' relationships, or as a dataset named by the first segment of any reference in any of its
+expressions (dimensions, metrics, filters, order) — regardless of the order or the
 names of the non-root stages. The last entry SHALL stay the root. A stage's join graph
 SHALL contain exactly the sibling stages it references in one of these ways and the siblings
 its inherited edges target, so no route passes through or into a sibling the stage neither
@@ -48,15 +47,23 @@ a cycle SHALL each be rejected with an error naming the offending stages.
 - **THEN** both lists execute and return the same hand-computed value
 
 #### Scenario: A relationship named like a sibling is not a sibling reference
-- **WHEN** stage `a` (population `orders`) groups by `ship_region.name` through `orders`' relationship `ship_region`, and a sibling stage named `ship_region` reads `a`
+- **WHEN** stage `a` (population `orders`) groups by `orders.ship_region.name` through `orders`' relationship `ship_region`, and a sibling stage named `ship_region` reads `a`
 - **THEN** the list executes, and `a` is not ordered after `ship_region`
 
+#### Scenario: A first segment naming a sibling reads the sibling
+- **WHEN** that stage `a` groups by `ship_region.name` instead
+- **THEN** `a` reads the sibling `ship_region`, and the list is rejected as a cycle
+
+#### Scenario: A route hop is no sibling reference
+- **WHEN** a stage over `customers` measures `max(customers.z_ev.ne)` and a sibling is named `z_ev`
+- **THEN** `z_ev` is a hop of the route from the anchor `customers`, not a sibling the stage reads
+
 #### Scenario: An inherited edge reaches its sibling target
-- **WHEN** stage `keyed` inherits its extension's relationship `totals_link` to sibling `totals`, and the root reads `totals_link.total` from `keyed` without naming `totals`
+- **WHEN** stage `keyed` inherits its extension's relationship `totals_link` to sibling `totals`, and the root reads `keyed.totals_link.total` from `keyed` without naming `totals`
 - **THEN** the root returns the hand-computed values
 
 #### Scenario: Routing never passes through an unnamed sibling
-- **WHEN** a sibling stage inherits edges to `customers` and `regions`, and a later stage over `customers` that never names that sibling selects the short form `regions.name`
+- **WHEN** a sibling stage inherits edges to `customers` and `regions`, and a later stage over `customers` that never names that sibling selects `regions.name`
 - **THEN** the sibling is not a route candidate: the reference resolves as it would without the sibling
 
 ### Requirement: Stage names are query-local

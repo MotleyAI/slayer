@@ -166,7 +166,7 @@ A `date_trunc` dimension entry whose shape is not exactly a string-literal unit 
 
 ### Requirement: Result keys disambiguate same-column time dimensions
 
-When two or more projected unnamed time dimensions share the same bound source — a column or an expression — at different granularities, each of their result keys SHALL be the usual key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). An unnamed time dimension whose source no other projected time dimension shares SHALL keep its granularity-free key, and a named one SHALL never carry the suffix (› Time dimension names). Exact-duplicate time dimensions (the same dimension, granularity, date range, name and label) SHALL be deduplicated at construction; time dimensions sharing dimension and granularity but differing in date range, name or label SHALL be rejected at construction. At construction two dimensions are the same when their parsed expressions are equal once a leading root qualifier is dropped (`created_at` ≡ `orders.created_at` from root `orders`), never on their text, so text inside a string literal or quoted identifier is compared exactly and never read as a qualifier. Time dimensions whose dimensions are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range, name or label, SHALL be rejected at binding — backstopping the construction-time check for spellings that only prove equivalent once resolved. Such spellings that share their name (an unnamed one's derived from its template) and agree in date range and label SHALL be deduplicated at binding into one projected time dimension, as exact duplicates are at construction.
+When two or more projected unnamed time dimensions share the same bound source — a column or an expression — at different granularities, each of their result keys SHALL be the usual key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). An unnamed time dimension whose source no other projected time dimension shares SHALL keep its granularity-free key, and a named one SHALL never carry the suffix (› Time dimension names). Exact-duplicate time dimensions (the same dimension, granularity, date range, name and label) SHALL be deduplicated at construction; time dimensions sharing dimension and granularity but differing in date range, name or label SHALL be rejected at construction. At construction two dimensions are the same when their parsed expressions are equal once read in the qualified syntax (`created_at` converts to `orders.created_at` in a query naming population `orders`, `queries/references`), never on their text, so text inside a string literal or quoted identifier is compared exactly and never read as a qualifier. Time dimensions whose dimensions are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range, name or label, SHALL be rejected at binding — backstopping the construction-time check for spellings that only prove equivalent once resolved. Such spellings that share their name (an unnamed one's derived from its template) and agree in date range and label SHALL be deduplicated at binding into one projected time dimension, as exact duplicates are at construction.
 
 #### Scenario: two granularities of one column
 
@@ -447,7 +447,7 @@ Every rule stated for a time dimension's column SHALL apply to an expression tim
 
 ### Requirement: Time dimension names
 
-A time dimension SHALL accept an optional `name`. An unnamed column time dimension SHALL keep its existing result key. An unnamed expression time dimension SHALL be named by the same sanitising rule as an unnamed computed dimension, and its result key SHALL be that name prefixed by the query's model, extended with the granularity exactly when another projected time dimension shares its bound source. A named time dimension's result key SHALL be its name prefixed by the query's model, never extended with the granularity. Names SHALL be unique across a query's dimensions and time dimensions; a collision SHALL fail at construction naming it. A time dimension MAY be referred to by its name from `main_time_dimension` and from `partition_by=`, exactly as a computed dimension is by its name.
+A time dimension SHALL accept an optional `name`. An unnamed column time dimension SHALL keep its existing result key. An unnamed expression time dimension SHALL be named by the same sanitising rule as an unnamed computed dimension, and its result key SHALL be that name prefixed by its references' common anchor (`queries/references`), extended with the granularity exactly when another projected time dimension shares its bound source. A named time dimension's result key SHALL be its bare name, never extended with the granularity. Names SHALL be unique across a query's dimensions and time dimensions; a collision SHALL fail at construction naming it. A time dimension MAY be referred to by its name from `main_time_dimension` and from `partition_by=`, exactly as a computed dimension is by its name.
 
 #### Scenario: Unnamed expression time dimension's key
 - **WHEN** a query on `orders` buckets `coalesce(shipped_at, created_at)` at `month`
@@ -455,11 +455,11 @@ A time dimension SHALL accept an optional `name`. An unnamed column time dimensi
 
 #### Scenario: Named time dimension
 - **WHEN** the same time dimension carries `"name": "effective_at"`
-- **THEN** its result key is `orders.effective_at`, and `main_time_dimension` `"effective_at"` selects it as the axis of a `cumsum` measure in a query that also buckets `created_at`
+- **THEN** its result key is `effective_at`, and `main_time_dimension` `"effective_at"` selects it as the axis of a `cumsum` measure in a query that also buckets `created_at`
 
 #### Scenario: Named column time dimension
 - **WHEN** a time dimension on `created_at` at `month` carries `"name": "m"`
-- **THEN** its result key is `orders.m` and its values equal the unnamed form's
+- **THEN** its result key is `m` and its values equal the unnamed form's
 
 #### Scenario: Partition by a time dimension's name
 - **WHEN** a query buckets `coalesce(shipped_at, created_at)` at `month` named `effective_at`, groups by `region`, and selects `sum(amount, partition_by=effective_at)`
