@@ -933,6 +933,31 @@ examples:
     datasets_delete_parser = datasets_subparsers.add_parser("delete", help="Delete a dataset")
     datasets_delete_parser.add_argument("name", help="Dataset name")
 
+    # ── semantic-models ──────────────────────────────────────────────
+    semantic_models_parser = subparsers.add_parser(
+        "semantic-models",
+        help="List, show and delete semantic models (Ossie documents)",
+        epilog="""\
+examples:
+  slayer semantic-models list --datasource shop
+  slayer semantic-models show sales --datasource shop
+  slayer semantic-models delete sales --datasource shop --yes
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    semantic_models_subparsers = semantic_models_parser.add_subparsers(dest="semantic_models_command")
+    semantic_models_list_parser = semantic_models_subparsers.add_parser("list", help="List semantic models")
+    semantic_models_list_parser.add_argument("--datasource", default=None, help="Only this datasource's")
+    semantic_models_show_parser = semantic_models_subparsers.add_parser("show", help="Print a semantic model's text")
+    semantic_models_delete_parser = semantic_models_subparsers.add_parser(
+        "delete", help="Delete a semantic model and its datasets")
+    for sub in (semantic_models_show_parser, semantic_models_delete_parser):
+        sub.add_argument("name", help="Semantic model name")
+        sub.add_argument("--datasource", default=None, help="Its datasource (needed when the name is ambiguous)")
+    semantic_models_delete_parser.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    for sub in (semantic_models_list_parser, semantic_models_show_parser, semantic_models_delete_parser):
+        _add_storage_arg(sub)
+
     # ── datasources ───────────────────────────────────────────────────
     datasources_parser = subparsers.add_parser(
         "datasources",
@@ -1448,6 +1473,8 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
         _run_export_osi(cast(_ExportOsiArgs, args))
     elif args.command == "datasets":
         _run_datasets(args)
+    elif args.command == "semantic-models":
+        _run_semantic_models(args)
     elif args.command == "datasources":
         _run_datasources(args)
     elif args.command == "memory":
@@ -2613,6 +2640,42 @@ def _run_datasets(args):
     handler = _DATASETS_COMMANDS.get(args.datasets_command)
     if handler is None:
         _fail("usage: slayer datasets {list,show,create,delete}")
+    handler(storage, args)
+
+
+def _semantic_models_list(storage: StorageBackend, args) -> None:
+    found = run_sync(storage.list_semantic_models(data_source=args.datasource))
+    if not found:
+        print("No semantic models found.")
+    for ds, name in found:
+        print(f"{ds}.{name}")
+
+
+def _semantic_models_show(storage: StorageBackend, args) -> None:
+    text = run_sync(storage.get_semantic_model_text(args.name, data_source=args.datasource))
+    if text is None:
+        _fail(f"Semantic model '{args.name}' not found.")
+    print(text, end="" if text.endswith("\n") else "\n")
+
+
+def _semantic_models_delete(storage: StorageBackend, args) -> None:
+    if not _confirm(f"Delete semantic model '{args.name}' and its datasets?", assume_yes=args.yes):
+        print("Aborted; storage unchanged.")
+        return
+    if not run_sync(storage.delete_semantic_model(args.name, data_source=args.datasource)):
+        _fail(f"Semantic model '{args.name}' not found.")
+    print(f"Deleted semantic model '{args.name}'.")
+
+
+_SEMANTIC_MODELS_COMMANDS = {"list": _semantic_models_list, "show": _semantic_models_show,
+                             "delete": _semantic_models_delete}
+
+
+def _run_semantic_models(args):
+    storage = _resolve_storage(args)
+    handler = _SEMANTIC_MODELS_COMMANDS.get(args.semantic_models_command)
+    if handler is None:
+        _fail("usage: slayer semantic-models {list,show,delete}")
     handler(storage, args)
 
 

@@ -192,6 +192,7 @@ def _datasets_summary_json(
                 "field_count": _visible_field_count(m),
                 "metric_names": [mm.name for mm in m.metrics],
                 "relationships_to": _relationship_targets(m, datasets),
+                **({"semantic_model": m.semantic_model} if m.semantic_model else {}),
                 **_inherited_payload(m, errors),
             }
             for m in datasets
@@ -219,6 +220,7 @@ def _datasets_summary_json(
                     for mm in m.metrics
                 ],
                 "relationships_to": _relationship_targets(m, datasets),
+                **({"semantic_model": m.semantic_model} if m.semantic_model else {}),
                 **_inherited_payload(m, errors),
             }
             for m in datasets
@@ -243,6 +245,8 @@ def _datasets_summary_markdown(
         dataset_lines: list[str] = [f"## `{m.name}`"]
         if m.description:
             dataset_lines.append(desc(m.description) or "")
+        if m.semantic_model:
+            dataset_lines.append(f"Semantic model: `{m.semantic_model}`")
         if compact:
             _append_compact_dataset_lines(
                 dataset_lines=dataset_lines, m=m, all_datasets=datasets,

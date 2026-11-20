@@ -207,7 +207,7 @@ class AccessFilteredStorage(StorageBackend):
     async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
         await self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing)
 
-    async def create_semantic_model(self, *, data_source: str, name: str, content: str | dict[str, Any] | None = None,
+    async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
                                     datasets: list[str] | None = None) -> None:
         await self._inner.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets)
 

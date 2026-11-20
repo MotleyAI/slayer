@@ -702,7 +702,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def inspect(
         entity_type: Annotated[str, Field(
             description=(
-                "Required: datasource, dataset, field, metric, aggregation or memory. Asserts the "
+                "Required: datasource, dataset, field, metric, aggregation, memory or semantic_model. Asserts the "
                 "resolved kind and disambiguates a name shared by, e.g., a field and an aggregation."
             ),
         )],
@@ -1560,6 +1560,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"Dataset '{name}' deleted."
         return f"Dataset '{name}' not found."
 
+    async def _refreshed_documents(data_source: str) -> list[str]:
+        """Best-effort search refresh of the datasource's semantic models after a committed write."""
+        try:
+            return await search_service.refresh_documents(data_source)
+        except Exception as exc:  # noqa: BLE001 — best-effort post-save refresh
+            logger.warning("semantic model search refresh failed for %r: %s", data_source, exc)
+            return [f"search refresh failed: {exc}"]
+
     @tool()
     async def create_semantic_model(
         name: Annotated[str, Field(description="The semantic model's name, unique in its datasource.")],
@@ -1576,7 +1584,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             await storage.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets)
         except Exception as exc:
             return f"Error creating semantic model '{name}': {type(exc).__name__}: {exc}"
-        return f"Semantic model '{name}' created."
+        return f"Semantic model '{name}' created." + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source))
 
     @tool()
     async def edit_semantic_model(
@@ -1611,7 +1619,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
         except Exception as exc:
             return f"Error editing semantic model '{name}': {type(exc).__name__}: {exc}"
-        return f"Semantic model '{name}' edited."
+        return f"Semantic model '{name}' edited." + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source))
 
     @tool()
     async def delete_semantic_model(

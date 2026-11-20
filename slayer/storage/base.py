@@ -294,6 +294,15 @@ def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
     ]}
 
 
+def _document_name(text: str) -> str:
+    """The ``name`` an Ossie document's text declares."""
+    data = yaml.safe_load(text)
+    name = data.get("name") if isinstance(data, dict) else None
+    if not isinstance(name, str) or not name:
+        raise ValueError("The semantic model's content declares no name; pass one")
+    return name
+
+
 def _checked_relationship_names(dataset: SlayerDataset) -> list[str]:
     """Names of ``dataset``'s named edges; raises on duplicates."""
     names = [j.name for j in dataset.relationships if j.name]
@@ -1138,16 +1147,19 @@ class StorageBackend(ABC):
             if existing is not None:
                 raise NamespaceCollisionError(name=metric, owner=owner, existing=existing, data_source=data_source)
 
-    async def create_semantic_model(self, *, data_source: str, name: str, content: str | dict[str, Any] | None = None,
+    async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
                                     datasets: list[str] | None = None) -> None:
-        """Create document ``name`` from Ossie ``content`` (text or mapping), or from the standalone ``datasets``, which
-        move into it under the same names."""
+        """Create document ``name`` (default: the content's own ``name``) from Ossie ``content`` (text or mapping), or
+        from the standalone ``datasets``, which move into it under the same names."""
         if (content is None) == (datasets is None):
             raise ValueError("Give a semantic model either its Ossie content or the standalone datasets it takes")
         if content is not None:
             text = content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False, allow_unicode=True)
+            name = name or _document_name(text)
             await self.save_semantic_model_text(data_source=data_source, name=name, text=text)
             return
+        if name is None:
+            raise ValueError("A semantic model made from standalone datasets needs a name")
         moved = await self._standalone_members(datasets or [], data_source=data_source)
         reader = await self._reader(data_source)
         doc = with_datasets({"version": OSSIE_VERSION, "name": name, "datasets": []}, moved, reader=reader)

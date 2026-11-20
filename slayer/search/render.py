@@ -27,7 +27,7 @@ Spec rules pinned by ``tests/test_search_render.py``:
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from typing_extensions import deprecated
@@ -40,7 +40,7 @@ from slayer.core.models import (
     SlayerDataset,
     field_type_text,
 )
-from slayer.core.semantic_model import AIContext, ModelScopedMetric
+from slayer.core.semantic_model import AIContext, AIContextObject, ModelScopedMetric
 from slayer.core.vocabulary import name_twins
 from slayer.memories.models import Memory
 
@@ -298,14 +298,26 @@ def expression_text(expression: Expression | None) -> str:
     return "; ".join(f"{e.dialect}: {e.expression}" for e in expression.dialects or [])
 
 
-def ai_context_text(ai_context: AIContext | None) -> str:
-    """An Ossie ``ai_context`` as one line."""
+def ai_context_text(ai_context: AIContext | dict[str, Any] | None) -> str:
+    """An Ossie ``ai_context`` (or its raw mapping) as one line."""
+    if isinstance(ai_context, dict):
+        ai_context = AIContextObject.model_validate(ai_context)
     if ai_context is None or isinstance(ai_context, str):
         return ai_context or ""
     parts = [ai_context.instructions or "",
              *(f"{label}: {', '.join(items)}" for label, items in
                (("synonyms", ai_context.synonyms), ("examples", ai_context.examples)) if items)]
     return "; ".join(p for p in parts if p)
+
+
+def render_semantic_model_text(*, data_source: str, name: str, document: dict[str, Any]) -> str:
+    """A semantic-model document: its name, description and ``ai_context``."""
+    lines = [f"Semantic model: {data_source}.{name}"]
+    if document.get("description"):
+        lines.append(f"Description: {document['description']}")
+    if ai := ai_context_text(document.get("ai_context")):
+        lines.append(f"AI context: {ai}")
+    return "\n".join(lines)
 
 
 def render_model_scoped_metric_text(*, metric: ModelScopedMetric) -> str:
