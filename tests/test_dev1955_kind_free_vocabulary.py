@@ -144,7 +144,7 @@ class TestUnprovenWarning:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),),
+            cols=(DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),),
             joins=(_li_join(),),
         )
         with warnings.catch_warnings(record=True) as rec:
@@ -162,7 +162,7 @@ class TestUnprovenWarning:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="big_qty", sql="line_items.qty", datatype=DataType.FLOAT,
+            cols=(DatasetField(name="big_qty", expression="line_items.qty", datatype=DataType.FLOAT,
                          filter="line_items.qty >= 2"),),
             joins=(_li_join(),),
         )
@@ -180,7 +180,7 @@ class TestFanningReferenceSpelling:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="li_qty", sql="orders.line_items.qty", datatype=DataType.FLOAT),),
+            cols=(DatasetField(name="li_qty", expression="orders.line_items.qty", datatype=DataType.FLOAT),),
             joins=(_li_join(cardinality=RelationshipCardinality.ONE_TO_MANY),),
         )
         with pytest.raises(DerivedFieldFanningError) as ei:
@@ -218,7 +218,7 @@ class TestEngineDoorCrossModelAttribution:
             _validate=False,
         )
         orders = _orders(
-            cols=(DatasetField(name="outer", datatype=DataType.FLOAT, sql="customers.bad * 2"),),
+            cols=(DatasetField(name="outer", datatype=DataType.FLOAT, expression="customers.bad * 2"),),
             joins=(DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                              cardinality=RelationshipCardinality.MANY_TO_ONE),),
         )

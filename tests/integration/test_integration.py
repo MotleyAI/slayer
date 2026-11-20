@@ -14,6 +14,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import AmbiguousRelationshipPathError, UnknownReferenceError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -1379,7 +1380,7 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
         name="premium", sql_table="premium", data_source="db",
         fields=[
             DatasetField(name="policy_amount_identifier", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="has_premium", sql="1", datatype=DataType.STRING),
+            DatasetField(name="has_premium", expression="1", datatype=DataType.STRING),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
@@ -2318,9 +2319,9 @@ async def stat_env(tmp_path):
                 DatasetField(name="y", sql="y", datatype=DataType.FLOAT),
                 DatasetField(name="bucket", sql="bucket", datatype=DataType.STRING),
                 # DatasetField.sql exercising scalar math UDFs
-                DatasetField(name="ln_x", sql="ln(x)", datatype=DataType.FLOAT),
-                DatasetField(name="sqrt_x", sql="sqrt(x)", datatype=DataType.FLOAT),
-                DatasetField(name="x_squared", sql="pow(x, 2)", datatype=DataType.FLOAT),
+                DatasetField(name="ln_x", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="ln(x)")]), datatype=DataType.FLOAT),
+                DatasetField(name="sqrt_x", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="sqrt(x)")]), datatype=DataType.FLOAT),
+                DatasetField(name="x_squared", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="pow(x, 2)")]), datatype=DataType.FLOAT),
             ],
         )
     )
@@ -2601,7 +2602,7 @@ async def planets_env(tmp_path):
                 DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -2665,9 +2666,8 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
                 DatasetField(name="socioeconomic", sql="socioeconomic", datatype=DataType.STRING),
                 DatasetField(
                     name="is_owner",
-                    sql=(
-                        "CASE LOWER(TRIM(json_extract(socioeconomic, '$.Tenure_Type'))) "
-                        "WHEN 'owned' THEN 1 ELSE 0 END"
+                    expression=(
+                        ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="CASE LOWER(TRIM(json_extract(socioeconomic, '$.Tenure_Type'))) WHEN 'owned' THEN 1 ELSE 0 END")])
                     ),
                     datatype=DataType.FLOAT,
                 ),
@@ -2727,7 +2727,7 @@ async def derived_chain_env(tmp_path):
                 DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
                 DatasetField(
                     name="foo_normalized",
-                    sql="foo_raw / 100.0",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="foo_raw / 100.0")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -2745,17 +2745,17 @@ async def derived_chain_env(tmp_path):
                 DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_base",
-                    sql="A.bar / B.foo_raw",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="A.bar / B.foo_raw")]),
                     datatype=DataType.FLOAT,
                 ),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="A.bar / B.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="A.bar / B.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
                 # Local derived chain: c1 derived; c2 references c1.
-                DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
-                DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.FLOAT),
+                DatasetField(name="c1", expression="raw_a + 1", datatype=DataType.FLOAT),
+                DatasetField(name="c2", expression="A.c1 * 2", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
         )
@@ -2846,7 +2846,7 @@ async def orders_customers_env(tmp_path):
             DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
             DatasetField(
                 name="is_eu",
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                expression="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -2911,8 +2911,8 @@ async def test_log10_round_trip_sqlite(tmp_path):
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="raw_score", sql="raw_score", datatype=DataType.FLOAT),
-                DatasetField(name="log_score", sql="log10(raw_score)", datatype=DataType.FLOAT),
-                DatasetField(name="log2_score", sql="log2(raw_score)", datatype=DataType.FLOAT),
+                DatasetField(name="log_score", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="log10(raw_score)")]), datatype=DataType.FLOAT),
+                DatasetField(name="log2_score", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="log2(raw_score)")]), datatype=DataType.FLOAT),
             ],
         )
     )
@@ -3040,7 +3040,7 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="score",
-                    sql="json_extract(payload, '$.score')",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="json_extract(payload, '$.score')")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -3732,7 +3732,7 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
             DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
             DatasetField(
                 name="region_pop",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -3863,7 +3863,7 @@ async def composite_score_env(tmp_path) -> SlayerQueryEngine:
             *bare_cols,
             DatasetField(
                 name="score",
-                sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
+                expression="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
                 datatype=DataType.FLOAT,
             ),
         ],

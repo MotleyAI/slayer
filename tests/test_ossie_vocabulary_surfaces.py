@@ -90,7 +90,7 @@ class TestMcpArguments:
         with recorded():
             reply = json.loads(await mcp_text(
                 storage, "edit_dataset", model_name="orders", data_source=DS,
-                columns=[{"name": "big", "sql": "amount > 30", "datatype": "Boolean"}],
+                columns=[{"name": "big", "expression": "amount > 30", "datatype": "Boolean"}],
                 measures=[{"name": "n", "expression": "count(*)"}],
                 joins=[{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}],
             ))

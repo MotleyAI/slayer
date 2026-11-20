@@ -93,7 +93,7 @@ def _orders_dataset() -> SlayerDataset:
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="net_amount",
-                sql="amount - tax",
+                expression="amount - tax",
                 datatype=DataType.FLOAT,
             ),
             DatasetField(name="tax", datatype=DataType.FLOAT),
@@ -108,7 +108,7 @@ def _orders_dataset() -> SlayerDataset:
             ),
             DatasetField(
                 name="created_at_day",
-                sql="DATE_TRUNC('day', created_at)",
+                expression="DATE_TRUNC('day', created_at)",
                 datatype=DataType.DATE,
             ),
         ],
@@ -607,7 +607,7 @@ class TestBuilderCrossModelKwargPath:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="quantity", datatype=DataType.INTEGER),
-                DatasetField(name="net_quantity", sql="quantity - 1", datatype=DataType.INTEGER),
+                DatasetField(name="net_quantity", expression="quantity - 1", datatype=DataType.INTEGER),
             ],
         )
         spec = SQLGenerator(dialect="postgres")._build_agg_render_spec_from_planned(

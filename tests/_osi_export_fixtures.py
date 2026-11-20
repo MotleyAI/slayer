@@ -37,8 +37,8 @@ EXPORT_DDL = [
 ]
 
 
-def col(name: str, type_: DataType = DataType.FLOAT, sql: str | None = None, **extra: Any) -> DatasetField:
-    return DatasetField(name=name, sql=sql, datatype=type_, **extra)
+def col(name: str, type_: DataType = DataType.FLOAT, expression: str | None = None, **extra: Any) -> DatasetField:
+    return DatasetField(name=name, expression=expression, datatype=type_, **extra)
 
 
 def slayer_metric(name: str, expression: str, **extra: Any) -> DatasetMetric:
@@ -150,11 +150,11 @@ def rich_orders() -> SlayerDataset:
         if c.name == "note":
             c.hidden = True
     columns += [
-        col("gross", sql="price * quantity"),
-        col("net", sql="gross - discount"),
-        col("completed_amount", sql="amount", filter="status = 'completed'"),
-        col("paid_flag", DataType.BOOLEAN, sql="is_paid", filter="status <> 'test'"),
-        col("segment", DataType.STRING, sql="customers.segment"),
+        col("gross", expression="price * quantity"),
+        col("net", expression="orders.gross - discount"),
+        col("completed_amount", expression="amount", filter="status = 'completed'"),
+        col("paid_flag", DataType.BOOLEAN, expression="is_paid", filter="status <> 'test'"),
+        col("segment", DataType.STRING, expression="customers.segment"),
     ]
     return orders(
         columns=columns,

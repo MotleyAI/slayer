@@ -18,6 +18,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -72,7 +73,7 @@ async def exec_qdouble(request):
     models = dev1832_datasets()
     sales = next(m for m in models if m.name == "sales")
     sales.fields.append(
-        DatasetField(name="q_double", datatype=DataType.FLOAT, sql="q_amount * 2"))
+        DatasetField(name="q_double", datatype=DataType.FLOAT, expression="sales.q_amount * 2"))
     async for engine in make_exec_engine(request, datasets=models):
         yield engine
 
@@ -362,7 +363,7 @@ class TestDerivedOverFiltered:
     async def test_derived_column_expands_wrapped_value_sql(self) -> None:
         model = sales_dataset()
         model.fields.append(
-            DatasetField(name="q_double", datatype=DataType.FLOAT, sql="q_amount * 2"))
+            DatasetField(name="q_double", datatype=DataType.FLOAT, expression="sales.q_amount * 2"))
         sql = await gen(sales_q(metrics=[_metric("sum(sales.q_double)")]), datasets=[model])
         assert "CASE WHEN" in sql.upper(), sql
         assert "'Q'" in sql, sql
@@ -381,7 +382,7 @@ class TestVariableSubstitution:
     async def test_variables_substitute_into_sql_and_filter(self) -> None:
         model = sales_dataset()
         model.fields.append(DatasetField(
-            name="vcol", datatype=DataType.FLOAT, sql="amount * {mult}",
+            name="vcol", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * {mult}")]),
             filter="product = '{prod}'"))
         sql = await gen(
             sales_q(metrics=[_metric("sum(sales.vcol)")], variables={"mult": 2, "prod": "Q"}),

@@ -457,13 +457,13 @@ class TestSlayerModel:
 
     def test_dimension_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in dimension sql are left as-is."""
-        dim = DatasetField(name="cust_name", sql="customers.name", datatype=DataType.FLOAT)
-        assert dim.sql == "customers.name"
+        dim = DatasetField(name="cust_name", expression="customers.name", datatype=DataType.FLOAT)
+        assert dim.expression == "customers.name"
 
     def test_measure_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in field sql are left as-is."""
-        meas = DatasetField(name="total", sql="orders.amount", datatype=DataType.FLOAT)
-        assert meas.sql == "orders.amount"
+        meas = DatasetField(name="total", expression="orders.amount", datatype=DataType.FLOAT)
+        assert meas.expression == "orders.amount"
 
     def test_model_name_allows_double_underscore(self) -> None:
         # `__` is legal in dataset names (the dotted-canonical flip
@@ -629,7 +629,7 @@ class TestWithinListDuplicateNames:
     def test_unnamed_model_measure_rejected(self) -> None:
         """A dataset metric must have a name."""
         raw = {"name": "orders", "sql_table": "t", "data_source": "test",
-               "fields": [{"name": "amount", "sql": "amount", "datatype": "Float"}],
+               "fields": [{"name": "amount", "expression": "amount", "datatype": "Float"}],
                "metrics": [{"expression": "sum(amount)"}]}
         with pytest.raises(ValueError, match="must have a name"):
             SlayerDataset.model_validate(raw)

@@ -63,6 +63,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -273,7 +274,7 @@ def shipped_orders_dataset() -> SlayerDataset:
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             DatasetField(name="shipped_at", datatype=DataType.DATETIME),
             # Derived field — the "every dimension kind" scenario (Codex F3).
-            DatasetField(name="city_key", datatype=DataType.STRING, sql="LOWER(city)"),
+            DatasetField(name="city_key", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="LOWER(city)"), DialectEntry(dialect="SQLITE", expression="LOWER(city)")])),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),

@@ -9,6 +9,7 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
@@ -125,8 +126,7 @@ class TestDuckDBQueries:
         orders = await duckdb_env.storage.get_dataset("orders")
         assert orders is not None
         await duckdb_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]), datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
@@ -638,7 +638,7 @@ class TestDuckDBStatAggregations:
         existing = await duckdb_env.storage.get_dataset("orders")
         assert existing is not None
         cols = list(existing.fields) + [
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
+            DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="log10(amount)")]), datatype=DataType.FLOAT),
         ]
         await duckdb_env.save_dataset(
             SlayerDataset(
@@ -724,7 +724,7 @@ async def planets_duckdb_env(tmp_path):
                 DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -778,7 +778,7 @@ async def duckdb_derived_chain_env(tmp_path):
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="foo_raw / 100.0")]), datatype=DataType.FLOAT),
             ],
         )
     )
@@ -793,7 +793,7 @@ async def duckdb_derived_chain_env(tmp_path):
                 DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="a_tbl.bar / b_tbl.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -886,8 +886,8 @@ def _dev1531_duckdb_storage(tmp_path_factory):
             DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="region_payment", sql="customers.regions.payment_amount", datatype=DataType.FLOAT),
-            DatasetField(name="cust_balance", sql="customers.balance", datatype=DataType.FLOAT),
+            DatasetField(name="region_payment", expression="customers.regions.payment_amount", datatype=DataType.FLOAT),
+            DatasetField(name="cust_balance", expression="customers.balance", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
@@ -1021,7 +1021,7 @@ def _dev1709_duckdb_storage(tmp_path_factory):
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+            DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )))
@@ -1303,8 +1303,8 @@ def _dev1728_duckdb_storage(tmp_path_factory):
             DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
             DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
             DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
-            DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="ltv_x2", expression="lifetime_value * 2", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         default_time_dimension="signup_at",

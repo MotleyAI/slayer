@@ -13,6 +13,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh, refresh_table_backed_dataset_sampled
@@ -728,7 +729,7 @@ async def test_refresh_continues_after_per_column_failure(sqlite_setup: tuple[Sl
     model = await storage.get_dataset("orders", data_source="ds")
     assert model is not None
     model.fields = [
-        DatasetField(name="amount", sql="no_such_fn(status)", datatype=DataType.FLOAT) if c.name == "amount" else c
+        DatasetField(name="amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(status)")]), datatype=DataType.FLOAT) if c.name == "amount" else c
         for c in model.fields
     ]
     await storage.save_dataset(model)

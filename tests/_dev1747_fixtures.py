@@ -203,16 +203,16 @@ def _orders_dataset(*, data_source: str = "test") -> SlayerDataset:
             # ``customers.regions.name`` resolves ungrouped.
             DatasetField(
                 name="cust_region", datatype=DataType.STRING,
-                sql="customers.regions.name",
+                expression="customers.regions.name",
             ),
             # A NON-crossing derived field — the control. Ordering by it must
             # keep working exactly as it does today.
-            DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
+            DatasetField(name="amount_x2", datatype=DataType.FLOAT, expression="amount * 2"),
             # A derived field over ANOTHER derived field. Only the expanding
             # resolver inlines the sibling; resolving the raw ``DatasetField.sql``
             # emits the bare name ``amount_x2``, which is not a database column
             # — so this is what tells the two render paths apart.
-            DatasetField(name="amount_x4", datatype=DataType.FLOAT, sql="orders.amount_x2 * 2"),
+            DatasetField(name="amount_x4", datatype=DataType.FLOAT, expression="orders.amount_x2 * 2"),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),

@@ -8,6 +8,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.dialects import base as dialects_base
@@ -122,7 +123,7 @@ class TestZonedColumnReadsNaive:
     async def test_derived_aggregate_source_reads_naive_once(self) -> None:
         base = _zoned_lib()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
-            name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", datatype=DataType.DATETIME, db_type="TIMESTAMP")]})
+            name="ts_shifted", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)")]), datatype=DataType.DATETIME, db_type="TIMESTAMP")]})
         query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "max(lib.ts_shifted)",
                                                                                  "alias": "agg_v"}]})
         sql = " ".join((await _engine_generate(query=query, dataset=model, dialect="bigquery")).upper().split())
@@ -142,7 +143,7 @@ class TestZonedColumnReadsNaive:
     async def test_derived_time_column_reads_naive(self) -> None:
         base = _zoned_lib()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
-            name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", datatype=DataType.DATETIME, db_type="TIMESTAMP")]})
+            name="ts_shifted", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)")]), datatype=DataType.DATETIME, db_type="TIMESTAMP")]})
         query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "count(lib.*)"}],
                                             "time_dimensions": [{"field": "lib.ts_shifted", "granularity": "month"}]})
         sql = " ".join((await _engine_generate(query=query, dataset=model, dialect="bigquery")).upper().split())
@@ -157,7 +158,7 @@ class TestZonedColumnReadsNaive:
             DatasetRelationship(to="b", from_columns=["at"], to_columns=["bt"])], fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="at", sql="at_raw", datatype=DataType.DATETIME, db_type="TIMESTAMP"),
-            DatasetField(name="ts_shifted", sql="TIMESTAMP_ADD(at_raw, INTERVAL 1 HOUR)", datatype=DataType.DATETIME)])
+            DatasetField(name="ts_shifted", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="TIMESTAMP_ADD(at_raw, INTERVAL 1 HOUR)")]), datatype=DataType.DATETIME)])
         b = SlayerDataset(name="b", sql_table="b", data_source="test", fields=[
             DatasetField(name="bt", datatype=DataType.DATETIME, db_type=target_db_type, primary_key=True),
             DatasetField(name="label", datatype=DataType.STRING)])

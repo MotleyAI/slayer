@@ -133,7 +133,7 @@ def dev1908_datasets() -> List[SlayerDataset]:
 
     orders = _by_name(models, "orders")
     orders.fields.append(DatasetField(name="ship_region_id", datatype=DataType.INTEGER))
-    orders.fields.append(DatasetField(name="cost", datatype=DataType.FLOAT, sql="amount * 2"))
+    orders.fields.append(DatasetField(name="cost", datatype=DataType.FLOAT, expression="amount * 2"))
     orders.aggregations.extend([
         # Owner at the root consumes its own name once (degenerate cancel-to-self).
         Aggregation(name="wself", expression="SUM({value} * {weight})",

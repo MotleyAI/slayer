@@ -146,11 +146,11 @@ def _no_grain_warnings(resp) -> None:
 def _sales_variant() -> SlayerDataset:
     s = sales_dataset()
     extra_cols = [
-        DatasetField(name="city_upper", datatype=DataType.STRING, sql="UPPER(city)"),
-        DatasetField(name="city_len", datatype=DataType.INTEGER, sql="LENGTH(city)"),
+        DatasetField(name="city_upper", datatype=DataType.STRING, expression="UPPER(city)"),
+        DatasetField(name="city_len", datatype=DataType.INTEGER, expression="LENGTH(city)"),
         DatasetField(name="prod_flag", datatype=DataType.INTEGER,
-               sql="CASE WHEN product = 'P' THEN 1 ELSE 0 END"),
-        DatasetField(name="bad", datatype=DataType.INTEGER, sql="amount +* )"),
+               expression="CASE WHEN product = 'P' THEN 1 ELSE 0 END"),
+        DatasetField(name="bad", datatype=DataType.INTEGER, expression="amount +* )"),
         DatasetField(name="city_q", datatype=DataType.STRING, sql="city", filter="product = 'Q'"),
         DatasetField(name="city_n", datatype=DataType.STRING, sql="city", filter="region = 'North'"),
     ]

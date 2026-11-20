@@ -130,7 +130,7 @@ class TestResolveRegistersJoins:
 
     def test_derived_columnsqlkey_crossing_registers_prefixes(self) -> None:
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         scope = _scope(orders, _customers(), _regions())
@@ -207,7 +207,7 @@ class TestResolveReservedQuoting:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="user_id", sql="user_id", datatype=DataType.FLOAT),
-                DatasetField(name="user_grade", sql="user.grade", datatype=DataType.FLOAT),
+                DatasetField(name="user_grade", expression="user.grade", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="user", from_columns=["user_id"], to_columns=["id"])],
         )
@@ -224,7 +224,7 @@ class TestResolvePredicateParens:
     @staticmethod
     def _derived_orders():
         return _orders(extra=[
-            DatasetField(name="total", sql="amount + balance", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount + balance", datatype=DataType.FLOAT),
         ])
 
     def test_derived_expansion_parenthesised_preserves_precedence(self) -> None:
@@ -400,7 +400,7 @@ class TestResolvePathedColumnSqlKey:
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
                 DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
-                DatasetField(name="tier", sql="upper(balance)", datatype=DataType.STRING),
+                DatasetField(name="tier", expression="upper(balance)", datatype=DataType.STRING),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
@@ -437,7 +437,7 @@ class TestResolvePathedColumnSqlKey:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-                DatasetField(name="deep", sql="regions.population", datatype=DataType.FLOAT),
+                DatasetField(name="deep", expression="regions.population", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )

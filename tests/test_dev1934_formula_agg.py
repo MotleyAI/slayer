@@ -68,9 +68,9 @@ def _orders(aggs: tuple[Aggregation, ...] = ()) -> SlayerDataset:
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
             DatasetField(name="discount", sql="discount", datatype=DataType.FLOAT),
-            DatasetField(name="netd", sql="price - discount", datatype=DataType.FLOAT),
+            DatasetField(name="netd", expression="price - discount", datatype=DataType.FLOAT),
             DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
-            DatasetField(name="q2", sql="quantity + 1"),
+            DatasetField(name="q2", expression="quantity + 1"),
         ],
         aggregations=list(aggs),
     )

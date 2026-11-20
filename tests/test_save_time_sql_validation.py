@@ -281,7 +281,7 @@ class TestGatesSkipProbe:
             name="col_var_model",
             sql="SELECT nonexistent FROM orders",
             data_source=_DS,
-            fields=[DatasetField(name="c", sql="{threshold}", datatype=DataType.STRING)],
+            fields=[DatasetField(name="c", expression="{threshold}", datatype=DataType.STRING)],
         )
         with pytest.raises(DatasetSqlValidationError):
             await engine.validate_sql_dataset_source(model)

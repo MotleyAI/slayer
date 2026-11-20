@@ -24,6 +24,7 @@ from __future__ import annotations
 import sqlglot
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 
@@ -96,17 +97,17 @@ def _customers_v2(*, extra_columns=None) -> SlayerDataset:
         DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
         DatasetField(name="status", sql="status", datatype=DataType.STRING),
         # Target-LOCAL derived dims (expand to customers_v2-only fields):
-        DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
-        DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INTEGER),
+        DatasetField(name="ltv_x2", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="lifetime_value * 2"), DialectEntry(dialect="POSTGRES", expression="lifetime_value * 2"), DialectEntry(dialect="SQLITE", expression="lifetime_value * 2")]), datatype=DataType.FLOAT),
+        DatasetField(name="ltv_third", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="lifetime_value / 3.0"), DialectEntry(dialect="POSTGRES", expression="lifetime_value / 3.0"), DialectEntry(dialect="SQLITE", expression="lifetime_value / 3.0")]), datatype=DataType.INTEGER),
         # Derived, one-hop crossing (customers_v2 → regions):
-        DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
-        DatasetField(name="deep_pop_x2", sql="regions.population * 2", datatype=DataType.FLOAT),
-        DatasetField(name="deep_weight", sql="regions.weight", datatype=DataType.FLOAT),
+        DatasetField(name="deep_pop", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.population"), DialectEntry(dialect="POSTGRES", expression="regions.population"), DialectEntry(dialect="SQLITE", expression="regions.population")]), datatype=DataType.FLOAT),
+        DatasetField(name="deep_pop_x2", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.population * 2"), DialectEntry(dialect="POSTGRES", expression="regions.population * 2"), DialectEntry(dialect="SQLITE", expression="regions.population * 2")]), datatype=DataType.FLOAT),
+        DatasetField(name="deep_weight", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.weight"), DialectEntry(dialect="POSTGRES", expression="regions.weight"), DialectEntry(dialect="SQLITE", expression="regions.weight")]), datatype=DataType.FLOAT),
         # Derived, TWO-hop crossing (customers_v2 → regions → countries):
-        DatasetField(name="deep_gdp", sql="regions.countries.gdp", datatype=DataType.FLOAT),
+        DatasetField(name="deep_gdp", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.countries.gdp"), DialectEntry(dialect="POSTGRES", expression="regions.countries.gdp"), DialectEntry(dialect="SQLITE", expression="regions.countries.gdp")]), datatype=DataType.FLOAT),
         # Derived TIME dim whose sql crosses a further relationship:
         DatasetField(name="region_opened_eff",
-               sql="coalesce(regions.opened_at, signup_at)",
+               expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="coalesce(regions.opened_at, signup_at)"), DialectEntry(dialect="POSTGRES", expression="coalesce(regions.opened_at, signup_at)"), DialectEntry(dialect="SQLITE", expression="coalesce(regions.opened_at, signup_at)")]),
                datatype=DataType.DATETIME),
     ]
     if extra_columns:

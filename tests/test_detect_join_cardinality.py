@@ -278,7 +278,7 @@ class TestVerdicts:
         # An expression-backed relationship key is not a base field: the dataset never builds.
         columns = [
             _col("id", pk=True),
-            DatasetField(name="ck", sql="customer_id + 0", datatype=DataType.INTEGER),
+            DatasetField(name="ck", expression="customer_id + 0", datatype=DataType.INTEGER),
         ]
         joins = [DatasetRelationship(to="customers", from_columns=["ck"], to_columns=["id"])]
         with pytest.raises(ValueError, match=r"orders_expr.*customers.*'ck'"):

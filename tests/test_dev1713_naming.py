@@ -126,7 +126,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="revenue", datatype=DataType.FLOAT, label="Revenue"),
                 DatasetField(name="signup_at", datatype=DataType.DATETIME),
-                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT, label="Rev x2"),
+                DatasetField(name="rev_x2", expression="revenue * 2", datatype=DataType.FLOAT, label="Rev x2"),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )

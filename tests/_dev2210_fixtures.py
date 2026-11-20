@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType, JoinType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.plan import plan_query
@@ -98,7 +99,7 @@ def table_datasets() -> list[SlayerDataset]:
             _id(), DatasetField(name="name", datatype=DataType.STRING),
         ]),
         _returns("returns", joins=[_to("done_orders"), _to("ups_orders")],
-                 extra=[DatasetField(name="done_status", datatype=DataType.STRING, sql="done_orders.status")]),
+                 extra=[DatasetField(name="done_status", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="done_orders.status"), DialectEntry(dialect="SQLITE", expression="done_orders.status")]))]),
         _returns("late_returns", joins=[_to("orders")], filters=["reason = 'late'"]),
         _returns("returns_of_done", joins=[_to("done_orders")], filters=["done_orders.id is not null"]),
         _returns("returns_inner", joins=[_to("done_orders", join_type=JoinType.INNER)]),

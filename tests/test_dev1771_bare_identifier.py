@@ -68,7 +68,7 @@ def test_diff_skips_non_ascii_leading_alias():
         data_source="db",
         sql_table="orders",
         fields=[
-            DatasetField(name="year", sql="год", datatype=DataType.INTEGER),
+            DatasetField(name="year", expression="год", datatype=DataType.INTEGER),
             DatasetField(name="year_ascii", sql="yr_phys", datatype=DataType.INTEGER),
         ],
     )
@@ -84,7 +84,7 @@ def test_first_dropped_ref_scans_non_ascii_leading_alias():
         name="orders",
         data_source="db",
         sql_table="orders",
-        fields=[DatasetField(name="year", sql="orders.год", datatype=DataType.INTEGER)],
+        fields=[DatasetField(name="year", expression="orders.год", datatype=DataType.INTEGER)],
     )
     state = _CascadeState(
         datasets_by_name={"orders": model},

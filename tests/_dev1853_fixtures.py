@@ -153,7 +153,7 @@ def parallel_datasets(*, named: bool) -> list[SlayerDataset]:
         # Mode-A probe over a named edge (planned only when referenced).
         order_columns.append(
             DatasetField(name="bill_tier", datatype=DataType.STRING,
-                   sql="billing_customer.tier"))
+                   expression="billing_customer.tier"))
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=order_columns,

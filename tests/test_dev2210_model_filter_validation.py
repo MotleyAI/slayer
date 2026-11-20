@@ -8,13 +8,15 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import DatasetFilterError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2210_fixtures import seed, table_datasets
 from tests._engine_helpers import seeded_exec_engine
 
-RANKED = DatasetField(name="ranked", datatype=DataType.INTEGER, sql="rank() over (order by amount)")
+RANKED = DatasetField(name="ranked", datatype=DataType.INTEGER, expression=ExpressionObject(
+    dialects=[DialectEntry(dialect="SQLITE", expression="rank() over (order by amount)")]))
 
 
 def _orders(name: str, *, columns: Sequence[DatasetField] = (), **kw) -> SlayerDataset:
@@ -71,7 +73,7 @@ class TestSaveRefusesInvalidFilters:
         assert await engine.storage.get_dataset("returns_ranked", data_source="test") is None
 
     async def test_filter_on_windowed_column_through_derived_column(self, engine, door):
-        model = _orders("orders_rank_plus", columns=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, sql="ranked + 0")],
+        model = _orders("orders_rank_plus", columns=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="orders_rank_plus.ranked + 0")]))],
                         filters=["orders_rank_plus.rank_plus > 1"])
         with pytest.raises(DatasetFilterError):
             await _save(engine, model, door=door)
@@ -86,7 +88,7 @@ class TestQueryReadsInvalidStoredFilter:
             _returns("returns_bad_filtered", target="bad_done", filters=["bad_done.id is not null"]), _validate=False,
         )
         derived = _returns("returns_bad_derived", target="bad_done")
-        derived.fields.append(DatasetField(name="bad_status", datatype=DataType.STRING, sql="bad_done.status"))
+        derived.fields.append(DatasetField(name="bad_status", datatype=DataType.STRING, expression="bad_done.status"))
         await engine.storage.save_dataset(derived, _validate=False)
         return engine
 

@@ -72,7 +72,7 @@ class TestStructuralProof:
         target = SlayerDataset(
             name="derived", data_source="test", sql_table="derived",
             fields=[
-                DatasetField(name="id", sql="UPPER(code)", datatype=DataType.STRING,
+                DatasetField(name="id", expression="UPPER(code)", datatype=DataType.STRING,
                        primary_key=True),
                 DatasetField(name="code", datatype=DataType.STRING),
             ],

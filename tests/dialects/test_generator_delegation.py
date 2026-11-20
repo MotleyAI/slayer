@@ -16,6 +16,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
@@ -40,14 +41,13 @@ class TestSqliteJsonExtractInGenerator:
                 DatasetField(name="payload", sql="payload", datatype=DataType.STRING),
                 DatasetField(
                     name="tier",
-                    sql="json_extract(payload, '$.tier')",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="json_extract(payload, '$.tier')")]),
                     datatype=DataType.STRING,
                 ),
                 DatasetField(
                     name="is_gold",
-                    sql=(
-                        "CASE LOWER(json_extract(payload, '$.tier')) "
-                        "WHEN 'gold' THEN 1 ELSE 0 END"
+                    expression=(
+                        ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END")])
                     ),
                     datatype=DataType.FLOAT,
                 ),

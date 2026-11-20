@@ -28,6 +28,7 @@ import pytest
 import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, SlayerQuery, TimeDimension
 from slayer.sql.generator import SQLGenerator
@@ -105,7 +106,7 @@ def accounts_dataset() -> SlayerDataset:
             DatasetField(
                 name="is_inactive",
                 datatype=DataType.BOOLEAN,
-                sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END",
+                expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END",
             ),
             DatasetField(
                 name="acct_form",
@@ -617,7 +618,7 @@ class TestFlavorBMixedCaseQuoting:
             data_source="test",
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="j", sql="COALESCE(RawVal, 0)", datatype=DataType.FLOAT),
+                DatasetField(name="j", expression="COALESCE(RawVal, 0)", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "sum(accounts.j)"}]})
@@ -721,7 +722,8 @@ class TestMixedCaseQuotingMultiDialect:
                 DatasetField(
                     name="is_inactive",
                     datatype=DataType.BOOLEAN,
-                    sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END",
+                    expression=ExpressionObject(dialects=[DialectEntry(
+                        dialect=dialect.upper(), expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END")]),
                 ),
             ],
         )

@@ -18,6 +18,7 @@ from sqlglot.expressions.core import Expression
 import slayer.live_schema.schema_drift as schema_drift
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import IngestableObject
@@ -68,7 +69,7 @@ def _base_datasets(ds: str) -> list[SlayerDataset]:
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
                 DatasetField(name="product_id", datatype=DataType.INTEGER),
                 # Derived, so never drift; executing it fails for a non-drift reason.
-                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
+                DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(id)")]), datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -84,7 +85,7 @@ def _sql_dataset(*, name: str, sql: str, ds: str = "ds") -> SlayerDataset:
         fields=[
             # A 0-row SQLite trial reports every column as TEXT.
             DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
-            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
+            DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(id)")]), datatype=DataType.FLOAT),
         ],
     )
 
@@ -360,7 +361,7 @@ class TestScopedInspection:
                 fields=[
                     DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                     DatasetField(name="v", datatype=DataType.FLOAT),
-                    DatasetField(name="bad", sql="no_such_fn(v)", datatype=DataType.FLOAT),
+                    DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(v)")]), datatype=DataType.FLOAT),
                 ],
             )
             for i in range(10)
@@ -411,7 +412,7 @@ class TestScopedInspection:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
+                DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(id)")]), datatype=DataType.FLOAT),
             ],
         ))
         await _fails_unwrapped(

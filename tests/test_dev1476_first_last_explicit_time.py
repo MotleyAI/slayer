@@ -11,6 +11,7 @@ from unittest import mock
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.keys import (
     AggregateKey,
     FieldKey,
@@ -185,7 +186,7 @@ async def test_local_first_last_over_derived_column_expands_inner_refs(
         "fields": list(orders.fields) + [
             DatasetField(
                 name="net_amount",
-                sql="amount * 0.9",
+                expression="amount * 0.9",
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -464,7 +465,7 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
                     DatasetField(name="customer_id", datatype=DataType.INTEGER),
                     DatasetField(
                         name="created_day",
-                        sql="date(created_at)",
+                        expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="date(created_at)")]),
                         datatype=DataType.DATETIME,
                     ),
                 ],
@@ -658,7 +659,7 @@ class TestTimeArgJoinDiscovery:
 
     def test_local_derived_crossing_time_arg_registers_join(self) -> None:
         orders = _u_orders(extra=[
-            DatasetField(name="cust_signup", sql="customers.signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="cust_signup", expression="customers.signup_at", datatype=DataType.DATETIME),
         ])
         scope = self._run(
             SlayerQuery.model_validate({
@@ -832,7 +833,7 @@ async def test_e2e_multi_hop_local_crossing_time_arg() -> None:
 
 async def test_e2e_local_derived_crossing_time_arg() -> None:
     orders = _u_orders(extra=[
-        DatasetField(name="cust_signup", sql="customers.signup_at", datatype=DataType.DATETIME),
+        DatasetField(name="cust_signup", expression="customers.signup_at", datatype=DataType.DATETIME),
     ])
     engine = await _engine_from_sql(
         ddl=[

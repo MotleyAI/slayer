@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -127,7 +128,8 @@ class TestPostgresVerbatimExecution:
         orders = await pg_env.storage.get_dataset("orders")
         assert orders is not None
         await pg_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')", datatype=DataType.STRING),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(
+                dialect="POSTGRES", expression=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')")]), datatype=DataType.STRING),
         ]}))
         query = SlayerQuery(
             population="orders_rx",

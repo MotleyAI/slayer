@@ -594,7 +594,7 @@ def _unavailable() -> Exception:
 _DB_FAILURE_CALLS = [
     ("query", (SlayerQueryEngine, "execute"), {"query": _QUERY}),
     ("create_dataset", (SlayerQueryEngine, "save_dataset"),
-     {"name": "m", "sql_table": "orders", "data_source": "test", "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
+     {"name": "m", "sql_table": "orders", "data_source": "test", "fields": [{"name": "id", "expression": "id", "datatype": "number"}]}),
     ("create_dataset", (SlayerQueryEngine, "create_dataset_from_query"), {"name": "m", "query": _QUERY}),
     ("validate_datasets", (SlayerQueryEngine, "validate_datasets"), {}),
     ("ingest_datasource", (engine_ingestion, "ingest_datasource_idempotent"), {"datasource_name": "test"}),

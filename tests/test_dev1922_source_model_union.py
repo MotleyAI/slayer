@@ -42,7 +42,7 @@ INLINE_MODEL = {
     "name": "ad_hoc",
     "sql_table": "things",
     "data_source": "ds",
-    "fields": [{"name": "x", "sql": "x", "datatype": "Float"}],
+    "fields": [{"name": "x", "expression": "x", "datatype": "Float"}],
 }
 JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
 ONE_MEASURE = [{"metric": "sum(amount)"}]

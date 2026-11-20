@@ -55,7 +55,7 @@ def _regions() -> SlayerDataset:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="population", datatype=DataType.FLOAT),
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
+            DatasetField(name="pop_x2", expression="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
@@ -80,7 +80,7 @@ def _orders() -> SlayerDataset:
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="status", datatype=DataType.STRING),
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
+            DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT),
             # a reserved-ish name that would shadow a statement keyword
             DatasetField(name="select", datatype=DataType.STRING),
         ],
@@ -164,7 +164,7 @@ class TestQualification:
         dataset" from "something re-qualified it against the scope root"."""
         customers = _customers()
         customers.fields.append(
-            DatasetField(name="balance_x2", sql="balance * 2", datatype=DataType.FLOAT),
+            DatasetField(name="balance_x2", expression="balance * 2", datatype=DataType.FLOAT),
         )
         host = _orders()
         # a same-named field on the ROOT, so a root-anchored pass is visible
@@ -269,7 +269,7 @@ class TestJoinRegistration:
         """
         customers = _customers()
         customers.fields.append(
-            DatasetField(name="flag_const", sql="1", datatype=DataType.INTEGER),
+            DatasetField(name="flag_const", expression="1", datatype=DataType.INTEGER),
         )
         host = _orders()
         alloc = AliasAllocator()

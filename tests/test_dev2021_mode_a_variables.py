@@ -15,6 +15,7 @@ import duckdb
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
@@ -137,10 +138,10 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
-_SCALED = DatasetField(name="scaled", sql="amount * {k}", datatype=DataType.FLOAT)
+_SCALED = DatasetField(name="scaled", expression="amount * {k}", datatype=DataType.FLOAT)
 _FLOORED = DatasetField(name="big", sql="amount", filter="amount >= {floor}", datatype=DataType.FLOAT)
-_TAGGED = DatasetField(name="tagged", sql="name || '{suffix}'", datatype=DataType.STRING)
-_FLAGGED = DatasetField(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.FLOAT)
+_TAGGED = DatasetField(name="tagged", expression="name || '{suffix}'", datatype=DataType.STRING)
+_FLAGGED = DatasetField(name="flagged", expression="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.FLOAT)
 
 #: (dataset, expression, variables) — one hostile value per Mode-A surface.
 _HOSTILE = {
@@ -204,7 +205,7 @@ class TestLiteralValuesBind:
         assert await env.value(model, _query("orders", "sum(orders.flagged)", variables={"flag": flag})) == expected
 
     async def test_sql_and_filter_of_one_column_both_bind(self, env: _Env) -> None:
-        both = DatasetField(name="both", sql="amount * {k}", filter="amount >= {floor}", datatype=DataType.FLOAT)
+        both = DatasetField(name="both", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * {k}"), DialectEntry(dialect="SQLITE", expression="amount * {k}")]), filter="amount >= {floor}", datatype=DataType.FLOAT)
         model = _table_dataset(extra=(both,))
         assert await env.value(model, _query("orders", "sum(orders.both)", variables={"k": 2, "floor": 25})) == 140
 
@@ -212,14 +213,14 @@ class TestLiteralValuesBind:
 #: (field, dataset) pairs whose placeholder stands in a non-literal position.
 _NON_LITERAL = {
     "model-sql-table": _sql_dataset("SELECT * FROM {table}"),
-    "column-function-name": _table_dataset(extra=(DatasetField(name="c", sql="{f}(amount)", datatype=DataType.FLOAT),)),
-    "column-quoted-identifier": _table_dataset(extra=(DatasetField(name="c", sql='"{c}"', datatype=DataType.FLOAT),)),
-    "column-comment": _table_dataset(extra=(DatasetField(name="c", sql="amount /* {c} */", datatype=DataType.FLOAT),)),
-    "column-type-name": _table_dataset(extra=(DatasetField(name="c", sql="CAST(amount AS {t})", datatype=DataType.FLOAT),)),
-    "column-partial-in-list": _table_dataset(extra=(DatasetField(name="c", sql="status IN ('x', {s})", datatype=DataType.BOOLEAN),)),
+    "column-function-name": _table_dataset(extra=(DatasetField(name="c", expression="{f}(amount)", datatype=DataType.FLOAT),)),
+    "column-quoted-identifier": _table_dataset(extra=(DatasetField(name="c", expression='"{c}"', datatype=DataType.FLOAT),)),
+    "column-comment": _table_dataset(extra=(DatasetField(name="c", expression="amount /* {c} */", datatype=DataType.FLOAT),)),
+    "column-type-name": _table_dataset(extra=(DatasetField(name="c", expression="CAST(amount AS {t})", datatype=DataType.FLOAT),)),
+    "column-partial-in-list": _table_dataset(extra=(DatasetField(name="c", expression="status IN ('x', {s})", datatype=DataType.BOOLEAN),)),
 }
 #: A bare slot is a literal position: saved, and refused at query time when its value is no number or boolean.
-_BARE_SLOT = _table_dataset(extra=(DatasetField(name="c", sql="{col} * 2", datatype=DataType.FLOAT),))
+_BARE_SLOT = _table_dataset(extra=(DatasetField(name="c", expression="{col} * 2", datatype=DataType.FLOAT),))
 
 
 class TestNonLiteralPositionsAreRefused:
@@ -261,7 +262,7 @@ class TestOptionalBlocks:
             await env.engine.execute(query)
 
     async def test_escaped_braces_render_one_brace(self, env: _Env) -> None:
-        tag = DatasetField(name="tag", sql="'{{x}}' || '{suffix}'", datatype=DataType.STRING)
+        tag = DatasetField(name="tag", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="'{{x}}' || '{suffix}'"), DialectEntry(dialect="SQLITE", expression="'{{x}}' || '{suffix}'")]), datatype=DataType.STRING)
         resp = await env.run(_table_dataset(extra=(tag,)), SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["orders.tag"], "variables": {"suffix": "!"},
         }))

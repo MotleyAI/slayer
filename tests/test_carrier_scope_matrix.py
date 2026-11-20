@@ -348,7 +348,7 @@ class TestScopeDefectPins:
 
     async def test_cross_model_source_crosses_further_join(self) -> None:
         customers = _customers(extra=[
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
             population="orders",

@@ -20,7 +20,7 @@ from tests._cross_model_chain import (
 from tests._engine_helpers import _assert_valid_sql
 
 # Derived field on regions: its filter path ends AT the target ``regions``.
-_REGIONS_EXTRA = [DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT)]
+_REGIONS_EXTRA = [DatasetField(name="pop_x2", expression="population * 2", datatype=DataType.FLOAT)]
 
 _TWO_HOP_AGG = QueryMetric(metric="sum(customers_v2.regions.population)")
 

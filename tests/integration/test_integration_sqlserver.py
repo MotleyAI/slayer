@@ -73,6 +73,7 @@ from tests.integration._one_request import PATHS, assert_one_request_each, run_t
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -358,8 +359,7 @@ class TestSQLServerQueries:
         orders = await sqlserver_env.storage.get_dataset("orders")
         assert orders is not None
         await sqlserver_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="TSQL", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]), datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
@@ -1161,7 +1161,7 @@ def sqlserver_log10_env(sqlserver_container):
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
+            DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="TSQL", expression="log10(amount)")]), datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -1286,7 +1286,7 @@ def planets_sqlserver_env(sqlserver_container):
                 DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="TSQL", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1345,7 +1345,7 @@ def sqlserver_derived_chain_env(sqlserver_container):
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", expression=ExpressionObject(dialects=[DialectEntry(dialect="TSQL", expression="foo_raw / 100.0")]), datatype=DataType.FLOAT),
             ],
         )
     ))
@@ -1361,7 +1361,7 @@ def sqlserver_derived_chain_env(sqlserver_container):
                 DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="TSQL", expression="a_tbl.bar / b_tbl.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1849,8 +1849,8 @@ async def test_money_columns_are_exact(sqlserver_container, tmp_path) -> None:
         await storage.save_datasource(ds)
         await storage.save_dataset(ledger.model_copy(update={"fields": [
             *ledger.fields,
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT, db_type="money"),
-            DatasetField(name="small_doubled", sql="small * 2", datatype=DataType.FLOAT, db_type="smallmoney"),
+            DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT, db_type="money"),
+            DatasetField(name="small_doubled", expression=ExpressionObject(dialects=[DialectEntry(dialect="TSQL", expression="small * 2")]), datatype=DataType.FLOAT, db_type="smallmoney"),
         ]}))
         engine = SlayerQueryEngine(storage=storage)
         sums = SlayerQuery.model_validate({"population": "ledger", "metrics": ["sum(ledger.amount)", "sum(ledger.small)"]})

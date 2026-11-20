@@ -137,7 +137,7 @@ class TestDev1527KwargExpansion:
         # A LOCAL derived field kwarg (no relationship) also collapses to a bare name
         # today (orders.dbl_qty, non-existent). After the fix it expands.
         orders = _orders(extra=[
-            DatasetField(name="dbl_qty", sql="quantity * 2", datatype=DataType.FLOAT),
+            DatasetField(name="dbl_qty", expression="quantity * 2", datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
             population="orders",
@@ -185,7 +185,7 @@ class TestDev1527KwargExpansion:
         # field crossing a relationship → its expansion is embedded as the second CORR
         # operand AND the relationship is registered (base-pulled).
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -208,7 +208,7 @@ class TestDev1527KwargExpansion:
         # weight operand is the expanded joined ref — not the bare, non-existent
         # ``orders.region_weight`` (Codex finding on the ROW-collector fold PR).
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -234,7 +234,7 @@ class TestDev1527KwargExpansion:
         # kwarg (customers__regions.weight) renders inside the CTE; the bare
         # non-existent orders.region_weight never appears.
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -306,7 +306,7 @@ class TestDev1527F1BasePull:
         # class-(d) crossed-argument ledger row). The proven-hop control
         # below pins the still-legal shape.
         orders = _orders(
-            extra=[DatasetField(name="li_weight", sql="line_items.qty", datatype=DataType.FLOAT)],
+            extra=[DatasetField(name="li_weight", expression="line_items.qty", datatype=DataType.FLOAT)],
             joins_extra=[DatasetRelationship(
                 to="line_items", from_columns=["id"], to_columns=["order_id"])],
         )
@@ -327,7 +327,7 @@ class TestDev1527F1BasePull:
         # N:1 control (region_weight): isolates identically — the trigger is
         # structural (any crossing input), not cardinality-driven.
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(

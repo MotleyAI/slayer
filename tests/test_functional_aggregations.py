@@ -11,6 +11,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import EntityResolutionError, UnknownFunctionError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     DatasetField,
@@ -304,7 +305,7 @@ class TestModeAUnchanged:
             update={
                 "fields": [
                     *model.fields,
-                    DatasetField(name="grand_total", sql="SUM(revenue)", datatype=DataType.FLOAT),
+                    DatasetField(name="grand_total", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="SUM(revenue)")]), datatype=DataType.FLOAT),
                 ]
             }
         )

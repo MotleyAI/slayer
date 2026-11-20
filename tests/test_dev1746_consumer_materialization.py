@@ -266,7 +266,7 @@ class TestRankedPathUsesTheOneMaterialiser:
     _HOST_CROSSING_COLUMN = [
         DatasetField(
             name="cust_ltv",
-            sql="customers_v2.lifetime_value",
+            expression="customers_v2.lifetime_value",
             datatype=DataType.FLOAT,
         ),
     ]

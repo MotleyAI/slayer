@@ -696,7 +696,7 @@ async def _persist_int_dataset(
     simulating an ingest from before SQLite widening."""
     col_kwargs: dict[str, Any] = {
         "name": column,
-        "sql": column,
+        "expression": column,
         "datatype": DataType.INTEGER,
         "format": column_format or NumberFormat(type=NumberFormatType.INTEGER),
         "description": description,

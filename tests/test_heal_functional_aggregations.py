@@ -10,6 +10,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnknownFunctionError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -124,7 +125,7 @@ class TestCountDistinctExecuted:
 
     async def test_mode_a_distinct_unchanged(self) -> None:
         orders = orders_dataset()
-        orders.fields.append(DatasetField(name="n_customers", sql="COUNT(DISTINCT customer_id)", datatype=DataType.INTEGER))
+        orders.fields.append(DatasetField(name="n_customers", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="COUNT(DISTINCT customer_id)")]), datatype=DataType.INTEGER))
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(n_customers)"]}),
             dataset=orders, extra_datasets=[customers_dataset(), order_items_dataset(), products_dataset()],

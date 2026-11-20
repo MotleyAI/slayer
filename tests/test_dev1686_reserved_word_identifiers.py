@@ -35,6 +35,7 @@ from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import ParseError, TokenError
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.sql.dialects import _ALL_DIALECTS, SQLGLOT_NAMES
@@ -569,7 +570,9 @@ def _orders_derived_grant_datasets() -> tuple[SlayerDataset, SlayerDataset]:
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INTEGER),
-            DatasetField(name="bumped", sql="grant.amount + 1", datatype=DataType.FLOAT),
+            DatasetField(name="bumped", expression=ExpressionObject(dialects=[
+                DialectEntry(dialect=d, expression="grant.amount + 1")
+                for d in ("POSTGRES", "MYSQL", "BIGQUERY", "TSQL", "SQLITE", "DUCKDB")]), datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="grant", from_columns=["grant_id"], to_columns=["id"])],
     )
@@ -614,7 +617,8 @@ class TestReservedInComputedPaths:
         orders, grant = _orders_derived_grant_datasets()
         target = grant.model_copy(update={"name": word})
         orders = orders.model_copy(update={
-            "fields": [c.model_copy(update={"sql": f"{word}.amount + 1"}) if c.name == "bumped" else c
+            "fields": [c.model_copy(update={"expression": ExpressionObject(
+                dialects=[DialectEntry(dialect=dialect.upper(), expression=f"{word}.amount + 1")])}) if c.name == "bumped" else c
                         for c in orders.fields],
             "relationships": [DatasetRelationship(to=word, from_columns=["grant_id"], to_columns=["id"])],
         })

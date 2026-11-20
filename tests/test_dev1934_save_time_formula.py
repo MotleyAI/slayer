@@ -328,8 +328,8 @@ async def _call(*, server: Any, name: str, arguments: dict[str, Any]) -> str:
 
 
 _COLUMNS = [
-    {"name": "id", "sql": "id", "datatype": "number", "primary_key": True},
-    {"name": "amount", "sql": "amount", "datatype": "number"},
+    {"name": "id", "expression": "id", "datatype": "number", "primary_key": True},
+    {"name": "amount", "expression": "amount", "datatype": "number"},
 ]
 
 

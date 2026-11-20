@@ -117,7 +117,7 @@ def customers_dataset() -> SlayerDataset:
             DatasetField(name="gold_spend", datatype=DataType.FLOAT, sql="spend",
                    filter="tier = 'gold'"),
             # Unsafe-input probes (only planned when referenced):
-            DatasetField(name="seg_label", datatype=DataType.STRING, sql="segments.label"),
+            DatasetField(name="seg_label", datatype=DataType.STRING, expression="segments.label"),
             DatasetField(name="vip_spend", datatype=DataType.FLOAT, sql="spend",
                    filter="segments.label = 'Alpha'"),
         ],

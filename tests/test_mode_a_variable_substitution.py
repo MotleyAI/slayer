@@ -7,6 +7,7 @@ sources, relationship targets and cross-dataset targets are out of scope (bounda
 All end-to-end cases run against a real file-backed SQLite datasource and
 assert on RESULT DATA, not just generated SQL strings.
 """
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import Optional
@@ -150,7 +151,7 @@ class TestColumnSqlSubstitution:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
 
@@ -531,7 +532,7 @@ class TestBraceLiterals:
             data_source="ds",
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="j", sql="'{1,2,3}'", datatype=DataType.STRING),
+                DatasetField(name="j", expression="'{1,2,3}'", datatype=DataType.STRING),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -721,7 +722,7 @@ class TestDeferredScope:
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="name", sql="name", datatype=DataType.STRING),
                 # relationship-target DatasetField.sql var — not substituted → unsupported
-                DatasetField(name="scaled", sql="id * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="id * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
@@ -919,7 +920,7 @@ class TestSubstituteHelperScope:
             sql="SELECT * FROM t WHERE r = '{region}'",
             filters=["a >= {floor}"],
             fields=[
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression="amount * {mult}", datatype=DataType.FLOAT),
                 DatasetField(
                     name="flt",
                     sql="amount",
@@ -929,7 +930,7 @@ class TestSubstituteHelperScope:
                 # Hidden field is still a Mode-A surface — it IS substituted
                 # (the helper iterates all fields, visible or not).
                 DatasetField(
-                    name="hid", sql="amount * {mult}", datatype=DataType.FLOAT, hidden=True
+                    name="hid", expression="amount * {mult}", datatype=DataType.FLOAT, hidden=True
                 ),
             ],
             # Saved metric expression: substituted under the Mode-B regime.
@@ -946,18 +947,18 @@ class TestSubstituteHelperScope:
         assert _literals(out.sql) == ["US"]
         assert len(out.filters) == 1
         assert _literals(out.filters[0]) == [5]
-        assert _literals(_col(out, "scaled").sql) == [2]
+        assert _literals(_col(out, "scaled").expression) == [2]
         assert _literals(_col(out, "flt").filter) == ["US"]
-        assert _literals(_col(out, "hid").sql) == [2]
+        assert _literals(_col(out, "hid").expression) == [2]
         # Saved metric expressions substitute (Mode-B regime); Aggregation.expression never does:
         assert _literals(out.metrics[0].text) == [2]
         assert out.aggregations[0].expression == "SUM({expr}) * {mult}"
         # Input dataset is NOT mutated — every Mode-A surface stays templated:
         assert model.sql == "SELECT * FROM t WHERE r = '{region}'"
         assert model.filters == ["a >= {floor}"]
-        assert model.get_field("scaled").sql == "amount * {mult}"
+        assert model.get_field("scaled").expression == "amount * {mult}"
         assert model.get_field("flt").filter == "r = '{region}'"
-        assert model.get_field("hid").sql == "amount * {mult}"
+        assert model.get_field("hid").expression == "amount * {mult}"
 
     def test_empty_variables_is_noop(self) -> None:
 
@@ -965,12 +966,12 @@ class TestSubstituteHelperScope:
             name="m",
             sql_table="t",
             data_source="ds",
-            fields=[DatasetField(name="j", sql="json_extract(x, '$.a')", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="j", expression="json_extract(x, '$.a')", datatype=DataType.FLOAT)],
         )
         out = _substitute_dataset_sql_surfaces(
             dataset=model, variables={}, dialect=SqliteDialect()
         )
-        assert _parse(_col(out, "j").sql) == _parse("json_extract(x, '$.a')")
+        assert _parse(_col(out, "j").expression) == _parse("json_extract(x, '$.a')")
 
     def test_list_value_substituted_on_all_four_mode_a_surfaces(self) -> None:
         """One list variable bound into each of the four Mode-A surfaces."""
@@ -981,7 +982,8 @@ class TestSubstituteHelperScope:
             sql="SELECT * FROM t WHERE region IN ({regions})",
             filters=["region IN ({regions})"],
             fields=[
-                DatasetField(name="in_flag", sql="region IN ({regions})", datatype=DataType.BOOLEAN),
+                DatasetField(name="in_flag", expression=ExpressionObject(
+                    dialects=[DialectEntry(dialect="SQLITE", expression="region IN ({regions})")]), datatype=DataType.BOOLEAN),
                 DatasetField(
                     name="amt",
                     sql="amount",
@@ -996,7 +998,7 @@ class TestSubstituteHelperScope:
         assert _in_values(out.sql) == ["US", "CA"]
         assert len(out.filters) == 1
         assert _in_values(out.filters[0]) == ["US", "CA"]
-        assert _in_values(_col(out, "in_flag").sql) == ["US", "CA"]
+        assert _in_values(_col(out, "in_flag").native_texts[0]) == ["US", "CA"]
         assert _in_values(_col(out, "amt").filter) == ["US", "CA"]
 
 # ---------------------------------------------------------------------------
@@ -1116,7 +1118,7 @@ class TestMissingVariablePerSurface:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1172,7 +1174,7 @@ class TestGetResultColumnTypesDefaults:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1193,7 +1195,7 @@ class TestGetResultColumnTypesDefaults:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1216,7 +1218,7 @@ class TestGetResultColumnTypesDefaults:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)

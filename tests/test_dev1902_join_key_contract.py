@@ -11,6 +11,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import RelationshipKeyError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.relationship_walker import OrientedRelationship, edges_between, relationship_key_fields
 from slayer.core.models import (
     DatasetField,
@@ -93,7 +94,7 @@ class TestBaseColumnSeam:
         assert plain.physical_name == "status"
 
     def test_physical_name_of_expression_column_raises(self):
-        col = DatasetField(name="ck", sql="CAST(id AS INT)")
+        col = DatasetField(name="ck", expression="CAST(id AS INT)")
         assert not col.is_base
         with pytest.raises(RelationshipKeyError):
             _ = col.physical_name
@@ -122,7 +123,7 @@ class TestSourceSideAtConstruction:
             _orders(fk, pairs=[["cust_fk", "id"]])
 
     def test_expression_source_key_rejected(self):
-        ck = DatasetField(name="ck", sql="CAST(id AS INT)")
+        ck = DatasetField(name="ck", expression="CAST(id AS INT)")
         with pytest.raises(ValueError) as exc:
             _orders(ck, pairs=[["ck", "id"]])
         msg = str(exc.value)
@@ -192,7 +193,7 @@ class TestTargetSide:
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
             await storage.save_dataset(_customers(
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="code", sql="UPPER(code_raw)")))
+                DatasetField(name="code", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="UPPER(code_raw)")]))))
             engine = SlayerQueryEngine(storage=storage)
             orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
             with pytest.raises(RelationshipKeyError) as exc:
@@ -338,7 +339,7 @@ class TestDriftAndRefinement:
                 conn.executemany("INSERT INTO items VALUES (?, ?)", [(1, 10), (2, 20)])
             doc = {
                 "name": "items", "sql_table": "items", "data_source": "live",
-                "fields": [{"name": "quantity", "sql": '"qty"', "datatype": "Float"}],
+                "fields": [{"name": "quantity", "expression": '"qty"', "datatype": "Float"}],
             }
             ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
             client = SlayerSQLClient(datasource=ds)
@@ -357,7 +358,7 @@ class TestDriftAndRefinement:
 
     def test_detection_skips_non_base_target_key(self):
         target = _customers(DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                            DatasetField(name="code", sql="UPPER(code_raw)"))
+                            DatasetField(name="code", expression="UPPER(code_raw)"))
         orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
         note = _detection_skip_reason(
             dataset=orders, target=target, src_cols=["customer_code"], tgt_cols=["code"])

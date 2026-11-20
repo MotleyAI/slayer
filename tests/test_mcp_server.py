@@ -15,6 +15,7 @@ from sqlalchemy import exc as sa_exc
 
 import slayer.live_schema.ingestion as ingestion_mod
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.query import SlayerQuery
 from slayer.core.models import (
     Aggregation,
@@ -1455,7 +1456,7 @@ class TestCreateModel:
             "sql_table": "public.orders",
             "data_source": "test_ds",
             "fields": [
-                {"name": "revenue", "sql": "amount", "datatype": "number",
+                {"name": "revenue", "expression": "amount", "datatype": "number",
                  "allowed_aggregations": ["sum", "avg"]},
             ],
         })
@@ -1471,7 +1472,7 @@ class TestCreateModel:
             "sql_table": "public.orders",
             "data_source": "test_ds",
             "fields": [
-                {"name": "revenue", "sql": "amount", "datatype": "number"},
+                {"name": "revenue", "expression": "amount", "datatype": "number"},
             ],
             "metrics": [
                 {"name": "aov", "expression": "sum(revenue) / count(*)",
@@ -1572,7 +1573,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "fields": [{"name": "total", "sql": "amount", "datatype": "number"}],
+            "fields": [{"name": "total", "expression": "amount", "datatype": "number"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1587,7 +1588,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "fields": [{"name": "total", "sql": "amount", "datatype": "number", "allowed_aggregations": ["sum", "avg"]}],
+            "fields": [{"name": "total", "expression": "amount", "datatype": "number", "allowed_aggregations": ["sum", "avg"]}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1602,7 +1603,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "fields": [{"name": "tags", "sql": "tags", "datatype": "Array", "element_type": "String"}],
+            "fields": [{"name": "tags", "expression": "tags", "datatype": "Array", "element_type": "String"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True, result
@@ -1619,7 +1620,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "fields": [{"name": "revenue", "sql": "price"}],
+            "fields": [{"name": "revenue", "expression": "price"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1689,7 +1690,7 @@ class TestEditModel:
             "dataset_name": "orders",
             "fields": [
                 {"name": "revenue", "description": "Updated"},
-                {"name": "profit", "sql": "revenue - cost", "datatype": "number"},
+                {"name": "profit", "expression": "orders.revenue - cost", "datatype": "number"},
             ],
         })
         parsed = json.loads(result)
@@ -1886,8 +1887,8 @@ class TestEditModel:
             "dataset_name": "orders",
             "description": "Orders table",
             "fields": [
-                {"name": "total", "sql": "amount", "datatype": "number"},
-                {"name": "status", "sql": "status", "datatype": "string"},
+                {"name": "total", "expression": "amount", "datatype": "number"},
+                {"name": "status", "expression": "status", "datatype": "string"},
             ],
         })
         parsed = json.loads(result)
@@ -1939,7 +1940,7 @@ class TestEditModel:
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
             "remove": {"fields": ["status"]},
-            "fields": [{"name": "status", "sql": "new_col", "datatype": "string"}],
+            "fields": [{"name": "status", "expression": "new_col", "datatype": "string"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1965,7 +1966,7 @@ class TestEditModel:
         await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "fields": [{"name": "rev", "sql": "amount", "datatype": "number", "allowed_aggregations": ["nonexistent_agg"]}],
+            "fields": [{"name": "rev", "expression": "amount", "datatype": "number", "allowed_aggregations": ["nonexistent_agg"]}],
         })
         assert "Validation error" in result or "not a built-in aggregation" in result
 
@@ -2483,7 +2484,7 @@ class TestEditModelColumnsRejected:
 
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "qb",
-            "fields": [{"name": "x", "sql": "x", "datatype": "string"}],
+            "fields": [{"name": "x", "expression": "x", "datatype": "string"}],
         })
         # Should be a clear error, not a silent success.
         assert (
@@ -2608,7 +2609,7 @@ class TestQueryAcceptsInlineSourceModel:
                     "extensions": [{
                         "dataset": "orders",
                         "fields": [
-                            {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
+                            {"name": "double_amount", "expression": "amount * 2", "type": "DOUBLE"},
                         ],
                     }],
                     "metrics": [{"metric": "sum(double_amount)"}],
@@ -2631,7 +2632,7 @@ class TestQueryAcceptsInlineSourceModel:
                         "sql_table": "things",
                         "data_source": "test",
                         "fields": [
-                            {"name": "x", "sql": "x", "datatype": "Float"},
+                            {"name": "x", "expression": "x", "datatype": "Float"},
                         ],
                     },
                     "metrics": [{"metric": "sum(x)"}],
@@ -3046,7 +3047,7 @@ class TestSaveTimeSqlValidationMcp:
         result = await _call(mcp_server, name="create_dataset", arguments={
             "name": "good_model", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
-            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
+            "fields": [{"name": "id", "expression": "id", "datatype": "number"}],
         })
         assert "created" in result
         assert await storage.get_dataset("good_model", data_source="livedb") is not None
@@ -3060,7 +3061,7 @@ class TestSaveTimeSqlValidationMcp:
         result = await _call(mcp_server, name="create_dataset", arguments={
             "name": "bad_model", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
-            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
+            "fields": [{"name": "id", "expression": "id", "datatype": "number"}],
         })
         assert "created" not in result
         assert "bad_model" in result
@@ -3121,7 +3122,7 @@ class TestDatabaseFailuresAreToolErrors:
             name="orders", sql_table="orders", data_source="shop",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="broken", sql="no_such_fn(amount)", datatype=DataType.FLOAT),
+                DatasetField(name="broken", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(amount)")]), datatype=DataType.FLOAT),
             ],
         ))
         await storage.save_dataset(SlayerDataset(
@@ -3169,7 +3170,7 @@ class TestDatabaseFailuresAreToolErrors:
 
     @pytest.mark.parametrize(("method", "arguments"), [
         ("save_dataset", {"name": "m", "sql_table": "orders", "data_source": "down",
-                        "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
+                        "fields": [{"name": "id", "expression": "id", "datatype": "number"}]}),
         ("create_dataset_from_query", {"name": "m", "query": {"population": "orders", "metrics": ["count(orders.*)"]}}),
     ], ids=["table", "query"])
     async def test_create_model_database_unreachable(

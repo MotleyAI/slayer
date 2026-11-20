@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.generator import SQLGenerator
@@ -192,7 +193,7 @@ class TestMultiDialectGeneration:
             data_source="test",
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="ts", sql="'2025-12-01'", datatype=DataType.DATETIME),
+                DatasetField(name="ts", expression="'2025-12-01'", datatype=DataType.DATETIME),
                 DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
             ],
         )
@@ -510,14 +511,14 @@ class TestLogAliasPreservation:
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 # Scalar log expressions inside DatasetField.sql — the primary
                 # path the issue surfaced through.
-                DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
-                DatasetField(name="log2_amount", sql="log2(amount)", datatype=DataType.FLOAT),
+                DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log10(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
+                DatasetField(name="log2_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log2(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
                 # Negative-control: a non-alias literal base. Must keep the
                 # standard 2-arg LOG(base, x) form post-fix.
-                DatasetField(name="log3_amount", sql="log(3, amount)", datatype=DataType.FLOAT),
+                DatasetField(name="log3_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log(3, amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
                 # ln(...) is a separate AST node (exp.Ln); the rewrite must
                 # not touch it.
-                DatasetField(name="ln_amount", sql="ln(amount)", datatype=DataType.FLOAT),
+                DatasetField(name="ln_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="ln(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
             ],
         )
 
@@ -599,7 +600,7 @@ class TestLogAliasPreservation:
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(
                     name="log_completed_amount",
-                    sql="log10(amount)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log10(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "POSTGRES", "PRESTO", "REDSHIFT", "SPARK", "SQLITE", "TRINO", "TSQL")]),
                     filter="status = 'completed'",
                     datatype=DataType.FLOAT,
                 ),

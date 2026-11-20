@@ -98,7 +98,7 @@ async def _save_datasets(storage: YAMLStorage) -> SlayerDataset:
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="flagged_amount", sql="amount", datatype=DataType.FLOAT,
                    filter="customers.region = 'West'"),
-            DatasetField(name="cust_region", sql="customers.region", datatype=DataType.STRING),
+            DatasetField(name="cust_region", expression="customers.region", datatype=DataType.STRING),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),

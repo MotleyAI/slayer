@@ -15,6 +15,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetMetric
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -144,7 +145,7 @@ class TestNamedEdgeValidationConsumers:
         cust.fields = [*cust.fields, DatasetField(
             name="gold_spend", sql="spend", filter="tier = 'gold'",
             datatype=DataType.FLOAT), DatasetField(
-            name="tier_uc", sql="UPPER(tier)", datatype=DataType.STRING), DatasetField(
+            name="tier_uc", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="UPPER(tier)")]), datatype=DataType.STRING), DatasetField(
             name="signup_day", sql="signup_at", datatype=DataType.DATETIME)]
         for col in cust.fields:
             if col.name == "spend":

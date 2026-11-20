@@ -130,7 +130,7 @@ async def test_sql_across_declared_one_to_many_rejected(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        li_column=DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
@@ -187,7 +187,7 @@ async def test_host_prefixed_reference_rejected(tmp_path) -> None:
     await storage.save_dataset(_line_items())
     orders = _orders(
         li_column=DatasetField(
-            name="li_qty", sql="orders.line_items.qty", datatype=DataType.FLOAT,
+            name="li_qty", expression="orders.line_items.qty", datatype=DataType.FLOAT,
         ),
         joins=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
@@ -218,7 +218,7 @@ async def test_join_declared_on_peer_side_rejected(tmp_path) -> None:
     )
     await storage.save_dataset(line_items)
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        li_column=DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),
         joins=[],  # no relationship declared on orders — it resolves over the reverse edge
     )
     with pytest.raises(DerivedFieldFanningError) as ei:
@@ -249,7 +249,7 @@ async def test_multihop_fanning_then_unproven_rejected(tmp_path) -> None:
     })
     await storage.save_dataset(line_items)
     orders = _orders(
-        li_column=DatasetField(name="pv", sql="line_items.parts.pval", datatype=DataType.FLOAT),
+        li_column=DatasetField(name="pv", expression="line_items.parts.pval", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
@@ -289,7 +289,7 @@ async def test_multihop_unproven_then_fanning_rejected(tmp_path) -> None:
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="astreet", sql="customers.addresses.street", datatype=DataType.STRING),
+            DatasetField(name="astreet", expression="customers.addresses.street", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["region"], to_columns=["region"])],
     )
@@ -318,7 +318,7 @@ async def test_declared_many_to_one_accepted_silently(tmp_path) -> None:
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="cust_id", sql="cust_id", datatype=DataType.INTEGER),
-            DatasetField(name="cust_region", sql="customers.region", datatype=DataType.STRING),
+            DatasetField(name="cust_region", expression="customers.region", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(
             to="customers", from_columns=["cust_id"], to_columns=["id"],
@@ -342,7 +342,7 @@ async def test_proof_beats_contradictory_to_many_declaration(tmp_path) -> None:
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="li_id", sql="li_id", datatype=DataType.INTEGER),
-            DatasetField(name="item_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+            DatasetField(name="item_qty", expression="line_items.qty", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
             to="line_items", from_columns=["li_id"], to_columns=["id"],
@@ -366,7 +366,7 @@ async def test_reverse_pk_undeclared_hop_warns_and_saves(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        li_column=DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )
     with warnings.catch_warnings(record=True) as rec:
@@ -392,7 +392,7 @@ async def test_fully_undeclared_hop_warns_and_saves(tmp_path) -> None:
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="wsum", sql="widgets.w", datatype=DataType.FLOAT),
+            DatasetField(name="wsum", expression="widgets.w", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="widgets", from_columns=["region"], to_columns=["region"])],
     )
@@ -427,7 +427,7 @@ async def test_unproven_warning_deduplicated_per_hop(tmp_path) -> None:
     await storage.save_dataset(_line_items())
     orders = _orders(
         li_column=DatasetField(
-            name="qtysum", sql="line_items.qty + line_items.order_id",
+            name="qtysum", expression="line_items.qty + line_items.order_id",
             datatype=DataType.FLOAT,
         ),
         joins=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
@@ -448,7 +448,7 @@ async def test_unloaded_target_skipped(tmp_path) -> None:
     the hop's target is unloaded → skipped (no error, no warning)."""
     storage = _storage(tmp_path)
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        li_column=DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
@@ -469,7 +469,7 @@ async def test_unresolvable_reference_skipped(tmp_path) -> None:
         name="orders", data_source=DS, sql_table="orders",
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="ghost", sql="nowhere.value", datatype=DataType.FLOAT),
+            DatasetField(name="ghost", expression="nowhere.value", datatype=DataType.FLOAT),
         ],
     )
     with warnings.catch_warnings(record=True) as rec:
@@ -497,7 +497,7 @@ async def test_ambiguous_parallel_edge_rejected(tmp_path) -> None:
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="w1", sql="w1", datatype=DataType.INTEGER),
             DatasetField(name="w2", sql="w2", datatype=DataType.INTEGER),
-            DatasetField(name="wsum", sql="widgets.w", datatype=DataType.FLOAT),
+            DatasetField(name="wsum", expression="widgets.w", datatype=DataType.FLOAT),
         ],
         relationships=[
             DatasetRelationship(
@@ -524,7 +524,7 @@ async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     fanning = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        li_column=DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,

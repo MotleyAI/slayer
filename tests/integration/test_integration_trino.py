@@ -24,6 +24,7 @@ from sqlglot import exp
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
@@ -289,8 +290,7 @@ class TestTrinoQueries:
         orders = await trino_env.storage.get_dataset("orders")
         assert orders is not None
         await trino_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]), datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
@@ -821,7 +821,7 @@ def trino_derived_chain_env(trino_container, tmp_path):
                 fields=[
                     DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                     DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                    DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                    DatasetField(name="foo_normalized", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="foo_raw / 100.0")]), datatype=DataType.FLOAT),
                 ],
             ),
             SlayerDataset(
@@ -831,7 +831,7 @@ def trino_derived_chain_env(trino_container, tmp_path):
                     DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
                     DatasetField(name="b_id", sql="b_id", datatype=DataType.INTEGER),
                     DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
-                    DatasetField(name="ratio_using_derived", sql="a_tbl.bar / b_tbl.foo_normalized", datatype=DataType.FLOAT),
+                    DatasetField(name="ratio_using_derived", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="a_tbl.bar / b_tbl.foo_normalized")]), datatype=DataType.FLOAT),
                 ],
                 relationships=[DatasetRelationship(to="b_tbl", from_columns=["b_id"], to_columns=["id"])],
             ),
@@ -863,8 +863,8 @@ def trino_log_env(trino_container, tmp_path):
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
-                DatasetField(name="log2_amount", sql="log2(amount)", datatype=DataType.FLOAT),
+                DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="log10(amount)")]), datatype=DataType.FLOAT),
+                DatasetField(name="log2_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="log2(amount)")]), datatype=DataType.FLOAT),
             ],
         )])
         yield SlayerQueryEngine(storage=storage)
@@ -900,7 +900,7 @@ def trino_planets_env(trino_container, tmp_path):
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="name", sql="name", datatype=DataType.STRING),
                 DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
-                DatasetField(name="rn", sql="row_number() over (order by mass desc)", datatype=DataType.FLOAT),
+                DatasetField(name="rn", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="row_number() over (order by mass desc)")]), datatype=DataType.FLOAT),
             ],
         )])
         yield SlayerQueryEngine(storage=storage)

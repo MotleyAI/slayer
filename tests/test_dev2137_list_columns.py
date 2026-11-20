@@ -18,6 +18,7 @@ from sqlalchemy.dialects import postgresql
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema.ingestion import (
     IntrospectedColumn, ResultList, _inferred_elements, _retyped_list, ingest_datasource_idempotent,
@@ -407,7 +408,7 @@ class TestReingest:
         assert (merged.element_type if merged is not None else None) == refilled
 
     async def test_a_derived_text_column_named_like_a_live_list_untouched(self) -> None:
-        derived = DatasetField(name="skills", sql="CAST(id AS VARCHAR)", datatype=DataType.STRING)
+        derived = DatasetField(name="skills", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="CAST(id AS VARCHAR)")]), datatype=DataType.STRING)
         with _duckdb_file(*LIVE) as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(derived))
         skills = loaded.get_field("skills")

@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.relationship_edges import RelationshipEdgeRef
 from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.live_schema import schema_drift
@@ -47,8 +48,8 @@ def _t(*, ts: DataType = DataType.STRING, filters: list[str] | None = None,
             DatasetField(name="x", datatype=DataType.FLOAT),
             DatasetField(name="s", datatype=DataType.STRING),
             DatasetField(name="ts", datatype=ts),
-            DatasetField(name="y", sql="x * 2", datatype=DataType.FLOAT),
-            DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.FLOAT),
+            DatasetField(name="y", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="x * 2")]), datatype=DataType.FLOAT),
+            DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(x)")]), datatype=DataType.FLOAT),
         ],
         filters=filters or [],
         metrics=metrics or [],
@@ -64,7 +65,7 @@ def _shop() -> list[SlayerDataset]:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT)],
+            DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(id)")]), datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]),
     ]
 
@@ -266,7 +267,7 @@ def _dated(*, ts: DataType, d: DataType) -> SlayerDataset:
         DatasetField(name="x", datatype=DataType.FLOAT),
         DatasetField(name="ts", datatype=ts),
         DatasetField(name="d", datatype=d),
-        DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.FLOAT)])
+        DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(x)")]), datatype=DataType.FLOAT)])
 
 
 def _retypes(entries: list[Any]) -> list[tuple[str, DataType, DataType]]:

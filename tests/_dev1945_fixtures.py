@@ -46,7 +46,7 @@ def orders_dataset(*, default: Optional[str] = None) -> SlayerDataset:
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             # Derived across the unproven hop.
-            DatasetField(name="li_ts", datatype=DataType.DATETIME, sql="line_items.created_at"),
+            DatasetField(name="li_ts", datatype=DataType.DATETIME, expression="line_items.created_at"),
             # Local value, filter across the unproven hop.
             DatasetField(
                 name="li_flag_ts", datatype=DataType.DATETIME, sql="created_at",
@@ -54,7 +54,7 @@ def orders_dataset(*, default: Optional[str] = None) -> SlayerDataset:
             ),
             DatasetField(name="bad_ts", datatype=DataType.DATETIME, sql=UNPARSEABLE_SQL),
             # Derived across the proven hop.
-            DatasetField(name="cust_signup", datatype=DataType.DATETIME, sql="customers.signup_at"),
+            DatasetField(name="cust_signup", datatype=DataType.DATETIME, expression="customers.signup_at"),
         ],
         relationships=[
             DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"]),
@@ -72,7 +72,7 @@ def line_items_dataset(*, default: Optional[str] = None) -> SlayerDataset:
             DatasetField(name="order_id", datatype=DataType.INTEGER),
             DatasetField(name="qty", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="sh_ts", datatype=DataType.DATETIME, sql="shipments.shipped_at"),
+            DatasetField(name="sh_ts", datatype=DataType.DATETIME, expression="shipments.shipped_at"),
         ],
         relationships=[
             DatasetRelationship(to="shipments", from_columns=["id"], to_columns=["line_item_id"]),

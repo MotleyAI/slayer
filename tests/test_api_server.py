@@ -86,8 +86,8 @@ class TestModels:
             "sql_table": "public.orders",
             "data_source": "test",
             "fields": [
-                {"name": "id", "sql": "id", "datatype": "number"},
-                {"name": "revenue", "sql": "amount", "datatype": "number"},
+                {"name": "id", "expression": "id", "datatype": "number"},
+                {"name": "revenue", "expression": "amount", "datatype": "number"},
             ],
         }
         resp = client.post("/datasets", json=model)
@@ -149,10 +149,10 @@ class TestModels:
             "sql_table": "t",
             "data_source": "test",
             "fields": [
-                {"name": "id", "sql": "id", "datatype": "number"},
-                {"name": "internal_flag", "sql": "flag", "datatype": "string", "hidden": True},
-                {"name": "revenue", "sql": "amount", "datatype": "number"},
-                {"name": "secret_sum", "sql": "x", "datatype": "number", "hidden": True},
+                {"name": "id", "expression": "id", "datatype": "number"},
+                {"name": "internal_flag", "expression": "flag", "datatype": "string", "hidden": True},
+                {"name": "revenue", "expression": "amount", "datatype": "number"},
+                {"name": "secret_sum", "expression": "x", "datatype": "number", "hidden": True},
             ],
         }
         client.post("/datasets", json=model)
@@ -169,7 +169,7 @@ class TestModels:
             "name": "orders",
             "sql_table": "t",
             "data_source": "test",
-            "fields": [{"name": "amount", "sql": "amount", "datatype": "number"}],
+            "fields": [{"name": "amount", "expression": "amount", "datatype": "number"}],
             "metrics": [
                 {"name": "aov", "expression": "sum(amount) / count(*)"},
                 {"name": "revenue", "expression": "sum(amount)"},
@@ -543,9 +543,9 @@ class TestQueryListBody:
             "data_source": "ds_list",
             "sql_table": "orders",
             "fields": [
-                {"name": "amount", "sql": "amount", "datatype": "Float"},
-                {"name": "status", "sql": "status", "datatype": "String"},
-                {"name": "customer_id", "sql": "customer_id", "datatype": "Float"},
+                {"name": "amount", "expression": "amount", "datatype": "Float"},
+                {"name": "status", "expression": "status", "datatype": "String"},
+                {"name": "customer_id", "expression": "customer_id", "datatype": "Float"},
             ],
         })
         assert resp.status_code in (200, 201), resp.text
@@ -637,7 +637,7 @@ class TestQueryInlineSourceModel:
             "data_source": "ds_inline",
             "sql_table": "orders",
             "fields": [
-                {"name": "amount", "sql": "amount", "datatype": "Float"},
+                {"name": "amount", "expression": "amount", "datatype": "Float"},
             ],
         })
         assert resp.status_code in (200, 201), resp.text
@@ -649,7 +649,7 @@ class TestQueryInlineSourceModel:
             "extensions": [{
                 "source_name": "orders",
                 "columns": [
-                    {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
+                    {"name": "double_amount", "expression": "amount * 2", "type": "DOUBLE"},
                 ],
             }],
             "metrics": [{"metric": "sum(double_amount)"}],
@@ -669,7 +669,7 @@ class TestQueryInlineSourceModel:
                 "name": "ad_hoc",
                 "sql_table": "things",
                 "data_source": "ds_adhoc",
-                "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
+                "columns": [{"name": "x", "expression": "x", "type": "DOUBLE"}],
             },
             "metrics": [{"metric": "sum(x)"}],
             "dry_run": True,
@@ -792,7 +792,7 @@ class TestSaveTimeSqlValidation:
         resp = client.post("/datasets", json={
             "name": "good_model", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
-            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
+            "fields": [{"name": "id", "expression": "id", "datatype": "number"}],
         })
         assert resp.status_code == 200
         # Acknowledged AND retrievable — not a no-op 200.
@@ -803,7 +803,7 @@ class TestSaveTimeSqlValidation:
         resp = client.post("/datasets", json={
             "name": "bad_model", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
-            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
+            "fields": [{"name": "id", "expression": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
         assert client.get("/datasets/bad_model").status_code == 404
@@ -815,12 +815,12 @@ class TestSaveTimeSqlValidation:
         assert client.post("/datasets", json={
             "name": "upd", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
-            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
+            "fields": [{"name": "id", "expression": "id", "datatype": "number"}],
         }).status_code == 200
         resp = client.put("/datasets/upd", json={
             "name": "upd", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
-            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
+            "fields": [{"name": "id", "expression": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
         assert client.get("/datasets/upd").json()["sql"] == "SELECT id FROM orders"

@@ -18,6 +18,7 @@ from sqlalchemy.dialects import mysql
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -60,7 +61,7 @@ def _pk() -> DatasetField:
 def _legacy() -> SlayerDataset:
     return SlayerDataset(name="legacy", sql_table="kinds", data_source="ds", fields=[
         _pk(), DatasetField(name="flags", datatype=DataType.STRING), DatasetField(name="span", datatype=DataType.STRING),
-        DatasetField(name="doc", datatype=DataType.STRING), DatasetField(name="flags_upper", sql="upper(flags)", datatype=DataType.STRING),
+        DatasetField(name="doc", datatype=DataType.STRING), DatasetField(name="flags_upper", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="upper(flags)")]), datatype=DataType.STRING),
     ], metrics=[DatasetMetric(name="n_flags", expression="count_distinct(flags)")])
 
 

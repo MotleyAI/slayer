@@ -224,7 +224,7 @@ class TestModelsReadBy:
 
     async def test_unresolvable_path_adds_nothing(self, datasets: dict[str, SlayerDataset]) -> None:
         stray = datasets["pub"].model_copy(update={
-            "name": "stray", "fields": [*datasets["pub"].fields, DatasetField(name="far", sql="nowhere.x")],
+            "name": "stray", "fields": [*datasets["pub"].fields, DatasetField(name="far", expression="nowhere.x")],
         })
         assert self.reads(stray, datasets) == set()
 

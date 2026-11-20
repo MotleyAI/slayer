@@ -29,6 +29,7 @@ except ImportError:  # optional dependency — tests importorskip at use sites
     duckdb = None
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     DatasetField,
@@ -533,9 +534,9 @@ class TestCascadeRules:
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 # derived field referencing 'amount'
-                DatasetField(name="amount_x2", sql="amount * 2", datatype=DataType.FLOAT),
+                DatasetField(name="amount_x2", expression="amount * 2", datatype=DataType.FLOAT),
                 # transitively-derived: refs another derived field
-                DatasetField(name="amount_x4", sql="orders.amount_x2 * 2", datatype=DataType.FLOAT),
+                DatasetField(name="amount_x4", expression="orders.amount_x2 * 2", datatype=DataType.FLOAT),
             ],
         )
         # Base diff: 'amount' dropped from live
@@ -718,7 +719,7 @@ class TestCascadeRules:
                 # derived cross-dataset ref
                 DatasetField(
                     name="customer_region",
-                    sql="customers.region",
+                    expression="customers.region",
                     datatype=DataType.STRING,
                 ),
             ],
@@ -859,7 +860,7 @@ class TestCascadeRules:
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 # Derived field that *would* reference 'id' — but PK drops
                 # don't trigger cascade, so this field survives.
-                DatasetField(name="id_doubled", sql="id * 2", datatype=DataType.FLOAT),
+                DatasetField(name="id_doubled", expression="id * 2", datatype=DataType.FLOAT),
             ],
             metrics=[DatasetMetric(expression="count_distinct(id)", name="unique_ids")],
         )
@@ -1339,7 +1340,7 @@ class TestValidateModelsSqliteProbe:
                     name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
                 DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
-                DatasetField(name="doubled", sql="tempstabidx * 2", datatype=DataType.INTEGER),
+                DatasetField(name="doubled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="tempstabidx * 2")]), datatype=DataType.INTEGER),
             ],
         )
         result = await engine.validate_datasets(data_source="ds")

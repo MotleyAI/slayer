@@ -356,7 +356,7 @@ async def test_mutating_returned_model_does_not_poison_cache(storage: YAMLStorag
     await storage.save_dataset(_dataset())
     first = await storage.get_dataset("m", data_source="ds")
     first.sql_table = "MUTATED"
-    first.fields[0].sql = "MUTATED"  # nested object mutation — shallow copy would leak
+    first.fields[0].expression = "MUTATED"  # nested object mutation — shallow copy would leak
     first.fields.clear()
     second = await storage.get_dataset("m", data_source="ds")
     assert second.sql_table == "public.t"
@@ -547,7 +547,7 @@ async def test_factory_storage_hands_out_independent_copies() -> None:
         first = await wrapped.get_dataset("m", data_source="ds")
         second = await wrapped.get_dataset("m", data_source="ds")
         assert first is not second
-        first.fields[0].sql = "MUTATED"
+        first.fields[0].expression = "MUTATED"
         third = await wrapped.get_dataset("m", data_source="ds")
         assert third.fields[0].expression == "id"
 

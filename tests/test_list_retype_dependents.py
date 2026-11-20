@@ -43,7 +43,7 @@ LIVE = (
 )
 TAGS = "contractors.tags"
 NT = DatasetMetric(name="nt", expression="max(tags)")
-FIRST_TAG = DatasetField(name="first_tag", sql="upper(tags)", datatype=DataType.STRING)
+FIRST_TAG = DatasetField(name="first_tag", expression="upper(tags)", datatype=DataType.STRING)
 BY_TAG = {"population": "contractors", "metrics": ["count(contractors.*)"], "filter": ["contractors.tags = 'go'"]}
 
 Key = tuple[str, str, str]
@@ -249,7 +249,7 @@ class TestNotReported:
     @pytest.mark.parametrize("marker", ["notes", "label"])
     async def test_a_name_mention_that_is_no_reference_is_not_checked(self, monkeypatch: pytest.MonkeyPatch,
                                                                      marker: str) -> None:
-        label = DatasetField(name="label", sql="'tags'", datatype=DataType.STRING)
+        label = DatasetField(name="label", expression="'tags'", datatype=DataType.STRING)
         _refuse_planning(monkeypatch, marker)
         async with _env(contractors(), orders(columns=(label,)), notes()) as env:
             result = await env.reingest()

@@ -28,10 +28,10 @@ def _dataset_a() -> SlayerDataset:
             DatasetField(name="b_id", sql="b_id", datatype=DataType.INTEGER),
             DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
             # Local derived chain: c2 references sibling derived c1.
-            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
-            DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.FLOAT),
+            DatasetField(name="c1", expression="raw_a + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", expression="A.c1 * 2", datatype=DataType.FLOAT),
             # Cross-dataset derived ref into B's derived field.
-            DatasetField(name="ratio", sql="A.bar / B.foo_normalized", datatype=DataType.FLOAT),
+            DatasetField(name="ratio", expression="A.bar / B.foo_normalized", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
@@ -45,7 +45,7 @@ def _dataset_b() -> SlayerDataset:
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-            DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+            DatasetField(name="foo_normalized", expression="foo_raw / 100.0", datatype=DataType.FLOAT),
         ],
     )
 
@@ -99,8 +99,8 @@ def test_cycle_raises_column_cycle_error() -> None:
         sql_table="C",
         fields=[
             DatasetField(name="x", sql="x", datatype=DataType.FLOAT),
-            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.FLOAT),
-            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.FLOAT),
+            DatasetField(name="c1", expression="C.c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", expression="C.c1 - 1", datatype=DataType.FLOAT),
         ],
     )
     with pytest.raises(DatasetFieldCycleError):

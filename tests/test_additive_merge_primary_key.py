@@ -69,7 +69,7 @@ def test_renamed_live_column_takes_its_key_and_comment():
 
 def test_computed_column_named_like_the_key_takes_no_key_metadata():
     stored = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
-        DatasetField(name="id", sql="id + 1", datatype=DataType.INTEGER),
+        DatasetField(name="id", expression="id + 1", datatype=DataType.INTEGER),
     ])
     fresh = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True, unique=True),
@@ -78,7 +78,7 @@ def test_computed_column_named_like_the_key_takes_no_key_metadata():
     assert column is not None
     assert not column.primary_key
     assert not column.unique
-    assert column.sql == "id + 1"
+    assert column.expression == "id + 1"
 
 
 def test_composite_key_lands_whole_or_not_at_all():

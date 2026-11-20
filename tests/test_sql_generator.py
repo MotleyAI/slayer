@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -236,7 +237,7 @@ class TestBasicQueries:
             fields=[
                 DatasetField(name="status", datatype=DataType.STRING),
 
-                DatasetField(name="num_policies", sql="1", allowed_aggregations=["sum"], datatype=DataType.FLOAT),
+                DatasetField(name="num_policies", expression="1", allowed_aggregations=["sum"], datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(population="policy", metrics=[QueryMetric(metric="sum(policy.num_policies)")])
@@ -2400,7 +2401,7 @@ class TestMultiDialectGeneration:
             data_source="test",
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="ts", sql="'2025-12-01'", datatype=DataType.DATETIME),
+                DatasetField(name="ts", expression="'2025-12-01'", datatype=DataType.DATETIME),
                 DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
             ],
         )
@@ -2725,7 +2726,7 @@ class TestPathAliasJoinInference:
                 DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
                 DatasetField(
                     name="is_us",
-                    sql="CASE WHEN customers.regions.name = 'US' THEN 1 ELSE 0 END",
+                    expression="CASE WHEN customers.regions.name = 'US' THEN 1 ELSE 0 END",
                     datatype=DataType.FLOAT,
                 ),
 
@@ -2780,7 +2781,7 @@ class TestPathAliasJoinInference:
                 DatasetField(name="user_id", sql="user_id", datatype=DataType.FLOAT),
                 DatasetField(
                     name="user_signup_date",
-                    sql="users.orgs.signup_date",
+                    expression="users.orgs.signup_date",
                     datatype=DataType.DATETIME,
                 ),
 
@@ -2811,7 +2812,7 @@ class TestPathAliasJoinInference:
     ) -> None:
         """Metric SQL like ``customers__regions.population`` infers joins for both intermediate hops (symmetric to the dimension and time-dimension cases above)."""
         chained_dataset.fields.append(
-            DatasetField(name="region_pop_sum", sql="customers.regions.population", datatype=DataType.FLOAT)
+            DatasetField(name="region_pop_sum", expression="customers.regions.population", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -2905,7 +2906,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_payment", sql="customers.regions.payment_amount",
+            DatasetField(name="region_payment", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
@@ -2937,7 +2938,7 @@ class TestMeasureSourceSqlJoinInference:
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ))
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="cust_balance", sql="customers.balance", datatype=DataType.FLOAT),
+            DatasetField(name="cust_balance", expression="customers.balance", datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
         query = SlayerQuery(
@@ -2954,7 +2955,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_payment", sql="customers.regions.payment_amount",
+            DatasetField(name="region_payment", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT, filter="orders.amount > 100"),
         ])
         await engine.storage.save_dataset(model)
@@ -2984,9 +2985,9 @@ class TestMeasureSourceSqlJoinInference:
     ) -> None:
         """Two metrics over the SAME crossing sql but DISTINCT derived fields intern to distinct ``AggregateKey``s (identity carries the field name), so each isolates into its OWN host-rooted CTE with its own ``_val`` materialisation — per-slot isolation, no CTE merging (merging is ``may_inline`` territory). Dedupe is therefore per-CTE."""
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_payment_a", sql="customers.regions.payment_amount",
+            DatasetField(name="region_payment_a", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
-            DatasetField(name="region_payment_b", sql="customers.regions.payment_amount",
+            DatasetField(name="region_payment_b", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
@@ -3019,9 +3020,9 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_pay_d", sql="customers.regions.payment_amount * 2",
+            DatasetField(name="region_pay_d", expression="customers.regions.payment_amount * 2",
                    datatype=DataType.FLOAT),
-            DatasetField(name="region_pay_i", sql="customers.regions.payment_amount * 2",
+            DatasetField(name="region_pay_i", expression="customers.regions.payment_amount * 2",
                    datatype=DataType.INTEGER),
         ])
         await engine.storage.save_dataset(model)
@@ -3047,7 +3048,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_payment", sql="customers.regions.payment_amount",
+            DatasetField(name="region_payment", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
@@ -3069,7 +3070,7 @@ class TestMeasureSourceSqlJoinInference:
     ) -> None:
         """An aggregate-phase query filter referencing the isolated first/last routes to the OUTER WHERE on the combined SELECT (HAVING-into-the-CTE would surface host rows as NULL instead of dropping them)."""
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_payment", sql="customers.regions.payment_amount",
+            DatasetField(name="region_payment", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
@@ -3096,7 +3097,7 @@ class TestMeasureSourceSqlJoinInference:
     ) -> None:
         model = self._orders_dataset(extra_columns=[
             DatasetField(name="_val_0", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="region_payment", sql="customers.regions.payment_amount",
+            DatasetField(name="region_payment", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
@@ -3120,7 +3121,7 @@ class TestMeasureSourceSqlJoinInference:
     ) -> None:
         """The negative control: a LOCAL-only derived source (``amount * 2``) crosses no join, so the ranked CTE pulls none."""
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.FLOAT),
+            DatasetField(name="double_amount", expression="amount * 2", datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
         query = SlayerQuery(
@@ -3155,7 +3156,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="customer_region_count",
-                sql="customers.region_id",
+                expression="customers.region_id",
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3180,7 +3181,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3210,7 +3211,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3236,7 +3237,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_prop_x",
-                sql="json_extract(customers.regions.props, '$.x')",
+                expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="json_extract(customers.regions.props, '$.x')")]),
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3259,12 +3260,12 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="pop_helper",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="doubled_pop",
-                sql="pop_helper * 2",
+                expression="orders.pop_helper * 2",
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3288,7 +3289,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3319,12 +3320,12 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="region_weight_sum",
-                sql="customers.regions.weight",
+                expression="customers.regions.weight",
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3356,7 +3357,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3383,7 +3384,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
                 # Filter crosses only the customers hop — does NOT touch customers__regions. Without multi-hop join inference the regions join is missing entirely.
                 filter="customers.region_id IS NOT NULL",
@@ -3463,7 +3464,7 @@ class TestMeasureSourceSqlJoinInference:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-                DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+                DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ))
@@ -3494,7 +3495,7 @@ class TestMeasureSourceSqlJoinInference:
         model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_weight",
-                sql="customers.regions.weight",
+                expression="customers.regions.weight",
                 datatype=DataType.FLOAT,
             ),
         ])
@@ -3569,7 +3570,7 @@ class TestDev1709WidenedIsolationShapes:
     async def test_crossing_sum_coexists_with_local_last(self) -> None:
         """A regular crossing aggregate next to a local first/last isolates — it never renders in the ranked outer scope."""
         orders = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_pop_sum", sql="customers.regions.population",
+            DatasetField(name="region_pop_sum", expression="customers.regions.population",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -3596,7 +3597,7 @@ class TestDev1709WidenedIsolationShapes:
     async def test_crossing_kwarg_coexists_with_local_last(self) -> None:
         """A crossing KWARG next to a local first/last isolates the parametric aggregate the same way (Codex plan-review F4 fold-in: kwarg expressions must never leak into the ranked outer scope)."""
         orders = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -3634,7 +3635,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_derived_crossing_time_arg_isolates(self) -> None:
         orders = self._orders_dataset(extra_columns=[
-            DatasetField(name="cross_time", sql="customers.signup_at",
+            DatasetField(name="cross_time", expression="customers.signup_at",
                    datatype=DataType.DATETIME),
         ])
         query = SlayerQuery(
@@ -3696,7 +3697,7 @@ class TestDev1709WidenedIsolationShapes:
     async def test_pathed_host_row_filter_inherited_into_cte(self) -> None:
         """F4 (Codex plan-review F5): a host ROW filter whose expression crosses a join constrains the host-rooted scope — it renders in BOTH the host base WHERE and the isolation CTE's scope, each with its own join registration."""
         orders = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_pop_sum", sql="customers.regions.population",
+            DatasetField(name="region_pop_sum", expression="customers.regions.population",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -3721,7 +3722,7 @@ class TestDev1709WidenedIsolationShapes:
     async def test_order_only_crossing_aggregate_isolates(self) -> None:
         """F3, hidden ORDER-only consumer: a crossing aggregate referenced ONLY by ORDER BY (colon-form ``OrderItem``) still isolates as a hidden slot; the ORDER BY reads the joined-back CTE column and the crossing ref never leaves the CTE."""
         orders = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_pop_sum", sql="customers.regions.population",
+            DatasetField(name="region_pop_sum", expression="customers.regions.population",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -3741,7 +3742,7 @@ class TestDev1709WidenedIsolationShapes:
     async def test_filter_only_composite_with_crossing_leaf(self) -> None:
         """F3, filter-only consumer: a composite referenced only by an aggregate-phase filter lowers the same way — crossing leaf isolates, the comparison lands in the combined outer WHERE (never HAVING), local operand promoted into ``_base``."""
         orders = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_pop_sum", sql="customers.regions.population",
+            DatasetField(name="region_pop_sum", expression="customers.regions.population",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -3765,9 +3766,9 @@ class TestDev1709WidenedIsolationShapes:
     async def test_ranked_isolation_survives_the_recursion_guard(self) -> None:
         """Two same-sql, different-CAST-type crossing first/lasts get a ranked producer scope EACH, and each materialises its own type-distinct value (the kernel form of the type-distinctness pin)."""
         orders = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_pay_d", sql="customers.regions.population * 2",
+            DatasetField(name="region_pay_d", expression="customers.regions.population * 2",
                    datatype=DataType.FLOAT),
-            DatasetField(name="region_pay_i", sql="customers.regions.population * 2",
+            DatasetField(name="region_pay_i", expression="customers.regions.population * 2",
                    datatype=DataType.INTEGER),
         ])
         bundle = ResolvedSourceBundle(
@@ -3801,7 +3802,7 @@ class TestDev1709WidenedIsolationShapes:
     ) -> None:
         """A crossing KWARG next to a first/last: the ranking has its own producer scope, so the crossing kwarg lives in ITS OWN producer and the ranked producer neither sees it nor is affected."""
         orders = self._orders_dataset(extra_columns=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         bundle = ResolvedSourceBundle(
@@ -3833,7 +3834,7 @@ class TestDev1709WidenedIsolationShapes:
     async def test_implicit_crossing_default_time_isolates_xfail(self) -> None:
         orders = self._orders_dataset(
             extra_columns=[
-                DatasetField(name="cross_time", sql="customers.signup_at",
+                DatasetField(name="cross_time", expression="customers.signup_at",
                        datatype=DataType.DATETIME),
             ],
             default_time_dimension="cross_time",
@@ -4653,7 +4654,7 @@ class TestConstantSQLFilters:
             data_source="test",
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="has_premium", sql="1", datatype=DataType.FLOAT),
+                DatasetField(name="has_premium", expression="1", datatype=DataType.FLOAT),
 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
@@ -4681,7 +4682,7 @@ DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
             data_source="test",
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="has_premium", sql="1", datatype=DataType.FLOAT),
+                DatasetField(name="has_premium", expression="1", datatype=DataType.FLOAT),
             ],
         )
         policy_amount = SlayerDataset(
@@ -4719,7 +4720,7 @@ DatasetField(name="total", sql="amount", datatype=DataType.FLOAT)],
             data_source="test",
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="safe_amount", sql="COALESCE(amount, 0)", datatype=DataType.FLOAT),
+                DatasetField(name="safe_amount", expression="COALESCE(amount, 0)", datatype=DataType.FLOAT),
 DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
@@ -5879,7 +5880,7 @@ class TestDev1501HiddenFirstLastRender:
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 # Derived time field whose sql crosses the customers join. No other slot drags ``customers`` into the FROM, so this is the ONLY signal join discovery has to add it.
                 DatasetField(
-                    name="net_signed_at", sql="customers.signed_up_at",
+                    name="net_signed_at", expression="customers.signed_up_at",
                     datatype=DataType.DATETIME,
                 ),
             ],
@@ -6385,7 +6386,7 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
             name="premium", sql_table="premium", data_source="test",
             fields=[
                 DatasetField(name="policy_amount_identifier", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="has_premium", sql="1", datatype=DataType.STRING),
+                DatasetField(name="has_premium", expression="1", datatype=DataType.STRING),
             ],
         )
         agreement_party_role = SlayerDataset(
@@ -6536,7 +6537,7 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
         # Add a local field on policy that the expression will aggregate
         policy_with_measure = policy.model_copy(update={
             "fields": list(policy.fields) + [
-                DatasetField(name="number_of_policies", sql="1", datatype=DataType.FLOAT),
+                DatasetField(name="number_of_policies", expression="1", datatype=DataType.FLOAT),
             ],
         })
         async with self._setup_engine(policy_with_measure, policy_amount, premium, agreement_party_role) as engine:
@@ -6944,7 +6945,7 @@ class TestMeasureFilterCrossModelJoin:
             data_source="test",
             fields=[
                 DatasetField(name="id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
+                DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
             ],
         )
         claim_amount = SlayerDataset(
@@ -7040,14 +7041,14 @@ class TestIsolatedFilteredMeasureCTEs:
                 name="loss_payment", sql_table="Loss_Payment", data_source="test",
                 fields=[
                     DatasetField(name="claim_amount_id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
+                    DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
                 ],
             ),
             "loss_reserve": SlayerDataset(
                 name="loss_reserve", sql_table="Loss_Reserve", data_source="test",
                 fields=[
                     DatasetField(name="claim_amount_id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
+                    DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
                 ],
             ),
             "claim": SlayerDataset(
@@ -7630,7 +7631,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 # Derived field reaching `customers__regions.code` via a 2-hop walk (Mode A uses ``__`` between hops + single dot before the leaf).
-                DatasetField(name="region_code", sql="customers.regions.code", datatype=DataType.STRING),
+                DatasetField(name="region_code", expression="customers.regions.code", datatype=DataType.STRING),
                 # Filtered local metric: filter references the derived field.
                 DatasetField(
                     name="eu_amount", sql="amount", filter="orders.region_code = 'EU'",
@@ -8190,7 +8191,7 @@ class TestIsolatedFilteredMeasureCTEs:
             name="loss_payment", sql_table="Loss_Payment", data_source="test",
             fields=[
                 DatasetField(name="claim_amount_id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
+                DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
             ],
         )
         # Auxiliary base dataset the subquery host references; the filtered-local CTE root path must not trip on a non-sql_table host shape.
@@ -8255,7 +8256,7 @@ class TestGetResultColumnTypesSql:
             fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
 
                 DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="safe_amount", sql="COALESCE(amount, 0)", datatype=DataType.FLOAT),
+                DatasetField(name="safe_amount", expression="COALESCE(amount, 0)", datatype=DataType.FLOAT),
             ],
         )
         with patch.object(storage, "get_dataset", new_callable=AsyncMock, return_value=model):
@@ -8306,7 +8307,7 @@ class TestGetResultColumnTypesSql:
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.FLOAT),
                 DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="customer_score", sql="customers.score", datatype=DataType.FLOAT),
+                DatasetField(name="customer_score", expression="customers.score", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ))
@@ -8394,12 +8395,12 @@ class TestLogAliasPreservation:
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 # Scalar log expressions inside DatasetField.sql — the primary path the issue surfaced through.
-                DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
-                DatasetField(name="log2_amount", sql="log2(amount)", datatype=DataType.FLOAT),
+                DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log10(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
+                DatasetField(name="log2_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log2(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
                 # Negative-control: a non-alias literal base. Must keep the standard 2-arg LOG(base, x) form post-fix.
-                DatasetField(name="log3_amount", sql="log(3, amount)", datatype=DataType.FLOAT),
+                DatasetField(name="log3_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log(3, amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
                 # ln(...) is a separate AST node (exp.Ln); the rewrite must not touch it.
-                DatasetField(name="ln_amount", sql="ln(amount)", datatype=DataType.FLOAT),
+                DatasetField(name="ln_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="ln(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
             ],
         )
 
@@ -8475,7 +8476,7 @@ class TestLogAliasPreservation:
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(
                     name="log_completed_amount",
-                    sql="log10(amount)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log10(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "POSTGRES", "PRESTO", "REDSHIFT", "SPARK", "SQLITE", "TRINO", "TSQL")]),
                     filter="orders.status = 'completed'",
                     datatype=DataType.FLOAT,
                 ),
@@ -8568,7 +8569,7 @@ def planets_dataset() -> SlayerDataset:
             DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
             DatasetField(
                 name="rn",
-                sql="row_number() over (order by mass desc)",
+                expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="row_number() over (order by mass desc)")]),
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -8627,7 +8628,7 @@ class TestCastEmissionColumn:
                     DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                     DatasetField(
                         name="x",
-                        sql="json_extract(blob, '$.x')",
+                        expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="json_extract(blob, '$.x')")]),
                         datatype=blob_type,
                     ),
                 ],
@@ -8658,7 +8659,7 @@ class TestCastEmissionColumn:
             data_source="test",
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="name_len", sql="length(name)", datatype=DataType.INTEGER),
+                DatasetField(name="name_len", expression="length(name)", datatype=DataType.INTEGER),
             ],
         )
         gen = SQLGenerator(dialect="sqlite")
@@ -8734,7 +8735,7 @@ class TestCastEmissionColumn:
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="x",
-                    sql="CAST(json_extract(blob, '$.x') AS DOUBLE)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="CAST(json_extract(blob, '$.x') AS DOUBLE)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -8768,7 +8769,7 @@ class TestCastEmissionOpaqueType:
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="loc",
-                    sql="coalesce(loc, home_loc)",
+                    expression="coalesce(loc, home_loc)",
                     datatype=DataType.OPAQUE,
                     db_type="point",
                 ),
@@ -8790,7 +8791,7 @@ class TestCastEmissionOpaqueType:
                 DatasetField(name="city", sql="city", datatype=DataType.STRING),
                 DatasetField(
                     name="loc",
-                    sql="coalesce(loc, home_loc)",
+                    expression="coalesce(loc, home_loc)",
                     datatype=DataType.OPAQUE,
                     db_type="point",
                 ),
@@ -8967,7 +8968,7 @@ class TestCastEmissionNonBasePaths:
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="score",
-                    sql="json_extract(payload, '$.score')",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="json_extract(payload, '$.score')")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -8994,7 +8995,7 @@ class TestCastEmissionNonBasePaths:
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="score",
-                    sql="json_extract(payload, '$.score')",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="json_extract(payload, '$.score')")]),
                     datatype=DataType.FLOAT,
                 ),
                 DatasetField(name="weight", sql="weight_col", datatype=DataType.FLOAT),
@@ -9632,7 +9633,7 @@ class TestFilterOuterParenWrapDev1539:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="archived", sql="archived", datatype=DataType.BOOLEAN),
-                DatasetField(name="active", sql="NOT archived", datatype=DataType.BOOLEAN),
+                DatasetField(name="active", expression="NOT archived", datatype=DataType.BOOLEAN),
             ],
         )
         query = SlayerQuery(
@@ -9661,7 +9662,7 @@ class TestFilterOuterParenWrapDev1539:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="midrange", sql="amount BETWEEN 100 AND 500", datatype=DataType.BOOLEAN),
+                DatasetField(name="midrange", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="amount BETWEEN 100 AND 500")]), datatype=DataType.BOOLEAN),
             ],
         )
         query = SlayerQuery(
@@ -9691,7 +9692,7 @@ class TestFilterOuterParenWrapDev1539:
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="active", sql="status IN ('a', 'b', 'c')", datatype=DataType.BOOLEAN),
+                DatasetField(name="active", expression="status IN ('a', 'b', 'c')", datatype=DataType.BOOLEAN),
             ],
         )
         query = SlayerQuery(
@@ -9938,7 +9939,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_single_further_hop_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
             population="orders_x",
@@ -9951,7 +9952,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_multi_hop_further_join_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            DatasetField(name="deep_gdp", sql="regions.countries.gdp", datatype=DataType.FLOAT),
+            DatasetField(name="deep_gdp", expression="regions.countries.gdp", datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
             population="orders_x",
@@ -9965,7 +9966,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_path_alias_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            DatasetField(name="deep_country_name", sql="regions.countries.name",
+            DatasetField(name="deep_country_name", expression="regions.countries.name",
                    datatype=DataType.STRING),
         ]))
         query = SlayerQuery(
@@ -9981,7 +9982,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
     async def test_mode_a_function_wrapping_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             DatasetField(name="region_prop_x",
-                   sql="json_extract(regions.props, '$.x')", datatype=DataType.FLOAT),
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="json_extract(regions.props, '$.x')")]), datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
             population="orders_x",
@@ -9994,8 +9995,8 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_sibling_derived_chain_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            DatasetField(name="pop_helper", sql="regions.population", datatype=DataType.FLOAT),
-            DatasetField(name="doubled_pop", sql="pop_helper * 2", datatype=DataType.FLOAT),
+            DatasetField(name="pop_helper", expression="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="doubled_pop", expression="customers_v2.pop_helper * 2", datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
             population="orders_x",
@@ -10008,7 +10009,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_mixed_base_col_and_further_join_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            DatasetField(name="deep_score", sql="lifetime_value + regions.population",
+            DatasetField(name="deep_score", expression="lifetime_value + regions.population",
                    datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
@@ -10025,7 +10026,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
     async def test_dedup_source_and_target_model_filter_same_join(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(
             extra_columns=[
-                DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+                DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
             ],
             filters=["regions.name IS NOT NULL"],
         ))
@@ -10043,7 +10044,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
     async def test_filter_and_source_cross_different_depths(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(
             extra_columns=[
-                DatasetField(name="deep_gdp", sql="regions.countries.gdp",
+                DatasetField(name="deep_gdp", expression="regions.countries.gdp",
                        datatype=DataType.FLOAT),
             ],
             filters=["regions.name IS NOT NULL"],
@@ -10062,8 +10063,8 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_composite_two_operand_each_cte_pulls_join(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
-            DatasetField(name="deep_weight", sql="regions.weight", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="deep_weight", expression="regions.weight", datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
             population="orders_x",
@@ -10080,7 +10081,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_first_last_source_join_in_ranked_subquery(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
             # The ranking field must be one of the TARGET's own — the ranked CTE is rooted there and a host field is not in its scope.
             DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
         ]))
@@ -10113,7 +10114,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_deeper_join_only_in_cte_not_host_base(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
             population="orders_x",

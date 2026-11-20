@@ -41,7 +41,7 @@ def _loss_payment() -> SlayerDataset:
         name="loss_payment", data_source="test", sql_table="Loss_Payment",
         fields=[
             DatasetField(name="claim_amount_id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
+            DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
         ],
     )
 
@@ -51,7 +51,7 @@ def _loss_reserve() -> SlayerDataset:
         name="loss_reserve", data_source="test", sql_table="Loss_Reserve",
         fields=[
             DatasetField(name="claim_amount_id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
+            DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
         ],
     )
 
@@ -130,7 +130,7 @@ def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(
                 name="is_eu", datatype=DataType.FLOAT,
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                expression="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
             ),
             DatasetField(
                 name="eu_amount", sql="amount", filter=eu_amount_filter,
@@ -442,19 +442,19 @@ def _s5_orders() -> SlayerDataset:
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="region_pay", sql="customers.regions.payment_amount",
+            DatasetField(name="region_pay", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
-            DatasetField(name="cust_weight_d", sql="customers.weight",
+            DatasetField(name="cust_weight_d", expression="customers.weight",
                    datatype=DataType.FLOAT),
             # Sibling derived chain: doubled_pop -> pop_helper -> crossing.
-            DatasetField(name="pop_helper", sql="customers.regions.payment_amount",
+            DatasetField(name="pop_helper", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
-            DatasetField(name="doubled_pop", sql="orders.pop_helper * 2",
+            DatasetField(name="doubled_pop", expression="orders.pop_helper * 2",
                    datatype=DataType.FLOAT),
             # Derived TIME field crossing a relationship (explicit-arg use only).
-            DatasetField(name="cross_time", sql="customers.signup_at",
+            DatasetField(name="cross_time", expression="customers.signup_at",
                    datatype=DataType.DATETIME),
-            DatasetField(name="local_double", sql="amount * 2", datatype=DataType.FLOAT),
+            DatasetField(name="local_double", expression="amount * 2", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
             to="customers", from_columns=["customer_id"], to_columns=["id"],

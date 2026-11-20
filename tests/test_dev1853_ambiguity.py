@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.core.errors import AmbiguousRelationshipPathError, DerivedFieldAmbiguousError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -81,7 +82,7 @@ class TestModeAAmbiguity:
             assert orders is not None
             orders.fields = [
                 *orders.fields,
-                DatasetField(name="cust_tier", sql="customers.tier"),
+                DatasetField(name="cust_tier", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="customers.tier")])),
             ]
             with pytest.raises(DerivedFieldAmbiguousError):
                 await storage.save_dataset(orders)

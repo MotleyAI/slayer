@@ -22,6 +22,7 @@ fields) is preserved.
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 
@@ -38,7 +39,7 @@ def _make_planets_dataset(*, with_window_column: bool = False) -> SlayerDataset:
         columns.append(
             DatasetField(
                 name="rn",
-                sql="row_number() over (order by mass desc)",
+                expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="row_number() over (order by mass desc)")]),
                 datatype=DataType.INTEGER,
             )
         )

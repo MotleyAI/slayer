@@ -95,9 +95,9 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 DatasetField(name="region", datatype=DataType.STRING),
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="revenue", datatype=DataType.FLOAT, label="Revenue"),
-                DatasetField(name="is_active", sql="status = 'active'", datatype=DataType.BOOLEAN),
-                DatasetField(name="big_spender", sql="revenue > 60", datatype=DataType.BOOLEAN),
-                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT),
+                DatasetField(name="is_active", expression="status = 'active'", datatype=DataType.BOOLEAN),
+                DatasetField(name="big_spender", expression="revenue > 60", datatype=DataType.BOOLEAN),
+                DatasetField(name="rev_x2", expression="revenue * 2", datatype=DataType.FLOAT),
             ],
             filters=["customers.is_active"],
         )

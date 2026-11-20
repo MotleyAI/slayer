@@ -12,6 +12,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
@@ -47,9 +48,9 @@ def _dataset(*, arrays: bool) -> SlayerDataset:
     columns = [
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="amount", datatype=DataType.FLOAT),
-        DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.FLOAT),
+        DatasetField(name="double_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * 2"), DialectEntry(dialect="SQLITE", expression="amount * 2")]), datatype=DataType.FLOAT),
         DatasetField(name="qty", sql="quantity", datatype=DataType.INTEGER),
-        DatasetField(name="order_total", sql='"Order Total"', datatype=DataType.FLOAT),
+        DatasetField(name="order_total", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression='"Order Total"'), DialectEntry(dialect="SQLITE", expression='"Order Total"')]), datatype=DataType.FLOAT),
         DatasetField(name="ordered_at", datatype=DataType.DATE),
         DatasetField(name="ordered_ts", datatype=DataType.DATETIME),
     ]

@@ -11,6 +11,7 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
@@ -154,7 +155,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
                 # in CAST(... AS DOUBLE PRECISION), so SUM yields double and
                 # ``round(double precision, int)`` would fail without the
                 # PostgresDialect numeric-cast rewrite.
-                DatasetField(name="amount_d", sql="amount * 1.0", datatype=DataType.FLOAT),
+                DatasetField(name="amount_d", expression="amount * 1.0", datatype=DataType.FLOAT),
             ],
         )
         customers_model = SlayerDataset(
@@ -963,7 +964,7 @@ class TestPostgresStatAggregations:
         existing = await pg_env.storage.get_dataset("orders")
         assert existing is not None
         cols = list(existing.fields) + [
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
+            DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="log10(amount)")]), datatype=DataType.FLOAT),
         ]
         await pg_env.save_dataset(
             SlayerDataset(
@@ -1054,7 +1055,7 @@ async def planets_pg_env(postgresql):
                 DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1115,7 +1116,7 @@ async def pg_derived_chain_env(postgresql):
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="foo_raw / 100.0")]), datatype=DataType.FLOAT),
             ],
         )
     )
@@ -1131,7 +1132,7 @@ async def pg_derived_chain_env(postgresql):
                 DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="a_tbl.bar / b_tbl.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1281,7 +1282,7 @@ def _pg_dev1645_storage(postgresql_proc, tmp_path_factory):
                 # Derived boolean referencing mixed-case StateFlag UNQUOTED (the
                 # fake_account_23 repro). Fix must emit "StateFlag".
                 DatasetField(name="is_inactive", datatype=DataType.BOOLEAN,
-                       sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
+                       expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
                 DatasetField(name="acct_form", sql="acct_form", datatype=DataType.STRING),
                 DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.INTEGER),
                 DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
@@ -1475,7 +1476,7 @@ def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
                 DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INTEGER),
                 DatasetField(name="qty", sql="qty", datatype=DataType.INTEGER),
                 # derived field referencing the reserved joined dataset `grant`
-                DatasetField(name="bumped", sql="grant.amount + 1", datatype=DataType.FLOAT),
+                DatasetField(name="bumped", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="grant.amount + 1")]), datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="grant", from_columns=["grant_id"], to_columns=["id"])],
         )

@@ -246,7 +246,7 @@ def dev1748_datasets() -> List[SlayerDataset]:
             # Used as an explicit time arg this is the residual-hop shape.
             DatasetField(
                 name="deep_opened", datatype=DataType.DATETIME,
-                sql="regions.opened_at",
+                expression="regions.opened_at",
             ),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
@@ -287,10 +287,10 @@ def dev1748_datasets() -> List[SlayerDataset]:
             # A derived value whose sql CROSSES into regions.
             DatasetField(
                 name="cust_region", datatype=DataType.STRING,
-                sql="customers.regions.name",
+                expression="customers.regions.name",
             ),
             # A local derived value — the non-crossing control.
-            DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
+            DatasetField(name="amount_x2", datatype=DataType.FLOAT, expression="amount * 2"),
             # A local derived TIME field, for an explicit derived time arg.
             DatasetField(
                 name="created_alias", datatype=DataType.DATETIME, sql="created_at",

@@ -27,6 +27,7 @@ from sqlalchemy.pool import QueuePool
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, RelationshipCardinality, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -401,8 +402,7 @@ def test_dev1933_regex_literal_model_column(sf_storage_with_datasets: StorageBac
     assert orders is not None
     run_sync(sf_storage_with_datasets.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
         *orders.fields,
-        DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                              "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+        DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="SNOWFLAKE", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]),
                datatype=DataType.FLOAT),
     ]})))
     result = run_sync(engine.execute(SlayerQuery(
@@ -912,7 +912,7 @@ def sf_dev1645_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 # Written UNQUOTED — the fix must emit "StateFlag".
                 DatasetField(name="is_inactive", datatype=DataType.BOOLEAN,
-                       sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
+                       expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
             ],
         )
         run_sync(storage.save_dataset(model))
@@ -967,7 +967,7 @@ def sf_dev2120_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
         run_sync(storage.save_datasource(sf_datasource))
         base = lib_dataset(data_source="sf_test")
         run_sync(storage.save_dataset(base.model_copy(update={
-            "fields": [c.model_copy(update={"sql": c.name}) for c in base.fields]})))
+            "fields": [c.model_copy(update={"expression": c.name}) for c in base.fields]})))
         for model in run_sync(_ingest(sf_datasource, include_tables=["docs"])):
             run_sync(storage.save_dataset(model))
         yield storage
@@ -1031,7 +1031,7 @@ def sf_lists(_sf_list_tables, sf_datasource: DatasourceConfig, tmp_path):
     run_sync(storage.save_datasource(sf_datasource))
     for base in (contractors_dataset(data_source="sf_test"), assignments_dataset(data_source="sf_test")):
         run_sync(storage.save_dataset(base.model_copy(update={
-            "fields": [c.model_copy(update={"sql": c.name}) for c in base.fields]})))
+            "fields": [c.model_copy(update={"expression": c.name}) for c in base.fields]})))
     run_sync(storage.save_dataset(mixed_numbers_dataset(data_source="sf_test", explicit_sql=True)))
     return storage, _sf_list_tables
 

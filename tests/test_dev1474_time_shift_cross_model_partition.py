@@ -46,6 +46,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -91,7 +92,7 @@ def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
         DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="status", sql="status", datatype=DataType.STRING),
-        DatasetField(name="status_up", sql="upper(status)", datatype=DataType.STRING),
+        DatasetField(name="status_up", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="upper(status)")]), datatype=DataType.STRING),
         DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME),
         DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.DATETIME),
         DatasetField(name="store_id", sql="store_id", datatype=DataType.INTEGER),
@@ -305,7 +306,7 @@ class TestShiftedCtePartitionShape:
         shifted CTE: the relationship is pulled AND the expanded expression is grouped.
         Today: silently skipped → broadcast across tiers (scope_closed passes)."""
         stores = _stores(extra=[
-            DatasetField(name="tier", sql="upper(name)", datatype=DataType.STRING),
+            DatasetField(name="tier", expression="upper(name)", datatype=DataType.STRING),
         ])
         query = SlayerQuery(
             population="orders",

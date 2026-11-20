@@ -111,7 +111,7 @@ class TestJoinOrderParity:
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="wh_pop", sql="warehouses.regions.population",
+                DatasetField(name="wh_pop", expression="warehouses.regions.population",
                        datatype=DataType.FLOAT),
             ],
             relationships=[
