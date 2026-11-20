@@ -38,6 +38,3 @@
 - title: create_datasource auto-ingest runs the idempotent ingest
   one_x_hash: 80998e6c6ef5f2cc4fa4323ae41d28d59a38874e6cc80e6875c9ef9862ba1f8e
   reason: "main keeps its own wording: MCP `ingest_datasource` and datasets where 1.x says `ingest_datasource_models` and models, failed key reads included."
-- title: Which CLI, Flight and Postgres calls open a request span
-  one_x_hash: abd10c126b8b3ea7029d0d5bcaccb87f2295597ad055b155c8b37cf3c8ad40ff
-  reason: "Pending archive: this change's delta carries it verbatim; removed when the change is archived."
