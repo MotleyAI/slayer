@@ -46,6 +46,7 @@ from slayer.engine.cardinality.inference import CardinalityVerdict, Relationship
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.live_schema.ingestion import (
     _empty_ingest_message,
+    _ingest_result_is_empty,
     _print_ingest_addition,
     _print_ingest_drift_and_errors,
 )
@@ -60,6 +61,7 @@ from slayer.live_schema.schema_drift import (
     REPORT_ONLY_FINDINGS,
     DriftReportEntry,
     EditDatasetDelete,
+    IdempotentIngestResult,
     NarrowedAccessFinding,
     RetypeFinding,
 )
@@ -1057,7 +1059,7 @@ examples:
         "-y",
         "--yes",
         action="store_true",
-        help="Overwrite existing datasource / colliding datasets without prompting",
+        help="Overwrite an existing datasource without prompting",
     )
 
     datasources_delete_parser = datasources_subparsers.add_parser("delete", help="Delete a datasource")
@@ -1945,10 +1947,25 @@ async def _ingest_workflow(args, engine: SlayerQueryEngine) -> None:
         storage_path = _storage_path(args)
         _fail(f"Datasource '{args.datasource}' not found in {storage_path}")
 
+    result = await _ingest_and_print(engine=engine, ds=ds, args=args)
+    # A skip means we declined to ingest a perfectly valid object, so it fails
+    # the command — `--exclude <name>` is the documented way to make it green.
+    # No live object and no model change (e.g. every schema skipped) fails too.
+    if (
+        result is None
+        or result.errors
+        or result.skipped
+        or not (result.objects or result.additions or result.to_delete)
+    ):
+        sys.exit(1)
+
+
+async def _ingest_and_print(*, engine: SlayerQueryEngine, ds: DatasourceConfig, args) -> IdempotentIngestResult | None:
+    """Run the idempotent ingest with the CLI scope flags and print it; None when it reported nothing."""
     client = engine.client_for(ds)
     result = await engine_ingestion.ingest_datasource_idempotent(
         datasource=ds,
-        storage=storage,
+        storage=engine.storage,
         client=client,
         schemas=_parse_csv_arg(args.schema),
         all_schemas=getattr(args, "all_schemas", False),
@@ -1957,35 +1974,17 @@ async def _ingest_workflow(args, engine: SlayerQueryEngine) -> None:
         include_views=getattr(args, "include_views", True),
         surface_internals=getattr(args, "surface_internals", False),
     )
-
-    # Gate on ``objects``, not ``additions``: a schema whose objects are all
-    # already in sync must stay quiet, but a truly empty schema must not print
-    # nothing and exit 0 (which reads as "empty" to a user with only views).
-    if not (
-        result.additions
-        or result.to_delete
-        or result.errors
-        or result.skipped
-        or result.objects
-    ):
-        print(
-            await _empty_ingest_message(
-                schema_name=args.schema or "",
-                client=client,
-                retry_hint=(
-                    "Try re-running with --schema set to one of these."
-                ),
-            )
-        )
-        sys.exit(1)
-
+    if _ingest_result_is_empty(result):
+        print(await _empty_ingest_message(
+            schema_name=args.schema or "",
+            client=client,
+            retry_hint="Try re-running with --schema set to one of these.",
+        ))
+        return None
     for addition in result.additions:
         _print_ingest_addition(addition)
-    _print_ingest_drift_and_errors(result, data_source=args.datasource)
-    # A skip means we declined to ingest a perfectly valid object, so it fails
-    # the command — `--exclude <name>` is the documented way to make it green.
-    if result.errors or result.skipped:
-        sys.exit(1)
+    _print_ingest_drift_and_errors(result, data_source=ds.name)
+    return result
 
 
 _DriftEntryT = TypeVar("_DriftEntryT", bound=DriftReportEntry)
@@ -2740,29 +2739,7 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
-def _persist_ingested_datasets(datasets: list[SlayerDataset], storage: StorageBackend, *, assume_yes: bool) -> None:
-    """Persist freshly-ingested datasets (``datasources create --ingest``), after a collision-confirmation prompt."""
-    if not datasets:
-        print("No datasets were generated.")
-        return
-
-    colliding = [m.name for m in datasets if run_sync(storage.get_dataset(m.name)) is not None]
-    if colliding and not _confirm(
-        f"Datasets already exist and will be overwritten: {', '.join(colliding)}. Continue?",
-        assume_yes=assume_yes,
-    ):
-        print("Aborted before writing datasets.", file=sys.stderr)
-        sys.exit(1)
-
-    for dataset in datasets:
-        try:
-            run_sync(storage.save_dataset(dataset))
-        except ValueError as e:
-            print(f"Skipped {dataset.name}: {e}")
-            continue
-        print(f"Ingested: {dataset.name} ({len(dataset.fields)} fields, {len(dataset.metrics)} metrics)")
-
-
+@otel.request(surface="cli", token="datasources.create")  # NOSONAR(S6418) — usage-operation name, not a secret
 def _run_datasources_create(args, storage):
     if (args.connection_string or "").strip().lower() == "demo":
         _run_datasources_create_demo(args, storage)
@@ -2775,7 +2752,6 @@ def _run_datasources_create(args, storage):
 
     name = args.name or derived_name
     schema_list = _parse_csv_arg(args.schema)
-    all_schemas = getattr(args, "all_schemas", False)
     # Persist ``schema_name`` only for a single explicit schema — a multi-schema
     # or --all-schemas request has no one default schema to record (D-7).
     persisted_schema = schema_list[0] if (schema_list and len(schema_list) == 1) else None
@@ -2803,55 +2779,19 @@ def _run_datasources_create(args, storage):
         _fail(str(e))
     print(f"Created datasource '{ds.name}' ({ds.type}).")
 
-    if not args.ingest:
-        return
-    _create_ingest_and_report(
-        args=args, ds=ds, storage=storage,
-        schema_list=schema_list, all_schemas=all_schemas,
-    )
+    if args.ingest:
+        _create_ingest_and_report(args=args, ds=ds, storage=storage)
 
 
-def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
-    """Run auto-ingestion for a freshly-created datasource and print the report.
-
-    Extracted from ``_run_datasources_create`` so that function stays under the
-    cognitive-complexity limit. Exit stays 0 on skips/hidden — creating the
-    datasource already succeeded.
-    """
-    include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
-    exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
-
+def _create_ingest_and_report(*, args, ds, storage) -> None:
+    """Idempotently ingest a freshly-created datasource; exit stays 0 on any reported outcome."""
     engine = SlayerQueryEngine(storage=storage)
     # Re-read: storage resolves ${ENV_VAR} credentials.
     live_ds = run_sync(storage.get_datasource(ds.name)) or ds
     try:
-        # Report form, not datasets-only ``ingest_datasource``: otherwise this
-        # path hides recognised internals and skips with no output at all.
-        report = engine.run_sync(engine_ingestion.ingest_datasource_report_async(
-            datasource=live_ds,
-            client=engine.client_for(live_ds),
-            schemas=schema_list,
-            all_schemas=all_schemas,
-            include_tables=include,
-            exclude_tables=exclude,
-            include_views=getattr(args, "include_views", True),
-            surface_internals=getattr(args, "surface_internals", False),
-        ))
+        engine.run_sync(_ingest_and_print(engine=engine, ds=live_ds, args=args))
     except Exception as e:
         _fail(f"Ingestion failed: {e}")
-
-    _persist_ingested_datasets(report.datasets, storage, assume_yes=args.yes)
-
-    if report.schema_description and not ds.description:
-        ds = ds.model_copy(update={"description": report.schema_description})
-        try:
-            run_sync(storage.save_datasource(ds))
-            print("Datasource description imported.")
-        except Exception as e:
-            print(f"Could not save datasource description: {e}")
-
-    # After persistence, so the sections comment on what was just written.
-    _print_ingest_drift_and_errors(report, data_source=ds.name)
 
 
 def _ingest_scope_flags(args) -> list[str]:

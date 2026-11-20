@@ -1,0 +1,24 @@
+## 1. Tests (pr-tests stage; all must fail before implementation)
+
+- [x] 1.1 OTel tests (extend the in-memory span exporter + metric reader setup of the existing `tests/test_otel_*` files) for the `otel/collection` scenarios: CLI `datasources create <sqlite-url> --ingest` over 3 tables → one `slayer.ingest` span, `datasets.added=3`, datasource name/type, four step children, child of a `slayer.request` (cli, `datasources.create`), one `slayer.ingest.duration` point, `slayer.ingest.datasets` = 3 with `change=added`; MCP `create_datasource` the same (span + both metrics); `slayer ingest` → exactly one `slayer.ingest` span and one duration point. Verify: they fail on the current code.
+- [x] 1.2 CLI behaviour tests for the `cli/commands` scenarios: fresh create prints `Created:` lines, exit 0; re-create keeps a user-written MODEL description with no model-overwrite prompt; a skipped object is listed under `Skipped` with exit 0; an ingest that raises → one `Ingestion failed:` stderr line, exit 1, datasource stored; `slayer ingest` with every requested schema skipped lists `Skipped schemas` with the reason and not "No tables or views found"; a truly empty schema still prints the message and exits 1; plus a description-only outcome is not treated as empty. Verify: they fail where behaviour changes.
+- [x] 1.3 MCP behaviour tests for the `mcp/tool-surface` scenarios: fresh create names both models under the new-models section; re-create says `replaced` and keeps a user-written MODEL description; a database failure during ingest yields "Auto-ingestion failed:" and the datasource stays stored.
+- [x] 1.4 `tests/test_law_ingest_door.py` (model on `tests/test_law_database_door.py`): AST scan of every module under `slayer.api`, `slayer.mcp`, `slayer.cli`, `slayer.client`, `slayer.inspect`, `slayer.demo`, `slayer.__main__`, `slayer.flight`, `slayer.pg_facade`, `slayer.facade` for calls to `ingest_datasource_report_async`, `ingest_datasource_report`, `ingest_datasource_async`, `ingest_datasource` (by attribute, by name, or via `from … import x as y` aliases) and for `.ingest(` / `.ingest_sync(` attribute calls. Verify: it fails today naming `slayer/cli.py` and `slayer/mcp/server.py`.
+- [x] 1.5 Existing tests pinning the old create output or semantics (`TestDatasourcesCreateReporting` in `tests/test_ingest_internal_tables.py`, the create tests in `tests/test_ingestion_schema_qualification.py`, any `Ingested:` / model-overwrite-prompt assertion on the non-demo create, the monkeypatched seam in `tests/test_mcp_server.py::test_create_auto_ingest_imports_dataset_description`): ask the user's approval per file before aligning them to the plan.
+
+## 2. Implementation
+
+- [x] 2.1 Add one full-shape emptiness check beside the renderers in `slayer/engine/ingestion.py` (design decision 10) and use it in `_ingest_workflow` (`slayer ingest`); exit codes unchanged. Verify: 1.2's empty-result tests pass.
+- [x] 2.2 Rewrite `_create_ingest_and_report` in `slayer/cli.py` to run `engine.ingest_idempotent` with the same scope, render via `_print_ingest_addition` + `_print_ingest_drift_and_errors` (empty → `_empty_ingest_message`), exit 0 on reported issues, keep `Ingestion failed:` + exit 1 on a raise; delete `_persist_ingested_models` and the separate description save. Verify: 1.2 CLI create tests pass.
+- [x] 2.3 Decorate the `datasources create` handler with `@otel.request(surface="cli", token="datasources.create")`. Verify: 1.1 CLI request-span assertion passes and the usage-reporting tests still pass.
+- [x] 2.4 Rewrite `create_datasource`'s auto-ingest in `slayer/mcp/server.py` to run `engine_ingestion.ingest_datasource_idempotent(datasource=ds, storage=storage, client=client, …)` with the same scope, append `_render_ingest_result` output, keep the explore hint when models were created and the "Auto-ingestion failed:" handling. Verify: 1.3 and 1.1 MCP tests pass.
+- [x] 2.5 Apply the approved `architecture/system.arc42.md` §3.14 clause verbatim (design decision 4). Verify: `poetry run la-arch-check` passes.
+- [x] 2.6 Verify the law test (1.4) and every OTel test (1.1) pass.
+
+## 3. Docs
+
+- [x] 3.1 `docs/reference/cli.md` (`datasources create --ingest`: idempotent and additive like `slayer ingest`, re-create merges), `docs/reference/mcp.md` (`create_datasource` row), `docs/concepts/ingestion.md` (create paths run the idempotent ingest), `docs/reference/opentelemetry.md` (line ~142: CLI request spans now `query`, `ingest`, `datasources.create`). Verify: grep docs for "will be overwritten" and the old `Ingested:` create output finds nothing stale.
+
+## 4. Gates
+
+- [x] 4.1 Run the local test scope (`la-affected-tests --base 1.x` plus the files above), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture`. Verify: all green.
