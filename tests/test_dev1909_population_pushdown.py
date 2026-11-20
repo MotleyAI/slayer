@@ -408,12 +408,12 @@ class TestProducerOnlySpine:
         resp = await engine.execute(cust_q(metrics=[ORDERS_AMOUNT], filter=[OK]))
         assert float(resp.data[0]["oa"]) == pytest.approx(POP_FILTER_PRODUCER_ONLY)
 
-    async def test_producer_only_no_match_yields_zero_rows(self, backend):
-        """A predicate no order passes yields zero rows — never one NULL-carrying row."""
+    async def test_producer_only_no_match_yields_one_null_row(self, backend):
+        """A predicate no order passes still yields the one row of a query without dimensions (Law 10)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
             metrics=[ORDERS_AMOUNT], filter=["orders.status = 'nonesuch'"]))
-        assert resp.data == []
+        assert resp.data == [{"oa": None}]
 
 
 class TestRawRowMode:

@@ -1,10 +1,4 @@
-"""DEV-1866 — a rootless query executes identically to its explicit twin.
-
-Runs on SQLite and DuckDB. The inferred-population query and the same query
-with that population named explicitly must agree on SQL, data, columns,
-attributes, and warnings; only the reported ``population`` / ``population_inferred``
-metadata differs.
-"""
+"""A rootless query's rows and reported population against its explicit twins, on SQLite and DuckDB."""
 
 from __future__ import annotations
 
@@ -48,36 +42,26 @@ async def _assert_twin(engine: SlayerQueryEngine, *, rootless: SlayerQuery, expl
 
 class TestExplicitTwinParity:
     async def test_canonical_customers_population(self, chain_engine) -> None:
-        await _assert_twin(
-            chain_engine,
-            rootless=SlayerQuery.model_validate({
-                "dimensions": ["customers.region"],
-                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
-            }),
-            explicit=SlayerQuery.model_validate({
-                "population": "customers",
-                "dimensions": ["customers.region"],
-                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
-            }),
-            population="customers",
-        )
+        """The anchor is ``customers``, but West, which no order reaches, is not a row."""
+        resp = await chain_engine.execute(SlayerQuery.model_validate({
+            "dimensions": ["customers.region"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+        }))
+        assert (resp.population, resp.population_inferred) == ("customers", True)
+        assert {r["customers.region"] for r in resp.data} == {"North", "South"}
 
-    async def test_field_filter_pulls_to_orders(self, chain_engine) -> None:
-        await _assert_twin(
-            chain_engine,
-            rootless=SlayerQuery.model_validate({
-                "dimensions": ["customers.region"],
-                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
-                "filter": ["orders.status = 'ok'"],
-            }),
-            explicit=SlayerQuery.model_validate({
-                "population": "orders",
-                "dimensions": ["customers.region"],
-                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
-                "filter": ["orders.status = 'ok'"],
-            }),
-            population="orders",
-        )
+    async def test_field_filter_keeps_the_anchor(self, chain_engine) -> None:
+        """An ``orders`` filter restricts the rows and never moves the anchor off ``customers``."""
+        query = {
+            "dimensions": ["customers.region"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "filter": ["orders.status = 'ok'"],
+        }
+        r = await chain_engine.execute(SlayerQuery.model_validate(query))
+        e = await chain_engine.execute(SlayerQuery.model_validate({"population": "orders", **query}))
+        assert _canon(r.data) == _canon(e.data)
+        assert r.columns == e.columns
+        assert (r.population, r.population_inferred) == ("customers", True)
 
     async def test_raw_row_mode(self, chain_engine) -> None:
         rootless = SlayerQuery(
@@ -128,7 +112,7 @@ class TestExplicitOverride:
 
 
 class TestNullAttachment:
-    async def test_region_without_orders_attaches_null(self, chain_engine) -> None:
+    async def test_region_without_orders_is_not_a_row(self, chain_engine) -> None:
         resp = await chain_engine.execute(SlayerQuery.model_validate({
             "dimensions": ["customers.region"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
@@ -136,4 +120,4 @@ class TestNullAttachment:
         assert resp.population == "customers"
         assert resp.population_inferred is True
         got = rows_by(resp, key="customers.region", value="rev")
-        assert got == CHAIN_REVENUE_BY_REGION
+        assert got == {region: v for region, v in CHAIN_REVENUE_BY_REGION.items() if v is not None}

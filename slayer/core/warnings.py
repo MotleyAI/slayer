@@ -151,11 +151,17 @@ class UnrelatedDatasetWarningPayload(SlayerWarning):
 
     kind: Literal["unrelated_dataset"] = "unrelated_dataset"
     dataset: str
-    population: str
+    #: ``None`` in a query without dimensions, whose measure homes no relationship path connects.
+    population: Optional[str] = None
     metrics: list[str]
     location: str
 
     def human_message(self) -> str:
+        if self.population is None:
+            return (
+                f"{', '.join(repr(m) for m in self.metrics)} (at {self.location}) read {self.dataset!r}, which no "
+                f"relationship path connects to the query's other measures: each is aggregated over its own rows"
+            )
         return (
             f"{', '.join(repr(m) for m in self.metrics)} (at {self.location}) read {self.dataset!r}, which no "
             f"relationship path reaches from {self.population!r}: unrelated dataset, aggregated over its own rows and "

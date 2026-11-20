@@ -691,6 +691,59 @@ class TestCrossModelAndMultistageClickHouse:
         assert by_tier["low"] == 3
 
 
+@pytest.fixture
+def clickhouse_key_union_env(clickhouse_container):
+    """``kdim`` with nullable decimal / timestamp / text keys; ``facta`` reaches it, ``factb`` only by an orphan key."""
+    db_name = _create_module_db(clickhouse_container)
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE kdim (key_id String, k_dec Nullable(Decimal(10, 3)), k_ts Nullable(DateTime), "
+                "k_txt Nullable(String)) ENGINE = MergeTree() ORDER BY key_id"))
+            for fact, pk, value in (("facta", "a_id", "x"), ("factb", "b_id", "y")):
+                conn.execute(sa.text(
+                    f"CREATE TABLE {fact} ({pk} String, key_id String, {value} Float64) "
+                    f"ENGINE = MergeTree() ORDER BY {pk}"))
+            conn.execute(sa.text(
+                "INSERT INTO kdim VALUES ('K1', 1.5, '2025-01-01 10:00:00', 'a'), ('K2', NULL, '2025-02-01 00:00:00', 'b')"))
+            conn.execute(sa.text("INSERT INTO facta VALUES ('A1', 'K1', 1), ('A2', 'K2', 2)"))
+            conn.execute(sa.text("INSERT INTO factb VALUES ('B1', 'K9', 5)"))
+
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp())
+    run_sync(storage.save_datasource(_ds_config(clickhouse_container, db_name)))
+    run_sync(storage.save_dataset(SlayerDataset(
+        name="kdim", sql_table="kdim", data_source="testclickhouse",
+        fields=[DatasetField(name="key_id", datatype=DataType.STRING, primary_key=True),
+                DatasetField(name="k_dec", datatype=DataType.DECIMAL),
+                DatasetField(name="k_ts", datatype=DataType.DATETIME),
+                DatasetField(name="k_txt", datatype=DataType.STRING)],
+    )))
+    for fact, pk, value in (("facta", "a_id", "x"), ("factb", "b_id", "y")):
+        run_sync(storage.save_dataset(SlayerDataset(
+            name=fact, sql_table=fact, data_source="testclickhouse",
+            fields=[DatasetField(name=pk, datatype=DataType.STRING, primary_key=True),
+                    DatasetField(name="key_id", datatype=DataType.STRING),
+                    DatasetField(name=value, datatype=DataType.FLOAT)],
+            relationships=[DatasetRelationship(to="kdim", from_columns=["key_id"], to_columns=["key_id"])],
+        )))
+    yield SlayerQueryEngine(storage=storage)
+    _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestRootlessKeyUnionClickHouse:
+    async def test_key_types_agree_across_row_sources(self, clickhouse_key_union_env: SlayerQueryEngine) -> None:
+        keys = ["kdim.k_dec", "kdim.k_ts", "kdim.k_txt"]
+        result = await clickhouse_key_union_env.execute(query=SlayerQuery.model_validate({
+            "dimensions": keys,
+            "metrics": [{"metric": "sum(facta.x)", "alias": "x"}, {"metric": "sum(factb.y)", "alias": "y"}],
+        }))
+        assert len(result.data) == 3
+        assert [r["y"] for r in result.data if all(r[k] is None for k in keys)] == [5.0]
+        for k in keys:
+            assert len({type(r[k]) for r in result.data if r[k] is not None}) == 1, k
+
+
 # ---------------------------------------------------------------------------
 # Median / percentile — ClickHouse uses parametric quantile(p)(x) + median(x)
 # ---------------------------------------------------------------------------

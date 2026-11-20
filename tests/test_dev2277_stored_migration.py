@@ -135,7 +135,8 @@ def memory_bytes(*, backend: str, base: str, storage: StorageBackend, memory_id:
 
 
 def test_versions_bumped() -> None:
-    assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == UPGRADED_AT
+    # SlayerQuery 18 only stamps ``population_inferred``.
+    assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {**UPGRADED_AT, "SlayerQuery": 18}
 
 
 # --------------------------------------------------------------------------- #

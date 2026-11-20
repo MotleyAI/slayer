@@ -13,7 +13,7 @@ Run-by-name SHALL accept a refinement carrying any of `dimensions`, `time_dimens
 same fields of a query. The refinement SHALL merge into the saved query's final stage only — earlier
 stages are never changed — and the result SHALL be exactly the values, result keys, warnings and
 errors of that merged stage written by hand in place of the saved final stage. A refinement carrying
-`population`, `name`, `version`, `variables` or any unknown field SHALL be rejected. An empty
+`population`, `population_inferred`, `name`, `version`, `variables` or any unknown field SHALL be rejected. An empty
 refinement SHALL behave exactly like no refinement.
 
 Scenario data for this capability (executed on SQLite and DuckDB): table `orders(id, customer_id, region,
@@ -58,7 +58,7 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 - **THEN** the result equals the plain run by name, with the same SQL
 
 #### Scenario: Forbidden refinement fields
-- **WHEN** a refinement carries `population`, `name`, `version`, `variables`, or an unknown key
+- **WHEN** a refinement carries `population`, `population_inferred`, `name`, `version`, `variables`, or an unknown key
 - **THEN** it is rejected as invalid input before anything executes
 
 ### Requirement: Merge rules per field

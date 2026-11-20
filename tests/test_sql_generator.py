@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
@@ -6388,19 +6389,24 @@ DatasetField(name="total_policy_amount", expression="policy_amount", datatype=Da
             yield SlayerQueryEngine(storage=storage)
 
     async def test_rerooted_cte_includes_reachable_and_sibling_filters(self, generator: SQLGenerator, _datasets: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
-        """The re-rooted producer includes filters REACHABLE from the target root — the target-path filter (``policy_amount.premium.has_premium``) AND the host-sibling filter (``agreement_party_role``): the root's own provably to-one relationship reaches the sibling, so it inherits instead of dropping (the Q9 shape). Nothing warns."""
+        """The re-rooted producer includes filters REACHABLE from the target root — the target-path filter (``policy_amount.premium.has_premium``) AND the sibling filter spelled through the aggregation's own path (``policy.policy_amount.agreement_party_role``): the root's own provably to-one relationship reaches the sibling, so it inherits instead of dropping (the Q9 shape). Unspelled, the sibling has two to-one paths from the home and is refused. Nothing warns."""
         policy, policy_amount, premium, agreement_party_role = _datasets
-        async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
-            query = SlayerQuery(
+
+        def query(sibling: str) -> SlayerQuery:
+            return SlayerQuery(
                 population="policy",
                 metrics=[QueryMetric(metric="sum(policy.policy_amount.total_policy_amount)")],
                 dimensions=[QueryDimension(field="policy.policy_number")],
-                filter=[
-                    "agreement_party_role.party_role_code = 'PH'",
-                    "policy.policy_amount.premium.has_premium = '1'",
-                ],
+                filter=[f"{sibling}.party_role_code = 'PH'", "policy.policy_amount.premium.has_premium = '1'"],
             )
-            resp = await engine.execute(query, dry_run=True)
+
+        async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
+            unspelled = query("agreement_party_role")
+            with pytest.raises(UnresolvableDimensionRelationshipError) as err:
+                await engine.execute(unspelled, dry_run=True)
+            assert "policy_amount.agreement_party_role" in str(err.value)
+            assert "policy_amount.policy.agreement_party_role" in str(err.value)
+            resp = await engine.execute(query("policy.policy_amount.agreement_party_role"), dry_run=True)
             sql = resp.sql
             _assert_valid_sql(sql, dialect=generator.dialect)
             _assert_valid_sql(sql)
@@ -8079,7 +8085,8 @@ class TestIsolatedFilteredMeasureCTEs:
     async def test_no_dim_query_with_host_row_filter_applies_in_base(
         self, generator: SQLGenerator, claim_amount_dataset: SlayerDataset, related_datasets,
     ) -> None:
-        """A no-dimension query with cross-dataset aggregates AND a host-local ROW filter must apply the filter at the placeholder ``_base`` (via ``WHERE`` + ``LIMIT 1``). The round-2 fix that dropped the host ``FROM`` to avoid N-row CROSS JOIN duplication also bypassed ``_build_where_having_from_planned``, silently ignoring host-local ROW filters (Codex round 4 / CodeRabbit)."""
+        """A no-dimension query's host-local ROW filter restricts the aggregate's rows, never the one-row ``_base``
+        (Law 10)."""
         # Add a host field the filter references.
         claim_amount_dataset.fields.append(
             DatasetField(name="status", expression="status", datatype=DataType.STRING),
@@ -8094,37 +8101,30 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "'active'" in sql, (
             f"Host ROW filter literal silently dropped:\n{sql}"
         )
-        # The ``_base`` placeholder must carry the filter as WHERE plus LIMIT 1 (the 1-row cardinality preservation from round 2).
-        base_body = _extract_cte_body(sql, r"_base")
-        assert "'active'" in base_body, (
-            f"Host ROW filter must apply at _base WHERE:\n{base_body}"
-        )
-        assert "LIMIT 1" in base_body.upper(), (
-            f"_base must LIMIT 1 to preserve no-dim cardinality:\n{base_body}"
-        )
+        assert "'active'" in _extract_cte_body(sql, r"_cm_\w*"), sql
+        base_body = _extract_cte_body(sql, r"_base").upper()
+        assert "WHERE" not in base_body, base_body
+        assert "LIMIT" not in base_body, base_body
         _assert_valid_sql(sql)
 
     async def test_no_dim_host_filter_referencing_joined_column_pulls_join(
         self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
-        """A no-dimension query with a host ROW filter that references a JOINED field (``claim.claim_number = '...'``) must pull the join into the placeholder ``_base`` FROM clause — the WHERE otherwise references an undefined alias."""
+        """A no-dimension query's host ROW filter on a JOINED field (``claim.claim_number = '...'``) restricts the
+        aggregate's rows with its join; the one-row ``_base`` stays ungated (Law 10)."""
         query = SlayerQuery(
             population="claim_amount",
             metrics=[QueryMetric(metric="sum(claim_amount.loss_payment_amt)")],
             filter=["claim.claim_number = '12345'"],
         )
         sql = await self._sql(claim_amount_dataset, related_datasets, query)
-        base_body = _extract_cte_body(sql, r"_base")
-        # The Claim join MUST appear in _base alongside the filter.
-        assert "Claim" in base_body, (
-            f"_base must include Claim join for the WHERE alias:\n{base_body}"
-        )
-        # WHERE still applies + LIMIT 1 still preserves cardinality.
-        assert "claim.claim_number" in base_body, (
-            f"_base WHERE must reference the joined alias:\n{base_body}"
-        )
-        assert "12345" in base_body
-        assert "LIMIT 1" in base_body.upper()
+        producer = _extract_cte_body(sql, r"_cm_\w*")
+        assert "Claim" in producer, producer
+        assert "claim_number" in producer, producer
+        assert "12345" in producer, producer
+        base_body = _extract_cte_body(sql, r"_base").upper()
+        assert "WHERE" not in base_body, base_body
+        assert "LIMIT" not in base_body, base_body
         _assert_valid_sql(sql)
 
     async def test_first_last_with_host_filter_not_reapplied_outside_ranked_subquery(

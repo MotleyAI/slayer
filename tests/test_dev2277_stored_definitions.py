@@ -73,9 +73,9 @@ CUSTOMER_METRICS = [
 ORDER_AGGREGATIONS = [_agg("w_bare", "amount"), _agg("w_quoted", '"amount"'), _agg("w_relationship", "customers.weight")]
 
 
-def definition_datasets(*, customer_filters: tuple[str, ...] = ()) -> list[SlayerDataset]:
+def definition_datasets(*, customer_filters: tuple[str, ...] = (), orders_managers: bool = True) -> list[SlayerDataset]:
     customers = customers_dataset(fields=CUSTOMER_FIELDS, metrics=CUSTOMER_METRICS, filters=list(customer_filters))
-    orders = orders_dataset(managers=True, aggregations=ORDER_AGGREGATIONS)
+    orders = orders_dataset(managers=orders_managers, aggregations=ORDER_AGGREGATIONS)
     return [*seed_datasets(managers=True, customers=customers, orders=orders), events_dataset()]
 
 
@@ -122,17 +122,21 @@ async def run_clean(engine: SlayerQueryEngine, body: dict[str, Any]) -> SlayerRe
 # --------------------------------------------------------------------------- #
 # The spec scenario
 # --------------------------------------------------------------------------- #
-async def test_stored_definitions_stay_dataset_local(engine: SlayerQueryEngine) -> None:
-    resp = await run_clean(engine, {
-        "population": "orders",
-        "dimensions": ["orders.order_id", "customers.region_label"],
-        "metrics": [{"metric": "customers.aov", "alias": "aov"}],
-    })
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_stored_definitions_stay_dataset_local(backend: str) -> None:
+    # One route from the ``customers`` home to ``orders``: no direct ``orders → managers`` edge.
+    async with definitions_engine(backend, datasets=definition_datasets(orders_managers=False)) as engine:
+        resp = await run_clean(engine, {
+            "population": "orders",
+            "dimensions": ["orders.order_id", "customers.region_label"],
+            "metrics": [{"metric": "customers.aov", "alias": "aov"}],
+        })
     assert {(r[column(resp, "order_id")], r[column(resp, "region_label")]) for r in resp.data} == {
         ("O1", "EAST"), ("O2", "EAST"), ("O3", "EAST"), ("O4", "WEST"),
     }
-    # aov per order row: the customer's orders' total over the customer's own row count (1).
-    assert values(resp, "order_id", "aov") == {"O1": 300.0, "O2": 300.0, "O3": 50.0, "O4": 300.0}
+    # aov per order row: the order's own amount (its home reads ``orders.order_id`` as itself) over the customer's own
+    # row count (1).
+    assert values(resp, "order_id", "aov") == {"O1": 100.0, "O2": 200.0, "O3": 50.0, "O4": 300.0}
 
 
 # --------------------------------------------------------------------------- #

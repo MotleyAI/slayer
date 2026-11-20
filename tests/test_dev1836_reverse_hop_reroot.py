@@ -16,6 +16,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -138,16 +139,23 @@ class TestTimeTruncGrainReroots:
 
 class TestSiblingFilterBindsTheHostInstance:
     async def test_via_host_instance_wins_over_the_roots_own_join(self, engine) -> None:
-        """``party.code`` in host coordinates is the HOST's party relationship
-        (policy.party_a). The producer must inherit that instance via the
-        reverse hop — not the root's own ``party_b`` relationship, which selects the
-        opposite rows here."""
-        resp = await engine.execute(SlayerQuery(
-            population="policy",
-            dimensions=[QueryDimension(field="policy.policy_number")],
-            metrics=[CM],
-            filter=["party.code = 'X'"],
-        ))
+        """From the home ``policy_amount``, ``party`` has two to-one paths (its own ``party_b``, ``policy → party_a``):
+        ``party.code`` is refused as ambiguous. Spelled from the aggregation's own anchor, ``policy.party.code`` reads
+        back along the written path, so the producer inherits the host's ``party_a`` instance."""
+        def query(condition: str) -> SlayerQuery:
+            return SlayerQuery(
+                population="policy",
+                dimensions=[QueryDimension(field="policy.policy_number")],
+                metrics=[CM],
+                filter=[condition],
+            )
+
+        unspelled = query("party.code = 'X'")
+        with pytest.raises(UnresolvableDimensionRelationshipError) as err:
+            await engine.execute(unspelled)
+        assert "policy_amount.party" in str(err.value)
+        assert "policy_amount.policy.party" in str(err.value)
+        resp = await engine.execute(query("policy.party.code = 'X'"))
         rows = {r["policy.policy_number"]: r for r in resp.data}
         assert set(rows) == {"POL-1"}, rows
         assert rows["POL-1"]["cm"] == pytest.approx(300.0), (

@@ -48,6 +48,8 @@ __all__ = [
     "PickedParam",
     "PlainProducerKernel",
     "PlannedQuery",
+    "PlannedRowBranch",
+    "PlannedRowSupply",
     "ProducerKernel",
     "RankedGrainMember",
     "RankedProducerKernel",
@@ -469,7 +471,15 @@ class PlannedQuery(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    @property
+    def stage_field_relation(self) -> str:
+        """The relation this stage's field names drop from its result keys."""
+        return self.field_relation if self.field_relation is not None else self.source_relation
+
     source_relation: str
+    #: The relation a stage's field names drop from its result keys: its dimension anchor in an inferred stage
+    #: (``""``: none, for the unit or a product), else ``source_relation``.
+    field_relation: Optional[str] = None
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     regroup_attach_plans: List["RegroupAttachPlan"] = Field(default_factory=list)
@@ -511,6 +521,8 @@ class PlannedQuery(BaseModel):
     spine: Optional[SpineFactor] = None
     # This stage's own resolved ``to_many_handling``.
     mode_policy: ModePolicy = ModePolicy()
+    # An inferred stage's rows when several sources supply them: the union of the branches' cells.
+    row_supply: Optional["PlannedRowSupply"] = None
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
@@ -727,9 +739,23 @@ def _validate_stage_order(pq: "PlannedQuery") -> None:
         _validate_stage_order(attach.producer_plan)
 
 
+class PlannedRowBranch(BaseModel):
+    """A row source's cells (a dimension-only plan), kept where they agree with each ``restrict`` plan's cells."""
+
+    cells: PlannedQuery
+    restrict: List[PlannedQuery] = Field(default_factory=list)
+
+
+class PlannedRowSupply(BaseModel):
+    """The rows of an inferred stage: the null-safe union of its branches' cells (semantics 12.4)."""
+
+    branches: List[PlannedRowBranch]
+
+
 # ``producer_plan`` forward-references ``PlannedQuery``.
 RegroupAttachPlan.model_rebuild()
 TrailingWindowProducerKernel.model_rebuild()
+PlannedQuery.model_rebuild()
 
 
 def regroup_producer_identity(attach: RegroupAttachPlan) -> Hashable:

@@ -2476,6 +2476,38 @@ def _is_path_head(text: str, *, start: int, end: int) -> bool:
     return bool(segment) and (segment[0] in '"*' or _RUN_RE.match(segment) is not None)
 
 
+_PLACEHOLDER_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _is_bare_ref(text: str, *, start: int, end: int) -> bool:
+    """The word ``text[start:end]`` stands alone: no word or ``.`` before it, no ``.`` or call after it."""
+    before = text[:start].rstrip()
+    after = text[end:].lstrip()
+    return not ((start and _RUN_CHAR_RE.match(text[start - 1])) or before.endswith(".") or after.startswith((".", "(")))
+
+
+def respell_bare_names(text: str, *, respell: Callable[[str], Optional[str]]) -> str:
+    """``text`` with each unquoted bare reference ``respell`` maps to new text replaced, every other byte kept;
+    text that does not parse is returned unchanged."""
+    try:
+        parsed = parse_template(text)
+    except Exception:  # noqa: BLE001 — unparseable text is left for binding to report
+        return text
+    names = {n.name for n in walk_parsed(parsed) if isinstance(n, Ref)}
+    out: List[str] = []
+    last = 0
+    for region in (r for r in _regions(text) if r.kind == "code") if names else ():
+        placeholders = [m.span() for m in _PLACEHOLDER_RE.finditer(text, region.start, region.end)]
+        for word in _RUN_RE.finditer(text, region.start, region.end):
+            new = respell(word.group()) if word.group() in names else None
+            inside = any(a <= word.start() < b for a, b in placeholders)
+            if new is None or inside or not _is_bare_ref(text, start=word.start(), end=word.end()):
+                continue
+            out += [text[last:word.start()], new]
+            last = word.end()
+    return "".join([*out, text[last:]])
+
+
 def respell_path_heads(text: str, *, respell: Callable[[str], Optional[str]]) -> str:
     """``text`` with each unquoted dotted-path head ``respell`` maps to a new spelling replaced, every other byte kept;
     text that does not parse is returned unchanged."""

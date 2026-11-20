@@ -9065,14 +9065,6 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 39,
-                    "endColumn": 66,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 39,
                     "endColumn": 72,
                     "lineCount": 1
                 }

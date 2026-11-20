@@ -128,7 +128,7 @@ class TestUnprovenHopAssociatesByDefault:
     async def test_rootless_returns_ossies_numbers(self, dialect, mode) -> None:
         async with ossie_engine(dialect) as engine:
             resp = await engine.execute(query(dimensions=["customers.region"], metrics=REV_ROOTLESS, **mode))
-        assert cells(resp, "region", "rev") == AMOUNT_BY_REGION
+        assert cells(resp, "region", "rev") == AMOUNT_BY_REGION_ROOTED
         assert kinds(resp, "associated")
         assert not kinds(resp, "broadcast")
 
