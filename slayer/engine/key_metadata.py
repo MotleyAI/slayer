@@ -13,6 +13,7 @@ from types import MappingProxyType
 from typing import Callable, Generator, Mapping, Optional, Tuple
 
 from slayer.core.enums import DataType
+from slayer.core.errors import SlayerError
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
     AggregateKey,
@@ -52,6 +53,7 @@ from slayer.core.scope import DatasetScope
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.sql.dialects.reflection import is_exact_numeric_db_type
 from slayer.sql.template_type import TemplateBinding, TypedFragment, template_result_type
+from slayer.engine.param_binding import bind_aggregation_params
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
@@ -200,14 +202,24 @@ class SlotTyping:
 
 
 def field_aggregate_type(*, dataset: SlayerDataset, field_name: str, aggregation: str) -> Optional[DataType]:
-    """The type of ``aggregation`` over ``dataset``'s field ``field_name`` (``"*"``: its rows), dialect-neutral."""
+    """The type of ``aggregation`` over ``dataset``'s field ``field_name`` (``"*"``: its rows), dialect-neutral;
+    ``None`` when a parameter default does not bind within ``dataset`` alone (it reads a related dataset)."""
     source = StarKey() if field_name == "*" else FieldKey(leaf=field_name)
-    key = AggregateKey(
-        source=source, agg=aggregation,
-        builtin=builtin_semantics(aggregation_definition(owner=dataset, agg=aggregation)),
-    )
     bundle = ResolvedSourceBundle(dialect="", population=dataset)
+    builtin = builtin_semantics(aggregation_definition(owner=dataset, agg=aggregation))
+    kwargs: tuple = ()
+    if not builtin:  # a built-in's type is its class's, whatever its parameters
+        try:
+            kwargs = bind_aggregation_params(
+                agg=aggregation, source=source, kwargs=(), bundle=bundle, bind_quoted=_no_quoted)
+        except SlayerError:
+            return None
+    key = AggregateKey(source=source, agg=aggregation, kwargs=kwargs, builtin=builtin)
     return SlotTyping(scope=DatasetScope(population=dataset), bundle=bundle).value_type(key)
+
+
+def _no_quoted(text: str) -> object:
+    raise AssertionError(f"no query-side argument to bind: {text!r}")
 
 
 def _local_aggregate_source_name(key: ValueKey) -> Optional[str]:

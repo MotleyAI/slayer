@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
-from slayer.core.models import Aggregation, DatasetField, SlayerDataset
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 from slayer.facade.catalog import build_local_view
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -218,6 +218,20 @@ class TestFacadeAgreement:
         assert _assert_facade_agrees(model, aggs) > 0
         _, metrics = build_local_view(model)
         assert {mt.name: mt.data_type for mt in metrics}["flag_wsum"] is INT
+
+    def test_an_overriding_formulas_parameter_default_enters_the_inference(self) -> None:
+        weighted = Aggregation(name="sum", expression="SUM({value} * {weight})",
+                               params=[AggregationParam(name="weight", sql="price")])
+        model = _facts(weighted)
+        assert _assert_facade_agrees(model, {"sum"}) > 0
+        _, metrics = build_local_view(model)
+        assert {mt.name: mt.data_type for mt in metrics}["qty_sum"] is DOUBLE
+
+    def test_a_default_reading_a_related_dataset_leaves_the_type_unknown(self) -> None:
+        weighted = Aggregation(name="sum", expression="SUM({value} * {weight})",
+                               params=[AggregationParam(name="weight", sql="customers.weight")])
+        _, metrics = build_local_view(_facts(weighted))
+        assert {mt.name: mt.data_type for mt in metrics}["qty_sum"] is None
 
 
 # --------------------------------------------------------------------------- #
