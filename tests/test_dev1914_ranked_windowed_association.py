@@ -6,6 +6,7 @@ Executed on SQLite and DuckDB."""
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,6 +38,7 @@ from tests._dev1914_fixtures import (
     by_month,
     by_status,
     by_status_month,
+    dev1900_datasets,
     make_exec_engine,
     make_ranked_fanout_engine,
     make_same_row_engine,
@@ -76,6 +78,27 @@ async def same_row_engine(request):
 async def fanout(request):
     dialect, keyed = request.param
     async for e in make_ranked_fanout_engine(dialect=dialect, keyed=keyed):
+        yield e
+
+
+#: last(customers.spend) by signup per (status, order month) over the customers with such an order.
+IMPLICIT_LAST_BY_STATUS_ORDER_MONTH = {
+    ("ok", "2024-01"): 100.0, ("new", "2024-01"): 100.0, ("ok", "2024-02"): 150.0, ("new", "2024-02"): 150.0,
+    ("ok", "2024-03"): 60.0, ("new", "2024-03"): 40.0, ("ok", "2024-04"): 30.0,
+}
+
+
+def signup_default_datasets():
+    datasets = dev1900_datasets()
+    for ds in datasets:
+        if ds.name == "customers":
+            ds.default_time_dimension = "signup_at"
+    return datasets
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def signup_default_engine(request):
+    async for e in make_exec_engine(SimpleNamespace(param=request.param), datasets=signup_default_datasets()):
         yield e
 
 
@@ -130,6 +153,15 @@ class TestRankedAssociation:
         resp = await engine.execute(query(mode, population="orders", dimensions=["orders.status"], metrics=[nested]))
         assert by_status(resp, "sl") == REAGG_LAST_BY_STATUS
         assert not broadcast_warnings(resp)
+
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_implicit_key_never_ranks_by_an_association_dimension(self, signup_default_engine, mode) -> None:
+        """The fanning order month associates; the implicit key is the home's default (signup), never that month."""
+        resp = await signup_default_engine.execute(query(
+            mode, population="orders", dimensions=["orders.status"], time_dimensions=ORDERED_MONTH,
+            metrics=[metric("last(customers.spend)", "l")]))
+        got = by_status_month(resp, "l", td="orders.ordered_at")
+        assert {k: v for k, v in got.items() if k[1] is not None} == IMPLICIT_LAST_BY_STATUS_ORDER_MONTH
 
     async def test_ranked_reaggregation_inner_outside_association(self, engine) -> None:
         nested = metric("sum(last(customers.spend, customers.signup_at))", "sl")

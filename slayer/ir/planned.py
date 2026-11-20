@@ -44,6 +44,7 @@ __all__ = [
     "MaskEntry",
     "MaskTyping",
     "OrderEntry",
+    "EntityDedup",
     "PickedParam",
     "PlainProducerKernel",
     "PlannedQuery",
@@ -314,6 +315,17 @@ class PlainProducerKernel(BaseModel):
     kind: Literal["plain"] = "plain"
 
 
+class EntityDedup(BaseModel):
+    """Association's level 1 under a ranked / windowed reducer: one row per (cell, entity) picking each input once."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: The root's identity keys in the producer's coordinates; empty with ``list_rows``.
+    entity_keys: List[ValueKey] = Field(default_factory=list)
+    #: Every associated dimension is a list child of the root: the root row is the entity.
+    list_rows: bool = False
+
+
 class RankedProducerKernel(BaseModel):
     """A ``first``/``last`` producer: one row per grain group, picked by ranking."""
 
@@ -322,6 +334,8 @@ class RankedProducerKernel(BaseModel):
     kind: Literal["ranked"] = "ranked"
     agg: Literal["first", "last"]
     ranking_time_key: ValueKey
+    #: Set when associating: the ranking runs over the deduplicated entity rows.
+    association: Optional[EntityDedup] = None
 
 
 class PickedParam(BaseModel):
@@ -359,6 +373,8 @@ class TrailingWindowProducerKernel(BaseModel):
     endpoints: Optional["PlannedQuery"] = None
     #: The producer's grain keys in ``endpoints``' column order.
     endpoint_keys: List[ValueKey] = Field(default_factory=list)
+    #: Set when associating: each frame's rows dedup per (bucket, cell, entity) before the reducer.
+    association: Optional[EntityDedup] = None
 
 
 class AssociationProducerKernel(BaseModel):
@@ -415,8 +431,6 @@ class RegroupAttachPlan(BaseModel):
     producer_root_dataset: Optional[str] = None
     broadcast_metric: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
-    # Why the default mode broadcast instead of associating; ``None`` for a requested broadcast.
-    association_unsupported: Optional[str] = None
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).

@@ -69,14 +69,17 @@ from slayer.sql.field_expansion import (
 )
 from slayer.ir.planned import (
     AssociationProducerKernel,
+    EntityDedup,
     MaskTyping,
     PlannedQuery,
     RankedGrainMember,
+    RankedProducerKernel,
     RegroupAttachPlan,
     SemiJoinFilter,
     SemiJoinHop,
     SpineFactor,
     StageKind,
+    TrailingWindowProducerKernel,
     ValueSlot,
     emitted_plans,
     is_spliced,
@@ -128,6 +131,9 @@ from slayer.sql.render.order_terms import (
     resolve_order_term,
 )
 from slayer.sql.render.ranked import (
+    RANK_KEY_FIELD,
+    RANK_PASS_FIELD,
+    RANK_VALUE_FIELD,
     RANKED_SOURCE_ALIAS,
     RankedGrainProjection,
     build_rank_field,
@@ -2357,8 +2363,9 @@ class SQLGenerator:
         base_relation: Optional[Expression] = None,
         regroup_env: Optional[Dict[Any, Expression]] = None,
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
+        association: Optional[EntityDedup] = None,
     ) -> Tuple[exp.Select, List[str]]:
-        """Render one duration-windowed-metric CTE."""
+        """Render one duration-windowed-metric CTE; associating, each frame counts an entity once."""
 
         key = agg_slot.key
         assert isinstance(key, AggregateKey)
@@ -2490,6 +2497,11 @@ class SQLGenerator:
                 root_relation=source_relation, bundle=bundle, scope=src_scope,
                 cast_derived=False,
             ).as_("_w_rank"))
+        n_entity_keys = 0 if association is None else len(association.entity_keys)
+        for i, ekey in enumerate(association.entity_keys if association is not None else []):
+            src_cols.append(render_value_key(
+                key=ekey, ctx=RenderContext(scope=src_scope, dialect=self._dialect),
+            ).as_(f"_w_ek{i}"))
 
         # _src inherits row filters minus their frame bounds; one effective list feeds both relationship-path discovery
         # and rendering so they can't disagree.
@@ -2514,6 +2526,7 @@ class SQLGenerator:
         from_expr, src_joins = self._build_from_and_joins(
             source_dataset=source_dataset, source_relation=source_relation,
             joined_paths=src_scope.join_paths.as_list(), bundle=bundle,
+            distinct_lists=association is not None and association.list_rows,
         )
         src_select = exp.Select().select(*src_cols).from_(from_expr)
         src_select = _apply_joins(select=src_select, joins=src_joins)
@@ -2569,6 +2582,29 @@ class SQLGenerator:
             base_relation if base_relation is not None
             else exp.Table(this=exp.to_identifier("_base"))
         )
+        value_type = aggregation_source_type(key.source, field_type=src_scope.field_type)
+        # Association's level 1: one framed row per (bucket, cell, entity); the reducer runs over those.
+        entity_rows = None if association is None else self._window_entity_rows(
+            framed=exp.Select().from_(base_from).join(src_subq, on=on_range, join_type="LEFT"),
+            grain_aliases=grain_aliases, grain_keys=grain_keys,
+            n_entity_keys=n_entity_keys, list_rows=association.list_rows,
+            picked=[
+                ("_w_value", value_type),
+                *((f"_w_p{i}", picked_kwarg_exprs[pp.name].input_type) for i, pp in enumerate(plan.picked_params)),
+                *([("_w_rank", None)] if plan.ranking_time_key is not None else []),
+                ("_w_time", time_type),
+            ],
+        )
+
+        def _framed(select: exp.Select) -> exp.Select:
+            if entity_rows is None:
+                return select.from_(base_from).join(src_subq, on=on_range, join_type="LEFT")
+            return select.from_(entity_rows.copy())
+
+        def grain_col(alias: str) -> exp.Column:
+            return _base_col(alias) if entity_rows is None else exp.Column(
+                this=exp.to_identifier(alias, quoted=True), table=exp.to_identifier("_src"),
+            )
 
         # first/last: rank the range-joined interval rows and pick rank 1 per bucket
         # through the one ranked shape — the LEFT JOIN's NULL row of an empty
@@ -2577,11 +2613,11 @@ class SQLGenerator:
             rank_inner = exp.Select()
             for ga in grain_aliases:
                 rank_inner = rank_inner.select(
-                    _base_col(ga).as_(exp.to_identifier(ga, quoted=True)))
+                    grain_col(ga).as_(exp.to_identifier(ga, quoted=True)))
             rank_inner = rank_inner.select(_src_col("_w_value").as_("_w_value"))
             rank_inner = rank_inner.select(build_rank_key(_src_col("_w_rank")))
             rank_inner = rank_inner.select(build_rank_field(
-                partition_by=[_base_col(ga) for ga in grain_aliases],
+                partition_by=[grain_col(ga) for ga in grain_aliases],
                 ranking_time=ranked_ordered(
                     ranking_time=_src_col("_w_rank"), agg=plan.agg,
                     native_nulls_first=self._dialect.native_nulls_first(
@@ -2589,15 +2625,14 @@ class SQLGenerator:
                     ),
                 ),
             ))
-            rank_inner = rank_inner.from_(base_from).join(
-                src_subq, on=on_range, join_type="LEFT")
+            rank_inner = _framed(rank_inner)
             pick = _wrap_cast_for_type(
                 dialect=self._dialect, expr=build_ranked_pick(
                     value_ref=exp.Column(
                         this=exp.to_identifier("_w_value"),
                         table=exp.to_identifier(RANKED_SOURCE_ALIAS),
                     ),
-                    input_type=aggregation_source_type(key.source, field_type=src_scope.field_type),
+                    input_type=value_type,
                     dialect=self._dialect,
                 ),
                 dt=_ranked_value_cast_type(self._slot_cast_type(agg_slot)),
@@ -2633,7 +2668,7 @@ class SQLGenerator:
             agg_kwargs=self._agg_param_exprs(
                 key=key, expression=expression, resolved=picked_kwarg_exprs, scope=src_scope,
             ),
-            input_type=aggregation_source_type(key.source, field_type=src_scope.field_type),
+            input_type=value_type,
         )
         agg_expr, _ = self._build_agg(level2_spec)
         if definition is not None and definition.expression is not None:
@@ -2648,17 +2683,42 @@ class SQLGenerator:
 
         outer = exp.Select()
         for ga in grain_aliases:
-            shown = self._grouped_display(_base_col(ga), key=grain_keys.get(ga))
+            shown = self._grouped_display(grain_col(ga), key=grain_keys.get(ga))
             outer = outer.select(shown.as_(exp.to_identifier(ga, quoted=True)) if isinstance(shown, exp.AnyValue)
                                  else shown)
         outer = outer.select(agg_expr.as_(exp.to_identifier(full_agg_alias, quoted=True)))
-        outer = outer.from_(base_from)
-        outer = outer.join(src_subq, on=on_range, join_type="LEFT")
+        outer = _framed(outer)
         for ga in grain_aliases:
-            outer = outer.group_by(self._grain_key(_base_col(ga), key=grain_keys.get(ga)))
+            outer = outer.group_by(self._grain_key(grain_col(ga), key=grain_keys.get(ga)))
 
         # Return AST: rendering here and re-parsing later would re-introduce the dotted-alias corruption on BigQuery.
         return outer, grain_aliases
+
+    def _window_entity_rows(
+        self, *, framed: exp.Select, grain_aliases: Sequence[str], grain_keys: Mapping[str, Any],
+        n_entity_keys: int, list_rows: bool, picked: Sequence[Tuple[str, Optional[DataType]]],
+    ) -> exp.Subquery:
+        """The range-joined rows as ``_src``, one per (bucket, cell, entity), each ``picked`` column read once; an
+        empty frame's NULL row stays one entity-less row. List rows are already one per root row."""
+        def base(alias: str) -> exp.Column:
+            return exp.Column(this=exp.to_identifier(alias, quoted=True), table=exp.to_identifier("_base"))
+
+        def src(name: str) -> exp.Column:
+            return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier("_src"))
+
+        select = framed
+        for ga in grain_aliases:
+            shown = base(ga) if list_rows else self._grouped_display(base(ga), key=grain_keys.get(ga))
+            select = select.select(shown.as_(exp.to_identifier(ga, quoted=True)))
+        for name, input_type in picked:
+            value = src(name) if list_rows else self._pick_once(src(name), input_type=input_type)
+            select = select.select(value.as_(exp.to_identifier(name)))
+        if not list_rows:
+            for ga in grain_aliases:
+                select = select.group_by(self._grain_key(base(ga), key=grain_keys.get(ga)))
+            for i in range(n_entity_keys):
+                select = select.group_by(src(f"_w_ek{i}"))
+        return exp.Subquery(this=select, alias=exp.TableAlias(this=exp.to_identifier("_src")))
 
     def _ranked_scope_expr(
         self,
@@ -2793,8 +2853,9 @@ class SQLGenerator:
         full_agg_alias: str,
         regroup_env: Optional[Dict[Any, Expression]] = None,
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
+        association: Optional[EntityDedup] = None,
     ) -> Tuple[exp.Select, List[str]]:
-        """Render one ranked (``first`` / ``last``) CTE."""
+        """Render one ranked (``first`` / ``last``) CTE; associating, it ranks the deduplicated entity rows."""
 
         key = agg_slot.key
         if not isinstance(key, AggregateKey):
@@ -2886,26 +2947,37 @@ class SQLGenerator:
         regroup_attach_conditions = self._resolve_regroup_attach_conditions(
             regroup_join_specs=regroup_join_specs, scope=ranked_scope,
         )
+        dedup = association is not None and not association.list_rows
+        entity_exprs = [
+            render_value_key(key=ek, ctx=RenderContext(scope=ranked_scope, dialect=self._dialect))
+            for ek in (association.entity_keys if dedup and association is not None else [])
+        ]
+        entity_refs = [ranked_scope.materialize_for(e, consumer=cte_scope) for e in entity_exprs]
 
         from_expr, joins = self._build_from_and_joins(
             source_dataset=root_dataset, source_relation=root_relation,
             joined_paths=ranked_scope.join_paths.as_list(), bundle=bundle,
+            distinct_lists=association is not None and association.list_rows,
         )
         inner = exp.Select()
         # A named projection list, never <relation>.*: the projection boundary keeps the rank column's name private.
         ranked_scope.apply_materializations(inner)
         inner = inner.select(build_rank_key(ranking_time))
-        inner = inner.select(build_rank_field(
-            partition_by=partition_by,
-            ranking_time=ranked_ordered(
-                ranking_time=ranking_time,
-                agg=plan.agg,
-                native_nulls_first=self._dialect.native_nulls_first(
-                    descending=plan.agg == "last",
+        if dedup:
+            if passing_first:
+                inner = inner.select(passing_first[0].this.copy().as_(RANK_PASS_FIELD))
+        else:
+            inner = inner.select(build_rank_field(
+                partition_by=partition_by,
+                ranking_time=ranked_ordered(
+                    ranking_time=ranking_time,
+                    agg=plan.agg,
+                    native_nulls_first=self._dialect.native_nulls_first(
+                        descending=plan.agg == "last",
+                    ),
                 ),
-            ),
-            leading=passing_first,
-        ))
+                leading=passing_first,
+            ))
         inner = inner.from_(from_expr)
         inner = _apply_joins(select=inner, joins=joins)
         for _cte_name, _condition in regroup_attach_conditions:
@@ -2921,19 +2993,60 @@ class SQLGenerator:
             inner = inner.where(
                 exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
             )
+        value_type = aggregation_source_type(local_key.source, field_type=ranked_scope.field_type)
+        if dedup:
+            for e in entity_exprs:
+                inner = inner.where(exp.Not(this=exp.Is(this=e.copy(), expression=exp.Null())))
+            inner, value_ref = self._ranked_entity_rows(
+                inner=inner, plan=plan, grain=grain, entity_refs=entity_refs, value_ref=value_ref,
+                value_type=value_type, passing=bool(passing_first),
+            )
 
         # A first/last value is the raw picked column, so its temporal type needs no CAST (SQLite would give numeric
         # affinity, truncating a date to its year).
         pick = _wrap_cast_for_type(
             dialect=self._dialect, expr=build_ranked_pick(
-                value_ref=value_ref, dialect=self._dialect,
-                input_type=aggregation_source_type(local_key.source, field_type=ranked_scope.field_type),
+                value_ref=value_ref, dialect=self._dialect, input_type=value_type,
             ),
             dt=_ranked_value_cast_type(self._slot_cast_type(agg_slot)),
         )
         return build_ranked_cte_select(
             inner=inner, grain=grain, pick=pick, agg_alias=full_agg_alias,
         )
+
+    def _ranked_entity_rows(
+        self, *, inner: exp.Select, plan, grain: Sequence[RankedGrainProjection], entity_refs: Sequence[Expression],
+        value_ref: Expression, value_type: Optional[DataType], passing: bool,
+    ) -> Tuple[exp.Select, Expression]:
+        """Association's level 1 under ``first``/``last``: one row per (cell, entity) picking its value, ranking key
+        and FILTER pass once, then ranked per cell; returns the ranked select and its value column."""
+        ent = exp.to_identifier("_ranked_ent")
+        members: Dict[str, Any] = {}
+        for g, member in zip(grain, plan.grain):
+            members.setdefault(g.inner_ref.name, member.ranked_key)
+        cols = [self._grouped_display(exp.column(n), key=k).as_(n) for n, k in members.items()]
+        cols.append(self._pick_once(value_ref.copy(), input_type=value_type).as_(RANK_VALUE_FIELD))
+        cols.append(exp.Max(this=exp.column(RANK_KEY_FIELD)).as_(RANK_KEY_FIELD))
+        if passing:
+            cols.append(exp.Min(this=exp.column(RANK_PASS_FIELD)).as_(RANK_PASS_FIELD))
+        deduped = exp.Select().select(*cols).from_(exp.Subquery(this=inner, alias=exp.TableAlias(this=ent)))
+        for n, k in members.items():
+            deduped = deduped.group_by(self._grain_key(exp.column(n), key=k))
+        for ref in entity_refs:
+            deduped = deduped.group_by(ref.copy())
+        rank_key = exp.column(RANK_KEY_FIELD)
+        ranked = exp.Select().select(
+            *(exp.column(n) for n in members), exp.column(RANK_VALUE_FIELD), rank_key.copy(),
+            build_rank_field(
+                partition_by=[self._grain_key(exp.column(n), key=k) for n, k in members.items()],
+                ranking_time=ranked_ordered(
+                    ranking_time=rank_key, agg=plan.agg,
+                    native_nulls_first=self._dialect.native_nulls_first(descending=plan.agg == "last"),
+                ),
+                leading=[exp.Ordered(this=exp.column(RANK_PASS_FIELD))] if passing else (),
+            ),
+        ).from_(exp.Subquery(this=deduped, alias=exp.TableAlias(this=ent.copy())))
+        return ranked, exp.column(RANK_VALUE_FIELD)
 
     def _ranked_cte_where(
         self,
@@ -3013,6 +3126,7 @@ class SQLGenerator:
                     slot=agg_slot, source_relation=source_relation, alias_index={},
                 ),
                 regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
+                association=kernel.association,
             )
         else:
             plan = _windowed_emission_from_kernel(
@@ -3051,6 +3165,7 @@ class SQLGenerator:
                 ),
                 base_relation=base_subq,
                 regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
+                association=kernel.association,
             )
 
         if regroup_ctes:
@@ -3953,10 +4068,14 @@ class SQLGenerator:
                 f"absent from the bundle's referenced datasets."
             )
         kernel = getattr(attach, "kernel", None)
-        if not isinstance(kernel, AssociationProducerKernel):
+        if isinstance(kernel, AssociationProducerKernel):
+            entity_keys = kernel.entity_keys
+        elif isinstance(kernel, (RankedProducerKernel, TrailingWindowProducerKernel)) and kernel.association:
+            entity_keys = kernel.association.entity_keys
+        else:
             return bundle.rerooted(root)
         root, numbered = identified_datasets(
-            root=root, entity_keys=kernel.entity_keys, datasets_by_name=bundle.datasets_by_name,
+            root=root, entity_keys=entity_keys, datasets_by_name=bundle.datasets_by_name,
         )
         return bundle.rerooted(root, replacing=numbered)
 

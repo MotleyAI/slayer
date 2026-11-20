@@ -28,8 +28,20 @@ class TestCrossModelPartitionedStillGuarded:
     crosses a relationship path."""
 
     async def test_cross_model_window_plus_partition(self) -> None:
-        # Fails closed with a precise attributability error (the active
-        # time dimension is a host field, unreachable from customers).
+        # Outside association it fails closed with a precise attributability error
+        # (the active time dimension is a host field, fanning from customers).
+        query = q(
+            dimensions=["customers.tier"], time_dimensions=month_td(),
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='1y', partition_by=customers.tier)",
+                alias="w",
+            )],
+            to_many_handling="error",
+        )
+        with pytest.raises(ValueError, match=r"attributable from"):
+            await gen(query)
+
+    async def test_cross_model_window_plus_partition_associates(self) -> None:
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             metrics=[QueryMetric(
@@ -37,8 +49,7 @@ class TestCrossModelPartitionedStillGuarded:
                 alias="w",
             )],
         )
-        with pytest.raises(ValueError, match=r"attributable from"):
-            await gen(query)
+        assert await gen(query)
 
     async def test_cross_model_first_last_plus_partition(self) -> None:
         query = q(

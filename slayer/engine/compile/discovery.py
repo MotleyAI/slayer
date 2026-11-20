@@ -117,12 +117,12 @@ class _Walker:
             self.out.append(d)
 
     def local_broadcasts(self, k: ValueKey) -> bool:
-        """A plain local aggregate grouped by a dimension unattributable from the host."""
+        """A local aggregate (plain, ranked or windowed) grouped by a dimension unattributable from the host."""
         host = self.host
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
             or self.homes.target_rooted(k) or k.locus == "host" or k.partition_keys is not None
-            or self.crossing(k) or is_kernel_requiring(k)
+            or self.crossing(k)
         ):
             return False
         # The population's spine is counted over each home's own axis, never the product.
@@ -191,10 +191,10 @@ class _Walker:
                 self.emit(k, "combined", "local_producer", names=names)
             else:
                 self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
-        if _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
-            self.emit(k, "combined", "local_producer", names=names)
-        elif self.local_broadcasts(k):
+        if self.local_broadcasts(k):
             self.emit(k, "combined", "target_rooted", names=names)
+        elif _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
+            self.emit(k, "combined", "local_producer", names=names)
 
     def inline_row_attach_roots(self) -> None:
         """Emit each row-attach root no producer disposition routes, with its inputs."""

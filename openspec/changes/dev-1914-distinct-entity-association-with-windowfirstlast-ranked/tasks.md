@@ -20,22 +20,22 @@
 
 ## 2. Mode gate and routing (engine)
 
-- [ ] 2.1 In `slayer/engine/compile/stages.py`, replace the exclusive `_kernel_decision` with reducer × associate (design decision 5). Route local windowed and ranked roots with an unattributable grain member to the home-rooted synthesis, leaving the local host regroup only attributable grains. Verify: the local-mode-axis tests from 1.1 pass, and the local windowed double-count is gone.
-- [ ] 2.2 Resolve the active window axis before the grain-mode decision (design decision 9): association arm under default/`associate`; `TimeAxisError` with the association remedy under `broadcast`/`error`, in `slayer/engine/elaborate_env.py::check_windowed_time_axis_attributable` and both call sites. Verify: the 1.5 tests pass.
-- [ ] 2.3 Delete `check_association_windowed_ranked` and its call site. Verify: the raise-ledger test passes with its row removed.
+- [x] 2.1 In `slayer/engine/compile/stages.py`, replace the exclusive `_kernel_decision` with reducer × associate (design decision 5). Route local windowed and ranked roots with an unattributable grain member to the home-rooted synthesis, leaving the local host regroup only attributable grains. Verify: the local-mode-axis tests from 1.1 pass, and the local windowed double-count is gone.
+- [x] 2.2 Resolve the active window axis before the grain-mode decision (design decision 9): association arm under default/`associate`; `TimeAxisError` with the association remedy under `broadcast`/`error`, in `slayer/engine/elaborate_env.py::check_windowed_time_axis_attributable` and both call sites. Verify: the 1.5 tests pass.
+- [x] 2.3 Delete `check_association_windowed_ranked` and its call site. Verify: the raise-ledger test passes with its row removed.
 
 ## 3. Kernels (IR + SQL)
 
-- [ ] 3.1 Ranked association: in `slayer/ir/planned.py` and `slayer/sql/generator.py`, add a level-1 entity dedup that picks one value and one ranking key per entity, drops NULL keys, then ranks and picks rank 1 (design decision 6). Verify: the 1.1 ranked tests and the 1.3 fan-out tests pass.
-- [ ] 3.2 Windowed association: the trailing-window kernel gains entity keys (`list_rows` and row identity reused) and the IR contract of design decision 8 (endpoints always set, frame-axis key in home coordinates). `_render_window_metric_cte_from_planned` gains the (bucket, cell, entity) dedup level, keeping the empty-frame NULL row and carrying the ranking key for windowed `first`/`last` (design decision 7). Verify: the 1.1 windowed tests, 1.2, 1.4 and 1.8 pass.
-- [ ] 3.3 List-child parameters: `_AssociationEntity.determines_param` judges a `list_rows` association against the root row (design decision 14). Verify: the 1.6 tests pass.
+- [x] 3.1 Ranked association: in `slayer/ir/planned.py` and `slayer/sql/generator.py`, add a level-1 entity dedup that picks one value and one ranking key per entity, drops NULL keys, then ranks and picks rank 1 (design decision 6). Verify: the 1.1 ranked tests and the 1.3 fan-out tests pass.
+- [x] 3.2 Windowed association: the trailing-window kernel gains entity keys (`list_rows` and row identity reused) and the IR contract of design decision 8 (endpoints always set, frame-axis key in home coordinates). `_render_window_metric_cte_from_planned` gains the (bucket, cell, entity) dedup level, keeping the empty-frame NULL row and carrying the ranking key for windowed `first`/`last` (design decision 7). Verify: the 1.1 windowed tests, 1.2, 1.4 and 1.8 pass.
+- [x] 3.3 List-child parameters: `_AssociationEntity.determines_param` judges a `list_rows` association against the root row (design decision 14). Verify: the 1.6 tests pass.
 
 ## 4. Fallback removal
 
-- [ ] 4.1 Remove `ModePolicy.fallback`, `_association_unsupported`, `RegroupAttachPlan.association_unsupported`, the `association_unsupported` field of `BroadcastGrainWarning` / its payload, `association_fallback_hint`, and the fallback part of the warning merge key in `slayer/engine/query_engine.py`. Verify: the aligned DEV-2216 tests pass, and the stale names are gone from `slayer/` (checked via LSP references).
+- [x] 4.1 Remove `ModePolicy.fallback`, `_association_unsupported`, `RegroupAttachPlan.association_unsupported`, the `association_unsupported` field of `BroadcastGrainWarning` / its payload, `association_fallback_hint`, and the fallback part of the warning merge key in `slayer/engine/query_engine.py`. Verify: the aligned DEV-2216 tests pass, and the stale names are gone from `slayer/` (checked via LSP references).
 
 ## 5. Docs and harnesses
 
-- [ ] 5.1 Apply the approved arc42 edits to `architecture/semantics.arc42.md` verbatim (design decisions 3 and 4). Verify: `poetry run la-arch-check` passes.
-- [ ] 5.2 Update `docs/concepts/queries.md`: the mode-table row, the warnings-table `broadcast` entry (drop `association_unsupported`), and the cross-dataset section's "cannot associate yet" paragraph, which gains the ranked and windowed association readings. Update `docs/upgrading/2.0.md` (drop the fallback sentence and state the local first/last / window mode-axis change). Verify: grep for `association_unsupported` and "cannot associate" in `docs/` returns nothing.
-- [ ] 5.3 Run the local test scope (`la-affected-tests --base main` plus the goldens of changed kernels), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and the enforcement bundle (`la-arch-check`, LikeC4 validate). Verify: all green; each golden divergence is reviewed individually.
+- [x] 5.1 Apply the approved arc42 edits to `architecture/semantics.arc42.md` verbatim (design decisions 3 and 4). Verify: `poetry run la-arch-check` passes.
+- [x] 5.2 Update `docs/concepts/queries.md`: the mode-table row, the warnings-table `broadcast` entry (drop `association_unsupported`), and the cross-dataset section's "cannot associate yet" paragraph, which gains the ranked and windowed association readings. Update `docs/upgrading/2.0.md` (drop the fallback sentence and state the local first/last / window mode-axis change). Verify: grep for `association_unsupported` and "cannot associate" in `docs/` returns nothing.
+- [x] 5.3 Run the local test scope (`la-affected-tests --base main` plus the goldens of changed kernels), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and the enforcement bundle (`la-arch-check`, LikeC4 validate). Verify: all green; each golden divergence is reviewed individually.

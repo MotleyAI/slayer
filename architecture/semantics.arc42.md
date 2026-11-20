@@ -170,10 +170,7 @@ principles every layer obeys.
    value repeats across the dimension's cells, with a self-announcing warning;
    spec: `queries/semantics` › Loud degradation)
    [enforced: test:tests/test_dev1836_broadcast_strict.py]; and error (refuse)
-   [enforced: test:tests/test_dev1841_error_mode.py]. Every aggregation is
-   **association-eligible** [target: DEV-1914]; an ineligible one broadcasts
-   under the default, warning with the reason, and is refused under an explicit
-   associate [enforced: test:tests/test_dev2216_associate_default.py]; an explicit partition_by
+   [enforced: test:tests/test_dev1841_error_mode.py]. Every aggregation associates — a windowed one per bucket, over the home rows with an associated row in the bucket's frame [enforced: test:tests/test_dev1914_ranked_windowed_association.py]; an explicit partition_by
    naming a dimension unattributable only from a further (cross-model) root is an
    error outside associate mode
    [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
@@ -297,10 +294,7 @@ enforced test ids as its instances land.
 4. **Position parity**: the same expression yields the same value as a
    measure, a filter, or an order key — positions differ only in what happens
    to the value. [review]
-5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a
-   groupby on `d` — exact for every association-eligible aggregation under the
-   default and associate; broadcast consciously trades this law away and must
-   warn.
+5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a groupby on `d` — exact for every aggregation under the default and associate; broadcast consciously trades this law away and must warn.
    [enforced: test:tests/test_law_dice_slice.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 6. **Lowering soundness**: every emission trick is a pure optimization —

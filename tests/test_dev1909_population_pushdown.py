@@ -175,8 +175,9 @@ class TestOrderWrapInheritsPopulation:
 class TestWindowedDerivedFanningAxisFailsClosed:
     """Decision 12 is closure-aware: a windowed metric whose active time axis is a
     host-local derived field — pathless in its own coordinates, but whose SQL
-    crosses a fanning hop — fails closed in every mode. The bare host-path is empty
-    (reads as safe); only the dependency closure reveals the fan."""
+    crosses a fanning hop — fans like any other axis: it fails closed outside
+    association and associates under it. The bare host-path is empty (reads as
+    safe); only the dependency closure reveals the fan."""
 
     def _bundle(self) -> ResolvedSourceBundle:
         m = dev1900_datasets()
@@ -188,15 +189,20 @@ class TestWindowedDerivedFanningAxisFailsClosed:
             dialect="postgres",
             population=cust, referenced_datasets=[x for x in m if x.name != "customers"])
 
-    @pytest.mark.parametrize("mode", MODES)
-    def test_pathless_derived_window_axis_raises(self, mode):
-        q = cust_q(
+    def _query(self, mode):
+        return cust_q(
             time_dimensions=[{"field": "customers.bad_date", "granularity": "month"}],
             metrics=[WINDOWED], to_many_handling=mode)
-        bundle = self._bundle()
+
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
+    def test_pathless_derived_window_axis_raises(self, mode):
+        q, bundle = self._query(mode), self._bundle()
         with pytest.raises((SlayerError, ValueError)) as ei:
             plan_query(query=q, bundle=bundle)
         assert "bad_date" in str(ei.value)
+
+    def test_pathless_derived_window_axis_associates(self):
+        assert plan_query(query=self._query("associate"), bundle=self._bundle()) is not None
 
 
 class TestMultiMeasureProducerNamesEveryMeasure:

@@ -86,7 +86,6 @@ from slayer.engine.elaborate_env import (
     is_dimension_transform_root,
     position_classes,
     check_stage_flatten_collision,
-    check_association_windowed_ranked,
     check_cross_dataset_inputs_safe,
     check_cross_dataset_partition_keys_attributable,
     check_cross_dataset_source_resolves,
@@ -115,6 +114,7 @@ from slayer.engine.population.filter_reachability import (
 from slayer.ir.planned import (
     AssociationProducerKernel,
     EmptyBaseGrainPlan,
+    EntityDedup,
     FilterReachability,
     MaskEntry,
     MaskTyping,
@@ -864,9 +864,13 @@ def _source_crossings(
     return [p[-1] for p in src if p and not safe(p)]
 
 
+def _producer_row_keys(producer_plan: PlannedQuery) -> List[ValueKey]:
+    return ordered_row_keys(row_slots=producer_plan.row_slots, public_projection=producer_plan.projection)
+
+
 def _checked_ranking_time_key(
     *,
-    producer_plan: PlannedQuery,
+    row_keys: Sequence[ValueKey],
     agg_key: AggregateKey,
     root_dataset: SlayerDataset,
     bundle: ResolvedSourceBundle,
@@ -877,11 +881,7 @@ def _checked_ranking_time_key(
     crossing key raises through the same checker its explicit spelling uses — the
     cross-dataset attributability form when target-rooted, the local ranked form else."""
     resolved = resolve_ranking_time_key(
-        key=agg_key, root_dataset=root_dataset, bundle=bundle,
-        row_keys=ordered_row_keys(
-            row_slots=producer_plan.row_slots,
-            public_projection=producer_plan.projection,
-        ),
+        key=agg_key, root_dataset=root_dataset, bundle=bundle, row_keys=row_keys,
     )
     crossing = _ranking_key_crossing(
         key=resolved, root_dataset=root_dataset, bundle=bundle, alias=alias,
@@ -905,6 +905,13 @@ def _checked_ranking_time_key(
     return resolved
 
 
+def _ranking_row_keys(
+    producer_plan: PlannedQuery, *, candidates: Optional[AbstractSet[ValueKey]],
+) -> List[ValueKey]:
+    """The producer's row keys an implicit ranking key may resolve to (``None``: all of them)."""
+    return [k for k in _producer_row_keys(producer_plan) if candidates is None or k in candidates]
+
+
 def _trailing_window_kernel(
     *,
     producer_plan: PlannedQuery,
@@ -913,6 +920,7 @@ def _trailing_window_kernel(
     bundle: ResolvedSourceBundle,
     alias: Optional[str],
     target_rooted: bool,
+    ranking_candidates: Optional[AbstractSet[ValueKey]] = None,
 ) -> TrailingWindowProducerKernel:
     window_raw = window_kwarg_of(agg_key)
     bucket_sid = producer_plan.active_time_dimension_slot_id
@@ -932,8 +940,8 @@ def _trailing_window_kernel(
     # first/last rank the interval rows by the same closure-judged key plain first/last would.
     ranking_time_key = (
         _checked_ranking_time_key(
-            producer_plan=producer_plan, agg_key=agg_key, root_dataset=root_dataset,
-            bundle=bundle, alias=alias, target_rooted=target_rooted,
+            row_keys=_ranking_row_keys(producer_plan, candidates=ranking_candidates), agg_key=agg_key,
+            root_dataset=root_dataset, bundle=bundle, alias=alias, target_rooted=target_rooted,
         )
         if is_ranked(agg_key) else None
     )
@@ -973,40 +981,45 @@ def _ranked_kernel(
     bundle: ResolvedSourceBundle,
     alias: Optional[str],
     target_rooted: bool,
+    ranking_candidates: Optional[AbstractSet[ValueKey]] = None,
 ) -> RankedProducerKernel:
     agg = agg_key.agg
     assert agg in ("first", "last")
     return RankedProducerKernel(
         agg=agg,
         ranking_time_key=_checked_ranking_time_key(
-            producer_plan=producer_plan, agg_key=agg_key, root_dataset=root_dataset,
+            row_keys=_ranking_row_keys(producer_plan, candidates=ranking_candidates), agg_key=agg_key,
+            root_dataset=root_dataset,
             bundle=bundle, alias=alias, target_rooted=target_rooted,
         ),
     )
 
 
 class _KernelDecision(BaseModel):
-    """The kernel a producer renders through, and the answer it renders."""
+    """The kernel a producer renders through: its reducer, whether it associates, and the answer it renders."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    kind: Literal["association", "trailing_window", "ranked"]
+    reducer: Literal["plain", "trailing_window", "ranked"]
+    associate: bool = False
     answer: AggregateKey
 
 
 def _kernel_decision(
     *, answer: ValueKey, windowed: bool, associate: bool = False, eligible: bool = True,
 ) -> Optional[_KernelDecision]:
-    """The one kernel choice of a producer answering ``answer``: association → trailing-window → ranked."""
+    """The one kernel choice of a producer answering ``answer``: reducer × associate; ``None`` for a plain grouping."""
     if not eligible or not isinstance(answer, AggregateKey):
         return None
-    if associate:
-        return _KernelDecision(kind="association", answer=answer)
     if windowed and window_kwarg_of(answer) is not None:
-        return _KernelDecision(kind="trailing_window", answer=answer)
-    if is_ranked(answer):
-        return _KernelDecision(kind="ranked", answer=answer)
-    return None
+        reducer = "trailing_window"
+    elif is_ranked(answer):
+        reducer = "ranked"
+    elif associate:
+        reducer = "plain"
+    else:
+        return None
+    return _KernelDecision(reducer=reducer, associate=associate, answer=answer)
 
 
 def _kernel_answer(decision: Optional[_KernelDecision]) -> Optional[AggregateKey]:
@@ -1016,16 +1029,16 @@ def _kernel_answer(decision: Optional[_KernelDecision]) -> Optional[AggregateKey
 def _decided_kernel(
     decision: Optional[_KernelDecision], *, producer_plan: PlannedQuery,
     root_dataset: SlayerDataset, bundle: ResolvedSourceBundle, alias: Optional[str],
-    target_rooted: bool,
+    target_rooted: bool, ranking_candidates: Optional[AbstractSet[ValueKey]] = None,
 ) -> Dict[str, Any]:
-    """The ``kernel=`` attach kwarg of a trailing-window / ranked decision."""
+    """The ``kernel=`` attach kwarg of a trailing-window / ranked decision (its association dedup set by the caller)."""
     if decision is None:
         return {}
-    assert decision.kind != "association", "an association kernel is built by its synthesiser"
-    build = _trailing_window_kernel if decision.kind == "trailing_window" else _ranked_kernel
+    assert decision.reducer != "plain", "an association kernel is built by its synthesiser"
+    build = _trailing_window_kernel if decision.reducer == "trailing_window" else _ranked_kernel
     return {"kernel": build(
         producer_plan=producer_plan, agg_key=decision.answer, root_dataset=root_dataset,
-        bundle=bundle, alias=alias, target_rooted=target_rooted,
+        bundle=bundle, alias=alias, target_rooted=target_rooted, ranking_candidates=ranking_candidates,
     )}
 
 
@@ -2207,22 +2220,52 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     product = crosses_product_hop(host=host_dataset, path=target_path, datasets_by_name=datasets_by_name)
     # Across a product hop every cell associates all home rows: the broadcast producer, warned as associated.
     product_associate = policy.associates and product
+    rerooted_of = dict(safe_pairs)
+    home = root_dataset
+
+    def _rerooted(g: ValueKey) -> ValueKey:
+        return rerooted_of.get(g) or reroot_from_root(
+            g, target_path=target_path, root_dataset=home,
+            datasets_by_name=datasets_by_name, host_name=host_dataset.name,
+        )
+
+    # An implicit ranking key reads the home's own grain (a local home's every query dimension), never an
+    # association dimension; a crossing one fails closed in every mode, ahead of any grain or axis decision.
+    ranking_candidates = None if not target_path else frozenset(rerooted_of.values())
+    if is_ranked(agg_rooted) and explicit_ranking_key(agg_rooted) is None:
+        _checked_ranking_time_key(
+            row_keys=[_rerooted(g) for g in requested if ranking_candidates is None or g in rerooted_of],
+            agg_key=agg_rooted, root_dataset=root_dataset,
+            bundle=bundle.rerooted(root_dataset), alias=canonical_aggregate_alias(agg, profile="stage_expression"),
+            target_rooted=bool(target_path),
+        )
+    active_td = prebound.main_time_key
+    if window_kwarg_of(agg) is not None and active_td is not None and not key_attributable_from_root(
+        key=active_td, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+        bundle=bundle, host_dataset=host_dataset, host_name=host_dataset.name,
+    ):
+        # A fanning window axis is judged before the grain: it associates, or it is refused.
+        if not policy.associates or product:
+            check_windowed_time_axis_attributable(
+                alias=alias, root_name=root_name, active_td_name=context.dim_display(active_td),
+                attributable=False,
+            )
+        if all(u.key != active_td for u in unattributable):
+            unattributable.append(_UnattributableDim(
+                key=active_td, name=context.dim_display(active_td), reason=key_broadcast_reason(
+                    key=active_td, target_path=target_path, root_dataset=root_dataset,
+                    datasets_by_name=datasets_with_host, bundle=bundle,
+                    host_dataset=host_dataset, host_name=host_dataset.name,
+                ),
+            ))
     # Association only when a DIMENSION is unattributable; attached inputs never need it.
     associate = policy.associates and bool(unattributable) and not product_associate
     entity: Optional[_AssociationEntity] = None
-    association_unsupported: Optional[str] = None
     if associate:
         entity = _association_entity(
             root_dataset=root_dataset, target_path=target_path, unattributable=unattributable,
             host_dataset=host_dataset, datasets_by_name=datasets_by_name, bundle=bundle,
         )
-        # The default broadcasts an ineligible implicit grain; requested grain is never broadcast.
-        if policy.fallback and not explicit:
-            association_unsupported = _association_unsupported(
-                agg=agg, entity=entity, target_path=target_path, host_dataset=host_dataset,
-                datasets_by_name=datasets_by_name, bundle=bundle,
-            )
-            associate = association_unsupported is None
     window_td_key: Optional[TimeTruncKey] = None
     semi_joins: List[SemiJoinFilter] = []
     broadcast: List[Tuple[str, str]] = []
@@ -2257,6 +2300,13 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         associated_dimensions = (
             [] if explicit else [u.name for u in unattributable]
         )
+        if window_kwarg_of(agg) is not None:
+            if active_td is None:
+                check_windowed_time_axis_attributable(
+                    alias=alias, root_name=root_name, active_td_name=None, attributable=False,
+                )
+            assert active_td is not None  # the checker raised otherwise
+            window_td_key = cast(TimeTruncKey, dict(safe_pairs).get(active_td) or _rerooted(active_td))
     else:
         # BROADCAST / ERROR ARM: an unattributable explicit key is a hard error.
         if product_associate:
@@ -2397,15 +2447,20 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         {"kernel": AssociationProducerKernel(
             entity_keys=entity_keys_root, picked_params=picked_params, list_rows=list_rows,
         )}
-        if decision is not None and decision.kind == "association"
+        if decision is not None and decision.reducer == "plain"
         else _decided_kernel(
             decision, producer_plan=producer_plan, root_dataset=root_dataset,
             bundle=root_bundle,
             alias=canonical_aggregate_alias(agg, profile="stage_expression"),
-            target_rooted=True,
+            target_rooted=bool(target_path), ranking_candidates=ranking_candidates,
         )
     )
     kernel = cm_attach_kwargs.get("kernel")
+    if associate and isinstance(kernel, (RankedProducerKernel, TrailingWindowProducerKernel)):
+        kernel = kernel.model_copy(update={
+            "association": EntityDedup(entity_keys=entity_keys_root, list_rows=list_rows),
+        })
+        cm_attach_kwargs["kernel"] = kernel
     if isinstance(kernel, TrailingWindowProducerKernel):
         cm_attach_kwargs["kernel"] = kernel.model_copy(update={
             "endpoints": _window_endpoints(
@@ -2430,7 +2485,6 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         semi_join_metric=alias,
         broadcast_metric=alias if broadcast else None,
         broadcast_dimensions=broadcast,
-        association_unsupported=association_unsupported if broadcast else None,
         associated_metric=associated_metric,
         associated_dimensions=associated_dimensions,
         association_restricted_filter_texts=restricted_texts,
@@ -2621,9 +2675,13 @@ class _AssociationEntity(NamedTuple):
     list_rows: bool
     keys: List[ValueKey]
     numbered: List[SlayerDataset]
+    #: What a parameter is judged against: the entity keys; for list rows, the root row's identity.
+    param_keys: List[ValueKey]
+    param_root: SlayerDataset
+    param_numbered: List[SlayerDataset]
 
     def host_grain(self, target_path: Tuple[str, ...]) -> Grain:
-        return Grain.of(_host_coordinates(k, target_path=target_path, root=self.root_dataset) for k in self.keys)
+        return Grain.of(_host_coordinates(k, target_path=target_path, root=self.param_root) for k in self.param_keys)
 
     def determines_param(
         self, *, value: ValueKey, target_path: Tuple[str, ...], host_dataset: SlayerDataset,
@@ -2632,9 +2690,9 @@ class _AssociationEntity(NamedTuple):
         # For a local home the initial grain seed reads the host dataset directly.
         return _param_is_determined(
             value=value, grain=self.host_grain(target_path),
-            host_dataset=host_dataset if target_path else self.root_dataset,
+            host_dataset=host_dataset if target_path else self.param_root,
             datasets_by_name={
-                **datasets_by_name, **{d.name: d for d in self.numbered}, self.root_dataset.name: self.root_dataset,
+                **datasets_by_name, **{d.name: d for d in self.param_numbered}, self.param_root.name: self.param_root,
             },
             bundle=bundle,
         )
@@ -2673,39 +2731,23 @@ def _association_entity(
         ))
         for u in unattributable
     ]
-    # A list child's rows are its root row's own elements: association needs no key (design D6).
+    keys = _identity_keys(root_dataset, bundle=bundle)
+    identified, numbered = identified_datasets(
+        root=root_dataset, entity_keys=keys, datasets_by_name=bundle.datasets_by_name,
+    )
+    # A list child's rows are its root row's own elements: association needs no key, the root row is the entity.
     if assoc_pairs and all(
         _reached_by_root_lists(rerooted, root_dataset=root_dataset, datasets_by_name=datasets_by_name)
         for _key, rerooted in assoc_pairs
     ):
         return _AssociationEntity(
             root_dataset=root_dataset, assoc_pairs=assoc_pairs, list_rows=True, keys=[], numbered=[],
+            param_keys=keys, param_root=identified, param_numbered=numbered,
         )
-    keys = _identity_keys(root_dataset, bundle=bundle)
-    root_dataset, numbered = identified_datasets(
-        root=root_dataset, entity_keys=keys, datasets_by_name=bundle.datasets_by_name,
-    )
     return _AssociationEntity(
-        root_dataset=root_dataset, assoc_pairs=assoc_pairs, list_rows=False, keys=keys, numbered=numbered,
+        root_dataset=identified, assoc_pairs=assoc_pairs, list_rows=False, keys=keys, numbered=numbered,
+        param_keys=keys, param_root=identified, param_numbered=numbered,
     )
-
-
-def _association_unsupported(
-    *, agg: AggregateKey, entity: _AssociationEntity, target_path: Tuple[str, ...],
-    host_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
-) -> Optional[str]:
-    """Why the association arm cannot serve ``agg``, else ``None``."""
-    if window_kwarg_of(agg) is not None:
-        return "window="
-    if is_ranked(agg):
-        return f"{agg.agg}()"
-    for name, value in _param_values(agg):
-        if not isinstance(value, (AggregateKey, TransformKey)) and not entity.determines_param(
-            value=value, target_path=target_path, host_dataset=host_dataset,
-            datasets_by_name=datasets_by_name, bundle=bundle,
-        ):
-            return f"a {name}= parameter the associated entity does not determine"
-    return None
 
 
 def _association_arm(
@@ -2713,15 +2755,11 @@ def _association_arm(
     entity: _AssociationEntity, target_path: Tuple[str, ...], host_dataset: SlayerDataset,
     datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
 ) -> Tuple[List[PickedParam], List[ValueKey]]:
-    """The home-rooted association arm: eligibility + mode-invariant
+    """The home-rooted association arm: mode-invariant
     input safety on the rerooted host-locus aggregate (compiled inline at its fanning
     grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
     coordinates and the parameters the entity grain picks, rerooted into the home."""
     root_dataset = entity.root_dataset
-    check_association_windowed_ranked(
-        alias=alias,
-        windowed_or_ranked=is_kernel_requiring(agg),
-    )
     _assert_cross_dataset_inputs_safe(
         agg=agg, agg_rooted=agg_rooted, root_dataset=root_dataset,
         root_name=root_dataset.name, target_path=target_path, bundle=bundle,

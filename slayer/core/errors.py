@@ -941,20 +941,15 @@ class UnresolvedPlaceholderError(SlayerError):
 class BroadcastGrainWarning(UserWarning):
     """A cross-dataset aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 
-    def __init__(self, metric: str, reason: str, association_unsupported: str | None = None) -> None:
-        super().__init__(metric, reason, association_unsupported)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
+    def __init__(self, metric: str, reason: str) -> None:
+        super().__init__(metric, reason)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
         self.metric = metric
         self.reason = reason
-        self.association_unsupported = association_unsupported
 
     def __str__(self) -> str:
-        fallback = (
-            "" if self.association_unsupported is None
-            else f" (association does not support {self.association_unsupported})"
-        )
         return (
             f"Metric {self.metric!r} broadcast across an unattributable "
-            f"dimension{fallback}: {self.reason}"
+            f"dimension: {self.reason}"
         )
 
 
