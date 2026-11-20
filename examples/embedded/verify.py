@@ -114,7 +114,7 @@ def main():
         query=SlayerQuery(
             population="orders",
             metrics=[COUNT_METRIC],
-            dimensions=["products.category"],
+            dimensions=["products.category"],  # NOSONAR(S1192) — each query spells its references inline, as a reader copies them
         )
     )
     by_cat = {r["products.category"]: r[COUNT_KEY] for r in result.data}
@@ -148,7 +148,7 @@ def main():
     result = engine.execute_sync(
         query=SlayerQuery(
             population="orders",
-            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],  # NOSONAR(S1192) — each query spells its references inline, as a reader copies them
             metrics=[
                 COUNT_METRIC,
                 "sum(orders.quantity)",

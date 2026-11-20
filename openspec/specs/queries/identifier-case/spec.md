@@ -48,7 +48,7 @@ Result keys, join aliases and result names SHALL carry the declared spelling of 
 
 #### Scenario: Dimension key uses the declared spelling
 - **WHEN** a query rooted at `orders` has dimension `CUSTOMERS.REGION`
-- **THEN** its result key is `orders.customers.region`
+- **THEN** its result key is `customers.region`
 
 ### Requirement: Saves never introduce a case collision
 A save of a model, datasource or saved query SHALL be refused with a typed error naming both names when it introduces two names in one namespace (model names in a datasource, a model's columns and saved measures, its join names, its model aggregations, the stage names of a query list, a query's result names) that are equal case-insensitively and are not both present in the persisted document of the same identity. A new document has no persisted collisions. A collision present in the persisted document SHALL keep loading and saving; it SHALL produce a structured warning naming both names on load, on save, and on every query response that reads the model.

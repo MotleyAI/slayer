@@ -216,7 +216,7 @@ def main():
             "population": "orders",
             "metrics": [count_metric("orders")],
             "time_dimensions": [
-                {"field": "orders.created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},  # NOSONAR(S1192) — each query spells its references inline, as a reader copies them
             ],
             "order": [{"field": "orders.created_at", "direction": "asc"}],
             "limit": 6,

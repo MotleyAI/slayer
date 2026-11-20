@@ -8,6 +8,7 @@
 #                 tolerance (default 1e-6), ordered (default false), columns_exact (output has only keys+values)
 #   slayer:       query (dict, or list of stages) or run_by_name (a saved query) + refine, options {to_many_handling,
 #                 policy}, extra_datasets (files in slayer/extra_datasets/), create_dataset_from_query, keys/values overrides,
+#                 truth_sql override (SLayer's own documented answer, e.g. a list grouped as its set of distinct elements),
 #                 expect: match | {error} | {warning} | {known_bug, buggy_rows, buggy_row_count, buggy_error};
 #                 or steps (MCP tool calls {tool, args} and {sql} edits on a private database copy; "{db_path}" in
 #                 args is that copy) with setup: datasets | datasource | empty, and expect: match (last step a json
@@ -428,12 +429,18 @@ probes:
 
   - id: F9
     row: Q3
-    title: month(order_date) inside partition_by is not supported
+    title: month(order_date) in partition_by is the month of year, its cells associated with each year (warned)
+    note: month() is the month of year, so each cell sums that month across years; a year row averages the cells it reaches
+    truth_sql: |
+      with c as (select region, month(order_date) mo, sum(amount) s from orders_flat group by 1, 2),
+           y as (select distinct region, date_trunc('year', order_date) yr, month(order_date) mo from orders_flat)
+      select y.region, y.yr, avg(c.s) from y join c on c.region is not distinct from y.region and c.mo = y.mo group by 1, 2
+    compare: {keys: [region, order_date], values: [v]}
     slayer:
       query: {population: orders_flat, dimensions: [orders_flat.region],
               time_dimensions: [{field: orders_flat.order_date, granularity: year}],
               metrics: [{metric: "avg(sum(orders_flat.amount, partition_by=[orders_flat.region, month(orders_flat.order_date)]))", alias: v}]}
-      expect: {error: PartitionKeyError}
+      expect: {warning: associated}
 
   - id: F9b
     row: Q3
@@ -459,33 +466,31 @@ probes:
 
   - id: F9d
     row: Q3
-    title: month cells via an inline order_month field under a year dimension broadcast (warned)
-    note: order_month is not linked to the year bucket, so each region's all-years value is repeated per year
+    title: month cells via a month-bucket expression in partition_by under a year dimension broadcast (warned)
+    note: the month bucket is not linked to the year bucket, so each region's all-years value is repeated per year
     truth_sql: |
       with c as (select region, date_trunc('month', order_date) m, sum(amount) s from orders_flat group by 1, 2),
            y as (select distinct region, date_trunc('year', order_date) yr from orders_flat)
       select y.region, y.yr, (select avg(s) from c where c.region is not distinct from y.region) from y
     compare: {keys: [region, order_date], values: [v]}
     slayer:
-      query: {population: {source_name: orders_flat,
-                             fields: [{name: order_month, sql: "date_trunc('month', order_date)", datatype: date}]},
-              dimensions: [region], time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{metric: "avg(sum(amount, partition_by=[region, order_month]))", alias: v}]}
+      query: {population: orders_flat, dimensions: [orders_flat.region],
+              time_dimensions: [{field: orders_flat.order_date, granularity: year}],
+              metrics: [{metric: "avg(sum(orders_flat.amount, partition_by=[orders_flat.region, CAST(date_trunc('month', orders_flat.order_date) AS DATE)]))", alias: v}]}
       options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
 
   - id: F9e
     row: Q3
-    title: average monthly total per region-year via partition_by=[region, order_month, order_date]
+    title: average monthly total per region-year via partition_by=[region, month bucket, order_date]
     truth_sql: |
       select region, date_trunc('year', m), avg(s) from (
         select region, date_trunc('month', order_date) m, sum(amount) s from orders_flat group by 1, 2) group by 1, 2
     compare: {keys: [region, order_date], values: [v]}
     slayer:
-      query: {population: {source_name: orders_flat,
-                             fields: [{name: order_month, sql: "date_trunc('month', order_date)", datatype: date}]},
-              dimensions: [region], time_dimensions: [{field: order_date, granularity: year}],
-              metrics: [{metric: "avg(sum(amount, partition_by=[region, order_month, order_date]))", alias: v}]}
+      query: {population: orders_flat, dimensions: [orders_flat.region],
+              time_dimensions: [{field: orders_flat.order_date, granularity: year}],
+              metrics: [{metric: "avg(sum(orders_flat.amount, partition_by=[orders_flat.region, CAST(date_trunc('month', orders_flat.order_date) AS DATE), orders_flat.order_date]))", alias: v}]}
 
   - id: F9f
     row: Q3
@@ -3018,9 +3023,8 @@ probes:
     truth_sql: select case when amount > 100 then 'big' else 'small' end, count(*) from orders group by 1
     compare: {keys: [size], values: [order_count]}
     slayer:
-      query: {population: {source_name: orders,
-                             fields: [{name: size, sql: "CASE WHEN amount > 100 THEN 'big' ELSE 'small' END", datatype: string}]},
-              dimensions: [size], metrics: [{metric: "count(*)", alias: order_count}]}
+      query: {population: orders, dimensions: [{field: "CASE WHEN orders.amount > 100 THEN 'big' ELSE 'small' END", alias: size}],
+              metrics: [{metric: "count(orders.*)", alias: order_count}]}
     malloy:
       query: |
         run: orders -> { extend: { dimension: size is pick 'big' when amount > 100 else 'small' } group_by: size; aggregate: order_count }
@@ -3493,8 +3497,9 @@ probes:
     contrast_sql: select avg(credit) from customers
     compare: {values: [v]}
     slayer:
-      query: {population: {source_name: orders, fields: [{name: credit, sql: customers.credit, datatype: number}]},
-              metrics: [{metric: "avg(credit)", alias: v}]}
+      query:
+        - {name: per_order, population: orders, dimensions: [orders.id, {field: customers.credit, alias: credit}]}
+        - {population: per_order, metrics: [{metric: "avg(per_order.credit)", alias: v}]}
     malloy:
       query: |
         run: orders -> { aggregate: v is source.avg(customers.credit) }
@@ -3764,8 +3769,9 @@ probes:
     contrast_sql: select t, count(distinct c.id) from customers c, unnest(c.tags) u(t) where t is not null group by 1
     compare: {keys: [tags], values: [n]}
     slayer:
+      truth_sql: select list_sort(list_distinct(tags)), count(*) from customers group by 1
       query: {population: customers, dimensions: [customers.tags], metrics: [{metric: "count(customers.*)", alias: n}]}
-      expect: {error: ListTypeError}
+      expect: {warning: whole_list}
     malloy:
       query: |
         run: customers -> { group_by: tags; aggregate: n is count() }

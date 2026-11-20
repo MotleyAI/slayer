@@ -35,8 +35,8 @@
 
 ## 4. Respell the tests
 
-- [ ] 4.1 Record the conversions the engine performs on the existing suite (old text, qualified twin, file and line) and apply them through the deterministic tooling; extend the tooling in the living-architecture repo where it cannot express an edit, and bump the `la` pin. Show the owner the substitution summary first. Verify: the respelled suite emits no `deprecated_input` warning outside the dedicated legacy tests.
-- [ ] 4.2 Apply the per-file approved changes of task 2.11. Verify: the local test scope passes.
+- [x] 4.1 Record the conversions the engine performs on the existing suite (old text, qualified twin, file and line) and apply them through the deterministic tooling; extend the tooling in the living-architecture repo where it cannot express an edit, and bump the `la` pin. Show the owner the substitution summary first. Verify: the respelled suite emits no `deprecated_input` warning outside the dedicated legacy tests. Note: by owner decision, a one-off scripted respell from the recorded conversions replaced the deterministic tooling (no tooling change, no pin bump); computed and conflicting sites were respelled by hand.
+- [x] 4.2 Apply the per-file approved changes of task 2.11. Verify: the local test scope passes.
 
 ## 5. Specs, architecture and docs
 
@@ -47,6 +47,6 @@
 
 ## 6. Finish
 
-- [ ] 6.1 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors, never `--writebaseline`), `poetry run la-arch-check`, `npx likec4 validate architecture`, `openspec validate --all --strict`.
-- [ ] 6.2 Local test scope green; full suites green in CI.
+- [x] 6.1 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors, never `--writebaseline`), `poetry run la-arch-check`, `npx likec4 validate architecture`, `openspec validate --all --strict`.
+- [x] 6.2 Local test scope green; full suites green in CI.
 - [ ] 6.3 After merge: comment on DEV-2279, DEV-2212 and DEV-2243 that qualified references are on `main`, with any ruling that changed since the DEV-2212 comment of 2026-11-15.
