@@ -38,6 +38,8 @@ from slayer.core.enums import (
     normalize_aggregation_name,
 )
 from slayer.core.errors import (
+    AggArgumentError,
+    AggFilterError,
     CallArgumentError,
     ColonSpellingError,
     GranularityCallError,
@@ -67,6 +69,8 @@ class Ref(_BaseNode):
     name: str
     # Written double-quoted; not part of identity.
     quoted: bool = False
+    # Written as ``AGG(…)``: must name a dataset metric; not part of identity.
+    evaluated: bool = False
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Ref) and self.name == other.name
@@ -81,6 +85,8 @@ class DottedRef(_BaseNode):
     quoted: bool = False
     # Per segment, whether it was double-quoted (empty: none); not part of identity.
     quoted_parts: Tuple[bool, ...] = ()
+    # Written as ``AGG(…)``: must name a dataset metric; not part of identity.
+    evaluated: bool = False
 
     def quoted_at(self, i: int) -> bool:
         return 0 <= i < len(self.quoted_parts) and self.quoted_parts[i]
@@ -953,6 +959,8 @@ _PRIMARY = _ATOM + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE) | _OVER))
 def _primary_node(toks: List[Any]) -> Any:
     node = _resolve(toks[0])
     for clause in toks[1]:
+        if isinstance(node, (Ref, DottedRef)) and node.evaluated:
+            raise AggFilterError(expression=_STATE.text)
         if not isinstance(node, AggCall):
             raise _Problem("FILTER (WHERE …) applies only to an aggregation, e.g. sum(x) FILTER (WHERE c).")
         if node.filter is not None:
@@ -1899,10 +1907,12 @@ def _onto_path(node: Any, *, path: Tuple[str, ...], memo: Optional[Dict[int, Any
 def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -> Any:
     unquoted = (False,) * len(path)
     if isinstance(node, Ref):
-        return DottedRef(parts=(*path, node.name), quoted=node.quoted, quoted_parts=(*unquoted, node.quoted))
+        return DottedRef(parts=(*path, node.name), quoted=node.quoted, quoted_parts=(*unquoted, node.quoted),
+                         evaluated=node.evaluated)
     if isinstance(node, DottedRef):
         own = tuple(node.quoted_at(i) for i in range(len(node.parts)))
-        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted, quoted_parts=(*unquoted, *own))
+        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted, quoted_parts=(*unquoted, *own),
+                         evaluated=node.evaluated)
     if isinstance(node, StarSource):
         return DottedRef(parts=(*path, "*"))
     if isinstance(node, ScalarCall):
@@ -2081,6 +2091,10 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], original: str,
 ) -> ParsedExpr:
     # ``agg`` stores the RAW token; ``first``/``last`` dispatch at bind by the operand's type.
+    if func_name.lower() in RESERVED_NAMES:
+        if kwargs or len(args) != 1 or not isinstance(args[0], (Ref, DottedRef)) or args[0].evaluated:
+            raise AggArgumentError(expression=original)
+        return args[0].model_copy(update={"evaluated": True})
     canonical_agg = normalize_aggregation_name(func_name)
     if canonical_agg in BUILTIN_AGGREGATIONS:
         if not args:
@@ -2428,7 +2442,7 @@ def _root_relative(node: Any, *, root: str, memo: Dict[int, Any]) -> Any:
             if parts == ("*",):
                 memo[id(node)] = StarSource()
             elif len(parts) == 1:
-                memo[id(node)] = Ref(name=parts[0], quoted=quoted_parts[0])
+                memo[id(node)] = Ref(name=parts[0], quoted=quoted_parts[0], evaluated=node.evaluated)
             else:
                 memo[id(node)] = node.model_copy(update={
                     "parts": parts, "quoted_parts": quoted_parts, "quoted": any(quoted_parts),
@@ -2616,10 +2630,10 @@ def legacy_result_name_seed(parsed: Any) -> str:
 
 
 def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
-    if isinstance(parsed, Ref):
-        return _identifier_text(parsed.name)
-    if isinstance(parsed, DottedRef):
-        return ".".join(p if p == "*" else _identifier_text(p) for p in parsed.parts)
+    if isinstance(parsed, (Ref, DottedRef)):
+        text = _identifier_text(parsed.name) if isinstance(parsed, Ref) else ".".join(
+            p if p == "*" else _identifier_text(p) for p in parsed.parts)
+        return f"AGG({text})" if parsed.evaluated else text
     if isinstance(parsed, StarSource):
         return "*"
     if isinstance(parsed, Literal):

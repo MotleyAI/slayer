@@ -38,7 +38,9 @@ from slayer.core.errors import (
     TimeSpineError,
     UnknownGranularityError,
 )
-from slayer.engine.field_dependency import check_dataset_filters, validate_derived_fields, warn_broken_dependents
+from slayer.engine.field_dependency import (
+    check_dataset_filters, check_evaluated_metrics, validate_derived_fields, warn_broken_dependents,
+)
 from slayer.core.relationship_walker import edges_between
 from slayer.core.names import folded_collisions, match_name
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
@@ -756,6 +758,7 @@ class StorageBackend(ABC):
         await self._validate_mode_a_placeholders(dataset)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_dataset_filters(dataset=dataset, reachable=peers)
+        check_evaluated_metrics(dataset=dataset, reachable=peers)
         self._validate_relationship_edges(dataset, peers=peers, identities=identities)
         await self._validate_aggregations(dataset)
         await self._validate_field_granularities(dataset)

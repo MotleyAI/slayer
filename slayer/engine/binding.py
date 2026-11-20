@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Final, List, Mapping, Optional, Tuple, T
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    AggArgumentError,
     AmbiguousRelationshipPathError,
     UnevaluableEntityError,
     ScalarArgumentError,
@@ -556,6 +557,8 @@ def _bind_leaf(
         return _bare_star(scope=scope)
     if not isinstance(parsed, (Ref, DottedRef)):
         return None
+    if parsed.evaluated:
+        return _bind_evaluated(parsed, scope=scope, bundle=bundle, metric_ctx=metric_ctx)
     try:
         if isinstance(parsed, Ref):
             return _resolve_ref(
@@ -568,6 +571,22 @@ def _bind_leaf(
         )
     except UnknownReferenceError as e:
         raise _with_hint(e, hint=_QUOTE_HINT.format(name=e.name)) if parsed.quoted else e
+
+
+def _bind_evaluated(
+    parsed: Ref | DottedRef,
+    *,
+    scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+    metric_ctx: Optional[MetricResolutionCtx],
+) -> ValueKey:
+    """``AGG(ref)``: the dataset metric ``ref`` names, bound as the reference itself; anything else is refused."""
+    plain = parsed.model_copy(update={"evaluated": False})
+    key = _bind_leaf(plain, scope=scope, bundle=bundle, alias_map=None, metric_ctx=metric_ctx)
+    if key is None or isinstance(key, (FieldKey, FieldSqlKey)):
+        raise AggArgumentError(expression=canonical_metric_text(parsed),
+                               reason=f"{canonical_metric_text(plain)!r} is a field")
+    return key
 
 
 def _bind_cmp(

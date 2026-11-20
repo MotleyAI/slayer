@@ -23,6 +23,7 @@ from collections.abc import Iterator
 import sqlglot
 
 from slayer.core.errors import (
+    AggArgumentError,
     AmbiguousRelationshipPathError,
     CircularRelationshipPathError,
     DatasetFieldCycleError,
@@ -619,6 +620,28 @@ def _filter_cycle(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]
         return None
 
     return visit(dataset.name)
+
+
+def check_evaluated_metrics(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:
+    """Refuse a metric of ``dataset`` whose ``AGG(…)`` is malformed or reads a field (``AggArgumentError``,
+    ``AggFilterError``); an argument whose path misses is left to query time."""
+    datasets = {**reachable, dataset.name: dataset}
+    for metric in dataset.metrics:
+        text = portable_text(metric.expression)
+        if metric.load_warning is not None or text is None:
+            continue
+        for node in walk_parsed(parse_template(text)):
+            if not isinstance(node, (Ref, DottedRef)) or not node.evaluated:
+                continue
+            parts = (node.name,) if isinstance(node, Ref) else node.parts
+            found = walk_terminal(root=dataset, path=parts[:-1], datasets_by_name=datasets) if parts[:-1] else (
+                dataset, ())
+            if found is None:
+                continue
+            terminal = found[0]
+            if terminal.get_metric(parts[-1]) is None and terminal.get_field(parts[-1]) is not None:
+                raise AggArgumentError(expression=f"Metric {metric.name!r}: AGG({'.'.join(parts)})",
+                                       reason=f"{'.'.join(parts)!r} is a field")
 
 
 def check_dataset_filters(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:

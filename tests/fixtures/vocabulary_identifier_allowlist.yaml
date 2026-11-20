@@ -282,6 +282,11 @@ carve_outs:
   - {name: portable_columns, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
   - {name: _source_column_reads, file: slayer/engine/field_dependency.py, reason: "physical database or result-set column"}
   - {name: columns, file: slayer/engine/field_dependency.py, reason: "physical database or result-set column"}
+  - {name: model_metrics, file: slayer/engine/legacy_references.py, reason: "Ossie's semantic model (the document)"}
+  - {name: names_model_metric, file: slayer/engine/legacy_references.py, reason: "Ossie's semantic model (the document)"}
+  - {name: ModelScope, file: slayer/engine/model_scoped.py, reason: "Ossie's semantic model (the document)"}
+  - {name: expand_model_scoped, file: slayer/engine/model_scoped.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model_scope, file: slayer/engine/model_scoped.py, reason: "Ossie's semantic model (the document)"}
   - {name: _attach_semi_join_texts, file: slayer/engine/query_engine.py, reason: "SQL JOIN as an operation"}
   - {name: _collect_semi_join_pushed_warnings, file: slayer/engine/query_engine.py, reason: "SQL JOIN as an operation"}
   - {name: _column_presence_cache, file: slayer/engine/query_engine.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}

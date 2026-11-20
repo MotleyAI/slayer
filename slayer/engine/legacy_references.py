@@ -42,6 +42,16 @@ class AnchorNames(BaseModel):
     aggregations: Dict[str, frozenset[str]] = {}
     #: Per folded population name, the names a pre-2.0 dotted first segment read from it: its fields and edges.
     heads: Dict[str, frozenset[str]] = {}
+    #: Model-scoped metric names, which a bare name reads before any conversion.
+    model_metrics: frozenset[str] = frozenset()
+
+    def has_member(self, *, population: str, name: str) -> bool:
+        """Whether ``population`` declares a field or metric ``name`` (unknown population: assumed)."""
+        members = self.members.get(population.casefold())
+        return members is None or name.casefold() in members
+
+    def names_model_metric(self, name: str, *, quoted: bool) -> bool:
+        return _is_alias(name, declared=list(self.model_metrics), quoted=quoted)
 
     def reads_head(self, *, population: str, name: str, quoted: bool) -> bool:
         """Whether a dotted reference starting at ``name`` read from ``population`` before 2.0 (unknown: assumed)."""
@@ -144,7 +154,9 @@ def _converts_reference(node: Any, *, population: str, anchors: AnchorNames, dec
                         edges: List[str]) -> bool:
     """Whether the ``Ref`` or ``DottedRef`` ``node`` was read from ``population``."""
     if isinstance(node, Ref):
-        return not (declared and _is_alias(node.name, declared=declared, quoted=node.quoted))
+        return not ((declared and _is_alias(node.name, declared=declared, quoted=node.quoted))
+                    or anchors.names_model_metric(node.name, quoted=node.quoted)
+                    or not anchors.has_member(population=population, name=node.name))
     head, quoted = node.parts[0], node.quoted_at(0)
     if anchors.anchors(head, quoted=quoted):
         return False
@@ -346,7 +358,11 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
             # Only an edge declared on a peer is left: reading every peer is the expensive part.
             own += await storage.incident_edge_names(dataset.name, data_source=dataset_source)
         heads[population.casefold()] = frozenset(own)
-    return AnchorNames(names=frozenset(names), members=members, aggregations=aggregations, heads=heads)
+    model_metrics: set[str] = set()
+    for ds in sorted(chosen):
+        model_metrics.update(m.name for m in await storage.list_model_scoped_metrics(ds))
+    return AnchorNames(names=frozenset(names), members=members, aggregations=aggregations, heads=heads,
+                       model_metrics=frozenset(model_metrics))
 
 
 def _dotted_heads(sources: Sequence[Any]) -> List[Tuple[str, bool]]:

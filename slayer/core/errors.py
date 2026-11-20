@@ -1121,6 +1121,30 @@ class ReservedFunctionNameError(SlayerError, ValueError):
         )
 
 
+class AggArgumentError(SlayerError, ValueError):
+    """``AGG(…)`` whose argument is not one reference to a dataset metric."""
+
+    def __init__(self, *, expression: str, reason: str | None = None) -> None:
+        self.expression = expression
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{expression}: AGG takes a dataset metric{f' — {reason}' if reason else ''}.",
+            suggestion="Write AGG(<dataset>.<metric>), e.g. AGG(orders.total_revenue).",
+        ))
+
+
+class AggFilterError(SlayerError, ValueError):
+    """``AGG(…)`` with a ``FILTER (WHERE …)`` clause."""
+
+    def __init__(self, *, expression: str) -> None:
+        self.expression = expression
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{expression}: AGG takes no FILTER clause.",
+            suggestion="Define a dataset metric with the filter and evaluate that.",
+        ))
+
+
 class CaseCollisionError(SlayerError, ValueError):
     """A save would introduce names that differ only in case into one namespace."""
 

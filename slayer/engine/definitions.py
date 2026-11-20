@@ -142,7 +142,7 @@ class _Translation:
         if len(node.parts) == 2 and _is_source_qualifier(node.parts[0], dataset=self.dataset):
             return self.reader_ref(node.parts[1], quoted=node.quoted_at(1))
         if len(node.parts) == 2 and node.parts[0] == self.dataset.name:
-            return Ref(name=node.parts[1], quoted=node.quoted_at(1))
+            return Ref(name=node.parts[1], quoted=node.quoted_at(1), evaluated=node.evaluated)
         return None
 
     def column(self, ref: FieldKey | FieldSqlKey) -> SqlExpression:

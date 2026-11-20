@@ -36,7 +36,7 @@
 
 ## 3. Engine and queries
 
-- [ ] 3.1 Model-scoped metrics in the source bundle; bare-name order alias → model-scoped → legacy → unknown in binding, population inference and `recommend_population`; verify resolution tests pass
+- [x] 3.1 Model-scoped metrics expanded in place once per statement at the planning entry (before population inference), so binding, population inference and the bundle see only qualified expressions; the legacy conversion skips model-scoped names; saved definitions keep the bare name; bare-name order alias → model-scoped → legacy → unknown; `recommend_population` resolves model-scoped items itself; verify resolution tests pass
 - [ ] 3.2 In-place expansion with one component per aggregate; result key = bare name; save-time reference rules and refusals (reserved word, library function, dataset name, circularity); verify model-scoped tests pass
 - [ ] 3.3 `AGG(d.m)` in `core.syntax` (the one Mode B reader) and binding, in queries, model-scoped metrics and dataset metrics, with every refusal; verify AGG tests pass
 - [ ] 3.4 Unknown datatype: explicit unknown on load; engine probe off the event loop, cached per engine + fingerprint; deferred save-time checks; verify unknown-type tests pass

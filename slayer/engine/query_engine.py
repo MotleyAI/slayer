@@ -136,6 +136,7 @@ from slayer.engine.cache import (
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
 from slayer.engine.legacy_references import Conversions, anchor_names, convert_refinement, qualified_input
+from slayer.engine.model_scoped import expand_model_scoped, model_scope
 from slayer.engine.population.anchors import anchor_route, unknown_metric, unqualified_count
 from slayer.core.names import qualified_reference
 from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
@@ -1386,6 +1387,8 @@ class SlayerQueryEngine:
         localized, respelled_spine = await self._respell_spine(
             queries=localized, stage_names={d.name for d in stage_displays.values()}, data_source=prefer_data_source,
         )
+        scope = await model_scope(self.storage, localized, data_source=prefer_data_source)
+        localized = [expand_model_scoped(q, scope=scope) for q in localized]
         query = localized[-1]
         named_queries = {q.name: q for q in localized[:-1] if q.name}
         # Infer the population of any rootless stage (main + each named
@@ -2523,10 +2526,19 @@ class SlayerQueryEngine:
         determination items. A feasible ``root_hint`` overrides the auto-pick; an
         infeasible one falls back with a warning, a malformed one raises.
         """
+        scope = await model_scope(self.storage, [], data_source=data_source)
+        scoped = {raw: m for raw in dict.fromkeys(i.strip() for i in items)
+                  if raw and (m := scope.bare(raw, aliases=())) is not None}
         resolved, base_warnings = await self._recommend_resolve_items(
-            items=items, data_source=data_source
+            items=[i for i in items if i.strip() not in scoped], data_source=data_source
         )
         ds = resolved[0].data_source
+        if any(m.data_source != ds for m in scoped.values()):
+            raise ValueError(
+                f"items span multiple datasources {sorted({ds, *(m.data_source for m in scoped.values())})}; "
+                f"pass items from a single datasource (optionally set data_source=...)."
+            )
+        scoped_paths = [ItemPath(input_item=raw, path=m.name, attachment=True) for raw, m in scoped.items()]
         datasets = await _all_datasets_in_datasource(self.storage, ds)
         datasets_by_name = {m.name: m for m in datasets}
         all_names = sorted(datasets_by_name)
@@ -2622,7 +2634,7 @@ class SlayerQueryEngine:
             ]
             return PopulationRecommendation(
                 data_source=ds, population=root, reachable=True,
-                item_paths=item_paths, warnings=warnings, message=message,
+                item_paths=[*item_paths, *scoped_paths], warnings=warnings, message=message,
             )
 
         force_include = {hint_dataset} if hint_dataset is not None else None
