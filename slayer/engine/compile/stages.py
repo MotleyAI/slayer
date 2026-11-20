@@ -24,6 +24,7 @@ from typing import (
     Sequence,
     Tuple,
     TypeVar,
+    Union,
     cast,
 )
 
@@ -2155,18 +2156,32 @@ def _home_routing(
         for r in walk_value_keys(key):
             if not isinstance(r, (FieldKey, FieldSqlKey, StarKey)) or r in mapping:
                 continue
-            parts = anchors.get(_canonical_path(r.path, root=host_dataset, datasets_by_name=datasets_by_name))
-            if parts is None or parts[0] == source_anchor:
-                continue
-            route = _home_route(parts, root=root_dataset, datasets_by_name=datasets_by_name)
-            if route is None:
-                continue
-            via_host = reroot_from_root(r, target_path=target_path, root_dataset=root_dataset,
-                                        datasets_by_name=datasets_by_name, host_name=host_dataset.name)
-            if _canonical_path(cast(FieldKey, via_host).path, root=root_dataset,
-                               datasets_by_name=datasets_by_name) != route:
-                mapping[r] = r.model_copy(update={"path": (*target_path, *route)})
+            rerouted = _home_reroute(
+                r, anchors=anchors, host_dataset=host_dataset, target_path=target_path, root_dataset=root_dataset,
+                datasets_by_name=datasets_by_name, source_anchor=source_anchor,
+            )
+            if rerouted is not None:
+                mapping[r] = rerouted
     return mapping
+
+
+def _home_reroute(
+    r: Union[FieldKey, FieldSqlKey, StarKey], *, anchors: Mapping[Tuple[str, ...], Tuple[str, ...]],
+    host_dataset: SlayerDataset, target_path: Tuple[str, ...], root_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], source_anchor: Optional[str],
+) -> Optional[ValueKey]:
+    """``r`` routed through the home, when the home reads it by another route than the host."""
+    parts = anchors.get(_canonical_path(r.path, root=host_dataset, datasets_by_name=datasets_by_name))
+    if parts is None or parts[0] == source_anchor:
+        return None
+    route = _home_route(parts, root=root_dataset, datasets_by_name=datasets_by_name)
+    if route is None:
+        return None
+    via_host = reroot_from_root(r, target_path=target_path, root_dataset=root_dataset,
+                                datasets_by_name=datasets_by_name, host_name=host_dataset.name)
+    if _canonical_path(cast(FieldKey, via_host).path, root=root_dataset, datasets_by_name=datasets_by_name) == route:
+        return None
+    return r.model_copy(update={"path": (*target_path, *route)})
 
 
 def _source_anchor(
@@ -4556,8 +4571,11 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         ))
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
+    supply = bundle.row_supply
+    column_relation = source_relation if supply is None else (supply.anchor or "")
     stage_schema = _emit_stage_schema(
-        stage_name=query.name, source_relation=source_relation, projection=projection, grain=grain,
+        stage_name=query.name, source_relation=source_relation, column_relation=column_relation,
+        projection=projection, grain=grain,
         root=render_source_dataset, datasets_by_name=bundle.datasets_by_name,
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
@@ -4618,6 +4636,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     )
     planned = PlannedQuery(
         source_relation=source_relation,
+        column_relation=column_relation,
         row_slots=row_slots,
         aggregate_slots=agg_slots,
         regroup_attach_plans=regroup_attach_plans,
@@ -4869,6 +4888,7 @@ def _emit_stage_schema(
     *,
     stage_name: Optional[str],
     source_relation: str,
+    column_relation: str,
     projection,
     grain: Optional[List[SlotId]],
     root: Optional[SlayerDataset],
@@ -4890,7 +4910,7 @@ def _emit_stage_schema(
         alias = pick_slot_alias(slot=slot, alias_index=alias_idx)
         rk = slot_result_key(slot=slot, alias=alias, source_relation=source_relation)
         # Downstream bind + CTE column name are the ``__``-flattened form; public_alias keeps the dotted result-key form.
-        flat = flat_name(rk, strip_relation=source_relation)
+        flat = flat_name(rk, strip_relation=column_relation)
         # Two public fields flattening to one downstream name make the column ambiguous to a stage reading it by name.
         if flat in key_by_flat:
             check_stage_flatten_collision(flat_name=flat, collides=stage_name is not None or key_by_flat[flat] == rk,
@@ -4899,7 +4919,7 @@ def _emit_stage_schema(
             continue
         key_by_flat[flat] = rk
         fields.append(_stage_field(
-            slot=slot, alias=rk.removeprefix(f"{source_relation}."), flat=flat,
+            slot=slot, alias=rk.removeprefix(f"{column_relation}."), flat=flat,
             source=_source_field(key=slot.key, root=root, datasets_by_name=datasets_by_name),
             respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,

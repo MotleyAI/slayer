@@ -71,6 +71,7 @@ from slayer.ir.planned import (
     AssociationProducerKernel,
     MaskTyping,
     PlannedQuery,
+    PlannedRowBranch,
     RankedGrainMember,
     RegroupAttachPlan,
     SemiJoinFilter,
@@ -430,6 +431,8 @@ def _lower_positions(planned_query) -> _LoweredPositions:
         s.stage is not None and s.stage.kind is StageKind.DERIVED
         for s in slots_by_id.values()
     )
+    # The row supply's LEFT JOIN onto the host would resurface a key the host's HAVING removed.
+    supplied = planned_query.row_supply is not None
 
     def _lower_mask(mask) -> _LoweredFilter:
         slot = slots_by_id[mask.slot_id]
@@ -440,7 +443,7 @@ def _lower_positions(planned_query) -> _LoweredPositions:
             phase = Phase.POST
         else:
             phase = Phase.AGGREGATE
-            outer = stage_kind in (
+            outer = supplied or stage_kind in (
                 StageKind.PRODUCER, StageKind.COMBINED,
             ) or any(
                 slot_id_by_key.get(k) in combined_attached
@@ -3988,7 +3991,12 @@ class SQLGenerator:
         allocator = self._gen_allocator or self._new_allocator()
         dims = [sid for sid in planned_query.grain or [] if aliases_by_slot_id.get(sid)]
         columns = {sid: aliases_by_slot_id[sid][0] for sid in dims}
-        names = {slots_by_id[sid].public_name or slots_by_id[sid].declared_name: sid for sid in dims}
+        # A cell plan spells a dimension by its alias, or by its field when it is a coarser grain's restriction.
+        names = {
+            name: sid for sid in dims
+            for name in (slots_by_id[sid].declared_name, *slots_by_id[sid].public_aliases, slots_by_id[sid].public_name)
+            if name
+        }
         hoisted: List[CteEntry] = []
 
         def cells(plan) -> Tuple[Expression, Dict[str, str]]:
@@ -4003,34 +4011,11 @@ class SQLGenerator:
             by_dim = {names[public[sid]]: col for sid, col in zip(plan.projection, outputs) if public[sid] in names}
             return body, by_dim
 
-        branches: List[exp.Select] = []
-        for i, branch in enumerate(planned_query.row_supply.branches):
-            body, by_dim = cells(branch.cells)
-            if set(by_dim) != set(dims):
-                raise ValueError("a row-source plan does not project every dimension of its stage")
-            alias = f"_cells{i}"
-            select = exp.Select().select(*(
-                exp.Alias(
-                    this=_wrap_cast_for_type(
-                        dialect=self._dialect, expr=exp.column(by_dim[sid], table=alias, quoted=True),
-                        dt=self._dialect.declared_cast_type(slots_by_id[sid].type),
-                    ),
-                    alias=exp.to_identifier(columns[sid], quoted=True),
-                )
-                for sid in dims
-            )).from_(exp.Subquery(this=body, alias=exp.TableAlias(this=exp.to_identifier(alias))))
-            for j, restrict in enumerate(branch.restrict):
-                r_body, r_dim = cells(restrict)
-                r_alias = f"_agree{i}_{j}"
-                on = build_grain_joinback_condition(pairs=self._keyed_pairs([
-                    (exp.column(col, table=r_alias, quoted=True), exp.column(by_dim[sid], table=alias, quoted=True),
-                     slots_by_id[sid].key)
-                    for sid, col in r_dim.items()
-                ]), dialect=self._dialect)
-                exists = exp.Select().select(exp.Literal.number(1)).from_(
-                    exp.Subquery(this=r_body, alias=exp.TableAlias(this=exp.to_identifier(r_alias))))
-                select = select.where(exp.Exists(this=exists.where(on) if on is not None else exists))
-            branches.append(select)
+        branches = [
+            self._row_supply_branch(index=i, branch=branch, cells=cells, dims=dims, columns=columns,
+                                    slots_by_id=slots_by_id)
+            for i, branch in enumerate(planned_query.row_supply.branches)
+        ]
         union: Expression = branches[0]
         for b in branches[1:]:
             union = exp.union(union, b, distinct=True)
@@ -4044,7 +4029,8 @@ class SQLGenerator:
             for sid in dims
         ]), dialect=self._dialect)
         wrapped = exp.Select().select(
-            *(exp.column(columns[sid], table=keys, quoted=True).as_(columns[sid], quoted=True) for sid in dims),
+            *(exp.column(columns[sid], table=keys, quoted=True).as_(alias, quoted=True)
+              for sid in dims for alias in aliases_by_slot_id[sid]),
             *(self._with_empty(exp.column(alias, table=host, quoted=True), slot=slots_by_id[sid], bundle=bundle)
               .as_(alias, quoted=True) for sid, alias in local),
         ).from_(keys)
@@ -4056,6 +4042,40 @@ class SQLGenerator:
             CteEntry(name=keys, query=union, depends_on=[e.name for e in hoisted]),
         ]
         return wrapped, ctes, [host, keys]
+
+    def _row_supply_branch(
+        self, *, index: int, branch: PlannedRowBranch, cells: Callable[[Any], Tuple[Expression, Dict[str, str]]],
+        dims: List[str], columns: Dict[str, str], slots_by_id: Dict[str, ValueSlot],
+    ) -> exp.Select:
+        """One branch's cells, each dimension cast to its type, kept where every ``restrict`` plan has the cell."""
+        body, by_dim = cells(branch.cells)
+        if set(by_dim) != set(dims):
+            raise ValueError("a row-source plan does not project every dimension of its stage")
+        alias = f"_cells{index}"
+        select = exp.Select().select(*(
+            exp.Alias(
+                this=_wrap_cast_for_type(
+                    dialect=self._dialect, expr=exp.column(by_dim[sid], table=alias, quoted=True),
+                    dt=self._dialect.declared_cast_type(slots_by_id[sid].type),
+                ),
+                alias=exp.to_identifier(columns[sid], quoted=True),
+            )
+            for sid in dims
+        )).from_(exp.Subquery(this=body, alias=exp.TableAlias(this=exp.to_identifier(alias))))
+        for j, restrict in enumerate(branch.restrict):
+            r_body, r_dim = cells(restrict)
+            if len(r_dim) != len(restrict.projection):
+                raise ValueError("a restricting cell plan projects a column that is no dimension of its stage")
+            r_alias = f"_agree{index}_{j}"
+            on = build_grain_joinback_condition(pairs=self._keyed_pairs([
+                (exp.column(col, table=r_alias, quoted=True), exp.column(by_dim[sid], table=alias, quoted=True),
+                 slots_by_id[sid].key)
+                for sid, col in r_dim.items()
+            ]), dialect=self._dialect)
+            exists = exp.Select().select(exp.Literal.number(1)).from_(
+                exp.Subquery(this=r_body, alias=exp.TableAlias(this=exp.to_identifier(r_alias))))
+            select = select.where(exp.Exists(this=exists.where(on) if on is not None else exists))
+        return select
 
     def _with_empty(self, value: Expression, *, slot: ValueSlot, bundle: ResolvedSourceBundle) -> Expression:
         """``value`` with a missing cell read as the slot's empty value (Axiom 4)."""
@@ -6909,7 +6929,7 @@ def _build_planned_stages_ast(
             name=relation,
             query=build_flat_rename_wrapper(
                 stage=planned.stage_schema.display_name,
-                source_relation=planned.source_relation,
+                source_relation=planned.stage_column_relation,
                 inner=body,
                 expected_columns=[c.name for c in planned.stage_schema.fields],
                 dialect=_as_dialect(dialect).sqlglot_name,

@@ -11,17 +11,19 @@ from typing import Any, Iterator, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.errors import UnrelatedDatasetError, UnresolvableDimensionRelationshipError
 from slayer.core.field_expression import portable_text
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, call_keywords, parse_template, walk_parsed_refs
 from slayer.core.models import SlayerDataset
+from slayer.core.time_spine import is_spine_query
 from slayer.engine.population.anchors import anchor_route, find_anchor
 from slayer.engine.population.inference import (
     DimensionAnchor,
     _OK,
     _all_filter_refs,
     _is_saved_metric_ref,
+    _query_dimension_refs,
     _walk_terminal_dataset,
     determination_items,
     metric_anchor_names,
@@ -73,6 +75,24 @@ class RowPlan(BaseModel):
 # --------------------------------------------------------------------------- #
 # Classification
 # --------------------------------------------------------------------------- #
+def _saved_metric(node: Any, *, owner: Optional[str], datasets_by_name: dict[str, SlayerDataset],
+                  seen: frozenset[str]) -> Optional[tuple[Any, str, str]]:
+    """``(parsed definition, its dataset, its key)`` when ``node`` names a saved metric not yet in ``seen``."""
+    parts = [*((owner,) if owner else ()), *(node.parts if isinstance(node, DottedRef) else (node.name,))]
+    dataset = _walk_terminal_dataset(parts[:-1], datasets_by_name=datasets_by_name)
+    if dataset is None or dataset.get_field(parts[-1]) is not None:
+        return None
+    metric = dataset.get_metric(parts[-1])
+    key = f"{dataset.name}.{parts[-1]}"
+    text = portable_text(metric.expression) if metric is not None and key not in seen else None
+    if text is None:
+        return None
+    try:
+        return parse_template(text), dataset.name, key
+    except Exception:  # noqa: BLE001 — an unparseable definition is refused where it binds
+        return None
+
+
 def _top_aggregates(tree: Any, *, owner: Optional[str], datasets_by_name: dict[str, SlayerDataset],
                     seen: frozenset[str] = frozenset()) -> Iterator[tuple[AggCall, Optional[str]]]:
     """Each aggregation of ``tree`` outside another, a saved metric's expanded on its dataset (``owner``)."""
@@ -80,22 +100,11 @@ def _top_aggregates(tree: Any, *, owner: Optional[str], datasets_by_name: dict[s
         if isinstance(node, AggCall):
             yield node, owner
             continue
-        parts = [*((owner,) if owner else ()), *(node.parts if isinstance(node, DottedRef) else (node.name,))]
-        dataset = _walk_terminal_dataset(parts[:-1], datasets_by_name=datasets_by_name)
-        metric = dataset.get_metric(parts[-1]) if dataset is not None and dataset.get_field(parts[-1]) is None else None
-        key = f"{dataset.name}.{parts[-1]}" if dataset is not None else ""
-        if metric is None or key in seen:
-            continue
-        text = portable_text(metric.expression)
-        try:
-            expanded = parse_template(text) if text is not None else None
-        except Exception:  # noqa: BLE001 — an unparseable definition is refused where it binds
-            continue
-        if expanded is None:
-            continue
-        assert dataset is not None
-        yield from _top_aggregates(expanded, owner=dataset.name, datasets_by_name=datasets_by_name,
-                                   seen=seen | {key})
+        saved = _saved_metric(node, owner=owner, datasets_by_name=datasets_by_name, seen=seen)
+        if saved is not None:
+            expanded, dataset_name, key = saved
+            yield from _top_aggregates(expanded, owner=dataset_name, datasets_by_name=datasets_by_name,
+                                       seen=seen | {key})
 
 
 def _leaf_paths(agg: AggCall, *, owner: Optional[str]) -> tuple[list[tuple[str, ...]], list[AggCall]]:
@@ -133,19 +142,20 @@ def _home(agg: AggCall, *, owner: Optional[str], datasets_by_name: dict[str, Sla
     return terminal.name if terminal is not None and terminal.name in datasets_by_name else common[0]
 
 
+def _partition_ref(v: Any, *, owner: Optional[str]) -> Optional[str]:
+    if isinstance(v, DottedRef):
+        return ".".join(((owner,) if owner else ()) + v.parts)
+    if isinstance(v, Ref):
+        return f"{owner}.{v.name}" if owner else v.name
+    return None
+
+
 def _partition_grain(agg: AggCall, *, owner: Optional[str]) -> Optional[tuple[str, ...]]:
-    refs: list[str] = []
-    found = False
-    for name, value in call_keywords(agg):
-        if name != "partition_by":
-            continue
-        found = True
-        for v in value if isinstance(value, (list, tuple)) else (value,):
-            if isinstance(v, DottedRef):
-                refs.append(".".join(((owner,) if owner else ()) + v.parts))
-            elif isinstance(v, Ref):
-                refs.append(f"{owner}.{v.name}" if owner else v.name)
-    return tuple(refs) if found else None
+    values = [value for name, value in call_keywords(agg) if name == "partition_by"]
+    if not values:
+        return None
+    flat = [v for value in values for v in (value if isinstance(value, (list, tuple)) else (value,))]
+    return tuple(r for v in flat if (r := _partition_ref(v, owner=owner)) is not None)
 
 
 def _reaches(*, home: str, item: str, datasets_by_name: dict[str, SlayerDataset]) -> bool:
@@ -217,17 +227,27 @@ def _field_filters(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerData
 
 
 def _cells(query: SlayerQuery, *, population: str, filters: list[str],
-           dimensions: Optional[tuple[str, ...]] = None) -> SlayerQuery:
-    """A dimension-only query over ``population``: the cells its filtered rows reach."""
+           grain: Optional[tuple[str, ...]] = None) -> SlayerQuery:
+    """A dimension-only query over ``population``: the cells its filtered rows reach, on the query's dimensions
+    whose references lie in ``grain`` when given (each kept as the query spells it, alias included)."""
     data = query.model_dump(mode="json", exclude_none=True, exclude={
         "metrics", "order", "limit", "offset", "name", "population", "population_inferred", "version", "filter",
-        *(("dimensions", "time_dimensions", "main_time_dimension") if dimensions is not None else ()),
+        *(("main_time_dimension",) if grain is not None else ()),
     })
     data["population"] = population
     if filters:
         data["filter"] = filters
-    if dimensions is not None:
-        data["dimensions"] = list(dimensions)
+    if grain is not None:
+        data["dimensions"] = [
+            d.model_dump(mode="json", exclude_none=True) for d in query.dimensions or []
+            if set(_query_dimension_refs(query.model_copy(update={"dimensions": [d], "time_dimensions": None})))
+            <= set(grain)
+        ]
+        data["time_dimensions"] = [
+            t.model_dump(mode="json", exclude_none=True) for t in query.time_dimensions or []
+            if set(_query_dimension_refs(query.model_copy(update={"dimensions": None, "time_dimensions": [t]})))
+            <= set(grain)
+        ]
     return SlayerQuery.model_validate(data)
 
 
@@ -260,6 +280,13 @@ def _routes(*, reader: SlayerDataset, home: str, datasets_by_name: dict[str, Sla
     return True
 
 
+def _require_route(*, reader: SlayerDataset, home: str, datasets_by_name: dict[str, SlayerDataset]) -> None:
+    """Raise the typed ambiguity error when ``reader`` has no unambiguous route to ``home``."""
+    target = datasets_by_name.get(home)
+    if target is not None and home != reader.name:
+        anchor_route(reader=reader, anchor=target, datasets_by_name=datasets_by_name)
+
+
 def anchored_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[RowPlan]:
     """A named population that cannot route to a metric's home: the stage is planned from that home, its rows the
     population's cells (the population's reading of the home never decides a value, Axiom 6); else ``None``.
@@ -275,54 +302,116 @@ def anchored_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDatas
                         if a in datasets_by_name and not _routes(reader=reader, home=a, datasets_by_name=datasets_by_name))
     if not unroutable:
         return None
-    routable = [
-        f for f in _field_filters(free, datasets_by_name=datasets_by_name)
-        if all(_routes(reader=reader, home=r.split(".")[0], datasets_by_name=datasets_by_name)
-               for r in _all_filter_refs(f, root=None)[0])
-    ]
-    cells = _cells(free, population=population, filters=routable)
-    return RowPlan(population=unroutable[0], supply=RowSupply(branches=(RowSupplyBranch(cells=cells),)),
+    filters = _field_filters(free, datasets_by_name=datasets_by_name)
+    for f in filters:
+        for r in _all_filter_refs(f, root=None)[0]:
+            _require_route(reader=reader, home=r.split(".")[0], datasets_by_name=datasets_by_name)
+    cells = _cells(free, population=population, filters=filters)
+    return RowPlan(population=unroutable[0], supply=RowSupply(branches=(RowSupplyBranch(cells=cells),), anchor=population),
                    row_sources=(population,), reported=population)
+
+
+def _connected(*, home: str, target: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> bool:
+    """Whether a join path (ambiguous or not) leads from ``home`` to ``target``."""
+    reader = datasets_by_name.get(home)
+    if reader is None:
+        return False
+    if reader.name == target.name:
+        return True
+    try:
+        return not anchor_route(reader=reader, anchor=target, datasets_by_name=datasets_by_name).unrelated
+    except UnresolvableDimensionRelationshipError:
+        return True
+
+
+def refuse_product_split(
+    query: SlayerQuery, *, anchor_datasets: tuple[str, ...], datasets_by_name: dict[str, SlayerDataset],
+) -> None:
+    """A product anchor beside a metric homed in its first group's component is refused, as an anchored query reading
+    the other groups' dimensions is (DEV-2390 lifts it)."""
+    host = datasets_by_name.get(anchor_datasets[0]) if len(anchor_datasets) > 1 else None
+    if host is None or not query.metrics:
+        return
+    homes = sorted({c.home for c in classify_row_sources(query, datasets_by_name=datasets_by_name).coarse})
+    joined = [h for h in homes if _connected(home=h, target=host, datasets_by_name=datasets_by_name)]
+    if joined:
+        others = ", ".join(anchor_datasets[1:])
+        raise UnrelatedDatasetError(
+            summary=f"The dimensions of {others} meet {host.name} as a product, and the metrics homed on "
+            f"{', '.join(joined)} reach no relationship path to {others}: their values by those dimensions are "
+            f"undefined.",
+            suggestion=f"Drop the dimensions of {others}, or measure {others} only through its own aggregates.",
+        )
+
+
+def _single(datasets: tuple[str, ...]) -> Optional[str]:
+    return datasets[0] if len(datasets) == 1 else None
+
+
+def _unit_plan(query: SlayerQuery, *, anchor: DimensionAnchor,
+               datasets_by_name: dict[str, SlayerDataset]) -> RowPlan:
+    """A query with no dimensions: one row, planned from a supplying home (else the first dataset named)."""
+    host = (classify_row_sources(query, datasets_by_name=datasets_by_name).homes or (None,))[0]
+    population = host or first_metric_anchor(query)
+    if population is None:
+        anchor.required()
+        raise ValueError("a query with no dimensions, metrics or filters has no rows")
+    return RowPlan(population=population, supply=RowSupply(unit=True), row_sources=(UNIT,))
+
+
+def _supply_branches(query: SlayerQuery, *, sources: RowSources, anchor_datasets: tuple[str, ...],
+                     filters: list[str]) -> list[RowSupplyBranch]:
+    """One branch per full-grain home, plus the anchor's cells restricted to each coarser term's cells."""
+    branches = [RowSupplyBranch(cells=_cells(query, population=h, filters=filters)) for h in sources.homes]
+    if not sources.needs_anchor:
+        return branches
+    anchor_cells = _cells(query, population=anchor_datasets[0], filters=filters)
+    for c in sources.coarse:
+        restrict = (_cells(query, population=c.home, filters=filters, grain=c.grain),) if c.grain else ()
+        branch = RowSupplyBranch(cells=anchor_cells, restrict=restrict)
+        if branch not in branches:
+            branches.append(branch)
+    return branches
+
+
+def pinned_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[RowPlan]:
+    """A stored inferred stage's row plan from its pinned anchor; ``None`` for an anchored or spine stage (whose rows
+    are its population's)."""
+    anchor = query.population_name
+    if not query.population_inferred or anchor is None or anchor not in datasets_by_name or is_spine_query(query):
+        return None
+    free = query.model_copy(update={"population": None, "population_inferred": False})
+    return plan_rows(free, anchor=DimensionAnchor(datasets=(anchor,)), datasets_by_name=datasets_by_name)
 
 
 def plan_rows(
     query: SlayerQuery, *, anchor: DimensionAnchor, datasets_by_name: dict[str, SlayerDataset],
 ) -> RowPlan:
     """The population an inferred ``query`` is planned from, its row supply, and what it reports."""
-    has_dims = bool(query.dimensions or query.time_dimensions)
     if not query.distinct_dimension_values:
         (population, *_rest) = anchor.required()
-        return RowPlan(population=population, supply=RowSupply(), row_sources=(population,), reported=population)
-    if not has_dims:
-        host = (classify_row_sources(query, datasets_by_name=datasets_by_name).homes or (None,))[0]
-        population = host or first_metric_anchor(query)
-        if population is None:
-            anchor.required()
-            raise ValueError("a query with no dimensions, metrics or filters has no rows")
-        return RowPlan(population=population, supply=RowSupply(unit=True), row_sources=(UNIT,))
+        return RowPlan(population=population, supply=RowSupply(anchor=population), row_sources=(population,),
+                       reported=population)
+    if not (query.dimensions or query.time_dimensions):
+        return _unit_plan(query, anchor=anchor, datasets_by_name=datasets_by_name)
     if not query.metrics:
         datasets = anchor.required()
-        return RowPlan(population=datasets[0], supply=RowSupply(product=len(datasets) > 1),
+        return RowPlan(population=datasets[0], supply=RowSupply(product=len(datasets) > 1, anchor=_single(datasets)),
                        row_sources=tuple(sorted(datasets)), reported=anchor.display)
     sources = classify_row_sources(query, datasets_by_name=datasets_by_name)
     anchor_datasets = anchor.required() if sources.needs_anchor else anchor.datasets
+    refuse_product_split(query, anchor_datasets=anchor_datasets, datasets_by_name=datasets_by_name)
     filters = _field_filters(query, datasets_by_name=datasets_by_name)
-    branches = [RowSupplyBranch(cells=_cells(query, population=h, filters=filters)) for h in sources.homes]
-    if sources.needs_anchor:
-        anchor_cells = _cells(query, population=anchor_datasets[0], filters=filters)
-        for c in sources.coarse:
-            restrict = (_cells(query, population=c.home, filters=filters, dimensions=c.grain),) if c.grain else ()
-            branch = RowSupplyBranch(cells=anchor_cells, restrict=restrict)
-            if branch not in branches:
-                branches.append(branch)
+    branches = _supply_branches(query, sources=sources, anchor_datasets=anchor_datasets, filters=filters)
     row_sources = tuple(sorted({*sources.homes, *(anchor_datasets if sources.needs_anchor else ())}))
     if not sources.needs_anchor and len(sources.homes) == 1:
-        return RowPlan(population=sources.homes[0], supply=RowSupply(), row_sources=row_sources,
+        return RowPlan(population=sources.homes[0], supply=RowSupply(anchor=_single(anchor.datasets)), row_sources=row_sources,
                        reported=anchor.display)
     # A supplying home hosts the stage: a re-aggregation's carrier is built over the host's rows.
     population = (sources.homes or anchor_datasets or (first_metric_anchor(query),))[0]
     if population is None:
         anchor.required()
         raise ValueError("an inferred query with metrics names no dataset")
-    return RowPlan(population=population, supply=RowSupply(branches=tuple(branches), product=len(anchor_datasets) > 1),
+    return RowPlan(population=population, supply=RowSupply(branches=tuple(branches), product=len(anchor_datasets) > 1,
+                                                           anchor=_single(anchor_datasets)),
                    row_sources=row_sources or (population,), reported=anchor.display)

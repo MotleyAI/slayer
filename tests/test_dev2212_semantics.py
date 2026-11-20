@@ -109,6 +109,14 @@ async def test_an_orphan_beside_the_spine_is_not_yet_a_row(backend: str) -> None
     assert resp.population == "time_spine × customers"
 
 
+async def test_a_spine_query_over_a_product_anchor(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[R, "tickets.priority"], time_dimensions=[SPINE_MONTH])
+    assert resp.row_count == 3 * 2 * 3
+    assert resp.population == "time_spine × customers × tickets"
+    assert resp.row_sources == ["customers", "tickets"]
+
+
 # --------------------------------------------------------------------------- #
 # Transforms over result rows (target: DEV-2218)
 # --------------------------------------------------------------------------- #

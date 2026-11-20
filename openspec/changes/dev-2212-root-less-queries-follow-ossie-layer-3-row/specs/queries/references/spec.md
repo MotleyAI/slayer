@@ -41,8 +41,8 @@ A query SHALL reach a reference's anchor from its **reading dataset** as follows
 - **THEN** it reads the sibling across the product, never the relationship; reading `ship_region.name` fails as an unknown field of the sibling
 
 #### Scenario: A directed cycle takes its to-one path
-- **WHEN** `x → y`, `y → z` and `z → x` are many-to-one and a query with `population: "x"` measures `sum(z.amount)`
-- **THEN** it sums the `z` row reached through `x → y → z`, and `sum(x.z.amount)` sums the `z` rows referencing each `x`
+- **WHEN** `x → y`, `y → z` and `z → x` are many-to-one and a query with `population: "x"` groups by `x.v` and measures `sum(z.amount)` and `sum(x.z.amount)`
+- **THEN** both sum the `z` rows referencing each `x`, the home `z` reaching `x` by its only to-one path `z → x`
 
 #### Scenario: Inference and binding agree
 - **WHEN** a query without a population has the dimensions `orders.status` and `customers.region` over the two-path schema above

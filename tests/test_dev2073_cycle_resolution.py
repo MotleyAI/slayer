@@ -17,8 +17,9 @@ class TestToOnePathFirst:
                 population="x", dimensions=["x.id"],
                 metrics=[{"metric": "sum(z.amount)", "alias": "s"}],
             )
-            # Through x → y → z; the direct z.x_id edge (x2 owns both z rows) would give {1: None, 2: 15}.
-            assert {r["x.id"]: r["s"] for r in resp.data} == {1: 10.0, 2: 5.0}
+            # Routed from the home z by its only to-one path, the direct z.x_id edge (x2 owns both z rows);
+            # the population's route x → y → z would give {1: 10, 2: 5}.
+            assert {r["x.id"]: r["s"] for r in resp.data} == {1: None, 2: 15.0}
 
 
 class TestRootlessAcrossADirectedCycle:

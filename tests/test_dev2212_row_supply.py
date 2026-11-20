@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.errors import UnrelatedDatasetError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 
 from tests._dev1737_fixtures import TableSpec
@@ -301,3 +302,75 @@ async def test_a_named_population_keeps_its_rows(backend: str, query: dict, orph
     assert table(resp, *keys) == rows(*expected)
     assert resp.population == query["population"]
     assert resp.population_inferred is False
+
+
+async def test_a_dimension_under_two_aliases_projects_both(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[{"field": R, "alias": "r1"}, {"field": R, "alias": "r2"}],
+                         metrics=[REV, RET])
+    assert table(resp, "r1", "r2", REV, RET) == rows(
+        ("EAST", "EAST", 350, 25), ("NORTH", "NORTH", None, 10), ("WEST", "WEST", 300, None))
+
+
+@pytest.mark.parametrize(("condition", "expected"), [
+    ("rev > 320", [("EAST", 350, 3)]),
+    ("n = 0", [("NORTH", None, 0)]),
+])
+async def test_a_measure_filter_removes_supplied_rows(backend: str, condition: str, expected: list) -> None:
+    # A key one branch supplies never resurfaces a row the measure filter removed; an absent cell reads its empty value.
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[R], filter=[condition], metrics=[
+            {"metric": "sum(orders.amount)", "alias": "rev"}, {"metric": "count(orders.*)", "alias": "n"}, RET])
+    assert table(resp, R, "rev", "n") == rows(*expected)
+
+
+@pytest.mark.parametrize("region", [R, {"field": R, "alias": "region"}])
+async def test_a_coarser_term_restricts_the_anchor_on_an_aliased_dimension(backend: str, region: Any) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[region, "customers.segment"],
+                         metrics=[{"metric": "sum(orders.amount, partition_by=[customers.region])", "alias": "p"}])
+    assert table(resp, resp.columns[0], "customers.segment", "p") == rows(
+        ("EAST", "corporate", 350), ("EAST", "retail", 350), ("WEST", "retail", 300))
+
+
+@pytest.mark.parametrize("metrics", [["ORDERS.total_revenue"], ["sum(ORDERS.amount)"], ["ORDERS.total_revenue", RET]])
+async def test_an_unquoted_head_supplies_rows_in_any_case(backend: str, metrics: list) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[R], metrics=metrics)
+        unit = await run(eng, metrics=metrics[:1])
+    assert sorted(r[R] for r in resp.data) == (["EAST", "NORTH", "WEST"] if RET in metrics else ["EAST", "WEST"])
+    assert unit.row_count == 1
+
+
+async def test_row_supply_cells_read_the_stage_variables(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[R], metrics=[REV, RET], filter=["orders.status = '{s}'"],
+                         variables={"s": "completed"})
+    assert table(resp, R, REV, RET) == rows(("EAST", 150, 25))
+
+
+@pytest.mark.parametrize("metric", ["customers.customer_count", "sum(orders.amount)"])
+@pytest.mark.parametrize("spine", [False, True])
+async def test_a_product_anchor_beside_a_metric_of_its_first_group_is_refused(
+        backend: str, metric: str, spine: bool) -> None:
+    # The metric's home reaches no path to tickets; DEV-2390 will compute it at its reachable grain instead.
+    spine_td = [{"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-01-01", "2025-02-28"]}]
+    async with seed_engine(backend) as eng:
+        with pytest.raises(UnrelatedDatasetError):
+            await run(eng, dimensions=[R, "tickets.priority"], metrics=[metric],
+                      **({"time_dimensions": spine_td} if spine else {}))
+
+
+async def test_a_product_anchor_beside_a_metric_of_another_group_answers(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[R, "tickets.priority"], metrics=[TIX])
+    assert {(r[R], r["tickets.priority"], r[TIX]) for r in resp.data} == {
+        (region, p, n) for region in ("EAST", "NORTH", "WEST") for p, n in (("high", 1), ("low", 2))}
+
+
+@pytest.mark.xfail(strict=True, reason="DEV-2388: the source binds from the host orders, walking back into it")
+@pytest.mark.parametrize("extra", [[], [RET]])
+async def test_a_metric_written_through_another_anchor_supplies_rows(backend: str, extra: list) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[R], metrics=[{"metric": "sum(customers.orders.amount)", "alias": "s"}, *extra])
+    assert {r[R]: r["s"] for r in resp.data} == {"EAST": 350, "WEST": 300, **({"NORTH": None} if extra else {})}

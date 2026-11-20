@@ -126,3 +126,23 @@ class TestRefinement:
         resp = await engine.execute("old_pin")
         assert table(resp, R, REV) == rows(("EAST", 350), ("WEST", 300), ("NORTH", None))
         assert (resp.population, resp.population_inferred) == ("customers", False)
+
+
+async def test_a_saved_inferred_stage_read_by_another_query_keeps_its_rows(engine) -> None:
+    await engine.create_dataset_from_query(query=BY_REGION, name="by_region")
+    direct = await run(engine, **BY_REGION)
+    spliced = await run(engine, population="by_region", dimensions=["by_region.region", "by_region.orders__total_revenue"])
+    assert table(direct, R, REV) == table(spliced, "by_region.region", "by_region.orders__total_revenue") == rows(
+        ("EAST", 350), ("WEST", 300))
+
+
+async def test_an_inferred_stage_keeps_its_column_names(engine) -> None:
+    await engine.create_dataset_from_query(query=BY_REGION, name="by_region")
+    saved = await engine.storage.get_dataset("by_region")
+    assert saved is not None
+    assert [f.name for f in saved.fields] == ["region", "orders__total_revenue"]
+    inline = await engine.execute([
+        SlayerQuery.model_validate({"name": "s1", **BY_REGION}),
+        SlayerQuery.model_validate({"population": "s1", "dimensions": ["s1.region", "s1.orders__total_revenue"]}),
+    ])
+    assert table(inline, "s1.region", "s1.orders__total_revenue") == rows(("EAST", 350), ("WEST", 300))

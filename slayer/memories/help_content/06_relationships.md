@@ -17,7 +17,10 @@ without orders are absent; rooted at `customers` they appear with counts of 0 an
 other aggregates NULL. When the question lists entities ("every region", "all
 customers"), root the query at that dataset. Omit `population` and the rows are every
 dimension combination some metric's rows reach — the dimension values alone with no
-metrics, one row with no dimensions (reported back).
+metrics, one row with no dimensions (reported back). A metric that cannot reach every
+dimension adds the combinations of the smallest dataset determining them all; dimensions
+with no join path between them combine as a product, and a tie between two such datasets
+is refused (name `population`).
 `recommend_population` proposes a root for a list of `dataset.field` items.
 
 ## Aggregating joined fields

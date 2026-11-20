@@ -101,6 +101,7 @@ async def test_cache_twin_reports_its_own_row_sources(backend: str) -> None:
     async with seed_engine(backend) as eng:
         unit = await eng.execute(q(**UNIT), cache=True)
         anchored = await eng.execute(q(population="orders", **UNIT), cache=True)
+        assert eng.cache_size == 1
     assert unit.row_sources == ["unit"]
     assert anchored.row_sources == ["orders"]
 
@@ -122,9 +123,9 @@ async def test_refresh_reports_row_sources() -> None:
 # --------------------------------------------------------------------------- #
 async def test_rest_reports_row_sources() -> None:
     async with seed_engine("sqlite") as eng:
-        client = TestClient(create_app(storage=eng.storage))
-        inferred = client.post("/query", json=TWO)
-        anchored = client.post("/query", json={"population": "customers", **TWO})
+        with TestClient(create_app(storage=eng.storage)) as client:
+            inferred = client.post("/query", json=TWO)
+            anchored = client.post("/query", json={"population": "customers", **TWO})
     assert inferred.status_code == 200, inferred.text
     body = inferred.json()
     assert (body["population"], body["population_inferred"], body["row_sources"]) == (

@@ -74,14 +74,17 @@ Each result cell's values SHALL depend only on the evaluated expression, the
 cell, and the row-level filters — never on which other measures, measure-typed
 filters, or order entries the query contains. In a query naming `population`, adding or
 removing a projected measure SHALL NOT change the row set or any other column's values. In a
-query omitting it, adding a measure SHALL NOT remove a row or change any value in an existing
-row, a row it adds carrying the other measures' empty values. A transform over result rows
+query omitting it with at least one measure, adding a measure SHALL NOT remove a row or change any value in an existing
+row, a row it adds carrying each other measure's value on its own grain there (its empty value
+where it has no cell). A transform over result rows
 (the rank family, `lag`, `lead`, cumulative and collapsing transforms) is exempt from the previous
-sentence until transforms evaluate over their operand's own cells (DEV-2218). A measure-typed
+sentence and from the single-measure-split guarantee below until transforms evaluate over their
+operand's own cells (DEV-2218). A measure-typed
 filter masks result cells without changing any surviving cell's values; ORDER BY and LIMIT
 select and order rows without changing any cell's values. A multi-measure query SHALL
 return, cell by cell, the same values as its single-measure splits in each split's rows, and
-each measure's empty value in the rows only its siblings supply. Selecting an
+in the rows only its siblings supply, its value on its own grain there (its empty value where it
+has no cell). Selecting an
 expression as a measure SHALL NOT make any other measure, filter or order entry that
 contains it fail.
 
@@ -162,8 +165,9 @@ make an aggregation supply rows.
 
 ### Requirement: Row laws of inferred queries
 Before measure-typed filters, `order` and `limit`, every query omitting `population` SHALL obey:
-**measure monotonicity** — adding a measure never removes a row and never changes a value in an
-existing row (transforms over result rows excepted until DEV-2218); **home-row preservation** —
+**measure monotonicity** — adding a measure to a query with at least one measure never removes a
+row and never changes a value in an existing row (transforms over result rows excepted until
+DEV-2218); **home-row preservation** —
 every home row of a full-grain aggregate surviving the filters lands in a row, exactly one when
 the home determines the dimensions and the data respects declared cardinality; **filter
 non-expansion** — adding a field filter never adds a row and never changes a result key; and the

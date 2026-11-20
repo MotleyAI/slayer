@@ -1206,16 +1206,16 @@ class TestF1F4SemanticValues:
         assert float(result.data[0]["customers.balance_sum"]) == pytest.approx(200.0)
 
     async def test_f4_scalar_cross_model_agg_no_matching_host_rows(self, f1f4_env) -> None:
-        # "Without matching host rows": a host filter matching NO orders
-        # empties the host base, so there is no host row to attach the target
-        # scalar onto — the query returns zero rows.
+        # A host filter matching no orders still returns the unit row, the target
+        # scalar reading its empty value (NULL).
         query = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(metric="sum(customers.balance)")],
             filter=["orders.status = 'nonexistent'"],
         )
         result = await f1f4_env.execute(query=query)
-        assert result.row_count == 0, result.data
+        assert result.row_count == 1, result.data
+        assert result.data == [{"customers.balance_sum": None}]
 
     async def test_cross_model_scalar_broadcasts_to_every_host_group(self, f1f4_env) -> None:
         # A cross-dataset aggregate that shares no grain with the host dimension

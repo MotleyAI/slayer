@@ -16,7 +16,8 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, RelationshipCardinality
-from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
+from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, DatasourceConfig, SlayerDataset
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev2212_fixtures import BACKENDS, DS, rows, run, table
@@ -71,9 +72,40 @@ async def test_an_aggregation_reads_its_grain_from_its_home(engine, population) 
     assert table(resp, "regions.name", "orders.total_revenue") == rows(("North", 150), ("South", 300))
 
 
-@pytest.mark.parametrize("population", [None, "regions"])
-async def test_a_filter_restricting_a_home_is_routed_from_that_home(engine, population) -> None:
-    resp = await run(engine, **({"population": population} if population else {}),
-                     dimensions=["regions.name"], metrics=["orders.total_revenue"],
+async def test_a_filter_restricting_a_home_is_routed_from_that_home(engine) -> None:
+    resp = await run(engine, dimensions=["regions.name"], metrics=["orders.total_revenue"],
                      filter=["customers.segment = 'retail'"])
     assert table(resp, "regions.name", "orders.total_revenue") == rows(("North", 100), ("South", 300))
+
+
+@pytest.mark.parametrize("condition", ["customers.segment = 'retail'", "orders.amount > 100"])
+async def test_a_named_population_refuses_a_filter_it_cannot_route(engine, condition) -> None:
+    # regions reaches customers and orders by two routes, neither to-one: the restriction is ambiguous.
+    with pytest.raises(UnresolvableDimensionRelationshipError):
+        await run(engine, population="regions", dimensions=["regions.name"], metrics=["orders.total_revenue"],
+                  filter=[condition])
+
+
+async def test_a_named_population_planned_on_its_home_keeps_its_datasource(engine, tmp_path) -> None:
+    # A higher-priority datasource also holds an `orders`; the stage stays on the population's datasource.
+    path = str(tmp_path / "other.duckdb")
+    seed_backend("duckdb", path, [TableSpec(name="orders", columns=TABLES[3].columns, rows=[])])
+    await engine.storage.save_datasource(DatasourceConfig(name="other", type="duckdb", database=path))
+    await engine.storage.save_dataset(DATASETS[3].model_copy(update={"data_source": "other", "relationships": []}))
+    await engine.storage.set_datasource_priority(["other", DS])
+    resp = await run(engine, population="regions", dimensions=["regions.name"], metrics=["sum(orders.amount)"])
+    assert table(resp, "regions.name", "orders.amount_sum") == rows(("North", 150), ("South", 300))
+
+
+_VIA_SOURCE, _AT_MANAGERS = "customers.regions.managers.name", "managers.name"
+
+
+@pytest.mark.parametrize("dimensions", [
+    pytest.param([_VIA_SOURCE, _AT_MANAGERS], marks=pytest.mark.xfail(
+        strict=True, reason="DEV-2388: the first spelling of a column decides its anchor")),
+    [_AT_MANAGERS, _VIA_SOURCE],
+])
+async def test_each_spelling_of_a_column_is_routed_from_the_home(engine, dimensions) -> None:
+    # `managers.name` is anchored at managers: from the home orders it has two to-one paths, whatever the order.
+    with pytest.raises(UnresolvableDimensionRelationshipError):
+        await run(engine, population="customers", dimensions=dimensions, metrics=["sum(customers.orders.amount)"])

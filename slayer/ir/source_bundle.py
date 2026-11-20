@@ -70,10 +70,19 @@ class RowSupply(BaseModel):
     unit: bool = False
     #: The population is one group of a product anchor; the other groups' dimensions read across ``×``.
     product: bool = False
+    #: The dimension anchor when it is one dataset: the stage's column names drop its name, whatever hosts the stage.
+    anchor: Optional[str] = None
 
 
 #: ``ResolvedSourceBundle.row_supplies`` key of an unnamed stage.
 ROOT_STAGE = ""
+
+
+class SplicedRows(BaseModel):
+    """A stored inferred stage's host and row supply, planned from its pinned anchor."""
+
+    population: str
+    supply: RowSupply
 
 
 class ResolvedSourceBundle(BaseModel):
@@ -115,6 +124,8 @@ class ResolvedSourceBundle(BaseModel):
     inner_restrictions: Tuple[InnerRestriction, ...] = ()
     # Each inferred stage's row supply, keyed by stage name (``ROOT_STAGE`` when unnamed).
     row_supplies: Dict[str, RowSupply] = Field(default_factory=dict)
+    # Each stored inferred stage of a query-backed dataset, keyed by (dataset, stage name or ``ROOT_STAGE``).
+    spliced_rows: Dict[Tuple[str, str], "SplicedRows"] = Field(default_factory=dict)
     # The row supply of the stage being planned (its producers inherit it).
     row_supply: Optional[RowSupply] = None
 

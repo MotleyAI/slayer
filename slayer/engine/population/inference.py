@@ -65,10 +65,19 @@ _NO_EDGE = "no_edge"
 
 
 class PopulationChoice(BaseModel):
-    """The inferred population: the chosen dataset and its datasource."""
+    """The inferred population: the anchor's datasets (several for a product) and their datasource."""
 
-    dataset_name: str
+    datasets: tuple[str, ...]
     data_source: str
+
+    @property
+    def dataset_name(self) -> str:
+        """The dataset planned as the population: the anchor's first group."""
+        return self.datasets[0]
+
+    @property
+    def display(self) -> str:
+        return " × ".join(self.datasets)
 
 
 class DimensionAnchor(BaseModel):
@@ -583,7 +592,7 @@ async def infer_spine_population(
             sibling_stage_names=sibling_stage_names,
         )
     return PopulationChoice(
-        dataset_name=TIME_SPINE_DATASET,
+        datasets=(TIME_SPINE_DATASET,),
         data_source=await spine_datasource(
             queries=[query], storage=storage, data_source=data_source, sibling_stage_names=sibling_stage_names,
         ),
@@ -726,10 +735,11 @@ async def _would_infer(
     if not (rest.dimensions or rest.time_dimensions or rest.filter):
         return None
     try:
-        return (await infer_population(query=rest, storage=storage, data_source=data_source,
-                                       sibling_stage_names=siblings)).dataset_name
+        choice = await infer_population(query=rest, storage=storage, data_source=data_source,
+                                        sibling_stage_names=siblings)
     except SlayerError:
         return None
+    return choice.dataset_name if len(choice.datasets) == 1 else None
 
 
 # --------------------------------------------------------------------------- #
@@ -882,10 +892,10 @@ async def infer_population(
     data_source: str | None = None,
     sibling_stage_names: set[str] | None = None,
 ) -> PopulationChoice:
-    """A root-less query's dimension anchor as one dataset, or raise :class:`PopulationInferenceError`."""
+    """A root-less query's dimension anchor, or raise :class:`PopulationInferenceError`."""
     rows = await infer_rows(query=query, storage=storage, data_source=data_source,
                             sibling_stage_names=sibling_stage_names)
     datasets = rows.anchor.required()
     if not datasets:
         raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
-    return PopulationChoice(dataset_name=" × ".join(datasets), data_source=rows.data_source)
+    return PopulationChoice(datasets=tuple(datasets), data_source=rows.data_source)

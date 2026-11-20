@@ -333,9 +333,10 @@ enforced test ids as its instances land.
    as a hidden measure. [review]
 7. **Measure closure**: before measure-typed filters, order and limit, adding a
    measure to an anchored query never changes its rows or any other field's
-   values; to an inferred one (**measure monotonicity**) it never removes a row
-   or changes a value in an existing row, a new row carrying the other measures'
-   empty values; transforms [target: DEV-2218].
+   values; to an inferred one with a measure (**measure monotonicity**) it never removes a row
+   or changes a value in an existing row, a new row carrying each other
+   measure's value on its own grain there (its empty value where it has no
+   cell); transforms [target: DEV-2218].
    [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
    [enforced: test:tests/test_law_measure_monotonicity.py]
 8. **Home-row preservation**: in an inferred query every home row of a
