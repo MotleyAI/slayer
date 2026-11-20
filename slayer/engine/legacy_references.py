@@ -261,10 +261,10 @@ def _live_aliases(*sources: Any) -> List[str]:
     return [a for a in declared_aliases(*sources) if a not in noop]
 
 
-def _rebuilt(model: Any, data: Dict[str, Any]) -> Any:
-    """``model``'s class validated over ``data``, keeping ``model``'s recorded deprecations."""
-    rebuilt = type(model).model_validate(data)
-    rebuilt._deprecated_inputs = model._deprecated_inputs
+def _rebuilt(entity: Any, data: Dict[str, Any]) -> Any:
+    """``entity``'s class validated over ``data``, keeping ``entity``'s recorded deprecations."""
+    rebuilt = type(entity).model_validate(data)
+    rebuilt._deprecated_inputs = entity._deprecated_inputs
     return rebuilt
 
 

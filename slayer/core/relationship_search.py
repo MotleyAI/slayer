@@ -68,8 +68,8 @@ class UnaddressablePair(BaseModel):
     edges: tuple[OrientedRelationship, ...]
 
     def describe(self) -> str:
-        joins = "; ".join(", ".join(f"{a}={b}" for a, b in e.column_pairs) for e in self.edges)
-        return (f"{self.source_dataset}↔{self.to} is joined by edges no path token addresses ({joins}); "
+        pairs = "; ".join(", ".join(f"{a}={b}" for a, b in e.column_pairs) for e in self.edges)
+        return (f"{self.source_dataset}↔{self.to} is joined by edges no path token addresses ({pairs}); "
                 f"name the edges to make them addressable")
 
 
