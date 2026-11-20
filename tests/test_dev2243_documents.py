@@ -409,7 +409,7 @@ async def test_a_dataset_named_source() -> None:
                          metrics=[metric("grand_total", "SUM(source.amount)")])
     async with document_engine(documents=(text,)) as engine:
         assert await single(engine, population="source", metric_expr="source.total") == 650.0
-        resp = await engine.execute({"metrics": ["grand_total"]})
+        resp = await engine.execute({"population": "source", "metrics": ["grand_total"]})
         assert [float(r["grand_total"]) for r in resp.data] == [650.0]
 
 
@@ -497,13 +497,13 @@ async def test_a_document_metric_answers_by_bare_name() -> None:
     text = SALES.replace("AGG(orders.total_revenue) / COUNT(DISTINCT customers.customer_id)",
                          "SUM(orders.amount) / COUNT(DISTINCT customers.customer_id)")
     async with document_engine(documents=(text,)) as engine:
-        resp = await engine.execute({"metrics": ["revenue_per_customer"]})
+        resp = await engine.execute({"population": "customers", "metrics": ["revenue_per_customer"]})
         assert [float(r["revenue_per_customer"]) for r in resp.data] == [162.5]
 
 
 async def test_an_agg_document_metric_answers_by_bare_name() -> None:
     async with document_engine() as engine:
-        resp = await engine.execute({"metrics": ["revenue_per_customer"]})
+        resp = await engine.execute({"population": "customers", "metrics": ["revenue_per_customer"]})
         assert [float(r["revenue_per_customer"]) for r in resp.data] == [162.5]
 
 
@@ -562,10 +562,10 @@ async def test_an_unevaluable_model_scoped_metric_loads_and_fails_only_when_read
         metrics = {m.name: m for m in await engine.storage.list_model_scoped_metrics(DS)}
         assert metrics["total"].load_warning is None
         assert "window" in (metrics["running"].load_warning or "").lower()
-        resp = await engine.execute({"metrics": ["total"]})
+        resp = await engine.execute({"population": "sales", "metrics": ["total"]})
         assert [float(r["total"]) for r in resp.data] == [35.0]
         with pytest.raises(error("UnevaluableEntityError"), match="running"):
-            await engine.execute({"metrics": ["running"]})
+            await engine.execute({"population": "sales", "metrics": ["running"]})
 
 
 # --------------------------------------------------------------------------- #
@@ -762,7 +762,7 @@ async def test_distinct_values_collect_as_a_list(tmp_path: Path) -> None:
 async def test_a_cross_dataset_operand_keeps_its_meaning(tmp_path: Path) -> None:
     doc = parity_doc(model_metrics=[metric("net", "SUM(orders.amount - customers.discount)")])
     async with ddl_engine(tmp_path, doc) as engine:
-        resp = await engine.execute({"metrics": ["net"]})
+        resp = await engine.execute({"population": "orders", "metrics": ["net"]})
         assert float(resp.data[0]["net"]) == pytest.approx(19.5)
 
 
@@ -842,7 +842,7 @@ GROSS_REVENUE = document_text(
 async def test_a_metric_written_only_as_a_dialect_entry_runs(tmp_path: Path, kind: str) -> None:
     """Spec scenario: A metric written only as a dialect entry runs."""
     async with document_engine(kind=kind, documents=(GROSS_REVENUE,), base=tmp_path) as engine:
-        resp = await engine.execute({"metrics": ["gross_revenue"]})
+        resp = await engine.execute({"population": "orders", "metrics": ["gross_revenue"]})
         assert [float(r["gross_revenue"]) for r in resp.data] == [650.0]
         assert await engine.storage.get_semantic_model_text("sales", data_source=DS) == GROSS_REVENUE
     if kind == "yaml":
@@ -854,7 +854,7 @@ async def test_a_model_scoped_metric_in_the_datasources_own_dialect_runs_unchang
         {"dialect": "DUCKDB", "expression": "APPROX_COUNT_DISTINCT(orders.customer_id)"}]}}
     doc = parity_doc(model_metrics=[reach])
     async with ddl_engine(tmp_path, doc) as engine:
-        resp = await engine.execute({"metrics": ["reach"]})
+        resp = await engine.execute({"population": "orders", "metrics": ["reach"]})
         assert [r["reach"] for r in resp.data] == [2]
         assert await engine.storage.get_semantic_model_text("parity", data_source=DS) == doc
     assert document_path(tmp_path, name="parity").read_text(encoding="utf-8") == doc

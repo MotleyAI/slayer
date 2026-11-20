@@ -183,7 +183,7 @@ def _resolved_field(
     field: DatasetField, *, dataset: SlayerDataset, datasets: Sequence[SlayerDataset], ds_type: str | None,
     live: ColumnTypes,
 ) -> DatasetField:
-    if field.resolved:
+    if field.resolved or field.load_warning is not None:
         return field
     if field.expression is None:
         return field.with_native(None)

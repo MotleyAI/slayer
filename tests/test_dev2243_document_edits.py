@@ -174,7 +174,7 @@ async def test_mixed_case_names_resolve_case_insensitively_and_keep_their_spelli
         assert stored is not None
         assert (stored.name, [f.name for f in stored.fields]) == ("Orders", ["Amount"])
         assert await single(engine, population="orders", metric_expr="sum(orders.amount)") == 650.0
-        resp = await engine.execute({"metrics": ["revenuetotal"]})
+        resp = await engine.execute({"population": "orders", "metrics": ["revenuetotal"]})
         assert [float(v) for v in resp.data[0].values()] == [650.0]
 
 
