@@ -56,7 +56,7 @@ async def _stored_filters(engine: SlayerQueryEngine, name: str) -> list[str]:
 
 
 async def _ids(engine: SlayerQueryEngine, source: str) -> set[int]:
-    resp = await engine.execute(SlayerQuery.model_validate({"population": source, "dimensions": ["id"]}))
+    resp = await engine.execute(SlayerQuery.model_validate({"population": source, "dimensions": [f"{source}.id"]}))
     return ids(resp, source)
 
 

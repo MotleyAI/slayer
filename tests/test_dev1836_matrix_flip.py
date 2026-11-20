@@ -138,8 +138,8 @@ class TestRowAttachWithCrossModelMeasure:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "field": ("rank(sum(amount, partition_by=channel) - "
-                               "sum(amount, partition_by=status), direction='desc')"),
+                "field": ("rank(sum(orders.amount, partition_by=orders.channel) - "
+                               "sum(orders.amount, partition_by=orders.status), direction='desc')"),
                 "alias": "mr",
             }],
             metrics=[M, CM], to_many_handling="broadcast",

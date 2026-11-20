@@ -43,7 +43,7 @@ def _daily() -> SlayerDataset:
 def _query(*, source_dataset: str, metric: str, date_range: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": source_dataset,
-        "time_dimensions": [TimeDimension(field="created_at", granularity="month", date_range=date_range)],
+        "time_dimensions": [TimeDimension(field=f"{source_dataset}.created_at", granularity="month", date_range=date_range)],
         "metrics": [{"metric": metric, "alias": "m0"}],
     })
 

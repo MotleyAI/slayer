@@ -177,7 +177,7 @@ FUNCTION_CASES = [
     _dim("replace", "replace", "replace(lib.code, '_', '-')"),
     _dim("div", "div", "div(lib.i, lib.m)"),
     _dim("pi", "pi", "pi()"),
-    *(_dim(fn, fn, f"{fn}(x)") for fn in ("sin", "cos", "tan", "asin", "acos", "atan", "cbrt")),
+    *(_dim(fn, fn, f"{fn}(lib.x)") for fn in ("sin", "cos", "tan", "asin", "acos", "atan", "cbrt")),
     _dim("atan2", "atan2", "atan2(lib.y, lib.x)"),
     _dim("greatest", "greatest", "greatest(lib.a, lib.b)"),
     _dim("least", "least", "least(lib.a, lib.b)"),

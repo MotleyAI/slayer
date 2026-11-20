@@ -66,9 +66,9 @@ async def assert_calendar_streak(
 ) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "streak_events",
-        "time_dimensions": [{"field": column, "granularity": granularity}],
-        "filter": [f"series = '{granularity}'"],
-        "metrics": [{"metric": "consecutive_periods(sum(amount) > 0)", "alias": "v"}],
+        "time_dimensions": [{"field": f"streak_events.{column}", "granularity": granularity}],
+        "filter": [f"streak_events.series = '{granularity}'"],
+        "metrics": [{"metric": "consecutive_periods(sum(streak_events.amount) > 0)", "alias": "v"}],
     }))
     rows = sorted(resp.data, key=lambda r: str(r[f"streak_events.{column}"]))
-    assert [int(r["streak_events.v"]) for r in rows] == [1, 2, 1, 2], rows
+    assert [int(r["v"]) for r in rows] == [1, 2, 1, 2], rows

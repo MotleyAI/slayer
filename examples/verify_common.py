@@ -18,9 +18,13 @@ for o in ORDERS:
     STATUS_COUNTS[o[4]] = STATUS_COUNTS.get(o[4], 0) + 1
 
 # Repeated string literals hoisted to constants (Sonar python:S1192).
-COUNT_METRIC = "count(*)"
 ORDERS_COUNT = "orders._count"
 QUERY_PATH = "/query"
+
+
+def count_metric(population):
+    """The row count of ``population``."""
+    return f"count({population}.*)"
 
 BASE_URL = "http://localhost:5143"
 
@@ -121,7 +125,7 @@ def run_common_checks():
         QUERY_PATH,
         {
             "population": "orders",
-            "metrics": [COUNT_METRIC],
+            "metrics": [count_metric("orders")],
         },
     )
     check(f"total orders = {TOTAL_ORDERS}", result["data"][0][ORDERS_COUNT] == TOTAL_ORDERS)
@@ -131,8 +135,8 @@ def run_common_checks():
         QUERY_PATH,
         {
             "population": "orders",
-            "metrics": [COUNT_METRIC],
-            "dimensions": ["status"],
+            "metrics": [count_metric("orders")],
+            "dimensions": ["orders.status"],
         },
     )
     by_status = {r["orders.status"]: r[ORDERS_COUNT] for r in result["data"]}
@@ -144,8 +148,8 @@ def run_common_checks():
         QUERY_PATH,
         {
             "population": "orders",
-            "metrics": [COUNT_METRIC],
-            "filter": ["status = 'completed'"],
+            "metrics": [count_metric("orders")],
+            "filter": ["orders.status = 'completed'"],
         },
     )
     check(
@@ -158,9 +162,9 @@ def run_common_checks():
         QUERY_PATH,
         {
             "population": "orders",
-            "metrics": [COUNT_METRIC],
-            "dimensions": ["customer_id"],
-            "order": [{"field": "count", "direction": "desc"}],
+            "metrics": [count_metric("orders")],
+            "dimensions": ["orders.customer_id"],
+            "order": [{"field": count_metric("orders"), "direction": "desc"}],
             "limit": 3,
         },
     )
@@ -171,7 +175,7 @@ def run_common_checks():
         QUERY_PATH,
         {
             "population": "products",
-            "metrics": [COUNT_METRIC],
+            "metrics": [count_metric("products")],
         },
     )
     check("8 products total", result["data"][0]["products._count"] == 8)
@@ -181,7 +185,7 @@ def run_common_checks():
         QUERY_PATH,
         {
             "population": "customers",
-            "metrics": [COUNT_METRIC],
+            "metrics": [count_metric("customers")],
         },
     )
     check("10 customers total", result["data"][0]["customers._count"] == 10)
@@ -232,9 +236,9 @@ def check_median_percentile(field="quantity"):
         {
             "population": "orders",
             "metrics": [
-                f"median({field})",
-                f"percentile({field}, p=0.25)",
-                f"percentile({field}, p=0.75)",
+                f"median(orders.{field})",
+                f"percentile(orders.{field}, p=0.25)",
+                f"percentile(orders.{field}, p=0.75)",
             ],
         },
     )
@@ -284,10 +288,10 @@ def check_stddev_var(field="quantity"):
         {
             "population": "orders",
             "metrics": [
-                f"stddev_samp({field})",
-                f"stddev_pop({field})",
-                f"var_samp({field})",
-                f"var_pop({field})",
+                f"stddev_samp(orders.{field})",
+                f"stddev_pop(orders.{field})",
+                f"var_samp(orders.{field})",
+                f"var_pop(orders.{field})",
             ],
         },
     )
@@ -340,9 +344,9 @@ def check_corr_covar(field="quantity", other="customer_id"):
         {
             "population": "orders",
             "metrics": [
-                f"corr({field}, other={other})",
-                f"covar_samp({field}, other={other})",
-                f"covar_pop({field}, other={other})",
+                f"corr(orders.{field}, other=orders.{other})",
+                f"covar_samp(orders.{field}, other=orders.{other})",
+                f"covar_pop(orders.{field}, other=orders.{other})",
             ],
         },
     )
@@ -380,11 +384,11 @@ def check_rollup(expect_rollup=True):
                 QUERY_PATH,
                 {
                     "population": "orders",
-                    "metrics": [COUNT_METRIC],
+                    "metrics": [count_metric("orders")],
                     "dimensions": ["products.category"],
                 },
             )
-            by_cat = {r["orders.products.category"]: r[ORDERS_COUNT] for r in result["data"]}
+            by_cat = {r["products.category"]: r[ORDERS_COUNT] for r in result["data"]}
             check("query by product category works", len(by_cat) > 0)
             check(f"all categories sum to {TOTAL_ORDERS}", sum(by_cat.values()) == TOTAL_ORDERS)
 
@@ -393,11 +397,11 @@ def check_rollup(expect_rollup=True):
                 QUERY_PATH,
                 {
                     "population": "orders",
-                    "metrics": [COUNT_METRIC],
+                    "metrics": [count_metric("orders")],
                     "dimensions": ["customers.regions.name"],
                 },
             )
-            by_region = {r["orders.customers.regions.name"]: r[ORDERS_COUNT] for r in result["data"]}
+            by_region = {r["customers.regions.name"]: r[ORDERS_COUNT] for r in result["data"]}
             check("transitive relationship by region works", len(by_region) > 0)
     else:
         check("no relationships (expected)", not has_relationships)

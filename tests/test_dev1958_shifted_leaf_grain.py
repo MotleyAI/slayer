@@ -73,7 +73,7 @@ def _dr_td() -> list:
 
 def _q(expression: str, *, date_range: bool = False, **kw):
     kw.setdefault("dimensions", ["monthly.region"])
-    return monthly_q(time_dimensions=_dr_td() if date_range else month_td(),
+    return monthly_q(time_dimensions=_dr_td() if date_range else month_td("monthly"),
                      metrics=[QueryMetric(metric=expression, alias="t")], **kw)
 
 
@@ -127,8 +127,8 @@ class TestPartitionedLeafKeepsItsGrain:
 
     async def test_reaggregation_over_shifted_composite(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            "avg(time_shift(sum(amount, partition_by=[region, ordered_at]) "
-            "/ sum(amount, partition_by=[ordered_at]), -1))", dimensions=[]))
+            "avg(time_shift(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at]) "
+            "/ sum(monthly.amount, partition_by=[monthly.ordered_at]), -1))", dimensions=[]))
         got = {month_key(r["monthly.ordered_at"]): r["t"] for r in resp.data}
         assert set(got) == set(REAGG_BY_MONTH)
         for month, want in REAGG_BY_MONTH.items():
@@ -189,7 +189,7 @@ class TestRankedAndWindowedLeavesInComposite:
 class TestSharedShiftedRelation:
     def _two_offsets(self):
         return monthly_q(
-            dimensions=["monthly.region"], time_dimensions=month_td(),
+            dimensions=["monthly.region"], time_dimensions=month_td("monthly"),
             metrics=[QueryMetric(metric=f"time_shift({SHARE}, -1)", alias="t1"),
                       QueryMetric(metric=f"time_shift({SHARE}, -2)", alias="t2")])
 

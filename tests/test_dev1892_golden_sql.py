@@ -29,7 +29,7 @@ _MODEL_SETS = {
     "sales": dev1847_datasets,
     "sales_cwavg": qualified_reagg_default_datasets,
 }
-_WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
+_WEIGHT_COUNT = "weight=count(sales.id, partition_by=[sales.city, sales.region])"
 
 
 def _cases() -> dict:
@@ -51,13 +51,13 @@ def _cases() -> dict:
         "reagg/degenerate_wavg": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["sales.region"], "metrics": [
-                {"metric": ("weighted_avg(sum(amount, partition_by=region), "
-                             "weight=count(id, partition_by=region))"),
+                {"metric": ("weighted_avg(sum(sales.amount, partition_by=sales.region), "
+                             "weight=count(sales.id, partition_by=sales.region))"),
                  "alias": "w"}]}},
         "reagg/corders_toone": {
             "models": "sales", "source": "corders", "mode": None,
             "kw": {"metrics": [
-                {"metric": ("weighted_avg(sum(amount, partition_by=customer_id), "
+                {"metric": ("weighted_avg(sum(corders.amount, partition_by=corders.customer_id), "
                              "weight=customers.region_id)"), "alias": "w"}]}},
         "assoc/wsum6_expr_default": {
             "models": "orders_wsum6", "source": "orders", "mode": "associate",

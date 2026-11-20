@@ -129,7 +129,7 @@ class TestStoredAggregations:
     @pytest.mark.parametrize("name", _FUNCTION_NAMES)
     async def test_named_after_a_function(self, aggregation_engine: SlayerQueryEngine, name: str) -> None:
         assert await aggregation_engine.storage.get_dataset(f"t_{name}", data_source=DS) is not None
-        resp = await aggregation_engine.execute({"population": f"t_{name}", "metrics": [metric(f"{name}(a)")]})
+        resp = await aggregation_engine.execute({"population": f"t_{name}", "metrics": [metric(f"{name}(t_{name}.a)")]})
         assert float(value(resp)) == SUM_A
 
 
