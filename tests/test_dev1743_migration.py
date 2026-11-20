@@ -172,7 +172,7 @@ class TestLegacyAliasRewrittenOnLoad:
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
             col = loaded.get_field("region_name")
-            assert col.sql == "customers.regions.name"
+            assert col.definition_sql == "customers.regions.name"
             assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
     @pytest.mark.asyncio
@@ -188,7 +188,7 @@ class TestLegacyAliasRewrittenOnLoad:
             assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
             region_col = next(c for c in on_disk["fields"]
                               if c["name"] == "region_name")
-            assert region_col["sql"] == "customers.regions.name"
+            assert region_col["expression"]["dialects"][0]["expression"] == "customers.regions.name"
 
     @pytest.mark.asyncio
     async def test_sqlite_rewrites_two_hop_alias_to_dotted(self) -> None:
@@ -199,7 +199,7 @@ class TestLegacyAliasRewrittenOnLoad:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").definition_sql == "customers.regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -249,7 +249,7 @@ class TestSiblingLoadThroughFactory:
             storage = resolve_storage(d)
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").definition_sql == "customers.regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -268,7 +268,7 @@ class TestOpaqueQualifierPreserved:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "foo__bar"
+            assert loaded.get_field("region_name").definition_sql == "foo__bar"
 
 
 # --------------------------------------------------------------------------- #
@@ -284,8 +284,8 @@ class TestIdempotence:
             ])
             first = await storage.get_dataset("orders", data_source="ds")
             second = await storage.get_dataset("orders", data_source="ds")
-            assert first.get_field("region_name").sql == \
-                second.get_field("region_name").sql == "customers.regions.name"
+            assert first.get_field("region_name").definition_sql == \
+                second.get_field("region_name").definition_sql == "customers.regions.name"
             assert second.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -305,7 +305,7 @@ class TestPartialResolvableSubset:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            sql = loaded.get_field("region_name").sql
+            sql = loaded.get_field("region_name").definition_sql
             assert "customers.regions.name" in sql
             assert "cte__x.y" in sql
             assert "customers__regions" not in sql
@@ -328,7 +328,7 @@ class TestExactDunderTargetBeatsSplit:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "customers__regions.name"
+            assert loaded.get_field("region_name").definition_sql == "customers__regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -380,4 +380,4 @@ class TestMigrationDoesNotForceRefinement:
                     yaml.dump(p, f, sort_keys=False)
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").definition_sql == "customers.regions.name"

@@ -159,8 +159,8 @@ FAMILY_CASES = [
      DimensionTypeError, "dimension 'loc'", True),
     ("model-filter",
      lambda: (SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(orders.*)")]),
-              [_orders(metrics=[DatasetMetric(name="tot", expression="sum(amount)")], filters=["tot > 100"])]),
-     DatasetFilterError, "dataset filter 'tot > 100'", True),
+              [_orders(metrics=[DatasetMetric(name="tot", expression="sum(amount)")], filters=["orders.tot > 100"])]),
+     DatasetFilterError, "dataset filter 'orders.tot > 100'", True),
     ("position-typing",
      lambda: (SlayerQuery(
          population="orders", time_dimensions=_MONTH, metrics=[QueryMetric(metric="count(orders.*)")],

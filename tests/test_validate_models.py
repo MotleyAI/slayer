@@ -535,7 +535,7 @@ class TestCascadeRules:
                 # derived column referencing 'amount'
                 DatasetField(name="amount_x2", sql="amount * 2", datatype=DataType.FLOAT),
                 # transitively-derived: refs another derived column
-                DatasetField(name="amount_x4", sql="amount_x2 * 2", datatype=DataType.FLOAT),
+                DatasetField(name="amount_x4", sql="orders.amount_x2 * 2", datatype=DataType.FLOAT),
             ],
         )
         # Base diff: 'amount' dropped from live

@@ -128,7 +128,7 @@ async def test_inline_operand(db: Path, sql: str, expected: float) -> None:
 async def test_operand_outside_the_formula_grammar_uses_a_helper(db: Path, sql: str, expected: float) -> None:
     result = _import(db, m("v", sql))
     [helper] = hidden(by_name(result)["orders"])
-    formula = next(x.expression for x in by_name(result)["orders"].metrics if x.name == "v")
+    formula = next(x.text for x in by_name(result)["orders"].metrics if x.name == "v")
     parsed = parse_expr(formula)
     assert isinstance(parsed, AggCall)
     assert isinstance(parsed.source, Ref)

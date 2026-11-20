@@ -78,7 +78,7 @@ class TestSaveRefusesCycles:
 
     async def test_cycle_through_a_derived_column(self, engine, door):
         await _save(engine, _dataset("a", "b", filters=["a_to_b.flag = 1"]), door=door)
-        b = _dataset("b", "a", "c", filters=["a_flag = 1"], extra=[DatasetField(name="a_flag", datatype=DataType.INTEGER, sql="b_to_a.flag")])
+        b = _dataset("b", "a", "c", filters=["b.a_flag = 1"], extra=[DatasetField(name="a_flag", datatype=DataType.INTEGER, sql="b_to_a.flag")])
         with pytest.raises(DatasetFilterCycleError):
             await _save(engine, b, door=door)
         assert await _stored_filters(engine, "b") == []

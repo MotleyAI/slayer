@@ -337,22 +337,15 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev1954_canonical_paths.py]
    [enforced: test:tests/test_dev2277_qualified_references.py]
    [enforced: test:tests/test_dev2277_routing.py]
-2. **Two expression layers**: Mode A free SQL (`DatasetField.sql`, model `filters`)
-   vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
-   canonical function library, extended never forked. [review]
+2. **Two expression layers**: Mode A, the datasource's own SQL (a definition's entry for that dialect, `filter`, dataset `filters`), vs Mode B, a SQL-compatible grammar (a definition's portable `sql`, query fields) — one canonical function library, extended never forked. [review]
    - **2.1** Every Mode B construct means the same on every dialect.
      [enforced: test:tests/test_dev2120_library_matrix.py]
    - **2.2** A dialect without its own translation of a Mode B construct
      refuses it with a typed error; a base-class default is never another
      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
    - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
-3. **Logical names, physical once**: every model-level column reference —
-   query fields, `from_columns` / `to_columns`, unique-key sets — names a column by
-   `DatasetField.name`; the physical spelling (`DatasetField.physical_name`: a base
-   column's bare `sql`, else its name) is applied once, where a reference
-   becomes SQL or meets the live schema, and is never the key two references
-   are matched on.
-   [enforced: test:tests/test_dev1902_join_key_spelling.py]
+3. **Logical names, physical once**: inside a **row definition** — a field's `expression` or `filter`, a dataset's `filters` — a bare name is a source column and a path from the dataset (`d.f`) a field; inside a metric's `expression` a bare name is a field; in both, `source.x` is a source column unless a field is named `source`. Every other reference — query fields, relationship keys, unique-key sets — names a field. A source column's spelling is applied once, where a reference becomes SQL or meets the live schema, and is never the key two references are matched on. [enforced: test:tests/test_dev1902_join_key_spelling.py] [enforced: test:tests/test_dev2175_definition_names.py]
+4. **Ossie superset**: every input valid under the Ossie core specification is valid here and means what Ossie says it means. An extension may give meaning to input that Ossie leaves undefined or declares invalid, and never changes the result of an Ossie-valid input. [target: DEV-2372]
 
 ## 5. Notes
 

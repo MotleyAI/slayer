@@ -15,7 +15,7 @@ from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.js_parser import parse_cube_js
@@ -37,7 +37,9 @@ from tests._dev2171_fixtures import (
     typing_notes, write_yaml,
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
-from tests._osi_helpers import by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, seed_db
+from tests._osi_helpers import (
+    by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, rel, running_form, seed_db,
+)
 
 DS = "ds"
 ITEMS = {"name": "items", "sql_table": "Sales.OrderItems",
@@ -80,7 +82,7 @@ def test_a_dialect_that_does_not_fold_stores_as_written() -> None:
 def test_quoted_names_literals_comments_and_logical_references_kept() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "dimensions": [
         {"name": "label", "sql": "CONCAT({CUBE}.\"Status\", 'Paid', {CUBE}.Region) -- Note", "type": "string"}]})
-    assert column(_datasets(result)["orders"], "label").sql == "CONCAT(\"Status\", 'Paid', region) -- Note"
+    assert column(_datasets(result)["orders"], "label").definition_sql == "CONCAT(\"Status\", 'Paid', region) -- Note"
 
 
 def test_names_local_to_a_source_query() -> None:
@@ -96,7 +98,7 @@ def test_names_local_to_a_source_query() -> None:
 def test_calculated_measure_with_a_mixed_case_operand() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "measures": [
         {"name": "paid_amount", "type": "number", "sql": "SUM(CASE WHEN {CUBE}.Status = 'paid' THEN {CUBE}.Amount END)"}]})
-    operand = source_column(_datasets(result)["orders"], "paid_amount").sql
+    operand = source_column(_datasets(result)["orders"], "paid_amount").definition_sql
     assert operand is not None
     assert _columns_read(operand) == {"status", "amount"}
     assert "'paid'" in operand
@@ -129,7 +131,7 @@ def test_filter_params_string_bodies_fold_and_keep_their_variables() -> None:
         "{CUBE}.CreatedAt > '2020-01-01' AND {FILTER_PARAMS.orders.CreatedOn.filter('CreatedAt')} "
         "AND {FILTER_PARAMS.orders.brand.filter('\"Brand\"')} AND {FILTER_PARAMS.orders.region.filter('Region')}")}]})
     orders = _datasets(result)["orders"]
-    assert column(orders, "recent").sql == (
+    assert column(orders, "recent").definition_sql == (
         "createdat > '2020-01-01' AND {? createdat IN ({CreatedOn}) ?} "
         "AND {? \"Brand\" IN ({brand}) ?} AND region IN ({region})")
     assert column(orders, "CreatedOn").physical_name == "createdat"
@@ -360,8 +362,7 @@ def osi_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _osi_sql(db: Path, field: dict[str, Any], *, target: str) -> str | None:
     result = convert(db=db, docs=documents(flat([ds("orders", fields=[f("id"), field])])), target_dialect=target)
-    found = cols(by_name(result)["orders"]).get(field["name"])
-    return found.sql if found is not None else None
+    return running_form(cols(by_name(result)["orders"]).get(field["name"]), target=target)
 
 
 def test_osi_target_native_kept_verbatim(osi_db: Path) -> None:
@@ -372,12 +373,6 @@ def test_osi_target_native_kept_verbatim(osi_db: Path) -> None:
 def test_osi_target_native_mixed_case_identifier_folded(osi_db: Path) -> None:
     assert _osi_sql(osi_db, f_dialects("pick", ("SNOWFLAKE", "OrderAmount::NUMBER(10,2)")),
                     target="snowflake") == "orderamount::NUMBER(10,2)"
-
-
-def test_osi_portable_expression_folded_by_the_target(osi_db: Path) -> None:
-    sql = _osi_sql(osi_db, f("pos", "IFF(OrderAmount > 0, OrderAmount, 0)"), target="postgres")
-    assert sql is not None
-    assert _columns_read(sql) == {"orderamount"}
 
 
 def test_osi_candidate_read_with_its_dialect_folded_by_the_target(osi_db: Path) -> None:
@@ -405,15 +400,45 @@ def test_osi_fields_read_the_exact_and_folded_snowflake_columns(tmp_path: Path, 
     result = convert(db=db, db_dialect="sqlite", target_dialect="snowflake", docs=documents(flat([
         ds("t", source="t", fields=[f("foo", '"foo"'), f("exact", '"foo"'), f("upper", "BAR")])])))
     fields = cols(by_name(result)["t"])
-    assert fields["foo"].sql == '"foo"'
-    assert fields["exact"].sql == '"foo"'
-    assert fields["upper"].sql == "bar"
+    assert fields["foo"].definition_sql == '"foo"'
+    assert fields["exact"].definition_sql == '"foo"'
+    assert fields["upper"].definition_sql == "bar"
 
 
-def test_osi_self_qualified_field_keeps_its_dataset_name(osi_db: Path) -> None:
+def test_osi_self_qualified_path_to_an_undeclared_field_is_dropped(osi_db: Path) -> None:
     result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([
         ds("Orders", source="orders", fields=[f("id"), f("double", "Orders.OrderAmount * 2")])])))
-    assert cols(by_name(result)["Orders"])["double"].sql == "Orders.orderamount * 2"
+    assert "double" not in cols(by_name(result)["Orders"])
+    assert any("Orders.OrderAmount" in w.message for w in result.warnings)
+
+
+def test_osi_self_qualified_path_to_a_declared_field_kept_as_written(osi_db: Path) -> None:
+    result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([ds("Orders", source="orders", fields=[
+        f("id"), f("OrderAmount", "orderamount"), f("double", "Orders.OrderAmount * 2")])])))
+    assert cols(by_name(result)["Orders"])["double"].definition_sql == "Orders.OrderAmount * 2"
+
+
+def test_osi_unquoted_self_qualified_path_matches_in_any_case(osi_db: Path) -> None:
+    result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([ds("Orders", source="orders", fields=[
+        f("id"), f("OrderAmount", "orderamount"), f("double", "orders.orderamount * 2")])])))
+    assert "double" in cols(by_name(result)["Orders"])
+
+
+def _two_dataset_import(db: Path, path: str, *, field_sql: str = "{} * 2") -> dict[str, DatasetField]:
+    result = convert(db=db, target_dialect="postgres", docs=documents(flat(
+        [ds("orders", source="orders", fields=[f("id"), f("double", field_sql.format(path))]),
+         ds("Totals", source="orders", fields=[f("id"), f("Amount", "orderamount", datatype="Date")])],
+        relationships=[rel("Totals", src="orders", to="Totals", from_columns=["id"], to_columns=["id"])])))
+    return cols(by_name(result)["orders"])
+
+
+def test_osi_quoted_relationship_hop_matches_exactly(osi_db: Path) -> None:
+    assert "double" in _two_dataset_import(osi_db, '"Totals".Amount')
+    assert "double" not in _two_dataset_import(osi_db, '"totals".Amount')
+
+
+def test_osi_unquoted_path_inherits_the_reached_field_type(osi_db: Path) -> None:
+    assert _two_dataset_import(osi_db, "totals.amount", field_sql="{}")["double"].datatype is DataType.DATE
 
 
 def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_db: Path,

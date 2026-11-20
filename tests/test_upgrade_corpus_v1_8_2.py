@@ -49,7 +49,7 @@ async def test_the_store_holds_the_list_column_shapes(backend: str, tmp_path, mo
     assert (_column(contractors, "scores").datatype, _column(contractors, "scores").element_type) == (
         DataType.ARRAY, DataType.INTEGER)
     assert contractors is not None
-    assert {m.expression for m in contractors.metrics} >= {"collect(id)", "collect(skills.value)", "count(skills)"}
+    assert {m.text for m in contractors.metrics} >= {"collect(id)", "collect(skills.value)", "count(skills)"}
     dev_skills = await storage.get_dataset("dev_skills", data_source="shop")
     assert dev_skills is not None
     assert dev_skills.sql

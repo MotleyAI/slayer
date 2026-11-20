@@ -455,9 +455,10 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             )
         # Admit only a stable read. A legacy migration write-back rewrites the
         # file, so its first load is (correctly) not cached — the next load
-        # reads the now-current file and caches it normally.
+        # reads the now-current file and caches it normally. A field sql waiting
+        # for its datasource's dialect converts on a later load, so is never cached.
         admit = _cache_admit(path=path, key_before=key_before)
-        if admit is not None:
+        if admit is not None and not any(c.sql is not None for c in dataset.fields):
             self._dataset_cache[path] = (admit, dataset)
         return dataset.model_copy(deep=True)
 

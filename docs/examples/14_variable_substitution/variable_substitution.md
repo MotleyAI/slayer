@@ -30,7 +30,7 @@ SQL — not as a filter on the result.
 | -- | -- |
 | `SlayerDataset.filters` | a dataset-level always-applied `WHERE` predicate |
 | `SlayerDataset.sql` | the raw SQL body of an `sql`-mode dataset (WHERE, projected scalars, anywhere) |
-| `DatasetField.sql` | a field's row-level SQL expression |
+| a field's dialect entry | a field's row-level SQL in its datasource's dialect |
 | `DatasetField.filter` | a field's `CASE WHEN` conditional (a per-metric windowed sum with scalar bounds) |
 
 A stored dataset `orders_over_floor` (`sql_table: orders`) with the filter

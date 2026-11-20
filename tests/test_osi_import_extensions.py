@@ -63,7 +63,7 @@ async def test_unedited_column_split_restored(env) -> None:
     result = await export_datasets(env, customers(), rich_orders())
     completed = by_name(convert_document(env, result.document))["orders"].get_field("completed_amount")
     assert completed is not None
-    assert (completed.sql, completed.filter) == ("amount", "status = 'completed'")
+    assert (completed.expression, completed.filter) == ("amount", "status = 'completed'")
 
 
 async def test_edited_field_falls_back_to_its_expression(env) -> None:
@@ -75,8 +75,8 @@ async def test_edited_field_falls_back_to_its_expression(env) -> None:
     completed = by_name(imported)["orders"].get_field("completed_amount")
     assert completed is not None
     assert completed.filter is None
-    assert completed.sql is not None
-    assert "'open'" in completed.sql
+    assert completed.definition_sql is not None
+    assert "'open'" in completed.definition_sql
     assert mentions(imported, "completed_amount", severity="info")
 
 

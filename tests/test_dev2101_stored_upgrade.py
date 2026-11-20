@@ -56,7 +56,7 @@ def _model_doc(*, formula: str, version: int = 15, **extra: Any) -> dict:
 
 
 def _model_formula(text: str) -> str:
-    return SlayerDataset.model_validate(_model_doc(formula=text)).metrics[0].expression
+    return SlayerDataset.model_validate(_model_doc(formula=text)).metrics[0].text
 
 
 def _query(**fields: Any) -> SlayerQuery:

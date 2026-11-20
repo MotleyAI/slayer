@@ -50,7 +50,7 @@ def _model_dict(*, measures: list[dict], version: Any = 12, **extra) -> dict:
 
 def _migrated_formula(formula: str) -> str:
     model = SlayerDataset.model_validate(_model_dict(measures=[{"name": "x", "formula": formula}]))
-    return model.metrics[0].expression
+    return model.metrics[0].text
 
 
 def _assert_only_direction_added(before: str, after: str) -> None:
@@ -160,7 +160,7 @@ class TestRewrite:
         data["filters"] = ["city <> 'rank(x)'"]
         data["aggregations"].append({"name": "rk", "formula": "rank() over (order by {value})"})
         model = SlayerDataset.model_validate(data)
-        assert next(c for c in model.fields if c.name == "rn").sql == "dense_rank() over (order by id)"
+        assert next(c for c in model.fields if c.name == "rn").definition_sql == "dense_rank() over (order by id)"
         assert model.filters == ["city <> 'rank(x)'"]
         assert next(c for c in model.fields if c.name == "fa").filter == "city <> 'rank(x)'"
         assert next(a for a in model.aggregations if a.name == "rk").expression == "rank() over (order by {value})"
@@ -382,7 +382,7 @@ class TestStorageLoad:
         model = await storage.get_dataset("sales", data_source="test")
         assert model is not None
         assert [m.expression for m in model.metrics] == formulas
-        assert next(c for c in model.fields if c.name == "rn").sql == "dense_rank() over (order by id)"
+        assert next(c for c in model.fields if c.name == "rn").definition_sql == "dense_rank() over (order by id)"
 
     async def test_untokenisable_measure_still_loads(self, seed: Seeder):
         storage = await seed(models=[_model_dict(measures=[{"name": "x", "formula": "rank(sum(amount)"}])])

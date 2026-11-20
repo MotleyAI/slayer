@@ -399,7 +399,7 @@ class TestModelSqlSpelledByModelName:
         orders = await engine.storage.get_dataset("orders", data_source="test")
         assert orders is not None
         label = next(c for c in orders.fields if c.name == "region_label")
-        assert label.sql == "customers.regions.rname"
+        assert label.definition_sql == "customers.regions.rname"
 
 
 class TestDefinitionDefaultSpelledByModelName:

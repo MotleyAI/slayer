@@ -94,8 +94,8 @@ def _expressions(stage: SlayerQuery) -> Iterator[str]:
     yield from stage.filter_conditions
     yield from (o.raw_expression for o in stage.order or [] if o.raw_expression)
     for metric in (m for e in stage.extensions or [] for m in e.metrics or []):
-        if metric.expression:
-            yield metric.expression
+        if metric.text:
+            yield metric.text
 
 
 def query_features(query: Any) -> QueryFeatures:

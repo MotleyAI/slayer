@@ -314,10 +314,10 @@ class TestQueryBackedWrap:
             )
         assert expanded.sql is not None
         fit = get_dialect(dialect).fit_alias
-        assert {c.name: c.sql for c in expanded.fields} == {
+        assert {c.name: c.physical_name for c in expanded.fields} == {
             f"customers__{LONG}": fit(f"customers__{LONG}"), "amount_sum": "amount_sum",
         }
-        assert set(parse(expanded.sql, dialect).named_selects) == {c.sql for c in expanded.fields}
+        assert set(parse(expanded.sql, dialect).named_selects) == {c.physical_name for c in expanded.fields}
         _assert_within_limit(expanded.sql, limit, dialect=dialect)
 
     async def test_duckdb_rows_are_keyed_by_column_names(self) -> None:

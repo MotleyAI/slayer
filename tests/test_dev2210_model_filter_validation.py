@@ -35,7 +35,7 @@ def _returns(name: str, *, target: str, **kw) -> SlayerDataset:
 
 
 def _with_total(name: str) -> SlayerDataset:
-    return _orders(name, metrics=[DatasetMetric(expression="sum(amount)", name="tot")], filters=["tot > 100"])
+    return _orders(name, metrics=[DatasetMetric(expression="sum(amount)", name="tot")], filters=[f"{name}.tot > 100"])
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ class TestSaveRefusesInvalidFilters:
         model = _with_total("orders_tot")
         with pytest.raises(DatasetFilterError) as exc:
             await _save(engine, model, door=door)
-        assert "dataset filter 'tot > 100'" in str(exc.value)
+        assert "dataset filter 'orders_tot.tot > 100'" in str(exc.value)
         assert await engine.storage.get_dataset("orders_tot", data_source="test") is None
 
     async def test_filter_on_joined_windowed_column(self, engine: SlayerQueryEngine, door):
@@ -72,7 +72,7 @@ class TestSaveRefusesInvalidFilters:
 
     async def test_filter_on_windowed_column_through_derived_column(self, engine, door):
         model = _orders("orders_rank_plus", columns=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, sql="ranked + 0")],
-                        filters=["rank_plus > 1"])
+                        filters=["orders_rank_plus.rank_plus > 1"])
         with pytest.raises(DatasetFilterError):
             await _save(engine, model, door=door)
 
@@ -100,4 +100,4 @@ class TestQueryReadsInvalidStoredFilter:
         query = SlayerQuery.model_validate(body)
         with pytest.raises(DatasetFilterError) as exc:
             await stored.execute(query)
-        assert "dataset filter 'tot > 100'" in str(exc.value)
+        assert "dataset filter 'bad_done.tot > 100'" in str(exc.value)

@@ -185,7 +185,7 @@ class TestRewrites:
         assert model is not None
         assert [m.expression for m in model.metrics] == [EARLY_COUNT_UPGRADED]
         assert next(c for c in model.fields if c.name == "late_amount").filter == LATE_AMOUNT_UPGRADED
-        assert next(c for c in model.fields if c.name == "late_amount").sql == "amount"
+        assert next(c for c in model.fields if c.name == "late_amount").definition_sql == "amount"
         resp = await run(storage, {"population": "orders", "metrics": ["orders.early", "sum(orders.late_amount)"]})
         row = resp.data[0]
         assert int(row["orders.early"]) == 3
@@ -359,7 +359,7 @@ class TestLeftAlone:
         model = await storage.get_dataset("orders_a", data_source=DS)
         assert model is not None
         assert model.filters == ["created_at <= '2024-12-31'"]
-        assert next(c for c in model.fields if c.name == "flag").sql == "CASE WHEN created_at <= '2024-04-10' THEN 1 END"
+        assert next(c for c in model.fields if c.name == "flag").definition_sql == "CASE WHEN created_at <= '2024-04-10' THEN 1 END"
         mem = await storage.get_memory("m_range")
         assert mem.query is not None
         assert [list(t.date_range or []) for t in mem.query.time_dimensions or []] == [["2024-03-05", "2024-04-10"]]

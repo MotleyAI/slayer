@@ -22,7 +22,7 @@ from slayer.core.vocabulary import extension_dataset, is_extension_object
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 27,
+    "SlayerModel": 28,
     "SlayerQuery": 17,
     "DatasourceConfig": 3,
     "Memory": 13,
@@ -298,4 +298,5 @@ from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(
 from slayer.storage import extension_columns_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import date_only_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import ossie_vocabulary_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import field_expression_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import qualified_references_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

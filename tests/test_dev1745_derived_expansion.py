@@ -123,7 +123,7 @@ class TestBareDerivedReferenceExpands:
 
     def test_same_model_bare_derived_alias_expands(self) -> None:
         # Not a cross-model problem: a local derived alias fails identically.
-        out = _expand("doubled")
+        out = _expand("orders.doubled")
         assert "doubled" not in out, (
             f"derived column name leaked into emitted SQL: {out!r}"
         )

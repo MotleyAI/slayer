@@ -38,7 +38,7 @@ def _model_doc(*, version: int, measures: list[dict], name: str = "orders", **ex
 
 
 def _formulas(doc: dict) -> list[str]:
-    return [m.expression for m in SlayerDataset.model_validate(doc).metrics]
+    return [m.text for m in SlayerDataset.model_validate(doc).metrics]
 
 
 def _query(*, version: int, **fields: Any) -> SlayerQuery:
@@ -47,7 +47,7 @@ def _query(*, version: int, **fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 27
+        assert CURRENT_VERSIONS["SlayerModel"] == 28
         assert CURRENT_VERSIONS["SlayerQuery"] == 17
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
         assert CURRENT_VERSIONS["Memory"] == 13

@@ -55,6 +55,10 @@ def convert_dbt_filter(
     all_semantic_models = all_semantic_models or {}
     result = filter_str
 
+    def _is_local_dimension(dim_name: str) -> bool:
+        source_sm = all_semantic_models.get(population_name)
+        return source_sm is not None and any(d.name == dim_name for d in source_sm.dimensions)
+
     # Replace {{ Dimension('entity__dim_name') }} references
     def _replace_dimension(match: re.Match) -> str:
         entity_name = match.group(1)
@@ -64,9 +68,8 @@ def convert_dbt_filter(
         entity_type = dataset_entity_names.get(entity_name)
         if entity_type in ("primary", "unique"):
             # Verify the dimension actually exists on the source model
-            source_sm = all_semantic_models.get(population_name)
-            if source_sm and any(d.name == dim_name for d in source_sm.dimensions):
-                return dim_name  # Local dimension — bare name
+            if _is_local_dimension(dim_name):
+                return f"{population_name}.{dim_name}"  # a bare name would read the source column
 
             # Dimension not on source — search peer models sharing the same entity
             # Sort by model name for deterministic selection when multiple peers match
@@ -102,7 +105,8 @@ def convert_dbt_filter(
 
     # Replace {{ TimeDimension('name', 'granularity') }} → just the name
     def _replace_time_dimension(match: re.Match) -> str:
-        return match.group(1)
+        name = match.group(1)
+        return f"{population_name}.{name}" if _is_local_dimension(name) else name
 
     result = _TIME_DIMENSION_RE.sub(_replace_time_dimension, result)
 

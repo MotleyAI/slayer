@@ -194,11 +194,11 @@ def event_less_datasets(
         event_columns += [
             DatasetField(name="value_bare", datatype=DataType.FLOAT, sql="value"),
             DatasetField(name="value_x2", datatype=DataType.FLOAT, sql="value * 2"),
-            DatasetField(name="value_x2_x2", datatype=DataType.FLOAT, sql="value_x2 * 2"),
+            DatasetField(name="value_x2_x2", datatype=DataType.FLOAT, sql="region_events.value_x2 * 2"),
             DatasetField(name="value_or_zero", datatype=DataType.FLOAT,
                    sql="COALESCE(value, 0)"),
             DatasetField(name="value_or_zero_x2", datatype=DataType.FLOAT,
-                   sql="value_or_zero * 2"),
+                   sql="region_events.value_or_zero * 2"),
             DatasetField(name="one", datatype=DataType.INTEGER, sql="1"),
             DatasetField(name="in_empty", datatype=DataType.BOOLEAN, sql="value IN ()"),
             DatasetField(name="col_in_list", datatype=DataType.BOOLEAN,

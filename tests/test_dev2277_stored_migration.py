@@ -36,7 +36,7 @@ from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, raw_doc, raw
 from tests._upgrade_corpus import Corpus, online
 
 #: The versions this change introduces; a concurrent bump renumbers only this line.
-UPGRADED_AT = {"SlayerModel": 27, "SlayerQuery": 17, "Memory": 13}
+UPGRADED_AT = {"SlayerModel": 28, "SlayerQuery": 17, "Memory": 13}
 PRE = {entity: version - 1 for entity, version in UPGRADED_AT.items()}
 
 #: The column ``sum(amount) / count(customers.*)`` had in an ``orders`` stage before this change.
