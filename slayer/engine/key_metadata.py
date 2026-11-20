@@ -311,7 +311,7 @@ def metric_key_format_description(
 
 
 def dimension_key_format_description(
-    *, dataset: SlayerDataset, key: ValueKey, bundle: ResolvedSourceBundle,
+    *, dataset: SlayerDataset, key: ValueKey,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
     """``(format, description)`` for a dimension slot: a LOCAL field's display contract; a JOINED one surfaces its
     own through ``response_meta``."""

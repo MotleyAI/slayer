@@ -270,12 +270,11 @@ class ValueRegistry:
         if public_name is not None:
             self._taken_names.add(public_name)
         public_aliases = [public_name] if public_name is not None else []
-        if type is None:
-            type = self._typing.type_of(key)
+        slot_type = type if type is not None else self._typing.type_of(key)
         if element_type is None:
-            element_type = self._typing.element_type_of(key, type)
+            element_type = self._typing.element_type_of(key, slot_type)
         if not type_is_explicit:
-            preserve_native_type = preserve_native_type or self._typing.preserves_native_type(key, type)
+            preserve_native_type = preserve_native_type or self._typing.preserves_native_type(key, slot_type)
         slot = ValueSlot(
             id=sid,
             key=key,
@@ -285,7 +284,7 @@ class ValueRegistry:
             hidden=hidden,
             phase=phase,
             label=label,
-            type=type,
+            type=slot_type,
             element_type=element_type,
             type_is_explicit=type_is_explicit,
             preserve_native_type=preserve_native_type,

@@ -2191,11 +2191,11 @@ class SQLGenerator:
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) and slot.is_dimension:
                     dim_expr = computed_dim_expr_by_sid[sid]
-                    # A cast dimension already is its declared type (a wide unsigned target must stay wide).
-                    shown = self._grouped_display(dim_expr, key=key)
+                    # Grouped as displayed (MySQL refuses a SELECT CAST(e) grouped by e); a cast dimension already
+                    # is its declared type (a wide unsigned target must stay wide).
                     if not isinstance(key, CastKey):
-                        shown = _wrap_cast_for_type(dialect=self._dialect, expr=shown, dt=self._slot_cast_type(slot))
-                    select_columns.append(shown.as_(full_alias, quoted=True))
+                        dim_expr = _wrap_cast_for_type(dialect=self._dialect, expr=dim_expr, dt=self._slot_cast_type(slot))
+                    select_columns.append(self._grouped_display(dim_expr, key=key).as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, self._grain_key(dim_expr, key=key))
                     display_by_sid[sid] = dim_expr
                     _record_alias(sid, full_alias)

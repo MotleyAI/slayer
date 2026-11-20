@@ -16,16 +16,18 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ScalarOperandTypeError, TimeDimensionFieldError
-from slayer.core.keys import FieldKey, Phase
+from slayer.core.keys import ArithmeticKey, FieldKey, LiteralKey, Phase, value_type
 from slayer.core.models import Aggregation, DatasetMetric, SlayerDataset
 from slayer.core.scope import StageField, StageSchema
 from slayer.ir.planned import ValueSlot
 from slayer.ir.source_bundle import dataset_from_stage_schema
+from slayer.sql.dialects import get_dialect
 from slayer.sql.render.row_expr import data_type_target
 from tests._dev2373_fixtures import (
     DIALECTS,
     DS,
     cast_target,
+    customers,
     d,
     emitted_types,
     m,
@@ -40,6 +42,7 @@ from tests._dev2373_fixtures import (
     stage_columns,
     value_of,
 )
+from tests._engine_helpers import _engine_generate
 
 INT, TEXT, DOUBLE, DEC = DataType.INTEGER, DataType.STRING, DataType.FLOAT, DataType.DECIMAL
 BOOL, TS = DataType.BOOLEAN, DataType.DATETIME
@@ -55,7 +58,7 @@ def _both(first: dict[str, Any], expected: dict[str, Optional[DataType]], **kw: 
 
 
 def _pg(dt: DataType) -> str:
-    return data_type_target(dt).sql(dialect="postgres").upper()
+    return data_type_target(dt, dialect=get_dialect("postgres")).sql(dialect="postgres").upper()
 
 
 # --------------------------------------------------------------------------- #
@@ -171,6 +174,8 @@ CASES: dict[str, _Case] = {
     "literal-text": _Case(_dim("'k'"), [], TEXT, {"k"}, cast=None),
     "literal-int": _Case(_dim("7"), [], INT, {7}, cast=_pg(INT)),
     "null-only": _Case(_dim("null"), [], INT, {None}, cast=_pg(INT)),
+    "null-only-arithmetic": _Case(_dim("null + null"), [], INT, {None}, cast=_pg(INT)),
+    "arithmetic-null-operand": _Case(_dim("orders.quantity + null"), [], INT, {None}, cast=_pg(INT)),
     "regroup-placeholder": _Case(
         {"dimensions": ["orders.region", "orders.status"], "metrics": [m("sum(orders.quantity, partition_by=orders.region)")]},
         ["region", "status"], INT, {("N", "paid"): 9, ("S", "open"): 8}, cast=None),
@@ -279,6 +284,57 @@ def _computed_projections(sql: str, *, alias: str) -> list[Expression]:
     """Every non-column expression projected as ``alias`` anywhere in ``sql``."""
     tree = sqlglot.parse_one(sql, dialect="postgres")
     return [a.this for a in tree.find_all(exp.Alias) if a.alias == alias and not isinstance(a.this, exp.Column)]
+
+
+# --------------------------------------------------------------------------- #
+# A cast computed dimension: grouped as displayed, a timestamp keeping its sub-second precision.
+# --------------------------------------------------------------------------- #
+_SHIFTED = q(population="orders", dimensions=["orders.id", d("date_add(orders.ordered_at, 1, 'hour')", "v")],
+             metrics=[m("count(orders.*)", "n")])
+
+
+async def _shifted_select(dialect: str) -> tuple[exp.Select, Expression]:
+    sql = await _engine_generate(query=_SHIFTED, dataset=orders(), extra_datasets=[customers()], dialect=dialect)
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    (shown,) = [a.this for a in tree.find_all(exp.Alias) if a.alias == "v"]
+    return shown.find_ancestor(exp.Select), shown
+
+
+class TestCastComputedDimension:
+    @pytest.mark.parametrize(("dialect", "target"), [
+        ("mysql", "DATETIME(6)"), ("clickhouse", "Nullable(DateTime64(6))"), ("trino", "TIMESTAMP(6)"),
+        ("postgres", "TIMESTAMP"), ("duckdb", "TIMESTAMP"),
+    ])
+    async def test_timestamp_cast_keeps_sub_second_precision(self, dialect: str, target: str) -> None:
+        _select, shown = await _shifted_select(dialect)
+        assert isinstance(shown, exp.Cast), shown.sql(dialect=dialect)
+        assert shown.to.sql(dialect=dialect) == target
+
+    @pytest.mark.parametrize(("dialect", "target"), [
+        ("postgres", "TIMESTAMPTZ"), ("duckdb", "TIMESTAMPTZ"), ("snowflake", "TIMESTAMPTZ"),
+        ("tsql", "DATETIMEOFFSET"), ("bigquery", "TIMESTAMP"), ("trino", "TIMESTAMP(6) WITH TIME ZONE"),
+    ])
+    def test_zoned_timestamp_cast_keeps_its_zone(self, dialect: str, target: str) -> None:
+        assert data_type_target(DataType.DATETIME_TZ, dialect=get_dialect(dialect)).sql(dialect=dialect) == target
+
+    @pytest.mark.parametrize("dialect", ["mysql", "postgres", "clickhouse"])
+    async def test_grouped_by_the_displayed_cast(self, dialect: str) -> None:
+        select, shown = await _shifted_select(dialect)
+        group = select.args["group"].expressions
+        assert any(g == shown for g in group), select.sql(dialect=dialect)
+
+
+class TestArithmeticNullOperand:
+    def test_only_a_null_literal_is_absorbed(self) -> None:
+        quantity, unresolved, null = FieldKey(leaf="quantity"), FieldKey(leaf="unresolved"), LiteralKey(value=None)
+
+        def typed(*operands: Any) -> Optional[DataType]:
+            key = ArithmeticKey(op="+", operands=operands)
+            return value_type(key, field_type=lambda k: INT if k == quantity else None)
+
+        assert typed(quantity, null) is INT
+        assert typed(null, null) is None
+        assert typed(quantity, unresolved) is DOUBLE
 
 
 # --------------------------------------------------------------------------- #

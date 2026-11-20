@@ -1886,6 +1886,12 @@ def value_type(
         return _aggregate_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
     if isinstance(key, TransformKey):
         return _transform_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    return _row_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+
+
+def _row_value_type(
+    key: object, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
     if list_valued(key, field_type=field_type):
         return DataType.ARRAY
     if isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS:
@@ -1893,8 +1899,18 @@ def value_type(
     if boolean_valued(key, field_type=field_type):
         return DataType.BOOLEAN
     if isinstance(key, ArithmeticKey) and key.op in _ARITHMETIC_OPS:
+        # A NULL literal operand is absorbed; all-NULL is NULL-only (``None``).
+        operands = [o for o in key.operands if not _is_null_arg(o)]
+        if not operands:
+            return None
         return _arithmetic_result_type(key.op, [
-            value_type(o, field_type=field_type, aggregate_type=aggregate_type) for o in key.operands])
+            value_type(o, field_type=field_type, aggregate_type=aggregate_type) for o in operands])
+    return _computed_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+
+
+def _computed_value_type(
+    key: object, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
     temporal = temporal_type(key, field_type=field_type)
     if temporal is not None:
         return temporal

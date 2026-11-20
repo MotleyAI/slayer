@@ -147,7 +147,7 @@ def apply_aggregate(
     restored = dialect.declared_cast_type(DataType.BOOLEAN)
     if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
         return aggregate
-    return exp.Cast(this=aggregate, to=data_type_target(restored))
+    return exp.Cast(this=aggregate, to=data_type_target(restored, dialect=dialect))
 
 
 class AggregateSpec(BaseModel):

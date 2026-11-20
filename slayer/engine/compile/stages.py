@@ -338,7 +338,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     for pk in grain_keys:
         d_type = typing.value_type(pk) if typing is not None else None
         if dataset is not None:
-            d_fmt, d_desc = dimension_key_format_description(dataset=dataset, key=pk, bundle=bundle)
+            d_fmt, d_desc = dimension_key_format_description(dataset=dataset, key=pk)
         else:
             d_fmt, d_desc = None, None
         # A combined attach names its grain by the consumer's dimension name.

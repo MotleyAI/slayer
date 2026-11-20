@@ -40,6 +40,7 @@ from slayer.sql.dialects.base import (
     is_null,
     iso_text,
     lit,
+    microsecond_type,
     pad_fill,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
@@ -578,6 +579,10 @@ class ClickhouseDialect(SqlDialect):
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6)])
+
+    def timestamp_cast_target(self, *, zoned: bool) -> exp.DataType:
+        """A zone is column metadata here, not a type of its own."""
+        return microsecond_type(exp.DataType.Type.DATETIME64)
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:

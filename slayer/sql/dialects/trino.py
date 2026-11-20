@@ -17,7 +17,7 @@ from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
     LIST_POSITION, PORTABLE_LIBRARY,
     NativeFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit,
-    non_null_elements, text_try_cast, unnest_elements,
+    microsecond_type, non_null_elements, text_try_cast, unnest_elements,
 )
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
 
@@ -172,6 +172,10 @@ class PrestoFamilyDialect(SqlDialect):
     def _interval(self, amount: int, unit: exp.Var) -> exp.Interval:
         """The count is a quoted string: ``INTERVAL '1' DAY``."""
         return exp.Interval(this=exp.Literal.string(str(amount)), unit=unit)
+
+    def timestamp_cast_target(self, *, zoned: bool) -> exp.DataType:
+        """A bare ``TIMESTAMP`` truncates to milliseconds."""
+        return microsecond_type(exp.DataType.Type.TIMESTAMPTZ if zoned else exp.DataType.Type.TIMESTAMP)
 
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
