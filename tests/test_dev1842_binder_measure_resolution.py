@@ -71,36 +71,36 @@ class TestPositiveResolutionThroughBinder:
 
     async def test_root_measure_equals_inline(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "rev") == await _gen(_dataset([]), "sum(amount)")
+        assert await _gen(model, "orders.rev") == await _gen(_dataset([]), "sum(orders.amount)")
 
     async def test_arithmetic_operand_expanded(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "rev + 1") == await _gen(_dataset([]), "sum(amount) + 1")
+        assert await _gen(model, "orders.rev + 1") == await _gen(_dataset([]), "sum(orders.amount) + 1")
 
     async def test_comparison_operand_expanded(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "rev > 100") == await _gen(
-            _dataset([]), "sum(amount) > 100")
+        assert await _gen(model, "orders.rev > 100") == await _gen(
+            _dataset([]), "sum(orders.amount) > 100")
 
     async def test_unary_operand_expanded(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "-rev") == await _gen(_dataset([]), "-sum(amount)")
+        assert await _gen(model, "-orders.rev") == await _gen(_dataset([]), "-sum(orders.amount)")
 
     async def test_boolean_operands_expanded(self) -> None:
         model = _dataset([_REV, _CNT])
-        assert await _gen(model, "rev > 100 and cnt > 0") == await _gen(
-            _dataset([]), "sum(amount) > 100 and count(*) > 0")
+        assert await _gen(model, "orders.rev > 100 and orders.cnt > 0") == await _gen(
+            _dataset([]), "sum(orders.amount) > 100 and count(orders.*) > 0")
 
     async def test_scalar_arg_expanded(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "nullif(rev, 0)") == await _gen(
-            _dataset([]), "nullif(sum(amount), 0)")
+        assert await _gen(model, "nullif(orders.rev, 0)") == await _gen(
+            _dataset([]), "nullif(sum(orders.amount), 0)")
 
     async def test_transform_input_expanded(self) -> None:
         model = _dataset([_REV])
         td = [{"field": "orders.created_at", "granularity": "month"}]
-        assert await _gen(model, "cumsum(rev)", time_dimensions=td) == await _gen(
-            _dataset([]), "cumsum(sum(amount))", time_dimensions=td)
+        assert await _gen(model, "cumsum(orders.rev)", time_dimensions=td) == await _gen(
+            _dataset([]), "cumsum(sum(orders.amount))", time_dimensions=td)
 
 
 class TestAggregationScopeNotExpanded:
@@ -160,7 +160,7 @@ class TestCycleAndDepthThroughBinder:
         for i in range(4, 0, -1):
             measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
         model = _dataset(measures)
-        assert await _gen(model, "m1") == await _gen(_dataset([]), "sum(amount)")
+        assert await _gen(model, "orders.m1") == await _gen(_dataset([]), "sum(orders.amount)")
 
 
 class TestTransformArgEligibilityDropped:

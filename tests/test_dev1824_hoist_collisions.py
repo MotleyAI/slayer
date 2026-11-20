@@ -98,7 +98,7 @@ class TestThreeLevelNesting:
     #: transform-bearing dimension producer, a windowed producer, and a ranked
     #: producer in one query.
     CBAND = (
-        "CASE WHEN cumsum(sum(amount, partition_by=[region, ordered_at])) > 50 "
+        "CASE WHEN cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) > 50 "
         "THEN 1 ELSE 0 END"
     )
 
@@ -171,10 +171,10 @@ class TestTruncatingDialect:
             dimensions=["t.grp"],
             metrics=[
                 QueryMetric(
-                    metric=f"last({LONG_PREFIX}_alpha, partition_by=grp)", alias="a",
+                    metric=f"last(t.{LONG_PREFIX}_alpha, partition_by=t.grp)", alias="a",
                 ),
                 QueryMetric(
-                    metric=f"last({LONG_PREFIX}_beta, partition_by=[])", alias="b",
+                    metric=f"last(t.{LONG_PREFIX}_beta, partition_by=[])", alias="b",
                 ),
             ],
         )

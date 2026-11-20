@@ -40,7 +40,7 @@ from tests._dev1953_fixtures import (
 RANK_UREG = "rank(sum(sales.amount), partition_by=ureg, direction='desc')"
 RANK_BAND = "rank(sum(sales.amount), partition_by=spend_band, direction='desc')"
 PARAM_BAND = "rank(sum(sales.amount, partition_by=[spend_band, sales.city]), partition_by=spend_band, direction='desc')"
-PARAM_UREG = ("weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), "
+PARAM_UREG = ("weighted_avg(sales.amount, weight=rank(sum(sales.amount, partition_by=[ureg, sales.city]), "
               "partition_by=ureg, direction='desc'))")
 DIM_R = {"field": "rank(sum(sales.amount, partition_by=[sales.city, ureg]), partition_by=ureg, direction='desc')",
          "alias": "r"}
@@ -235,7 +235,8 @@ class TestExecutedPositions:
 
     async def test_undeclared_name_stays_unknown(self, engine):
         query = sales_q(
-            dimensions=["sales.city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")])
+            dimensions=["sales.city"],
+            metrics=[QueryMetric(metric="rank(sum(sales.amount), partition_by=sales.ureg, direction='desc')", alias="r")])
         with pytest.raises(UnknownReferenceError, match="ureg"):
             await engine.execute(query)
 

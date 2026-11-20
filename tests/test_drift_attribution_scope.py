@@ -725,7 +725,7 @@ class TestUnreachableDatasource:
         self, tmp_path: Path, source: str,
     ) -> None:
         engine = await _unreachable_engine(tmp_path)
-        query = {"population": source, "metrics": [{"metric": "count(*)"}]}
+        query = {"population": source, "metrics": [{"metric": f"count({source}.*)"}]}
         try:
             with patch.object(
                 SlayerSQLClient, "_metadata", autospec=True,

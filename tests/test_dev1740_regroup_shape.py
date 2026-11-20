@@ -43,8 +43,8 @@ class TestFilterRoutingAcrossStageBoundary:
 
 class TestOneStagePerDistinctPartitionSet:
     async def test_two_distinct_sets_emit_two_ctes(self) -> None:
-        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
-                "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                "AND sum(orders.amount, partition_by=orders.region) > 10000 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
@@ -54,8 +54,8 @@ class TestOneStagePerDistinctPartitionSet:
     async def test_repeated_aggregate_dedups_to_one_cte(self) -> None:
         # The same partitioned aggregate referenced twice must intern to ONE
         # synthesized stage (dedup by AggregateKey identity).
-        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
-                "THEN sum(amount, partition_by=city) ELSE 0 END")
+        band = ("CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                "THEN sum(orders.amount, partition_by=orders.city) ELSE 0 END")
         sql = await gen(_q(
             dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],

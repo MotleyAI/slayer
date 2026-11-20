@@ -52,12 +52,12 @@ from tests._dev1859_fixtures import (
 )
 
 _HEADLINE = ("weighted_avg(customers.spend, "
-             "weight=sum(amount, partition_by=customers.regions.name))")
+             "weight=sum(orders.amount, partition_by=customers.regions.name))")
 _ORDINARY = "weighted_avg(sales.amount, weight=sum(sales.amount, partition_by=sales.region))"
-_MIXED_PARAM = ("weighted_avg(quantity * avg(unit_price, partition_by=product), "
-                "weight=sum(amount, partition_by=region))")
+_MIXED_PARAM = ("weighted_avg(sales.quantity * avg(sales.unit_price, partition_by=sales.product), "
+                "weight=sum(sales.amount, partition_by=sales.region))")
 _CROSS = ("weighted_avg("
-          "amount, weight=sum(customers.spend, partition_by=customers.regions.name))")
+          "orders.amount, weight=sum(customers.spend, partition_by=customers.regions.name))")
 _TARGET_SIDE = ("weighted_avg(customers.spend, "
                 "weight=sum(customers.spend, partition_by=customers.regions.name))")
 
@@ -222,8 +222,8 @@ class TestUngrainedParameterThreeKernels:
         resp = await sales_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=("wsum(sum(amount, partition_by=[city, region]), "
-                         "weight=count(id))"),
+                metric=("wsum(sum(sales.amount, partition_by=[sales.city, sales.region]), "
+                         "weight=count(sales.id))"),
                 alias="w")]))
         _assert_region(_region_vals(resp, "w"),
                        ungrained_wsum_reagg_by_region())
@@ -262,7 +262,7 @@ class TestCrossModelParameterOnLocalRoot:
         q = orders_q(
             dimensions=["orders.status"],
             metrics=[QueryMetric(
-                metric=("weighted_avg(amount, weight="
+                metric=("weighted_avg(orders.amount, weight="
                          "sum(customers.spend, partition_by=customers.plans.level))"),
                 alias="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -282,7 +282,7 @@ class TestUndeterminedParameterRejected:
             dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric=("weighted_avg(customers.spend, "
-                         "weight=sum(amount, partition_by=status))"),
+                         "weight=sum(orders.amount, partition_by=orders.status))"),
                 alias="w")])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
@@ -332,8 +332,8 @@ class TestFilterAndOrderPositions:
 
 
 #: the SAME attached aggregate as source constituent AND parameter — one producer.
-_DEDUP = ("weighted_avg(quantity * sum(amount, partition_by=region), "
-          "weight=sum(amount, partition_by=region))")
+_DEDUP = ("weighted_avg(sales.quantity * sum(sales.amount, partition_by=sales.region), "
+          "weight=sum(sales.amount, partition_by=sales.region))")
 
 
 class TestSqlHygiene:

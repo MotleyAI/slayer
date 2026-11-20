@@ -189,7 +189,7 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = self._banded_stages(
-            dimensions=["region"], filter=["banded.band == 1"],
+            dimensions=["banded.region"], filter=["banded.band == 1"],
             metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         )
         resp = await engine.execute(stages)
@@ -255,7 +255,7 @@ class TestNestingIsCardinalityNeutral:
         _, engine = exec_backend
 
         def stages(with_band: bool) -> list:
-            dims = ["region", BAND] if with_band else ["region"]
+            dims = ["orders.region", BAND] if with_band else ["orders.region"]
             return [
                 q(name="s1", dimensions=dims,
                   metrics=[QueryMetric(metric="sum(orders.amount)", alias="bt")]),
