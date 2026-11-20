@@ -18,8 +18,8 @@
   one_x_hash: 230b283a638025e775dc66e8283458d2c86c0be4f1fab06433e7e92b4a7b3333
   reason: "main keeps its own wording: an EXPLAIN query's database span is `slayer.db.explain`, not 1.x's `slayer.db.execute`."
 - title: An ingest is one span tree with its outcome
-  one_x_hash: f0bbc12ac7f6ba8f96e38d4a216d0866375998f5e786e0372465a3e3db67cae6
-  reason: "main keeps its own wording: datasets where 1.x says models; same span tree and outcome attributes."
+  one_x_hash: 723dd7fe97e18f037f5308e0f943ebe38b1dc133224d3910baf5c02bb49bc677
+  reason: "main keeps its own wording: datasets where 1.x says models, MCP `ingest_datasource`; same span tree and outcome attributes."
 - title: Errors are reported by class
   one_x_hash: 173ba814f40df827dc70806333970fc0c693ae78e2b241ca7a14868af61cef87
   reason: "main keeps its own wording: the unknown-dataset scenario reports `DatasetNotFoundError`."
@@ -29,3 +29,12 @@
 - title: Counters for retries, cache and ingest
   one_x_hash: f0a4c287d9ab88aeaa6ab1422222825312b96ed6f116933dc2ed11a2fb0ec724
   reason: "main keeps its own wording: `slayer.ingest.datasets` counts ingested datasets, not models."
+- title: datasources create --ingest runs the idempotent ingest
+  one_x_hash: b187d3b691f0b7ca6699252e30846dacc585ebac304259b361c4c02157cb9b01
+  reason: "main keeps its own wording: datasets where 1.x says models, and the printed sections include main's failed-key-read section."
+- title: The empty-ingest message needs an empty result
+  one_x_hash: bb2356376e15674635f9e3804578351da2495bb37eec28a2ec750e22906c80c3
+  reason: "main keeps its own wording: datasets where 1.x says models, and a failed key read also makes the result non-empty."
+- title: create_datasource auto-ingest runs the idempotent ingest
+  one_x_hash: 80998e6c6ef5f2cc4fa4323ae41d28d59a38874e6cc80e6875c9ef9862ba1f8e
+  reason: "main keeps its own wording: MCP `ingest_datasource` and datasets where 1.x says `ingest_datasource_models` and models, failed key reads included."
