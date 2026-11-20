@@ -37,12 +37,12 @@ def one_value(row: dict, *, exclude: Iterable[str] = ()) -> Any:
 
 def _orders_fields(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-        DatasetField(name="region", sql="region", datatype=DataType.STRING),
-        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-        DatasetField(name="shipped_at", sql="shipped_at", datatype=DataType.DATETIME),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+        DatasetField(name="region", expression="region", datatype=DataType.STRING),
+        DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+        DatasetField(name="shipped_at", expression="shipped_at", datatype=DataType.DATETIME),
     ]
     cols.extend(extra)
     return cols
@@ -96,24 +96,24 @@ def region_chain_datasets(*, data_source: str = "ds") -> list[SlayerDataset]:
     regions = SlayerDataset(
         name="regions", sql_table="regions", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="last_activity_at", sql="last_activity_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="last_activity_at", expression="last_activity_at", datatype=DataType.DATETIME),
         ],
     )
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )

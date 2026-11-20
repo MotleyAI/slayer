@@ -41,6 +41,7 @@ from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failure
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -265,12 +266,12 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
             sql_table="orders",
             data_source="testmysql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="avg_amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         customers_model = SlayerDataset(
@@ -278,9 +279,9 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
             sql_table="customers",
             data_source="testmysql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
         run_sync(storage.save_dataset(orders_model))
@@ -314,8 +315,7 @@ class TestMySQLQueries:
         orders = await mysql_env.storage.get_dataset("orders")
         assert orders is not None
         await mysql_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]), datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
@@ -604,21 +604,21 @@ def mysql_cross_dataset_env(mysql_container):
         name="orders", sql_table="orders", data_source="testmysql",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testmysql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="avg_score", sql="score", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="avg_score", expression="score", datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -1176,9 +1176,9 @@ def mysql_log10_env(mysql_container):
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testmysql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="log10(amount)")]), datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -1256,12 +1256,12 @@ def planets_mysql_env(mysql_container):
             sql_table="planets",
             data_source="testmysql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1320,9 +1320,9 @@ def mysql_derived_chain_env(mysql_container):
             data_source="testmysql",
             sql_table="b_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", expression="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", expression="foo_raw / 100.0", datatype=DataType.FLOAT),
             ],
         )
     ))
@@ -1332,13 +1332,13 @@ def mysql_derived_chain_env(mysql_container):
             data_source="testmysql",
             sql_table="a_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
-                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", expression="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
+                DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="a_tbl.bar / b_tbl.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1415,9 +1415,9 @@ def _mysql_esc_storage(mysql_container, tmp_path_factory):
             # Mode-A dataset filter with a {var} placeholder (escape="sql").
             filters=["status = '{v}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )))
         yield storage

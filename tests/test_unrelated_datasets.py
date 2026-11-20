@@ -17,6 +17,7 @@ from slayer.core.errors import (
     UnresolvableDimensionRelationshipError,
     UnsafeRelationshipInputError,
 )
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.enums import DataType
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
@@ -232,7 +233,7 @@ class TestStoredDefinitionsRefuse:
     @pytest.mark.parametrize("definition", ["column", "filter"])
     async def test_column_sql_and_model_filter(self, engine: SlayerQueryEngine, definition: str) -> None:
         if definition == "column":
-            model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.FLOAT, sql="events.amount")])
+            model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="events.amount"), DialectEntry(dialect="SQLITE", expression="events.amount")]))])
             use, named = query(metrics=[m("sum(customers.ev_amount)", "x")]), "ev_amount"
         else:
             model = customers_dataset(filters=["events.amount > 1"])
@@ -249,7 +250,8 @@ class TestStoredDefinitionsRefuse:
 
     @pytest.mark.parametrize("sql", ['"events".amount', '"events"."amount"'])
     async def test_quoted_qualifier(self, engine: SlayerQueryEngine, sql: str) -> None:
-        model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.FLOAT, sql=sql)])
+        model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.FLOAT, expression=ExpressionObject(
+            dialects=[DialectEntry(dialect=d, expression=sql) for d in ("SQLITE", "DUCKDB")]))])
         await engine.storage.save_dataset(model, _validate=False)
         q = query(metrics=[m("sum(customers.ev_amount)", "x")])
         with pytest.raises(SlayerError, match="no relationship path reaches 'events'"):
@@ -261,7 +263,7 @@ class TestStoredDefinitionsRefuse:
             name="logs", sql_table="orgs", data_source="test",
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
         ))
-        stale = customers_dataset(fields=[DatasetField(name="lx", datatype=DataType.STRING, sql="logs.name")])
+        stale = customers_dataset(fields=[DatasetField(name="lx", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="logs.name"), DialectEntry(dialect="SQLITE", expression="logs.name")]))])
         await engine.storage.save_dataset(stale, _validate=False)
         await engine.storage.save_dataset(SlayerDataset(name="per_city", data_source="test", source_queries=[
             query(dimensions=["customers.city"], metrics=[m("count(customers.lx)", "n")]),

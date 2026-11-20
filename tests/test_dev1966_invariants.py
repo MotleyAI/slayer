@@ -70,7 +70,7 @@ class TestStageBundleCollision:
 
     def test_an_extended_host_replaces_its_base(self) -> None:
         extended = orders_dataset().model_copy(update={"fields": [
-            *orders_dataset().fields, DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.FLOAT)]})
+            *orders_dataset().fields, DatasetField(name="double_amount", expression="amount * 2", datatype=DataType.FLOAT)]})
         out = stage_bundle_with_siblings(
             bundle=_bundle(), source_dataset=extended, sibling_schemas={}, data_source="test")
         (host,) = [x for x in out.referenced_datasets if x.name == "orders"]

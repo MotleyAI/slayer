@@ -88,10 +88,10 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="orders",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                    name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
             metrics=[
                 DatasetMetric(expression="sum(amount) / count(*)", name="aov"),
@@ -105,9 +105,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="customers",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                    name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
     )

@@ -27,6 +27,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -73,10 +74,10 @@ def dev1954_datasets(*, named: bool = True) -> List[SlayerDataset]:
 
     orders = _by_name(models, "orders")
     orders.fields.append(DatasetField(
-        name="north_amount", datatype=DataType.FLOAT, sql="amount",
+        name="north_amount", datatype=DataType.FLOAT, expression="amount",
         filter="customers.regions.rname = 'North'"))
     orders.fields.append(DatasetField(
-        name="region_label", datatype=DataType.STRING, sql="customers.regions.rname"))
+        name="region_label", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.regions.rname"), DialectEntry(dialect="SQLITE", expression="customers.regions.rname")])))
     orders.metrics.append(DatasetMetric(name="rp", expression="max(customers.regions.pop)"))
     orders.aggregations.append(Aggregation(
         name="wpop", expression="SUM({value} * {weight})",

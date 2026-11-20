@@ -53,7 +53,7 @@ def orders_dataset(*, data_source: str = "test", flag_format: Optional[NumberFor
             DatasetField(name="ordered_at", datatype=DataType.DATE),
             DatasetField(name="amount", datatype=DataType.INTEGER),
             DatasetField(name="flag", datatype=DataType.BOOLEAN, format=flag_format),
-            DatasetField(name="big_order", datatype=DataType.BOOLEAN, sql="amount > 15"),
+            DatasetField(name="big_order", datatype=DataType.BOOLEAN, expression="amount > 15"),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )

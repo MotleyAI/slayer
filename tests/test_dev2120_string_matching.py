@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -37,7 +38,7 @@ async def sqlite_engine():
 def _mode_a_dataset() -> SlayerDataset:
     base = lib_dataset()
     return base.model_copy(update={"fields": [
-        *base.fields, DatasetField(name="is_ada", sql="word LIKE 'ada%'", datatype=DataType.BOOLEAN),
+        *base.fields, DatasetField(name="is_ada", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="word LIKE 'ada%'")]), datatype=DataType.BOOLEAN),
     ]})
 
 

@@ -2830,7 +2830,7 @@ class SQLGenerator:
             ))
         else:
             expr = self._dialect.read_column(self._resolve_sql(
-                sql=col.sql if col.sql else col.name, name=col.name,
+                sql=col.definition_sql or col.name, name=col.name,
                 dataset_name=root_relation, type=col.datatype,
             ), zoned=self._dialect.is_zoned_db_type(col.db_type))
         for p in self._joined_paths_in_sql(
@@ -5634,7 +5634,8 @@ class SQLGenerator:
                 f"Field {leaf!r} not found on dataset "
                 f"{source_dataset.name!r}",
             )
-        resolved = self._resolve_sql(sql=col.sql, name=col.name, dataset_name=source_relation, type=col.datatype)
+        resolved = self._resolve_sql(sql=col.definition_sql, name=col.name, dataset_name=source_relation,
+                                     type=col.datatype)
         return self._dialect.read_column(resolved, zoned=self._dialect.is_zoned_db_type(col.db_type))
 
     def _bucket_source_expr(
@@ -6060,7 +6061,7 @@ class SQLGenerator:
                 field_type = None
                 zoned_value = None
             else:
-                sql_text = col.sql if col.sql else col.name
+                sql_text = col.definition_sql or col.name
                 field_type = col.datatype
                 # A zoned physical column reads as the dialect's naive type inside the aggregate too.
                 zoned_value = self._dialect.read_column(

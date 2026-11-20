@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import os
 import re as _re
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import AsyncIterator
@@ -138,7 +139,7 @@ class TestDev1701AnchoringDirectionMatrix:
     async def test_local_derived_td_unaffected(self) -> None:
         """A LOCAL derived TD (no crossing) keeps its host-rooted anchor."""
         orders_extra = [DatasetField(
-            name="eff_created", sql="coalesce(created_at, created_at)",
+            name="eff_created", expression="coalesce(created_at, created_at)",
             datatype=DataType.DATETIME)]
         query = SlayerQuery(
             population="orders_x",
@@ -156,7 +157,7 @@ class TestDev1701AnchoringDirectionMatrix:
         """A one-hop joined derived TD (customers_v2.signup_at based) anchors at
         the direct ``customers_v2`` alias, never double-prefixed."""
         customers_extra = [DatasetField(
-            name="signup_eff", sql="datetime(signup_at, '+1 month')",
+            name="signup_eff", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="datetime(signup_at, '+1 month')")]),
             datatype=DataType.DATETIME)]
         query = SlayerQuery(
             population="orders_x",
@@ -300,7 +301,7 @@ class TestDev1702B2ForwardMaterialization:
         implementation that resolves only the value would leave the countries
         relationship unregistered."""
         customers_extra = [DatasetField(
-            name="deep_pop_flt", sql="regions.population", datatype=DataType.FLOAT,
+            name="deep_pop_flt", expression="regions.population", datatype=DataType.FLOAT,
             filter="regions.countries.gdp > 5")]
         query = SlayerQuery(
             population="orders_x",
@@ -489,7 +490,7 @@ class TestDerivedSharedGrainRenders:
         """A HOST-LOCAL derived dim (path=()) still broadcasts via CROSS JOIN —
         the guard is scoped to path-bearing shared-grain dims only."""
         orders_extra = [DatasetField(
-            name="amt_bucket", sql="amount * 2", datatype=DataType.FLOAT)]
+            name="amt_bucket", expression="amount * 2", datatype=DataType.FLOAT)]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["orders_x.amt_bucket"],
@@ -723,7 +724,7 @@ async def sqlite_engine() -> AsyncIterator[SlayerQueryEngine]:
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="lifetime_value", datatype=DataType.FLOAT),
                 DatasetField(name="status", datatype=DataType.STRING),
-                DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+                DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ))
@@ -773,7 +774,7 @@ class TestNullSafeJoinBackExecution:
                 DatasetField(name="status", datatype=DataType.STRING),
                 # Filter references a JOINED table → filtered-local
                 # isolation. High-ltv customers (2 & 3) have NULL status.
-                DatasetField(name="amt_hi", sql="amount", datatype=DataType.FLOAT,
+                DatasetField(name="amt_hi", expression="amount", datatype=DataType.FLOAT,
                        filter="customers_v2.lifetime_value > 15"),
             ],
             relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],

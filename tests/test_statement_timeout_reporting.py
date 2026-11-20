@@ -80,8 +80,8 @@ async def engine(tmp_path, monkeypatch: pytest.MonkeyPatch) -> SlayerQueryEngine
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
         ],
     ))
 

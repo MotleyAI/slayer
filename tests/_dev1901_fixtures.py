@@ -81,7 +81,7 @@ def dev1901_datasets() -> List[SlayerDataset]:
     orders = _by_name(models, "orders")
     orders.fields.extend([
         DatasetField(name="factor", datatype=DataType.FLOAT),
-        DatasetField(name="cust_spend", datatype=DataType.FLOAT, sql="customers.spend"),
+        DatasetField(name="cust_spend", datatype=DataType.FLOAT, expression="customers.spend"),
     ])
     orders.aggregations.extend([
         _w("wsum", "orders.store_no"),

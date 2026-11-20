@@ -54,7 +54,7 @@ def _host_with_label() -> SlayerDataset:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="cr_id", datatype=DataType.INTEGER),
             DatasetField(name="region_label", datatype=DataType.STRING,
-                   sql="customer__region.label"),
+                   expression="customer__region.label"),
         ],
         relationships=[DatasetRelationship(to="customer__region",
                          from_columns=["cr_id"], to_columns=["id"])],

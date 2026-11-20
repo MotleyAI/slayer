@@ -46,9 +46,9 @@ def _derived_ref_datasets():
     sales, regions, customers, corders = (
         sales_dataset(), regions_dataset(), customers_dataset(), corders_dataset())
     customers.fields.append(
-        DatasetField(name="rid1", datatype=DataType.FLOAT, sql="region_id * 1"))
+        DatasetField(name="rid1", datatype=DataType.FLOAT, expression="region_id * 1"))
     corders.fields.append(
-        DatasetField(name="cust_rid", datatype=DataType.FLOAT, sql="customers.rid1"))
+        DatasetField(name="cust_rid", datatype=DataType.FLOAT, expression="customers.rid1"))
     return [corders, customers, regions, sales]
 
 

@@ -210,8 +210,8 @@ class TestSurfaces:
         await storage.save_dataset(SlayerDataset.model_validate(shop_orders(relationships=[])))
         with recorded() as caught:
             await mcp_text(storage, "edit_dataset", dataset_name="orders", data_source=DS,
-                           fields=[{"name": "extra_a", "sql": "amount", "type": "Float"},
-                                   {"name": "extra_b", "sql": "amount", "type": "Float"}],
+                           fields=[{"name": "extra_a", "expression": "amount", "type": "Float"},
+                                   {"name": "extra_b", "expression": "amount", "type": "Float"}],
                            metrics=[{"name": "m1", "formula": "count(*)"}, {"name": "m2", "formula": "count(*)"}])
         olds = sorted(payload_of(w).old for w in deprecations(caught))
         assert len([o for o in olds if "type" in o]) == 1

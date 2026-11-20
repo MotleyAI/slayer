@@ -83,9 +83,9 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                    DatasetField(name="region", expression="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -98,12 +98,12 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="sku", sql="sku", datatype=DataType.STRING),
+                    DatasetField(name="sku", expression="sku", datatype=DataType.STRING),
                     DatasetField(
                         name="description",
-                        sql="description",
+                        expression="description",
                         datatype=DataType.STRING,
                     ),
                 ],
@@ -118,13 +118,13 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", expression="status", datatype=DataType.STRING),
                     DatasetField(
                         name="customer_id",
-                        sql="customer_id",
+                        expression="customer_id",
                         datatype=DataType.FLOAT,
                     ),
                 ],

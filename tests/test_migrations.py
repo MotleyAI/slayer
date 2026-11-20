@@ -812,8 +812,8 @@ async def _build_engine_with_orders(tmpdir: str):
         sql_table="public.orders",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     ))
     return SlayerQueryEngine(storage=storage)

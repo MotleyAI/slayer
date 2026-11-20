@@ -61,8 +61,8 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 sql_table="orders",
                 data_source="mydb",
                 fields=[
-                    DatasetField(name="id", sql="id", primary_key=True),
-                    DatasetField(name="amount", sql="amount"),
+                    DatasetField(name="id", expression="id", primary_key=True),
+                    DatasetField(name="amount", expression="amount"),
                 ],
             )
         )

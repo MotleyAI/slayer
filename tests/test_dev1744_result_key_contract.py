@@ -123,7 +123,7 @@ async def engine(tmp_path) -> SlayerQueryEngine:
                 DatasetField(name="revenue", datatype=DataType.FLOAT),
                 DatasetField(name="signup_at", datatype=DataType.DATETIME),
                 DatasetField(
-                    name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT,
+                    name="rev_x2", expression="revenue * 2", datatype=DataType.FLOAT,
                 ),
             ],
             relationships=[

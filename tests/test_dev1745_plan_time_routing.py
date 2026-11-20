@@ -52,7 +52,7 @@ def _orders() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="eu_amount", sql="amount",
+            DatasetField(name="eu_amount", expression="amount",
                    filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(

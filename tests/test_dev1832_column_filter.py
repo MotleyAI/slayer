@@ -18,6 +18,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -72,7 +73,7 @@ async def exec_qdouble(request):
     models = dev1832_datasets()
     sales = next(m for m in models if m.name == "sales")
     sales.fields.append(
-        DatasetField(name="q_double", datatype=DataType.FLOAT, sql="q_amount * 2"))
+        DatasetField(name="q_double", datatype=DataType.FLOAT, expression="sales.q_amount * 2"))
     async for engine in make_exec_engine(request, datasets=models):
         yield engine
 
@@ -113,7 +114,7 @@ def _tsales_dataset() -> SlayerDataset:
             DatasetField(name="product", datatype=DataType.STRING),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="ts", datatype=DataType.DATETIME),
-            DatasetField(name="q_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="q_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="product = 'Q'"),
         ])
 
@@ -315,11 +316,11 @@ class TestHostLocalFilterReachability:
     the filter fragment, not only the value (which the crossed set already
     covers)."""
 
-    def _orders_bundle(self, *, sql: str | None, filter_: str):
+    def _orders_bundle(self, *, expression: str | None, filter_: str):
         models = dev1832_datasets()
         orders = next(m for m in models if m.name == "orders")
         orders.fields.append(DatasetField(
-            name="probe", datatype=DataType.FLOAT, sql=sql, filter=filter_))
+            name="probe", datatype=DataType.FLOAT, expression=expression, filter=filter_))
         b = ResolvedSourceBundle(
             dialect="sqlite",
             population=orders,
@@ -330,7 +331,7 @@ class TestHostLocalFilterReachability:
     def test_cross_model_value_with_host_local_filter_is_host_local(self) -> None:
         # value crosses orders → customers (to-one); filter reads host orders.amount.
         orders, key, b = self._orders_bundle(
-            sql="customers.discount", filter_="amount > 5")
+            expression="customers.discount", filter_="amount > 5")
         assert key_has_host_local_ref(
             key=key, anchor_dataset=orders, anchor_relation="orders",
             bundle=b, cache={}) is True
@@ -338,7 +339,7 @@ class TestHostLocalFilterReachability:
     def test_cross_model_value_and_cross_model_filter_is_not_host_local(self) -> None:
         # Control: both fragments cross to customers — nothing anchors at the host.
         orders, key, b = self._orders_bundle(
-            sql="customers.discount", filter_="customers.tier = 'gold'")
+            expression="customers.discount", filter_="customers.tier = 'gold'")
         assert key_has_host_local_ref(
             key=key, anchor_dataset=orders, anchor_relation="orders",
             bundle=b, cache={}) is False
@@ -349,7 +350,7 @@ class TestHostLocalFilterReachability:
         # A field with NO sql masks its own physical value (host-local); a
         # cross-dataset filter must NOT strip that host-locality (Codex edge case).
         orders, key, b = self._orders_bundle(
-            sql=None, filter_="customers.tier = 'gold'")
+            expression=None, filter_="customers.tier = 'gold'")
         assert key_has_host_local_ref(
             key=key, anchor_dataset=orders, anchor_relation="orders",
             bundle=b, cache={}) is True
@@ -362,7 +363,7 @@ class TestDerivedOverFiltered:
     async def test_derived_column_expands_wrapped_value_sql(self) -> None:
         model = sales_dataset()
         model.fields.append(
-            DatasetField(name="q_double", datatype=DataType.FLOAT, sql="q_amount * 2"))
+            DatasetField(name="q_double", datatype=DataType.FLOAT, expression="sales.q_amount * 2"))
         sql = await gen(sales_q(metrics=[_metric("sum(sales.q_double)")]), datasets=[model])
         assert "CASE WHEN" in sql.upper(), sql
         assert "'Q'" in sql, sql
@@ -381,7 +382,7 @@ class TestVariableSubstitution:
     async def test_variables_substitute_into_sql_and_filter(self) -> None:
         model = sales_dataset()
         model.fields.append(DatasetField(
-            name="vcol", datatype=DataType.FLOAT, sql="amount * {mult}",
+            name="vcol", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * {mult}")]),
             filter="product = '{prod}'"))
         sql = await gen(
             sales_q(metrics=[_metric("sum(sales.vcol)")], variables={"mult": 2, "prod": "Q"}),
@@ -404,7 +405,7 @@ class TestCycleAndPathValidation:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="product", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT, filter="product = 'Q'"),
-                DatasetField(name="der", datatype=DataType.FLOAT, sql="amount",
+                DatasetField(name="der", datatype=DataType.FLOAT, expression="fcyc.amount",
                        filter="product = 'Q'"),
             ]))
 
@@ -417,8 +418,8 @@ class TestCycleAndPathValidation:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="product", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="der1", datatype=DataType.FLOAT, sql="amount"),
-                DatasetField(name="der2", datatype=DataType.FLOAT, sql="amount",
+                DatasetField(name="der1", datatype=DataType.FLOAT, expression="amount"),
+                DatasetField(name="der2", datatype=DataType.FLOAT, expression="amount",
                        filter="fedge.der1 > 0"),
             ]))
 
@@ -428,7 +429,7 @@ class TestCycleAndPathValidation:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="loop", datatype=DataType.FLOAT, sql="amount",
+                DatasetField(name="loop", datatype=DataType.FLOAT, expression="amount",
                        filter="floop.loop > 0"),
             ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
@@ -442,7 +443,7 @@ class TestCycleAndPathValidation:
             name="fself", sql_table="sales", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="val", datatype=DataType.FLOAT, sql="val",
+                DatasetField(name="val", datatype=DataType.FLOAT, expression="val",
                        filter="val > 0"),
             ]))
 
@@ -454,7 +455,7 @@ class TestCycleAndPathValidation:
             name="fself", sql_table="fself", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="val", datatype=DataType.FLOAT, sql="val", filter="val > 0"),
+                DatasetField(name="val", datatype=DataType.FLOAT, expression="val", filter="val > 0"),
             ])
         sql = await gen(
             SlayerQuery(population="fself", metrics=[_metric("sum(fself.val)")]),
@@ -471,8 +472,8 @@ class TestCycleAndPathValidation:
             name="cyc", sql_table="cyc", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="x", datatype=DataType.FLOAT, sql="x", filter="cyc.y > 0"),
-                DatasetField(name="y", datatype=DataType.FLOAT, sql="x")])
+                DatasetField(name="x", datatype=DataType.FLOAT, expression="x", filter="cyc.y > 0"),
+                DatasetField(name="y", datatype=DataType.FLOAT, expression="cyc.x")])
         x_col = model.get_field("x")
         assert x_col is not None
         with pytest.raises(DatasetFieldCycleError):
@@ -487,9 +488,9 @@ class TestCycleAndPathValidation:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="der_a", datatype=DataType.FLOAT, sql="amount",
+                DatasetField(name="der_a", datatype=DataType.FLOAT, expression="amount",
                        filter="fmutual.der_b > 0"),
-                DatasetField(name="der_b", datatype=DataType.FLOAT, sql="amount",
+                DatasetField(name="der_b", datatype=DataType.FLOAT, expression="amount",
                        filter="fmutual.der_a > 0"),
             ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
@@ -501,7 +502,7 @@ class TestCycleAndPathValidation:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="bad", datatype=DataType.FLOAT, sql="amount",
+                DatasetField(name="bad", datatype=DataType.FLOAT, expression="amount",
                        filter="ghost.col = 1"),
             ])
         with pytest.raises(ValueError) as ei:
@@ -515,7 +516,7 @@ class TestCycleAndPathValidation:
             name="host", data_source="test", sql_table="host",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="masked", datatype=DataType.FLOAT, sql="id",
+                DatasetField(name="masked", datatype=DataType.FLOAT, expression="id",
                        filter="peer.flag = 1")])
         col = host.get_field("masked")
         assert col is not None
@@ -531,7 +532,7 @@ class TestCycleAndPathValidation:
             name="host", data_source="test", sql_table="host",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="masked", datatype=DataType.FLOAT, sql="id",
+                DatasetField(name="masked", datatype=DataType.FLOAT, expression="id",
                        filter="peer.flag = 1")])
         col = host.get_field("masked")
         assert col is not None

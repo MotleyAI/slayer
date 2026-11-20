@@ -30,7 +30,7 @@ async def _seed(s: YAMLStorage) -> None:
     await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
 
     def col(n, t=DataType.STRING, pk=False):
-        return DatasetField(name=n, sql=n, datatype=t, primary_key=pk)
+        return DatasetField(name=n, expression=n, datatype=t, primary_key=pk)
 
     await s.save_dataset(SlayerDataset(
         name="orders", data_source="mydb", sql_table="orders",
@@ -117,8 +117,8 @@ class TestMcpTool:
                 await s.save_dataset(SlayerDataset(
                     name="orders", data_source=ds, sql_table="orders",
                     fields=[
-                        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                        DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                        DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                        DatasetField(name="status", expression="status", datatype=DataType.STRING),
                     ],
                 ))
             mcp = create_mcp_server(storage=s)

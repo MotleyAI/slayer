@@ -25,6 +25,7 @@ from sqlglot import exp
 import slayer.engine.query_engine as qe_mod
 from slayer.core.enums import DataType
 from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.field_expansion import _requalify
@@ -73,7 +74,7 @@ class TestDunderTargetResolves:
                 # Mode-A reference to a DIRECT relationship target literally named
                 # ``customer__region`` — exact match, single hop.
                 DatasetField(name="region_label", datatype=DataType.STRING,
-                       sql="customer__region.label"),
+                       expression="customer__region.label"),
             ],
             relationships=[DatasetRelationship(to="customer__region",
                              from_columns=["cr_id"], to_columns=["id"])],
@@ -105,7 +106,7 @@ class TestLegacyDunderIsHardErrorAtSave:
                 # naive split walks customers -> regions, so this must be a D2
                 # error naming the dotted replacement.
                 DatasetField(name="rn", datatype=DataType.STRING,
-                       sql="customers__regions.name"),
+                       expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="customers__regions.name")])),
             ],
             relationships=[DatasetRelationship(to="customers",
                              from_columns=["customer_id"], to_columns=["id"])],
@@ -137,7 +138,7 @@ class TestLegacyDunderIsHardErrorAtGeneration:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
                 DatasetField(name="rn", datatype=DataType.STRING,
-                       sql="customers__regions.name"),
+                       expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="customers__regions.name")])),
             ],
             relationships=[DatasetRelationship(to="customers",
                              from_columns=["customer_id"], to_columns=["id"])],
@@ -181,7 +182,7 @@ class TestModeAValidationOverReverseOnlyEdge:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="bad", datatype=DataType.STRING,
-                       sql="orders.nonexistent.name"),
+                       expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="orders.nonexistent.name")])),
             ],
         )
         with pytest.raises(UnresolvableDimensionRelationshipError):
@@ -200,7 +201,7 @@ class TestBrokenChainNamesFailingHop:
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
                 # customers is a relationship target; nonexistent is not one on it.
                 DatasetField(name="bad", datatype=DataType.STRING,
-                       sql="customers.nonexistent.name"),
+                       expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="customers.nonexistent.name")])),
             ],
             relationships=[DatasetRelationship(to="customers",
                              from_columns=["customer_id"], to_columns=["id"])],
@@ -234,7 +235,7 @@ class TestExactHostQualifier:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 # Explicit host qualifier — resolves to the host relation.
-                DatasetField(name="doubled", datatype=DataType.FLOAT, sql="orders.amount * 2"),
+                DatasetField(name="doubled", datatype=DataType.FLOAT, expression="orders.amount * 2"),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         )
@@ -293,8 +294,8 @@ class TestAmbiguityImpossible:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="a_id", datatype=DataType.INTEGER),
                 DatasetField(name="ab_id", datatype=DataType.INTEGER),
-                DatasetField(name="chain_val", datatype=DataType.STRING, sql="a.b.val"),
-                DatasetField(name="direct_val", datatype=DataType.STRING, sql="a__b.val"),
+                DatasetField(name="chain_val", datatype=DataType.STRING, expression="a.b.val"),
+                DatasetField(name="direct_val", datatype=DataType.STRING, expression="a__b.val"),
             ],
             relationships=[
                 DatasetRelationship(to="a", from_columns=["a_id"], to_columns=["id"]),
@@ -343,7 +344,7 @@ class TestDeepDottedChainResolves:
                 DatasetField(name="aa_id", datatype=DataType.INTEGER),
                 # 5 name parts: aa.bb.cc.dd.v — a nested-Dot AST, not 4-part
                 # Column.parts. The extraction layer must still walk it.
-                DatasetField(name="deep", datatype=DataType.STRING, sql="aa.bb.cc.dd.v"),
+                DatasetField(name="deep", datatype=DataType.STRING, expression="aa.bb.cc.dd.v"),
             ],
             relationships=[DatasetRelationship(to="aa", from_columns=["aa_id"], to_columns=["id"])],
         )
@@ -386,7 +387,7 @@ class TestModeAValidationDialect:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="cr_id", datatype=DataType.INTEGER),
-                DatasetField(name="rl", datatype=DataType.STRING, sql="customer__region.label"),
+                DatasetField(name="rl", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="customer__region.label")])),
             ],
             relationships=[DatasetRelationship(to="customer__region",
                              from_columns=["cr_id"], to_columns=["id"])],

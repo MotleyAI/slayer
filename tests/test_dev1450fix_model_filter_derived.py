@@ -24,6 +24,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -95,7 +96,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             data_source="prod",
             fields=[
                 *_base_cols(),
-                DatasetField(name="big_order", sql="amount > 5", datatype=DataType.BOOLEAN),
+                DatasetField(name="big_order", expression="amount > 5", datatype=DataType.BOOLEAN),
             ],
             filters=["orders_big.big_order"],
         )
@@ -110,7 +111,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 *_base_cols(),
                 DatasetField(
                     name="eu_flag",
-                    sql="customers.region = 'EU'",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="customers.region = 'EU'")]),
                     datatype=DataType.BOOLEAN,
                 ),
             ],
@@ -140,7 +141,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 *_base_cols(),
                 DatasetField(
                     name="ranked",
-                    sql="rank() over (order by amount)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="rank() over (order by amount)")]),
                     datatype=DataType.INTEGER,
                 ),
             ],

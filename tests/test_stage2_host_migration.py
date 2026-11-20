@@ -63,8 +63,8 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
@@ -73,9 +73,9 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -85,8 +85,8 @@ def _warehouses() -> SlayerDataset:
     return SlayerDataset(
         name="warehouses", sql_table="warehouses", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -107,11 +107,11 @@ class TestJoinOrderParity:
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="wh_pop", sql="warehouses.regions.population",
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="warehouse_id", expression="warehouse_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="wh_pop", expression="warehouses.regions.population",
                        datatype=DataType.FLOAT),
             ],
             relationships=[
@@ -153,9 +153,9 @@ class TestPlaceholderLimitOne:
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -185,16 +185,16 @@ class TestPlaceholderLimitOne:
         shippers = SlayerDataset(
             name="shippers", sql_table="shippers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="code", sql="code", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="code", expression="code", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="shipper_id", sql="shipper_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="shipper_id", expression="shipper_id", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -243,15 +243,15 @@ class TestTypedJoinKeyMixedCaseQuoted:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="CustId", sql="CustId", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+                DatasetField(name="CustId", expression="CustId", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="cust_ref", sql="cust_ref", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="cust_ref", expression="cust_ref", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["cust_ref"], to_columns=["CustId"])],
         )

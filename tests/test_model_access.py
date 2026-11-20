@@ -41,11 +41,11 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFiltered
     return AccessFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
 
-def _unloadable_reader(sql: str) -> SlayerDataset:
+def _unloadable_reader(expression: str) -> SlayerDataset:
     """``reader``, related to the unloadable dataset, with a field ``sql``."""
     return SlayerDataset(
         name="reader", sql_table="pub_items", data_source=DS,
-        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="leak", datatype=DataType.INTEGER, sql=sql)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="leak", datatype=DataType.INTEGER, expression=expression)],
         relationships=[DatasetRelationship(to=UNLOADABLE, from_columns=["id"], to_columns=["id"], cardinality=RelationshipCardinality.ONE_TO_ONE)],
     )
 
@@ -224,7 +224,7 @@ class TestModelsReadBy:
 
     async def test_unresolvable_path_adds_nothing(self, datasets: dict[str, SlayerDataset]) -> None:
         stray = datasets["pub"].model_copy(update={
-            "name": "stray", "fields": [*datasets["pub"].fields, DatasetField(name="far", sql="nowhere.x")],
+            "name": "stray", "fields": [*datasets["pub"].fields, DatasetField(name="far", expression="nowhere.x")],
         })
         assert self.reads(stray, datasets) == set()
 

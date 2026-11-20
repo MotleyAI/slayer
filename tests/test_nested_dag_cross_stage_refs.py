@@ -42,8 +42,8 @@ def _countries_dataset() -> SlayerDataset:
         sql_table="countries",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     )
 
@@ -54,10 +54,10 @@ def _regions_dataset() -> SlayerDataset:
         sql_table="regions",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="country_id", sql="country_id", datatype=DataType.FLOAT),
-            DatasetField(name="last_activity_at", sql="last_activity_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="country_id", expression="country_id", datatype=DataType.FLOAT),
+            DatasetField(name="last_activity_at", expression="last_activity_at", datatype=DataType.DATETIME),
         ],
         relationships=[DatasetRelationship(to="countries", from_columns=["country_id"], to_columns=["id"])],
     )
@@ -69,9 +69,9 @@ def _customers_dataset() -> SlayerDataset:
         sql_table="customers",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-            DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -84,10 +84,10 @@ def _orders_dataset() -> SlayerDataset:
         data_source="test_ds",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
@@ -786,7 +786,7 @@ class TestSerializationRoundtripStripsBreadcrumb:
             name="virtual_test",
             sql="SELECT 1 AS one",
             data_source="test_ds",
-            fields=[DatasetField(name="one", sql="one", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="one", expression="one", datatype=DataType.FLOAT)],
             source_dataset_origin=SourceDatasetOrigin(
                 name="upstream", data_source="test_ds",
             ),
@@ -811,7 +811,7 @@ class TestSerializationRoundtripStripsBreadcrumb:
             name="virtual_test",
             sql="SELECT 1 AS one",
             data_source="test_ds",
-            fields=[DatasetField(name="one", sql="one", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="one", expression="one", datatype=DataType.FLOAT)],
             source_dataset_origin=SourceDatasetOrigin(
                 name="upstream", data_source="test_ds",
             ),

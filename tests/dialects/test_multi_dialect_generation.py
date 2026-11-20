@@ -20,7 +20,7 @@ from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDime
 from slayer.sql.generator import SQLGenerator
 
 from tests.dialects.conftest import _generate, _norm
-
+from tests._field_builders import literal_time_orders, log_completed_orders, log_orders, public_orders
 
 # Per-alias allowlists for "natively supports single-arg log10/log2"
 # rendering. Outside these sets the current 2-arg LOG(base, x) form is kept.
@@ -42,22 +42,7 @@ class TestMultiDialectGeneration:
 
     @pytest.fixture
     def orders_dataset(self) -> SlayerDataset:
-        model = SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            default_time_dimension="created_at",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                # Second numeric field so 2-arg stat aggregates
-                # (corr(other=...) / covar_*(other=...)) have a valid LHS+RHS pair.
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
-            ],
-        )
+        model = public_orders()
         return model
 
     ALL_DIALECTS = [
@@ -154,8 +139,8 @@ class TestMultiDialectGeneration:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="ordered_on", sql="ordered_on", datatype=DataType.DATE),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="ordered_on", expression="ordered_on", datatype=DataType.DATE),
             ],
         )
         sql = await _generate(
@@ -186,16 +171,7 @@ class TestMultiDialectGeneration:
         and forcing a cast could strip ``TIMESTAMPTZ`` to ``TIMESTAMP``.
         """
         gen = SQLGenerator(dialect=dialect)
-        model = SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="ts", sql="'2025-12-01'", datatype=DataType.DATETIME),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            ],
-        )
+        model = literal_time_orders()
         # Bare-literal time dim — must be cast.
         sql = await _generate(
             gen,
@@ -500,26 +476,7 @@ class TestLogAliasPreservation:
 
     @pytest.fixture
     def log_dataset(self) -> SlayerDataset:
-        return SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                # Scalar log expressions inside DatasetField.sql — the primary
-                # path the issue surfaced through.
-                DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
-                DatasetField(name="log2_amount", sql="log2(amount)", datatype=DataType.FLOAT),
-                # Negative-control: a non-alias literal base. Must keep the
-                # standard 2-arg LOG(base, x) form post-fix.
-                DatasetField(name="log3_amount", sql="log(3, amount)", datatype=DataType.FLOAT),
-                # ln(...) is a separate AST node (exp.Ln); the rewrite must
-                # not touch it.
-                DatasetField(name="ln_amount", sql="ln(amount)", datatype=DataType.FLOAT),
-            ],
-        )
+        return log_orders()
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_log10_in_column_sql_is_preserved(
@@ -589,22 +546,7 @@ class TestLogAliasPreservation:
         re-parse of ``LOG10(amount)`` would otherwise canonicalise back to
         a generic ``Log`` node and re-emit as ``LOG(10, amount)``.
         """
-        model = SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(
-                    name="log_completed_amount",
-                    sql="log10(amount)",
-                    filter="status = 'completed'",
-                    datatype=DataType.FLOAT,
-                ),
-            ],
-        )
+        model = log_completed_orders(filter="status = 'completed'")
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",

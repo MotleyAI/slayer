@@ -62,8 +62,8 @@ def _file_engine(db: Path) -> SlayerQueryEngine:
     asyncio.run(storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="v", sql="v", datatype=DataType.INTEGER),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="v", expression="v", datatype=DataType.INTEGER),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -80,7 +80,7 @@ def _seeded_in_memory_engine(
     asyncio.run(storage.save_dataset(
         SlayerDataset(
             name="t", data_source="mem", sql_table="t",
-            fields=[DatasetField(name="v", sql="v", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="v", expression="v", datatype=DataType.INTEGER)],
         ),
         _validate=False,
     ))

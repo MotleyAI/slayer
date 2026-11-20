@@ -64,7 +64,7 @@ def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
             DatasetField(name="customer_name", datatype=DataType.STRING),
             DatasetField(name="note", datatype=DataType.STRING),
             DatasetField(name="path", datatype=DataType.STRING),
-            DatasetField(name="order total", sql="order_total", datatype=DataType.FLOAT),
+            DatasetField(name="order total", expression="order_total", datatype=DataType.FLOAT),
             DatasetField(name="payload", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],

@@ -617,7 +617,7 @@ class TestIdempotencyAndReporting:
                 name="_dlt_loads",
                 data_source="ds",
                 sql_table="_dlt_loads",
-                fields=[DatasetField(name="load_id", sql="load_id", datatype=DataType.STRING)],
+                fields=[DatasetField(name="load_id", expression="load_id", datatype=DataType.STRING)],
             )
         )
 
@@ -640,7 +640,7 @@ class TestIdempotencyAndReporting:
                 name="_dlt_loads",
                 data_source="ds",
                 sql="SELECT load_id FROM _dlt_loads",
-                fields=[DatasetField(name="load_id", sql="load_id", datatype=DataType.STRING)],
+                fields=[DatasetField(name="load_id", expression="load_id", datatype=DataType.STRING)],
             )
         )
 
