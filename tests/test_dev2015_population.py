@@ -30,9 +30,9 @@ class TestSpineFactorsOut:
         assert resp.population == "time_spine × customers"
         assert resp.population_inferred is False
 
-    async def test_a_field_filter_still_participates(self, engine) -> None:
+    async def test_a_field_filter_never_moves_p(self, engine) -> None:
         resp = await engine.execute(_per_group(filter=["orders.amount > 60"]))
-        assert resp.population == "time_spine × orders"
+        assert resp.population == "time_spine × customers"
 
 
 class TestSpineOnly:

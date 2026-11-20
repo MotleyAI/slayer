@@ -440,6 +440,130 @@ def law_assert(condition: bool, *, law: str, detail: str, shape) -> None:
     assert condition, f"LAW {law} violated — {detail}; shape={shape}"
 
 
+# --------------------------------------------------------------------------- #
+# Root-less shapes over the Ossie Appendix B seed (``tests._dev2212_fixtures``):
+# the row laws of inferred queries. A one-metric shape is single-source, a
+# shape whose metrics have several homes is a key union.
+# --------------------------------------------------------------------------- #
+ROOTLESS_DIMS: dict[str, list[str]] = {
+    "region": ["customers.region"],
+    "region_segment": ["customers.region", "customers.segment"],
+    "status": ["orders.status"],
+    "region_status": ["customers.region", "orders.status"],
+    "unit": [],
+}
+#: The population naming each family's anchored twin.
+ROOTLESS_POPULATION = {"region": "customers", "region_segment": "customers", "status": "orders",
+                       "region_status": "orders", "unit": "customers"}
+ROOTLESS_METRICS = {
+    "rev": "sum(orders.amount)",
+    "ret": "sum(returns.amount)",
+    "vis": "count(visits.*)",
+    "tix": "count(tickets.*)",
+    "cust": "count(customers.*)",
+    "part": "sum(orders.amount, partition_by=[customers.region])",
+    "maxret": "max(returns.amount)",
+    "ratio": "sum(orders.amount) / count(customers.*)",
+}
+#: Each metric's value in a cell it lacks (Axiom 4).
+ROOTLESS_EMPTY = {"vis": 0, "tix": 0, "cust": 0}
+#: A metric that needs a dimension among the query's.
+ROOTLESS_REQUIRES = {"part": "customers.region"}
+ROOTLESS_FILTERS = {
+    "f0": None,
+    "fa": "orders.amount > 60",
+    "fs": "customers.segment = 'retail'",
+    "fr": "returns.amount > 20",
+    "fz": "1 = 0",
+}
+N_ROOTLESS = 24
+ROOTLESS_DUCKDB_STRIDE = 4
+
+
+class RootlessShape(BaseModel):
+    """One root-less query shape: a dimension family, 1–3 pool metrics and a filter."""
+
+    shape_id: str
+    family: str
+    metric_keys: Tuple[str, ...]
+    filter: Optional[str]
+
+    @property
+    def dims(self) -> list[str]:
+        return ROOTLESS_DIMS[self.family]
+
+    def __str__(self) -> str:
+        return f"{self.shape_id}(dims={self.dims}, metrics={list(self.metric_keys)}, filter={self.filter!r})"
+
+
+def _rootless_allowed(family: str, key: str) -> bool:
+    need = ROOTLESS_REQUIRES.get(key)
+    return need is None or need in ROOTLESS_DIMS[family]
+
+
+def sample_rootless_shapes() -> Tuple[RootlessShape, ...]:
+    """Covering core (every family single-source and as a key union, every metric and filter), then seeded fill."""
+    rng = random.Random(LAW_SEED)
+    families, ftags = tuple(ROOTLESS_DIMS), tuple(ROOTLESS_FILTERS)
+    cores: list[tuple[str, Tuple[str, ...], str]] = []
+    for i, family in enumerate(families):
+        cores.append((family, ("rev",), ftags[i % len(ftags)]))
+        cores.append((family, ("rev", "ret", "vis"), ftags[(i + 1) % len(ftags)]))
+    for i, key in enumerate(ROOTLESS_METRICS):
+        family = "region" if key in ROOTLESS_REQUIRES else families[i % len(families)]
+        cores.append((family, (key, "rev" if key == "ret" else "ret"), ftags[i % len(ftags)]))
+    while len(cores) < N_ROOTLESS:
+        family = rng.choice(families)
+        pool = [k for k in ROOTLESS_METRICS if _rootless_allowed(family, k)]
+        cores.append((family, tuple(rng.sample(pool, rng.randint(1, 3))), rng.choice(ftags)))
+    shapes = tuple(
+        RootlessShape(shape_id=f"r{i:02d}-{family}-{'.'.join(keys)}-{ftag}", family=family, metric_keys=keys,
+                      filter=ROOTLESS_FILTERS[ftag])
+        for i, (family, keys, ftag) in enumerate(cores)
+    )
+    assert {s.family for s in shapes} == set(ROOTLESS_DIMS)
+    assert {k for s in shapes for k in s.metric_keys} == set(ROOTLESS_METRICS)
+    assert {s.filter for s in shapes} == set(ROOTLESS_FILTERS.values())
+    return shapes
+
+
+ROOTLESS_SHAPES = sample_rootless_shapes()
+
+
+def rootless_params(predicate=lambda s: True) -> list:
+    """``(dialect, shape)`` params: SQLite over every shape, DuckDB over every ``ROOTLESS_DUCKDB_STRIDE``-th."""
+    shapes = [s for s in ROOTLESS_SHAPES if predicate(s)]
+    return [
+        pytest.param((dialect, s), id=f"{dialect}-{s.shape_id}")
+        for dialect in ("sqlite", "duckdb")
+        for i, s in enumerate(shapes)
+        if dialect == "sqlite" or i % ROOTLESS_DUCKDB_STRIDE == 0
+    ]
+
+
+def rootless_query(shape: RootlessShape, *, keys: Optional[Sequence[str]] = None, filter: Any = "<shape>",
+                   population: Optional[str] = None) -> SlayerQuery:
+    """``shape`` as a query over ``keys`` (default: its own), its filter (or ``filter``), optionally anchored."""
+    chosen = shape.filter if filter == "<shape>" else filter
+    body: dict[str, Any] = {
+        "dimensions": shape.dims,
+        "metrics": [{"metric": ROOTLESS_METRICS[k], "alias": f"m_{k}"} for k in (keys or shape.metric_keys)],
+    }
+    if chosen:
+        body["filter"] = [chosen]
+    if population:
+        body["population"] = population
+    return SlayerQuery.model_validate(body)
+
+
+def rootless_rows(resp, *, shape: RootlessShape) -> dict[tuple, dict]:
+    """Rows keyed by the shape's dimension tuple; a repeated key is a grain violation."""
+    out = {tuple(canon(r[d]) for d in shape.dims): r for r in resp.data}
+    law_assert(len(out) == len(resp.data), law="grain guarantee",
+               detail=f"duplicate rows for one key ({len(resp.data)} rows, {len(out)} keys)", shape=shape)
+    return out
+
+
 __all__ = [
     "CM_PARTITIONED_MEASURES", "CM_PARTITIONED_OPERANDS", "DEFERRAL_SITES",
     "DIMS_ONLY", "DUCKDB_PAIR_IDS", "DUCKDB_SHAPE_IDS",
@@ -452,4 +576,7 @@ __all__ = [
     "law_dim_key", "law_params", "make_law_engine", "month_key", "month_td",
     "pair_params", "q", "raw_rows", "sample_pairs", "sample_shapes",
     "values_equal",
+    "N_ROOTLESS", "ROOTLESS_DIMS", "ROOTLESS_EMPTY", "ROOTLESS_FILTERS", "ROOTLESS_METRICS",
+    "ROOTLESS_POPULATION", "ROOTLESS_SHAPES", "RootlessShape", "rootless_params", "rootless_query",
+    "rootless_rows", "sample_rootless_shapes",
 ]

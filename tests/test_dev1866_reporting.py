@@ -118,18 +118,14 @@ class TestReportedAcrossExecutionModes:
         assert miss.population_inferred is hit.population_inferred is True
 
     async def test_cache_twin_reports_current_inferred_flag(self, engine) -> None:
-        """Explicit and inferred twins share a cache key (identical SQL); a cache
+        """Explicit and inferred dimension-only twins share a cache key (identical SQL); a cache
         hit must report the CURRENT query's inferred flag, not the stored one."""
-        explicit = SlayerQuery.model_validate({
-            "population": "customers",
-            "dimensions": ["customers.region"],
-            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
-        })
+        explicit = SlayerQuery(population="customers", dimensions=["customers.region"])
         first = await engine.execute(explicit, cache=True)
         assert first.population_inferred is False
         assert engine.cache_size == 1
         # Same SQL ⇒ cache hit, but this query inferred its population.
-        second = await engine.execute(_INFERRED, cache=True)
+        second = await engine.execute(SlayerQuery(dimensions=["customers.region"]), cache=True)
         assert engine.cache_size == 1
         assert second.population == "customers"
         assert second.population_inferred is True

@@ -12,6 +12,7 @@ import pytest
 from slayer.core.errors import PopulationErrorReason, PopulationInferenceError
 from slayer.core.query import SlayerQuery
 from slayer.engine.population.inference import infer_population
+from slayer.engine.query_engine import SlayerResponse
 
 from tests._dev1866_fixtures import (
     DS_CHAIN,
@@ -19,11 +20,17 @@ from tests._dev1866_fixtures import (
     DS_WIDGETS_B,
     make_inference_storage,
 )
+from tests._engine_helpers import owned_query_engine
 
 
 @pytest.fixture
 async def storage():
     return await make_inference_storage()
+
+
+async def _dry_run(storage, query: SlayerQuery, **kwargs) -> SlayerResponse:
+    async with owned_query_engine(storage=storage) as engine:
+        return await engine.execute(query, dry_run=True, **kwargs)
 
 
 def _assert_stable_prefix(err: PopulationInferenceError) -> None:
@@ -50,23 +57,15 @@ class TestFailClosed:
         assert set(err.candidates) == {"basket", "basket_items", "basket_pays"}
         _assert_stable_prefix(err)
 
-    async def test_unknown_cardinality_hop_is_not_determination(self, storage) -> None:
-        query = SlayerQuery(dimensions=["hits.page", "sess.token"])
-        with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(query=query, storage=storage)
-        assert ei.value.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
-        _assert_stable_prefix(ei.value)
+    async def test_unknown_cardinality_hop_counts_by_association(self, storage) -> None:
+        resp = await _dry_run(storage, SlayerQuery(dimensions=["hits.page", "sess.token"]))
+        assert (resp.population, resp.population_inferred) == ("hits", True)
 
-    async def test_empty_determination_set_has_dedicated_error(self, storage) -> None:
-        """Only metrics, no dims/field-filters ⇒ nothing to infer from."""
+    async def test_a_metrics_only_query_has_the_unit_as_its_anchor(self, storage) -> None:
+        """Only metrics, no dims: the rows are the unit, never a population error."""
         query = SlayerQuery.model_validate({"metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]})
-        with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(query=query, storage=storage, data_source=DS_CHAIN)
-        err = ei.value
-        assert err.reason is PopulationErrorReason.EMPTY_DETERMINATION
-        assert not err.candidates  # dedicated message, no full dataset listing
-        assert "infer" in str(err).lower()
-        _assert_stable_prefix(err)
+        resp = await _dry_run(storage, query, data_source=DS_CHAIN)
+        assert (resp.population, resp.population_inferred) == (None, True)
 
     async def test_ambiguous_hop_fails_closed(self, storage) -> None:
         query = SlayerQuery(dimensions=["shipment.weight", "depot.name"])
@@ -118,22 +117,16 @@ class TestFailClosed:
         assert "population" in str(err)  # advice: name the sibling explicitly
         _assert_stable_prefix(err)
 
-    async def test_measure_only_without_datasource_is_empty_determination(self, storage) -> None:
-        """A metrics-only query has nothing to infer from — even with no
-        data_source it is EMPTY_DETERMINATION, never a datasource error."""
+    async def test_measure_only_without_datasource_scopes_by_its_metrics(self, storage) -> None:
+        """A metrics-only query with no data_source scopes by its metric homes."""
         query = SlayerQuery.model_validate({"metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]})
-        with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(query=query, storage=storage)
-        assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
+        resp = await _dry_run(storage, query)
+        assert resp.population is None
 
-    async def test_aggregate_filter_only_without_datasource_is_empty_determination(
-        self, storage
-    ) -> None:
-        """Aggregate-only filter, no dims, no data_source ⇒ EMPTY_DETERMINATION, not NO_DATASOURCE."""
-        query = SlayerQuery(filter=["sum(orders.amount) > 100"])
-        with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(query=query, storage=storage)
-        assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
+    async def test_aggregate_filter_only_has_the_unit_as_its_anchor(self, storage) -> None:
+        """Aggregate-only filter, no dims, no data_source: the unit, not a population error."""
+        resp = await _dry_run(storage, SlayerQuery(filter=["sum(orders.amount) > 100"]))
+        assert resp.population is None
 
     async def test_measure_referencing_sibling_does_not_fail_closed(self, storage) -> None:
         """A metric whose anchor matches a sibling stage name must not trigger
