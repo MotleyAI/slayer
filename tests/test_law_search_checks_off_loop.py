@@ -83,9 +83,14 @@ def _targets(func: ast.expr, env: dict[str, frozenset[str]]) -> set[str | None]:
     return {_canonical(func, {chain[0]: origin}) for origin in origins}
 
 
+def _bound_names(target: ast.expr) -> list[ast.Name]:
+    """Names a target binds; a subscript's or attribute's inner names are loads."""
+    return [n for n in ast.walk(target) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)]
+
+
 def _comprehension_targets(comp: ast.AST) -> list[ast.Name]:
     generators = comp.generators if isinstance(comp, _COMPREHENSIONS) else []
-    return [n for g in generators for n in ast.walk(g.target) if isinstance(n, ast.Name)]
+    return [n for g in generators for n in _bound_names(g.target)]
 
 
 def _local_names(func: _Function, nodes: list[ast.AST]) -> set[str]:
@@ -109,7 +114,7 @@ def _comprehension_parts(
     parts: list[tuple[ast.AST, frozenset[str]]] = []
     for gen in comp.generators:
         parts.extend([(gen.iter, shadow), (gen.target, shadow)])
-        shadow = shadow | {n.id for n in ast.walk(gen.target) if isinstance(n, ast.Name)}
+        shadow = shadow | {n.id for n in _bound_names(gen.target)}
         parts.extend((cond, shadow) for cond in gen.ifs)
     results = [comp.key, comp.value] if isinstance(comp, ast.DictComp) else [comp.elt]
     return parts + [(expr, shadow) for expr in results]
@@ -283,6 +288,11 @@ def test_no_async_def_calls_a_lazily_importing_search_check() -> None:
             async def f(slots, xs):
                 return [None for slots[graph.is_available()] in xs]
         """, id="comprehension-subscript-target"),
+        pytest.param("slayer.x", """
+            from slayer.search import graph
+            async def f(slots, xs):
+                return [graph.is_available() for slots[graph] in xs]
+        """, id="subscript-key-in-target-does-not-shadow"),
         pytest.param("slayer.x", """
             from slayer.search import graph
             async def f():

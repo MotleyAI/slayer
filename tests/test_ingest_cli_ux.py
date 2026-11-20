@@ -358,7 +358,7 @@ class TestDatasourcesCreateCarveOut:
             storage=str(workspace / "storage"),
         )
         _run_datasources_create(args, storage)
-        assert "No datasets were generated." in capsys.readouterr().out
+        assert "No tables or views found" in capsys.readouterr().out
 
 class TestViewsFlagWiring:
     """The parser is built inline in ``main()``, so drive it through ``main()`` with a stubbed handler that captures the parsed args."""
