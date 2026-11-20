@@ -110,6 +110,7 @@ from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMetric, OrderSpec, b
 from slayer.engine.compile.discovery import RootDisposition, discover_roots, row_attach_inputs
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate, AggregateHomes
+from slayer.engine.population.anchors import anchor_route, find_anchor
 from slayer.engine.population.filter_reachability import (
     key_has_host_local_ref,
 )
@@ -2114,11 +2115,67 @@ def _query_dim_display(prebound: PreboundQuery, key: ValueKey) -> str:
 
 
 class _UnattributableDim(NamedTuple):
-    """A requested grain dimension not attributable from the aggregate's root: its query name and broadcast reason."""
+    """A requested grain dimension not attributable from the aggregate's root: its host key, query name, broadcast
+    reason and its key routed from the home."""
 
     key: ValueKey
     name: str
     reason: str
+    routed: ValueKey
+
+
+def _home_route(
+    parts: Tuple[str, ...], *, root: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[Tuple[str, ...]]:
+    """The home's path to a reference spelled ``parts`` (anchor, canonical route): its own route to the anchor, then
+    the route; ``None`` for the spine or an unrelated anchor."""
+    anchor = find_anchor(parts[0], quoted=True, reader=root, datasets_by_name=datasets_by_name)
+    if anchor is None or is_spine(anchor):
+        return None
+    reached = anchor_route(reader=root, anchor=anchor, datasets_by_name=datasets_by_name, rest=parts[1:])
+    return None if reached.unrelated else (*reached.route, *parts[1:])
+
+
+def _home_routing(
+    keys: Iterable[ValueKey], *, anchors: Mapping[Tuple[str, ...], Tuple[str, ...]], host_dataset: SlayerDataset,
+    target_path: Tuple[str, ...], root_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+    source_anchor: Optional[str],
+) -> Dict[ValueKey, ValueKey]:
+    """Each leaf of ``keys`` the home reads by another route than the host's → its host coordinates through the home
+    (queries/references: a reference is routed from the dataset reading it; one anchored at ``source_anchor`` is read
+    back along the source's written path, which the host's reroot already is)."""
+    mapping: Dict[ValueKey, ValueKey] = {}
+    if not target_path or not anchors:
+        return mapping
+    for key in keys:
+        for r in walk_value_keys(key):
+            if not isinstance(r, (FieldKey, FieldSqlKey, StarKey)) or r in mapping:
+                continue
+            parts = anchors.get(_canonical_path(r.path, root=host_dataset, datasets_by_name=datasets_by_name))
+            if parts is None or parts[0] == source_anchor:
+                continue
+            route = _home_route(parts, root=root_dataset, datasets_by_name=datasets_by_name)
+            if route is None:
+                continue
+            via_host = reroot_from_root(r, target_path=target_path, root_dataset=root_dataset,
+                                        datasets_by_name=datasets_by_name, host_name=host_dataset.name)
+            if _canonical_path(cast(FieldKey, via_host).path, root=root_dataset,
+                               datasets_by_name=datasets_by_name) != route:
+                mapping[r] = r.model_copy(update={"path": (*target_path, *route)})
+    return mapping
+
+
+def _source_anchor(
+    agg: AggregateKey, *, anchors: Mapping[Tuple[str, ...], Tuple[str, ...]], host_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[str]:
+    """The anchor ``agg``'s source was written from, when a query reference spelled it."""
+    for r in walk_value_keys(agg.source):
+        if isinstance(r, (FieldKey, FieldSqlKey, StarKey)):
+            parts = anchors.get(_canonical_path(r.path, root=host_dataset, datasets_by_name=datasets_by_name))
+            if parts is not None:
+                return parts[0]
+    return None
 
 
 def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive target-rooted producer synthesis (root / safe-grain / broadcast / inputs / filter-inheritance / recursive plan / attach); the arms share the re-rooting coordinate state.
@@ -2163,9 +2220,25 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     # Host included so the reverse (fanning) hop resolves for the broadcast
     # reason; attributability/filter routing keep the host-free map unchanged.
     datasets_with_host = {**datasets_by_name, host_dataset.name: host_dataset}
-    base_filters_with_text = [*base_filters_with_text, *_host_membership(
-        host_dataset=host_dataset, target_path=target_path, datasets_by_name=datasets_with_host, bundle=bundle,
-    )]
+    # The home reads its grain and the filters restricting it by its own routes (queries/references).
+    home_routing = _home_routing(
+        [*requested, *(bf.value_key for bf, _t in base_filters_with_text),
+         *((prebound.main_time_key,) if prebound.main_time_key is not None else ())],
+        anchors=prebound.reference_anchors, host_dataset=host_dataset, target_path=target_path,
+        root_dataset=root_dataset, datasets_by_name=datasets_with_host,
+        source_anchor=_source_anchor(agg, anchors=prebound.reference_anchors, host_dataset=host_dataset,
+                                     datasets_by_name=datasets_with_host),
+    )
+
+    def routed(key: ValueKey) -> ValueKey:
+        return substitute_value_keys(key, home_routing) if home_routing else key
+
+    base_filters_with_text = [
+        *((substitute_in_bound_filter(bf, home_routing) if home_routing else bf, t) for bf, t in base_filters_with_text),
+        *_host_membership(
+            host_dataset=host_dataset, target_path=target_path, datasets_by_name=datasets_with_host, bundle=bundle,
+        ),
+    ]
 
     # Safe grain S (attributable from R) vs unattributable.
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
@@ -2175,16 +2248,17 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             key=g, target_path=target_path, host_dataset=host_dataset,
             datasets_by_name=datasets_by_name,
         )
+        g_home = routed(g)
         if shared is not None:
             # The join-key identity needs no join in the producer.
             safe_pairs.append((g, shared))
         elif grain_member_attributable(
-            key=g, target_path=target_path, root_dataset=root_dataset,
+            key=g_home, target_path=target_path, root_dataset=root_dataset,
             datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_dataset,
             host_name=host_dataset.name,
         ):
             rerooted = reroot_from_root(
-                g, target_path=target_path, root_dataset=root_dataset,
+                g_home, target_path=target_path, root_dataset=root_dataset,
                 datasets_by_name=datasets_by_name, host_name=host_dataset.name,
             )
             check_axis_rebucket(host_key=g, rerooted=rerooted, host=host_dataset, root=root_dataset, bundle=bundle)
@@ -2192,10 +2266,10 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         else:
             unattributable.append(_UnattributableDim(
                 key=g, name=context.dim_display(g), reason=key_broadcast_reason(
-                    key=g, target_path=target_path, root_dataset=root_dataset,
+                    key=g_home, target_path=target_path, root_dataset=root_dataset,
                     datasets_by_name=datasets_with_host, bundle=bundle,
                     host_dataset=host_dataset, host_name=host_dataset.name,
-                ),
+                ), routed=g_home,
             ))
 
     # One rooting law (Axiom 2.5): re-anchor into the home's coordinates once, a
@@ -2289,7 +2363,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
                     None if active_td is None else context.dim_display(active_td)
                 ),
                 attributable=active_td is not None and key_attributable_from_root(
-                    key=active_td, target_path=target_path,
+                    key=routed(active_td), target_path=target_path,
                     root_dataset=root_dataset, datasets_by_name=datasets_by_name,
                     bundle=bundle, host_dataset=host_dataset,
                     host_name=host_dataset.name,
@@ -2297,7 +2371,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             )
             assert active_td is not None  # the checker raised otherwise
             window_td_key = reroot_from_root(
-                key=active_td, target_path=target_path, root_dataset=root_dataset,
+                key=routed(active_td), target_path=target_path, root_dataset=root_dataset,
                 datasets_by_name=datasets_by_name, host_name=host_dataset.name,
             )
 
@@ -2669,7 +2743,7 @@ def _association_entity(
 ) -> _AssociationEntity:
     assoc_pairs = [
         (u.key, reroot_from_root(
-            key=u.key, target_path=target_path, root_dataset=root_dataset,
+            key=u.routed, target_path=target_path, root_dataset=root_dataset,
             datasets_by_name=datasets_by_name, host_name=host_dataset.name,
         ))
         for u in unattributable

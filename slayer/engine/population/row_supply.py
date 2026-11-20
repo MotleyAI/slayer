@@ -258,7 +258,8 @@ def _routes(*, reader: SlayerDataset, home: str, datasets_by_name: dict[str, Sla
 
 def anchored_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[RowPlan]:
     """A named population that cannot route to a metric's home: the stage is planned from that home, its rows the
-    population's cells (the population's reading of the home never decides a value, Axiom 6); else ``None``."""
+    population's cells (the population's reading of the home never decides a value, Axiom 6); else ``None``.
+    DEV-2388 removes it: aggregations bind from their own anchor."""
     population = query.population_name
     reader = datasets_by_name.get(population or "")
     has_dims = bool(query.dimensions or query.time_dimensions)
@@ -314,7 +315,7 @@ def plan_rows(
     if not sources.needs_anchor and len(sources.homes) == 1:
         return RowPlan(population=sources.homes[0], supply=RowSupply(), row_sources=row_sources,
                        reported=anchor.display)
-    # A supplying home hosts the stage, so a producer rooted at the host reads that home's own rows.
+    # A supplying home hosts the stage: a re-aggregation's carrier is built over the host's rows.
     population = (sources.homes or anchor_datasets or (first_metric_anchor(query),))[0]
     if population is None:
         anchor.required()
