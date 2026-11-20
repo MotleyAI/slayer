@@ -395,6 +395,18 @@ warnings with the remedy to name its edges.
   `count(events.id)`
 - **THEN** no root is recommended, exactly as before this change
 
+#### Scenario: A row count is an attachment on its dataset
+
+- **WHEN** `recommend_population` is given `customers.region` and `count(orders.*)`
+- **THEN** the root is `customers` and `count(orders.*)` is reported as an
+  attachment on `orders` with the path `count(orders.*)`
+
+#### Scenario: An unqualified row count is refused
+
+- **WHEN** `recommend_population` is given `customers.region` and `count(*)`
+- **THEN** it fails with the typed error saying `count(*)` names no dataset and
+  suggesting `count(<dataset>.*)`
+
 ### Requirement: A saved query's inferred populations are pinned at save
 
 Saving a query-backed model — through `save_dataset`, `create_dataset_from_query`, or an edit of its
