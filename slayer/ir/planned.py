@@ -132,7 +132,7 @@ class ValueSlot(BaseModel):
     #: re-aggregates (False); None for non-transform values (D6).
     series: Optional[bool] = None
     label: Optional[str] = None
-    type: Optional[DataType] = None
+    type: DataType
     element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False

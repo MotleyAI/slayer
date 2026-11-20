@@ -36,7 +36,7 @@ from slayer.core.models import (
 )
 from slayer.core.refs import functional_agg_text
 from slayer.core.syntax import metric_text_at_path
-from slayer.engine.key_metadata import aggregated_type
+from slayer.engine.key_metadata import field_aggregate_type
 from slayer.facade.datatypes import SUPPORTED_DATATYPES
 
 logger = logging.getLogger(__name__)
@@ -528,7 +528,7 @@ def _field_x_builtin_aggs(dataset: SlayerDataset) -> list[FacadeMetric]:
             name=f"{col.name}_{agg}",
             description=_describe_field_agg(field=col, agg=agg),
             label=col.label,
-            data_type=aggregated_type(dataset=dataset, metric_name=col.name, aggregation=agg),
+            data_type=field_aggregate_type(dataset=dataset, field_name=col.name, aggregation=agg),
             metric_expression=functional_agg_text(source=col.name, suffix=agg),
         )
         for col in dataset.fields
@@ -549,7 +549,7 @@ def _field_x_custom_aggs(dataset: SlayerDataset) -> list[FacadeMetric]:
                 field=col, agg=agg.name,
             ),
             label=col.label,
-            data_type=aggregated_type(dataset=dataset, metric_name=col.name, aggregation=agg.name),
+            data_type=field_aggregate_type(dataset=dataset, field_name=col.name, aggregation=agg.name),
             metric_expression=functional_agg_text(source=col.name, suffix=agg.name),
         )
         for agg in custom

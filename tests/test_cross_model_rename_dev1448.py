@@ -646,7 +646,7 @@ class TestCrossModelRenameCollisionGuards:
             f"public projection has a duplicate alias — silent merge; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        assert 'SUM(orders.amount) AS REAL) / 100 AS "orders.revenue_sum_100"' in sql, sql
+        assert 'SUM(orders.amount) AS REAL) / 100 AS REAL) AS "orders.revenue_sum_100"' in sql, sql
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "revenue_sum"' in sql, sql
 
     async def test_two_local_renames_distinct_canonicals_pass(

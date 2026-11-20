@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import (
     AXIS_COLLAPSING_TRANSFORMS,
+    AggregationValueClass,
     DataType,
     DatePart,
     INTEGER_AGGREGATIONS,
@@ -51,6 +52,7 @@ from slayer.core.enums import (
     TEMPORAL_DATATYPES,
     TimeGranularity,
     TypeKind,
+    classify_aggregation,
     kind_of,
 )
 from slayer.core.format import NumberFormat
@@ -1721,13 +1723,13 @@ CONDITIONAL_SCALARS = frozenset({"iif", "coalesce", "ifnull", "greatest", "least
 
 
 def _fold_branch_types(
-    key: ScalarCallKey, *, field_type: FieldTypeFn,
+    key: ScalarCallKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn] = None,
 ) -> Tuple[Optional[DataType], Optional[Tuple[DataType, DataType]]]:
     """``(joined type, None)`` over a conditional's returned arguments, else ``(None, the first pair that cannot
     join)``; an untyped or UNKNOWN argument is absorbed."""
     joined: Optional[DataType] = None
     for arg in _returned_args(key):
-        t = value_type(arg, field_type=field_type)
+        t = value_type(arg, field_type=field_type, aggregate_type=aggregate_type)
         if t is None or t.is_opaque:
             continue
         if joined is not None:
@@ -1802,39 +1804,121 @@ def literal_type(value: object) -> Optional[DataType]:
     return None
 
 
-def value_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
-    """``key``'s type where it is certain, else ``None``."""
+# An expression aggregation's declared or inferred result type, ``None`` when its expression cannot be typed.
+AggregateTypeFn = Callable[["AggregateKey"], Optional[DataType]]
+
+
+def aggregation_result_type(
+    *, metric_name: Optional[str], aggregation: str, source_type: Optional[DataType],
+) -> Tuple[Optional[DataType], Optional[DataType]]:
+    """A built-in aggregation's ``(type, element type)``: COUNT → INT, the float classes → DOUBLE, PRESERVING →
+    ``source_type``, LIST → a list of ``source_type``."""
+    cls = classify_aggregation(metric_name=metric_name, aggregation=aggregation, source_type=source_type)
+    if cls is AggregationValueClass.COUNT:
+        return DataType.INTEGER, None
+    if cls is AggregationValueClass.LIST:
+        return DataType.ARRAY, source_type or DataType.OPAQUE
+    if cls is AggregationValueClass.PRESERVING:
+        return source_type, None
+    return DataType.FLOAT, None
+
+
+def _aggregate_value_type(
+    key: AggregateKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    """An expression aggregation: declared → inferred → its input's type (INT over ``*``); a built-in by its class."""
+    if not key.builtin and aggregate_type is not None:
+        declared = aggregate_type(key)
+        if declared is not None:
+            return declared
+    star = isinstance(key.source, StarKey)
+    source_type = None if star else (
+        aggregation_source_type(key.source, field_type=field_type)
+        or value_type(key.source, field_type=field_type, aggregate_type=aggregate_type)
+    )
+    if not key.builtin:
+        return DataType.INTEGER if star else source_type
+    agg = key.agg.lower()
+    return aggregation_result_type(metric_name="*" if star else None, aggregation=agg, source_type=source_type)[0]
+
+
+def _transform_value_type(
+    key: TransformKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    if key.op in _NUMBER_RESULT_TRANSFORMS and key.op != "percent_rank":
+        return DataType.INTEGER
+    if key.op in ("change_pct", "percent_rank"):
+        return DataType.FLOAT
+    inner = value_type(key.input, field_type=field_type, aggregate_type=aggregate_type)
+    if key.op == "cumsum":
+        return aggregation_result_type(metric_name=None, aggregation="sum", source_type=inner)[0]
+    if key.op == "change":
+        return _arithmetic_result_type("-", [inner, inner])
+    return inner
+
+
+def _arithmetic_result_type(op: str, types: Sequence[Optional[DataType]]) -> Optional[DataType]:
+    """``+ - * %`` over integers (booleans read as theirs) is INT, over exact numbers with a DECIMAL among them
+    DECIMAL; any other number mix (or ``/``) DOUBLE."""
+    if any(t is None for t in types) or op not in _INT_OPS:
+        return DataType.FLOAT
+    if all(t in (DataType.INTEGER, DataType.BOOLEAN) for t in types):
+        return DataType.INTEGER
+    if DataType.DECIMAL in types and all(t in _EXACT_NUMBER_TYPES for t in types):
+        return DataType.DECIMAL
+    return DataType.FLOAT
+
+
+_EXACT_NUMBER_TYPES = frozenset({DataType.INTEGER, DataType.BOOLEAN, DataType.DECIMAL})
+
+
+def value_type(
+    key: object, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn] = None,
+) -> Optional[DataType]:
+    """``key``'s type; ``None`` only for NULL or an unresolvable field leaf."""
     if isinstance(key, LiteralKey):
         return literal_type(key.value)
     if isinstance(key, (FieldKey, FieldSqlKey)):
         return field_type(key)
-    if list_valued(key, field_type=field_type):
-        return DataType.ARRAY
     if isinstance(key, CastKey):
         return None if kind_of(key.data_type) is TypeKind.UNKNOWN else key.data_type
+    if isinstance(key, AggregateKey):
+        return _aggregate_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    if isinstance(key, TransformKey):
+        return _transform_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    if list_valued(key, field_type=field_type):
+        return DataType.ARRAY
     if isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS:
-        return _fold_branch_types(key, field_type=field_type)[0]
+        return _fold_branch_types(key, field_type=field_type, aggregate_type=aggregate_type)[0]
     if boolean_valued(key, field_type=field_type):
         return DataType.BOOLEAN
+    if isinstance(key, ArithmeticKey) and key.op in _ARITHMETIC_OPS:
+        return _arithmetic_result_type(key.op, [
+            value_type(o, field_type=field_type, aggregate_type=aggregate_type) for o in key.operands])
     temporal = temporal_type(key, field_type=field_type)
     if temporal is not None:
         return temporal
+    if isinstance(key, ScalarCallKey) and key.name in _INT_SCALARS and key.args and value_type(
+            key.args[0], field_type=field_type, aggregate_type=aggregate_type) is DataType.DECIMAL:
+        return DataType.DECIMAL
     if integer_valued(key, field_type=field_type):
         return DataType.INTEGER
     if numeric_valued(key, field_type=field_type):
         return DataType.FLOAT
     if isinstance(key, ScalarCallKey):
-        return _scalar_value_type(key, field_type=field_type)
-    if isinstance(key, AggregateKey) and key.agg.lower() in _TEMPORAL_PRESERVING_AGGS:
-        return value_type(key.source, field_type=field_type)
+        return _scalar_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    if isinstance(key, TimeTruncKey):
+        return value_type(key.source, field_type=field_type, aggregate_type=aggregate_type)
     return None
 
 
-def _scalar_value_type(key: ScalarCallKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
+def _scalar_value_type(
+    key: ScalarCallKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn] = None,
+) -> Optional[DataType]:
     spec = SCALAR_SPECS.get(key.name)
     if spec is not None and spec.result is not None:
         return spec.result
-    types = {value_type(a, field_type=field_type) for a in _returned_args(key)}
+    types = {value_type(a, field_type=field_type, aggregate_type=aggregate_type) for a in _returned_args(key)}
     return types.pop() if len(types) == 1 else None
 
 

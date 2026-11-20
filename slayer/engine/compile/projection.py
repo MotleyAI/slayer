@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
+from slayer.engine.key_metadata import SlotTyping
 from slayer.engine.elaborate_env import (
     check_canonical_alias_shadows_field,
     check_duplicate_metric_name,
@@ -94,9 +95,11 @@ class ValueRegistry:
     def __init__(
         self,
         *,
+        typing: SlotTyping,
         source_field_names: Optional[FrozenSet[str]] = None,
         host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> None:
+        self._typing = typing
         self._source_fields: FrozenSet[str] = (
             source_field_names or frozenset()
         )
@@ -267,6 +270,12 @@ class ValueRegistry:
         if public_name is not None:
             self._taken_names.add(public_name)
         public_aliases = [public_name] if public_name is not None else []
+        if type is None:
+            type = self._typing.type_of(key)
+        if element_type is None:
+            element_type = self._typing.element_type_of(key, type)
+        if not type_is_explicit:
+            preserve_native_type = preserve_native_type or self._typing.preserves_native_type(key, type)
         slot = ValueSlot(
             id=sid,
             key=key,
@@ -325,8 +334,10 @@ class ValueRegistry:
         )
         if element_type is not None and slot.element_type is None:
             updates["element_type"] = element_type
-        if type_is_explicit and type is not None and slot.type in (None, type):
+        if type_is_explicit and type is not None and (slot.type == type or not slot.type_is_explicit):
+            updates["type"] = type
             updates["type_is_explicit"] = True
+            updates["element_type"] = (element_type or slot.element_type) if type is DataType.ARRAY else None
         if preserve_native_type and not slot.preserve_native_type:
             updates["preserve_native_type"] = True
         if updates:
@@ -454,10 +465,12 @@ class ProjectionPlanner:
         metrics: List[DeclaredMetric],
         filters: List[BoundFilter],
         order: List[OrderSpec],
+        typing: SlotTyping,
         source_field_names: Optional[FrozenSet[str]] = None,
         host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> ProjectionPlan:
         registry = ValueRegistry(
+            typing=typing,
             source_field_names=source_field_names,
             host_dataset_name=host_dataset_name,
         )

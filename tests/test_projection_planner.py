@@ -18,6 +18,7 @@ from slayer.core.keys import (
 )
 from decimal import Decimal
 from slayer.engine.compile.projection import ProjectionPlanner
+from tests._slot_typing_fixtures import SHOP_TYPING
 from slayer.ir.bound import DeclaredMetric, OrderSpec
 from slayer.ir.bound import BoundExpr, BoundFilter
 
@@ -36,6 +37,7 @@ class TestDeclaredMeasures:
     def test_declared_measure_becomes_public_slot(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
@@ -57,6 +59,7 @@ class TestDeclaredMeasures:
     def test_two_measures_with_same_key_share_slot(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
@@ -84,6 +87,7 @@ class TestHiddenSlots:
         # amount:sum. The slot is materialised hidden.
         planner = ProjectionPlanner()
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
@@ -113,6 +117,7 @@ class TestHiddenSlots:
     def test_order_only_ref_becomes_hidden(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
@@ -136,6 +141,7 @@ class TestHiddenSlots:
     def test_declared_then_used_in_filter_stays_public(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
@@ -172,6 +178,7 @@ class TestPlanFilters:
             referenced_keys=(_status(),),
         )
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
@@ -197,6 +204,7 @@ class TestPlanFilters:
             referenced_keys=(agg, LiteralKey(value=Decimal(100))),
         )
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
@@ -234,6 +242,7 @@ class TestPlanFilters:
             op="+", operands=(agg, LiteralKey(value=Decimal(1))),
         )
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
@@ -281,6 +290,7 @@ class TestDev1501CanonicalNameWithAggArgs:
         )
         planner = ProjectionPlanner()
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
@@ -330,6 +340,7 @@ class TestDev1501CanonicalNameWithAggArgs:
         )
         planner = ProjectionPlanner()
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
@@ -368,6 +379,7 @@ class TestDev1501CanonicalNameWithAggArgs:
         agg = _amount_sum()  # AggregateKey(amount, sum, args=(), kwargs=())
         planner = ProjectionPlanner()
         plan = planner.plan(
+            typing=SHOP_TYPING,
             metrics=[
                 DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),

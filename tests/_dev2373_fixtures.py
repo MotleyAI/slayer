@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 import pytest
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
@@ -181,7 +182,7 @@ async def postgres_sql(queries: list[SlayerQuery | dict], *, datasets: Optional[
     return await _engine_generate(query=queries, dataset=population, extra_datasets=rest, dialect="postgres")
 
 
-def cast_target(expression: exp.Expression) -> Optional[str]:
+def cast_target(expression: Expression) -> Optional[str]:
     """The Postgres type an outermost CAST converts to, else ``None``."""
     if isinstance(expression, exp.Cast):
         return expression.to.sql(dialect="postgres").upper()

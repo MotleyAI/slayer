@@ -1008,7 +1008,7 @@ class TestStillGuarded:
         not on "any hidden slot with a materialised alias" — driven here with a
         hidden ROW slot carrying an alias, which must still be rejected."""
 
-        slot = ValueSlot(
+        slot = ValueSlot(type=DataType.INTEGER,
             id="s0",
             key=FieldKey(path=(), leaf="status"),
             declared_name="status",

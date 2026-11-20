@@ -23,7 +23,7 @@ from slayer.core.query import SlayerQuery
 from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import aggregated_type, metric_key_type
+from slayer.engine.key_metadata import SlotTyping, field_aggregate_type
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.core.syntax import parse_expr
 from slayer.facade.catalog import build_local_view
@@ -34,6 +34,12 @@ from tests._dev2046_fixtures import customers_dataset, orders_dataset
 ORDERS = orders_dataset()
 CUSTOMERS = customers_dataset()
 BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
+
+
+def _key_type(*, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None) -> Optional[DataType]:
+    """The one derivation's type of ``key`` over ``dataset``."""
+    bundle = bundle or ResolvedSourceBundle(dialect="postgres", population=dataset)
+    return SlotTyping(scope=DatasetScope(population=dataset), bundle=bundle).value_type(key)
 INTEGER = NumberFormat(type=NumberFormatType.INTEGER)
 PERCENT = NumberFormat(type=NumberFormatType.PERCENT)
 
@@ -71,15 +77,15 @@ class TestClassifier:
 class TestColumnTyping:
     def test_aggregated_type(self) -> None:
         types = {
-            agg: aggregated_type(dataset=ORDERS, metric_name="flag", aggregation=agg)
+            agg: field_aggregate_type(dataset=ORDERS, field_name="flag", aggregation=agg)
             for agg in ("sum", "avg", "min", "max", "count", "first")
         }
         assert types == {
             "sum": DataType.INTEGER, "avg": DataType.FLOAT, "min": DataType.BOOLEAN,
             "max": DataType.BOOLEAN, "count": DataType.INTEGER, "first": DataType.BOOLEAN,
         }
-        assert aggregated_type(dataset=ORDERS, metric_name="big_order", aggregation="sum") is DataType.INTEGER
-        assert aggregated_type(dataset=ORDERS, metric_name="amount", aggregation="sum") is DataType.INTEGER
+        assert field_aggregate_type(dataset=ORDERS, field_name="big_order", aggregation="sum") is DataType.INTEGER
+        assert field_aggregate_type(dataset=ORDERS, field_name="amount", aggregation="sum") is DataType.INTEGER
 
     def test_sum_format_is_integer(self) -> None:
         assert _infer_aggregated_format(dataset=ORDERS, metric_name="flag", aggregation="sum") == INTEGER
@@ -110,12 +116,12 @@ class TestMeasureKeyType:
         ("sum(True)", DataType.INTEGER),
     ])
     def test_boolean_sources(self, text: str, expected: DataType) -> None:
-        assert metric_key_type(dataset=ORDERS, key=_bind(text), bundle=BUNDLE) is expected
+        assert _key_type(dataset=ORDERS, key=_bind(text), bundle=BUNDLE) is expected
 
     def test_mixed_coalesce_is_not_boolean_typed(self) -> None:
         """Scenario: mixed-type coalesce is not boolean — the boolean branch reads as its integer."""
         key = _bind("sum(coalesce(flag, amount))")
-        assert metric_key_type(dataset=ORDERS, key=key, bundle=BUNDLE) is DataType.INTEGER
+        assert _key_type(dataset=ORDERS, key=key, bundle=BUNDLE) is DataType.INTEGER
 
 
 class TestStageMeasureType:
@@ -125,7 +131,7 @@ class TestStageMeasureType:
 
     def test_boolean_stage_column(self) -> None:
         types = {
-            agg: metric_key_type(
+            agg: _key_type(
                 dataset=dataset_from_stage_schema(name="s1", schema=self.SCHEMA, data_source="test"),
                 key=AggregateKey(source=FieldKey(leaf="fm"), agg=agg))
             for agg in ("sum", "avg", "max", "count")

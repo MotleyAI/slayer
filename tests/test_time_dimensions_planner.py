@@ -40,6 +40,7 @@ from slayer.engine.compile.projection import (
     _canonical_name,
     _iter_slot_deps,
 )
+from tests._slot_typing_fixtures import SHOP_TYPING
 from slayer.ir.bound import DeclaredMetric
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
@@ -370,7 +371,7 @@ class TestPlanningPrimitivesForTimeTruncKey:
 
 class TestValueRegistryTimeTrunc:
     def test_same_column_same_grain_interns_once(self) -> None:
-        reg = ValueRegistry()
+        reg = ValueRegistry(typing=SHOP_TYPING)
         k1 = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
@@ -387,7 +388,7 @@ class TestValueRegistryTimeTrunc:
         # TimeTruncKey identity is (field, granularity); different
         # grains on the same field intern to distinct slots even though
         # they share an underlying field.
-        reg = ValueRegistry()
+        reg = ValueRegistry(typing=SHOP_TYPING)
         k_month = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
@@ -405,7 +406,7 @@ class TestValueRegistryTimeTrunc:
         assert sid_m != sid_d
 
     def test_different_column_distinct_slots(self) -> None:
-        reg = ValueRegistry()
+        reg = ValueRegistry(typing=SHOP_TYPING)
         k_a = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
@@ -443,6 +444,7 @@ class TestProjectionPlannerTimeDimensions:
             label=None,
         )
         plan = ProjectionPlanner().plan(
+            typing=SHOP_TYPING,
             metrics=[dm],
             filters=[],
             order=[],

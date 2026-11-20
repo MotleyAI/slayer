@@ -12,6 +12,7 @@ import pytest
 import sqlglot
 from pydantic import ValidationError
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ScalarOperandTypeError, TimeDimensionFieldError
@@ -46,7 +47,7 @@ MONTH = [{"field": "orders.ordered_at", "granularity": "month"}]
 BY_REGION = {"dimensions": ["orders.region"]}
 
 
-def _both(first: dict[str, Any], expected: dict[str, DataType], **kw: Any) -> None:
+def _both(first: dict[str, Any], expected: dict[str, Optional[DataType]], **kw: Any) -> None:
     """Stage ``s`` emits, and a later stage reads, exactly ``expected``."""
     names = list(expected)
     assert emitted_types(first, names=names, **kw) == expected
@@ -101,7 +102,8 @@ class TestScenarios:
             with pytest.raises(ScalarOperandTypeError) as info:
                 await engine.execute([s, root])
         message = str(info.value)
-        assert "String" in message and "Date" in message, message
+        assert "String" in message, message
+        assert "Date" in message, message
         assert "coalesce" in message.lower(), message
 
     @pytest.mark.parametrize("dialect", DIALECTS)
@@ -273,7 +275,7 @@ class TestPerCategory:
             assert casts == {case.cast}, sql
 
 
-def _computed_projections(sql: str, *, alias: str) -> list[exp.Expression]:
+def _computed_projections(sql: str, *, alias: str) -> list[Expression]:
     """Every non-column expression projected as ``alias`` anywhere in ``sql``."""
     tree = sqlglot.parse_one(sql, dialect="postgres")
     return [a.this for a in tree.find_all(exp.Alias) if a.alias == alias and not isinstance(a.this, exp.Column)]
@@ -310,8 +312,9 @@ class TestStructural:
             StageField(name="a", sql_alias="a")  # pyright: ignore[reportCallIssue]
 
     def test_value_slot_requires_a_type(self) -> None:
+        key = FieldKey(leaf="a")
         with pytest.raises(ValidationError):
-            ValueSlot(id="s0", key=FieldKey(leaf="a"), declared_name="a", phase=Phase.ROW)  # pyright: ignore[reportCallIssue, reportArgumentType]
+            ValueSlot(id="s0", key=key, declared_name="a", phase=Phase.ROW)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     def test_stage_dataset_keeps_every_declared_field_type(self) -> None:
         types = [INT, TEXT, DOUBLE, DEC, BOOL, DataType.DATE, TS, DataType.OPAQUE]
@@ -347,4 +350,5 @@ class TestNullOnlyStageColumnTimeDimension:
         with pytest.raises(TimeDimensionFieldError) as info:
             stage_columns([s1, outer], stage="s1")
         message = str(info.value)
-        assert "temporal" in message and "Integer" in message, message
+        assert "temporal" in message, message
+        assert "Integer" in message, message

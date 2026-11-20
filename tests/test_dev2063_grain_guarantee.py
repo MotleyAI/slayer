@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.errors import MaterialisationStageError
+from slayer.core.enums import DataType
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
@@ -268,18 +269,18 @@ def _stage_error(build: Callable[[], object]) -> str:
 
 
 def _dim(sid: str = "d", key: FieldKey = _REGION) -> ValueSlot:
-    return ValueSlot(id=sid, key=key, declared_name=key.leaf, public_name=key.leaf,
+    return ValueSlot(type=DataType.INTEGER, id=sid, key=key, declared_name=key.leaf, public_name=key.leaf,
                      public_aliases=[key.leaf], is_dimension=True, phase=Phase.ROW,
                      stage=_BASE, needs_field=True)
 
 
 def _metric(sid: str = "m") -> ValueSlot:
-    return ValueSlot(id=sid, key=_SUM, declared_name="s", public_name="s", public_aliases=["s"],
+    return ValueSlot(type=DataType.INTEGER, id=sid, key=_SUM, declared_name="s", public_name="s", public_aliases=["s"],
                      phase=Phase.AGGREGATE, stage=_BASE, needs_field=True)
 
 
 def _hidden(sid: str, key, *, needs_column: bool = True) -> ValueSlot:
-    return ValueSlot(id=sid, key=key, declared_name=f"__{sid}", hidden=True, phase=Phase.ROW,
+    return ValueSlot(type=DataType.INTEGER, id=sid, key=key, declared_name=f"__{sid}", hidden=True, phase=Phase.ROW,
                      stage=_BASE, needs_field=needs_column)
 
 

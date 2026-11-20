@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import pytest
 from pydantic import ValidationError
@@ -115,13 +115,14 @@ class TestDeclaredDatatype:
             storage = YAMLStorage(base_dir=tmp)
             server = create_mcp_server(storage=storage)
             try:
-                blocks, _ = await server.call_tool(name="create_dataset", arguments={
+                blocks, _ = cast(Any, await server.call_tool(name="create_dataset", arguments={
                     "name": "orders", "sql_table": "orders", "data_source": DS,
-                    "fields": [{"name": "flag", "datatype": "Boolean"}], "aggregations": [aggregation]})
+                    "fields": [{"name": "flag", "datatype": "Boolean"}], "aggregations": [aggregation]}))
             finally:
-                await server._slayer_engine.aclose()
+                await getattr(server, "_slayer_engine").aclose()
             assert await storage.get_dataset("orders", data_source=DS) is None
-        assert "trues" in blocks[0].text and "Bogus" in blocks[0].text, blocks[0].text
+        assert "trues" in blocks[0].text, blocks[0].text
+        assert "Bogus" in blocks[0].text, blocks[0].text
 
     async def test_a_declared_datatype_is_saved_through_mcp(self) -> None:
         aggregation = {"name": "trues", "expression": "COUNT(CASE WHEN {value} THEN 1 END)", "datatype": "Float"}
@@ -133,7 +134,7 @@ class TestDeclaredDatatype:
                     "name": "orders", "sql_table": "orders", "data_source": DS,
                     "fields": [{"name": "flag", "datatype": "Boolean"}], "aggregations": [aggregation]})
             finally:
-                await server._slayer_engine.aclose()
+                await getattr(server, "_slayer_engine").aclose()
             loaded = await storage.get_dataset("orders", data_source=DS)
         assert loaded is not None
         assert loaded.aggregations[0].datatype is DOUBLE

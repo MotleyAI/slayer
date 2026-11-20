@@ -13,6 +13,7 @@ from pydantic import (
     Field,
     ModelWrapValidatorHandler,
     PrivateAttr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -762,12 +763,24 @@ class Aggregation(DatasetPart):
     expression: str | None = None  # SQL template; None = use built-in expression
     params: list[AggregationParam] = Field(default_factory=list)
     description: str | None = None
+    datatype: DataType | None = Field(
+        default=None,
+        description="The aggregation's result type; omitted, it is inferred from `expression`, else its input's type.",
+    )
     meta: dict[str, Any] | None = None
 
     @model_validator(mode="wrap")
     @classmethod
     def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["Aggregation"]) -> "Aggregation":
         return _part_input(cls, data, handler, vocabulary.aggregation)
+
+    @field_validator("datatype", mode="before")
+    @classmethod
+    def _validate_datatype(cls, v: Any, info: ValidationInfo) -> Any:
+        if v is None or isinstance(v, DataType) or v in {t.value for t in DataType}:
+            return v
+        allowed = ", ".join(t.value for t in DataType)
+        raise ValueError(f"Aggregation '{info.data.get('name')}' has datatype {v!r}, not one of: {allowed}")
 
     @field_validator("name")
     @classmethod

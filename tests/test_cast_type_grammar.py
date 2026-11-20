@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import pytest
 import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.errors import CastTypeError
+from slayer.core.models import SlayerDataset
 from slayer.core.keys import ScalarCallKey, ValueKey, is_list_call, list_element_type
 from slayer.core.scope import DatasetScope
 from slayer.core.syntax import Cast, parse_expr
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import dimension_key_metadata
+from slayer.engine.key_metadata import SlotTyping
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._cast_fixtures import check_array_cast, duckdb_tags_engine
 from tests._dev2101_fixtures import TIER1, customers_dataset, emit, orders_dataset, q
 
 ORDERS = orders_dataset()
+
+
+def _key_type(*, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None) -> Optional[DataType]:
+    """The one derivation's type of ``key`` over ``dataset``."""
+    bundle = bundle or ResolvedSourceBundle(dialect="postgres", population=dataset)
+    return SlotTyping(scope=DatasetScope(population=dataset), bundle=bundle).value_type(key)
 
 
 def _dim(expr: str):
@@ -50,7 +59,7 @@ def _bind(text: str, *, dialect: str) -> ValueKey:
 
 def _planned_type(text: str, *, dialect: str) -> DataType | None:
     bundle = ResolvedSourceBundle(dialect=dialect, population=ORDERS, referenced_datasets=[customers_dataset()])
-    return dimension_key_metadata(dataset=ORDERS, key=_bind(text, dialect=dialect), bundle=bundle)[0]
+    return _key_type(dataset=ORDERS, key=_bind(text, dialect=dialect), bundle=bundle)
 
 
 def _element_type(text: str, *, dialect: str) -> DataType | None:

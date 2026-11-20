@@ -113,12 +113,12 @@ from slayer.engine.elaborate_env import (
 from slayer.engine.population.home import row_expression_crossing
 from slayer.engine.cardinality.relationship_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
+    SlotTyping,
     bundle_dialect,
     key_element_type,
     metric_key_format_description,
     scope_field_element,
     metric_key_preserves_native_type,
-    metric_key_type,
     scope_field_type,
     scope_zoned_timestamp,
 )
@@ -913,7 +913,7 @@ def _type_for_metric_expression(
 ) -> Optional[DataType]:
     if scope.population is None:
         return None
-    return metric_key_type(dataset=scope.population, key=bound.value_key, bundle=bundle)
+    return SlotTyping(scope=scope, bundle=bundle).value_type(bound.value_key)
 
 
 def _retyped_after_coercion(

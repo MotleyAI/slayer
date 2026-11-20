@@ -2191,13 +2191,21 @@ class SQLGenerator:
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) and slot.is_dimension:
                     dim_expr = computed_dim_expr_by_sid[sid]
-                    select_columns.append(self._grouped_display(dim_expr, key=key).as_(full_alias, quoted=True))
+                    # A cast dimension already is its declared type (a wide unsigned target must stay wide).
+                    shown = self._grouped_display(dim_expr, key=key)
+                    if not isinstance(key, CastKey):
+                        shown = _wrap_cast_for_type(dialect=self._dialect, expr=shown, dt=self._slot_cast_type(slot))
+                    select_columns.append(shown.as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, self._grain_key(dim_expr, key=key))
                     display_by_sid[sid] = dim_expr
                     _record_alias(sid, full_alias)
                 elif isinstance(key, LiteralKey) and slot.is_dimension:
                     # A constant needs no GROUP BY entry (a constant one is refused or read as a position).
-                    select_columns.append(_literal(key.value, dialect=self._dialect).as_(full_alias, quoted=True))
+                    shown = _wrap_cast_for_type(
+                        dialect=self._dialect, expr=_literal(key.value, dialect=self._dialect),
+                        dt=self._slot_cast_type(slot),
+                    )
+                    select_columns.append(shown.as_(full_alias, quoted=True))
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) or (
                     isinstance(key, LiteralKey) and not slot.is_dimension
