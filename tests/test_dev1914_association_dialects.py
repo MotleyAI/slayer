@@ -3,6 +3,9 @@ queries/attribution-modes › Ranked and windowed association — The windowed a
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 from pytest_postgresql import factories
 
@@ -50,8 +53,8 @@ async def test_renders(dialect: str, shape: str) -> None:
 
 
 @pytest.mark.parametrize("shape", SHAPES)
-async def test_executes_on_postgres(request, tmp_path, shape: str) -> None:
+async def test_executes_on_postgres(postgresql_proc: Any, tmp_path: Path, shape: str) -> None:
     q, read, expected = SHAPES[shape]
-    with pg_database(request.getfixturevalue("postgresql_proc"), statements=postgres_statements(), name="pg") as ds:
+    with pg_database(postgresql_proc, statements=postgres_statements(), name="pg") as ds:
         async with pg_query_engine(ds, base_dir=str(tmp_path), datasets=_datasets("pg"), validate=False) as engine:
             assert read(await engine.execute(q)) == expected

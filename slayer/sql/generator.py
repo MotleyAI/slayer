@@ -2584,17 +2584,20 @@ class SQLGenerator:
         )
         value_type = aggregation_source_type(key.source, field_type=src_scope.field_type)
         # Association's level 1: one framed row per (bucket, cell, entity); the reducer runs over those.
-        entity_rows = None if association is None else self._window_entity_rows(
-            framed=exp.Select().from_(base_from).join(src_subq, on=on_range, join_type="LEFT"),
-            grain_aliases=grain_aliases, grain_keys=grain_keys,
-            n_entity_keys=n_entity_keys, list_rows=association.list_rows,
-            picked=[
+        entity_rows: Optional[exp.Subquery] = None
+        if association is not None:
+            picked: List[Tuple[str, Optional[DataType]]] = [
                 ("_w_value", value_type),
                 *((f"_w_p{i}", picked_kwarg_exprs[pp.name].input_type) for i, pp in enumerate(plan.picked_params)),
-                *([("_w_rank", None)] if plan.ranking_time_key is not None else []),
-                ("_w_time", time_type),
-            ],
-        )
+            ]
+            if plan.ranking_time_key is not None:
+                picked.append(("_w_rank", None))
+            picked.append(("_w_time", time_type))
+            entity_rows = self._window_entity_rows(
+                framed=exp.Select().from_(base_from).join(src_subq, on=on_range, join_type="LEFT"),
+                grain_aliases=grain_aliases, grain_keys=grain_keys,
+                n_entity_keys=n_entity_keys, list_rows=association.list_rows, picked=picked,
+            )
 
         def _framed(select: exp.Select) -> exp.Select:
             if entity_rows is None:
