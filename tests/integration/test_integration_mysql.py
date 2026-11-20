@@ -303,7 +303,7 @@ def mysql_env(_mysql_env_storage) -> SlayerQueryEngine:
 @pytest.mark.integration
 class TestMySQLQueries:
     async def test_count_all(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
@@ -319,20 +319,20 @@ class TestMySQLQueries:
         ]}))
         query = SlayerQuery(
             population="orders_rx",
-            dimensions=[QueryDimension(field="rx")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders_rx.rx")],
+            metrics=[QueryMetric(metric="count(orders_rx.*)")],
         )
         result = await mysql_env.execute(query=query)
         by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.total)"}]})
         result = await mysql_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_avg_measure(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(avg_amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(orders.avg_amount)"}]})
         result = await mysql_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -340,8 +340,8 @@ class TestMySQLQueries:
     async def test_group_by_status(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "dimensions": ["orders.status"],
         })
         result = await mysql_env.execute(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
@@ -352,8 +352,8 @@ class TestMySQLQueries:
     async def test_filter_equals(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status == 'completed'"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status == 'completed'"],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
@@ -361,8 +361,8 @@ class TestMySQLQueries:
     async def test_filter_gt(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["total > 100"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.total > 100"],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
@@ -374,8 +374,8 @@ class TestMySQLQueries:
         for total = 100."""
         acceptance = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["trunc(total) >= 100"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["trunc(orders.total) >= 100"],
         })
         result = await mysql_env.execute(query=acceptance)
         assert result.data[0]["orders._count"] > 0
@@ -384,8 +384,8 @@ class TestMySQLQueries:
 
         truncates = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["trunc(total / 40.0) == 2"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["trunc(orders.total / 40.0) == 2"],
         })
         result = await mysql_env.execute(query=truncates)
         assert result.data[0]["orders._count"] == 1, result.sql
@@ -393,9 +393,9 @@ class TestMySQLQueries:
     async def test_order_by_desc(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "dimensions": ["status"],
-            "order": [{"field": "count", "direction": "desc"}],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "dimensions": ["orders.status"],
+            "order": [{"field": "count(orders.*)", "direction": "desc"}],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
@@ -403,8 +403,8 @@ class TestMySQLQueries:
     async def test_limit(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "dimensions": ["orders.status"],
             "limit": 2,
         })
         result = await mysql_env.execute(query=query)
@@ -413,8 +413,8 @@ class TestMySQLQueries:
     async def test_multiple_measures(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}, {"metric": "sum(total)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "count(orders.*)"}, {"metric": "sum(orders.total)"}],
+            "dimensions": ["orders.status"],
         })
         result = await mysql_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
@@ -426,8 +426,8 @@ class TestMySQLQueries:
         return 3 months."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
         })
         result = await mysql_env.execute(query=query)
         assert result.row_count == 3
@@ -435,9 +435,9 @@ class TestMySQLQueries:
     async def test_time_dimension_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "time_dimensions": [{
-                "field": "created_at",
+                "field": "orders.created_at",
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
@@ -449,8 +449,8 @@ class TestMySQLQueries:
     async def test_composite_filter(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status == 'completed' or status == 'pending'"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status == 'completed' or orders.status == 'pending'"],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders._count"] == 5
@@ -459,34 +459,34 @@ class TestMySQLQueries:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev_month"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="time_shift(sum(orders.total), -1, 'month')", alias="prev_month"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
-        assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
+        assert float(result.data[0]["prev_month"]) == pytest.approx(200.0)
 
     async def test_consecutive_periods_with_boolean_predicate(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="consecutive_periods(sum(total) > 200)", alias="positive_run"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="consecutive_periods(sum(orders.total) > 200)", alias="positive_run"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
-        assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
+        assert [r["positive_run"] for r in result.data] == [1, 0, 1]
 
     @pytest.mark.parametrize("column,granularity", CALENDAR_CASES)
     async def test_consecutive_periods_breaks_on_calendar_gap(
@@ -498,55 +498,55 @@ class TestMySQLQueries:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="change(sum(total))", alias="amount_change"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="change(sum(orders.total))", alias="amount_change"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
-        assert float(result.data[0]["orders.amount_change"]) == pytest.approx(175.0)
+        assert float(result.data[0]["amount_change"]) == pytest.approx(175.0)
 
     async def test_change_pct_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="change_pct(sum(total))", alias="pct"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="change_pct(sum(orders.total))", alias="pct"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
-        assert float(result.data[0]["orders.pct"]) == pytest.approx(0.875)
+        assert float(result.data[0]["pct"]) == pytest.approx(0.875)
 
     async def test_multiple_date_range_shifts(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev"),
-                QueryMetric(metric="time_shift(sum(total), 1, 'month')", alias="next"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="time_shift(sum(orders.total), -1, 'month')", alias="prev"),
+                QueryMetric(metric="time_shift(sum(orders.total), 1, 'month')", alias="next"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(200.0)
-        assert float(result.data[0]["orders.prev"]) == pytest.approx(300.0)
-        assert float(result.data[0]["orders.next"]) == pytest.approx(375.0)
+        assert float(result.data[0]["prev"]) == pytest.approx(300.0)
+        assert float(result.data[0]["next"]) == pytest.approx(375.0)
 
 
 # ---------------------------------------------------------------------------
@@ -631,24 +631,24 @@ class TestCrossModelAndMultistageMySQL:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="avg(customers.avg_score)")],
-            order=[OrderItem(field="created_at", direction="asc")],
+            metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="avg(customers.avg_score)")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_cross_dataset_env.execute(query=query)
         assert result.row_count == 3
-        assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
+        assert [float(r["customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
     async def test_query_list_named(self, mysql_cross_dataset_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total)")],
+            metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(orders.total)")],
         )
-        outer = SlayerQuery(population="monthly", metrics=[QueryMetric(metric="count(*)")])
+        outer = SlayerQuery(population="monthly", metrics=[QueryMetric(metric="count(monthly.*)")])
         result = await mysql_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
@@ -656,25 +656,25 @@ class TestCrossModelAndMultistageMySQL:
         source = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total)")],
+            metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(orders.total)")],
         )
         saved = await mysql_cross_dataset_env.create_dataset_from_query(query=source, name="mysql_monthly")
         assert saved.source_queries is not None
         result = await mysql_cross_dataset_env.execute(
-            query=SlayerQuery(population="mysql_monthly", metrics=[QueryMetric(metric="count(*)")])
+            query=SlayerQuery(population="mysql_monthly", metrics=[QueryMetric(metric="count(mysql_monthly.*)")])
         )
         assert result.data[0]["mysql_monthly._count"] == 3
 
     async def test_sql_dimension(self, mysql_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", alias="tier")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="CASE WHEN orders.amount > 100 THEN 'high' ELSE 'low' END", alias="tier")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await mysql_cross_dataset_env.execute(query=query)
-        by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
+        by_tier = {r["tier"]: r["orders._count"] for r in result.data}
         assert by_tier["high"] == 3
         assert by_tier["low"] == 3
 
@@ -784,11 +784,11 @@ class TestRollupIngestionMySQL:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
-        by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
+        by_name = {r["customers.name"]: r["orders._count"] for r in result.data}
         assert by_name["Acme"] == 2
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
@@ -804,11 +804,11 @@ class TestRollupIngestionMySQL:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}, {"metric": "sum(amount)"}],
+            "metrics": [{"metric": "count(orders.*)"}, {"metric": "sum(orders.amount)"}],
             "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
-        by_region = {r["orders.customers.regions.name"]: r for r in result.data}
+        by_region = {r["customers.regions.name"]: r for r in result.data}
         assert by_region["US"]["orders._count"] == 3
         assert by_region["EU"]["orders._count"] == 1
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
@@ -837,11 +837,11 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
-        by_region = {r["orders.customers.regions.name"]: r["orders._count"] for r in result.data}
+        by_region = {r["customers.regions.name"]: r["orders._count"] for r in result.data}
         assert by_region["US"] == 3
         assert by_region["EU"] == 1
 
@@ -853,7 +853,7 @@ class TestRollupIngestionMySQL:
         for m in models:
             await storage.save_dataset(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
         result = await engine.execute(query=query)
         assert "LEFT JOIN" not in result.sql
         assert result.data[0]["orders._count"] == 4
@@ -868,7 +868,7 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
@@ -886,7 +886,7 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
@@ -930,7 +930,7 @@ class TestRollupIngestionMySQL:
 @pytest.mark.integration
 class TestMySQLMedianPercentileRaises:
     async def test_median_raises(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
         with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
             await mysql_env.execute(query=query)
 
@@ -938,8 +938,8 @@ class TestMySQLMedianPercentileRaises:
         """Grouped median path goes through the same dialect hook; must also raise."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "median(total)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "median(orders.total)"}],
+            "dimensions": ["orders.status"],
         })
         with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
             await mysql_env.execute(query=query)
@@ -947,7 +947,7 @@ class TestMySQLMedianPercentileRaises:
     async def test_percentile_raises(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "percentile(total, p=0.5)"}],
+            "metrics": [{"metric": "percentile(orders.total, p=0.5)"}],
         })
         with pytest.raises(NotImplementedError, match="(?i)percentile.*mysql"):
             await mysql_env.execute(query=query)
@@ -972,7 +972,7 @@ class TestMySQLStatAggregations:
     """
 
     async def test_stddev_samp_native_mysql(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "stddev_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "stddev_samp(orders.total)"}]})
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -982,7 +982,7 @@ class TestMySQLStatAggregations:
     async def test_stddev_pop_native_mysql(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "stddev_pop(total)"}],
+            "metrics": [{"metric": "stddev_pop(orders.total)"}],
         })
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -994,7 +994,7 @@ class TestMySQLStatAggregations:
         """The MysqlDialect.build_stat_agg_1arg Anonymous wrap means the
         emitted SQL contains literal ``VAR_SAMP(``, not sqlglot's default
         ``VARIANCE``. Pin via dry_run."""
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_samp(orders.total)"}]})
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_samp"]) == pytest.approx(
@@ -1011,7 +1011,7 @@ class TestMySQLStatAggregations:
     async def test_var_pop_uses_canonical_mysql_name(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"metric": "var_pop(total)"}],
+            metrics=[{"metric": "var_pop(orders.total)"}],
         )
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1031,7 +1031,7 @@ class TestMySQLStatAggregations:
         (no native function). Pin both numeric correctness AND SQL shape."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "corr(total, other=customer_id)"}],
+            "metrics": [{"metric": "corr(orders.total, other=orders.customer_id)"}],
         })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1056,7 +1056,7 @@ class TestMySQLStatAggregations:
     async def test_covar_samp_variance_decomposition_mysql(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "covar_samp(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_samp(orders.total, other=orders.customer_id)"}],
         })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1078,7 +1078,7 @@ class TestMySQLStatAggregations:
     async def test_covar_pop_variance_decomposition_mysql(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "covar_pop(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_pop(orders.total, other=orders.customer_id)"}],
         })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1103,11 +1103,11 @@ class TestMySQLStatAggregations:
         """Trailing 90d windows (bucket end exclusive) over the six seeded orders."""
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at",
+            time_dimensions=[TimeDimension(field="orders.created_at",
                                            granularity=TimeGranularity.MONTH)],
             metrics=[
-                QueryMetric(metric="covar_samp(total, other=customer_id, window='90d')", alias="cv"),
-                QueryMetric(metric="corr(total, other=customer_id, window='90d')", alias="co"),
+                QueryMetric(metric="covar_samp(orders.total, other=orders.customer_id, window='90d')", alias="cv"),
+                QueryMetric(metric="corr(orders.total, other=orders.customer_id, window='90d')", alias="co"),
             ],
         )
         rows = [  # (amount, customer_id, created_at)
@@ -1128,12 +1128,12 @@ class TestMySQLStatAggregations:
         assert set(by_month) == set(month_ends)
         for month in month_ends:
             xs, ys = members(month)
-            assert float(by_month[month]["orders.cv"]) == pytest.approx(
+            assert float(by_month[month]["cv"]) == pytest.approx(
                 statistics.covariance(xs, ys), rel=1e-9, abs=1e-9,
             )
         for month in ("2024-02", "2024-03"):
             xs, ys = members(month)
-            assert float(by_month[month]["orders.co"]) == pytest.approx(
+            assert float(by_month[month]["co"]) == pytest.approx(
                 statistics.correlation(xs, ys), rel=1e-9,
             )
 
@@ -1192,14 +1192,14 @@ async def test_log10_round_trip_mysql(mysql_log10_env: SlayerQueryEngine) -> Non
     ``LOG(10, ...)`` form."""
 
     result = await mysql_log10_env.execute(
-        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]})
+        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(orders.log_amount)"}]})
     )
     assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
         _math.log10(300.0), rel=1e-9
     )
 
     dry = await mysql_log10_env.execute(
-        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]}),
+        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(orders.log_amount)"}]}),
         dry_run=True,
     )
     assert dry.sql is not None
@@ -1276,8 +1276,8 @@ async def test_filter_on_windowed_column_mysql_raises(planets_mysql_env) -> None
     engine = planets_mysql_env
     query = SlayerQuery(
         population="planets",
-        dimensions=["name"],
-        filter=["rn <= 3"],
+        dimensions=["planets.name"],
+        filter=["planets.rn <= 3"],
     )
     with pytest.raises(ValueError, match="(?i)window function|rank"):
         await engine.execute(query)
@@ -1357,10 +1357,10 @@ async def test_integration_mysql_cross_model_derived_columnsql(
         SlayerQuery(
             population="a_tbl",
             dimensions=[
-                QueryDimension(field="id"),
-                QueryDimension(field="ratio_using_derived"),
+                QueryDimension(field="a_tbl.id"),
+                QueryDimension(field="a_tbl.ratio_using_derived"),
             ],
-            order=[OrderItem(field="id", direction="asc")],
+            order=[OrderItem(field="a_tbl.id", direction="asc")],
         )
     )
     assert response.row_count == 2
@@ -1445,7 +1445,7 @@ class TestMySQLModeAEscaping:
     ) -> None:
         resp = await mysql_esc_env.execute(SlayerQuery.model_validate({
             "population": "esc",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(esc.amount)"}],
             "variables": {"v": value},
         }))
         assert resp.row_count == 1
@@ -1461,7 +1461,7 @@ class TestMySQLModeAEscaping:
         # NULL on MySQL, 0 on ClickHouse — either way a weaker signal).
         resp = await mysql_esc_env.execute(SlayerQuery.model_validate({
             "population": "esc",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(esc.*)"}],
             "variables": {"v": "x\\' OR '1'='1"},
         }))
         assert int(resp.data[0]["esc._count"]) == 0
@@ -1526,8 +1526,8 @@ class TestMySQLDateFunctions:
 
     async def test_hourly_time_dimension_keeps_the_hour(self, mysql_dates: SlayerQueryEngine) -> None:
         resp = await mysql_dates.execute(SlayerQuery.model_validate({
-            "population": "dt", "dimensions": ["id"],
-            "time_dimensions": [{"field": "t1", "granularity": "hour"}],
+            "population": "dt", "dimensions": ["dt.id"],
+            "time_dimensions": [{"field": "dt.t1", "granularity": "hour"}],
         }))
         buckets = {int(r["dt.id"]): r["dt.t1"] for r in resp.data}
         assert str(buckets[1])[:19] == "2024-01-31 23:00:00"
@@ -1671,7 +1671,7 @@ class TestMySQLPortableLibrary:
 
     async def test_comparisons_follow_the_column_collation(self, _mysql_dev2120_storage) -> None:
         engine = SlayerQueryEngine(storage=_mysql_dev2120_storage)
-        for filt, expected in (("word = 'ada'", {3, 4}), ("word IN ('paid')", {1, 2}), ("word LIKE 'ada%'", {3, 4})):
+        for filt, expected in (("lib.word = 'ada'", {3, 4}), ("lib.word IN ('paid')", {1, 2}), ("lib.word LIKE 'ada%'", {3, 4})):
             resp = await engine.execute(lib_query(filter=[filt]))
             assert {int(r["lib.id"]) for r in resp.data} == expected, (filt, resp.sql)
 

@@ -212,7 +212,9 @@ class TestModelStorage:
             await storage.save_dataset(replacement)
 
         assert open(path).read() == original  # NOSONAR(S7493) — sync fixture I/O is intentional
-        assert (await storage.get_dataset("test_dataset")).description is None
+        reloaded = await storage.get_dataset("test_dataset")
+        assert reloaded is not None
+        assert reloaded.description is None
 
     async def test_failed_sample_update_preserves_model(
         self,
@@ -236,7 +238,9 @@ class TestModelStorage:
             )
 
         assert open(path).read() == original  # NOSONAR(S7493) — sync fixture I/O is intentional
-        assert (await storage.get_dataset("test_dataset")).fields[1].sampled is None
+        reloaded = await storage.get_dataset("test_dataset")
+        assert reloaded is not None
+        assert reloaded.fields[1].sampled is None
 
     async def test_empty_model_file_raises_clear_error(
         self, storage: YAMLStorage, sample_dataset: SlayerDataset

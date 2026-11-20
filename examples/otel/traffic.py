@@ -14,13 +14,13 @@ import urllib.request
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:5143"
 ROUNDS = int(sys.argv[2]) if len(sys.argv) > 2 else 20
 
-COUNT = ["count(*)"]
+COUNT = ["count(orders.*)"]
 QUERIES = [
-    {"population": "orders", "metrics": COUNT, "dimensions": ["status"]},
+    {"population": "orders", "metrics": COUNT, "dimensions": ["orders.status"]},
     {"population": "orders", "metrics": COUNT, "dimensions": ["products.category"]},
     {"population": "orders", "metrics": COUNT, "dimensions": ["regions.name"]},
-    {"population": "orders", "metrics": COUNT, "dimensions": ["status"], "dry_run": True},
-    {"population": "no_such_dataset", "metrics": COUNT},
+    {"population": "orders", "metrics": COUNT, "dimensions": ["orders.status"], "dry_run": True},
+    {"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]},
 ]
 # 200 for the first four queries; a client error for the last, which names a dataset that does not exist.
 EXPECTED = [range(200, 201)] * 4 + [range(400, 500)]
