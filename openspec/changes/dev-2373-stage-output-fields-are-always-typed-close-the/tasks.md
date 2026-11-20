@@ -27,8 +27,8 @@ Write scenarios with DEV-2277's qualified reference spelling (`sum(orders.amount
 - [x] 3.6 `ValueSlot.type` and `StageField.datatype` required; delete the FLOAT fallback in `dataset_from_stage_schema`. Verify: tests 2.5, 2.7 pass.
 - [x] 3.7 Re-bless golden SQL; review each diff for added casts only. Verify: golden tests pass and every golden diff is a cast.
 - [x] 3.8 Docs: custom aggregations (`datatype`, formula inference, fallback) and multi-stage (stage columns carry their real type) pages under `docs/`; MCP schema description of the aggregation `datatype`; check `zensical.toml` nav for any new page. Verify: `tests/test_docs_guards.py` passes.
-- [ ] 3.9 Comment on DEV-2180: DEV-2373 retires the slot-typing derivations (`metric_key_type`, `aggregated_type`, `date_scalar_type`, the type part of `dimension_key_metadata`, the stage-producer typing); the check-side ones in `elaborate_env` remain. Verify: the comment is on the issue.
+- [x] 3.9 Comment on DEV-2180: DEV-2373 retires the slot-typing derivations (`metric_key_type`, `aggregated_type`, `date_scalar_type`, the type part of `dimension_key_metadata`, the stage-producer typing); the check-side ones in `elaborate_env` remain. Verify: the comment is on the issue.
 
 ## 4. Gates
 
-- [ ] 4.1 Local test scope per `/la:pr` (`la-affected-tests --base main` plus goldens), `poetry run ruff check slayer/ tests/`, `poetry run la-typecheck`, `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture`. Verify: all pass.
+- [x] 4.1 Local test scope per `/la:pr` (`la-affected-tests --base main` plus goldens), `poetry run ruff check slayer/ tests/`, `poetry run la-typecheck`, `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture`. Verify: all pass.
