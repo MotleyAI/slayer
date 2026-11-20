@@ -326,13 +326,13 @@ def _orders(**kw) -> SlayerDataset:
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="ship_date", sql="ship_date", datatype=DataType.DATETIME),
-            DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.DATETIME),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="ship_date", expression="ship_date", datatype=DataType.DATETIME),
+            DatasetField(name="delivery_at", expression="delivery_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ],
     )
     base.update(kw)
@@ -345,10 +345,10 @@ def _customers(**kw) -> SlayerDataset:
         sql_table="customers",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="tier", expression="tier", datatype=DataType.STRING),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
         ],
     )
     base.update(kw)
@@ -359,8 +359,8 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     )
 

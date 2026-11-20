@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -533,11 +534,34 @@ def test_long_column_sql_block_included() -> None:
         name="big",
         sql_table="big_table",
         data_source="warehouse",
-        fields=[DatasetField(name="cat", sql=long_sql, datatype=DataType.STRING)],
+        fields=[DatasetField(name="cat", expression=long_sql, datatype=DataType.STRING)],
     )
     col = m.get_field("cat")
     text = render_field_text(dataset=m, field=col)
     assert long_sql in text
+
+
+def _field_text(field: DatasetField) -> list[str]:
+    m = SlayerDataset(name="t", sql_table="t", data_source="w", fields=[field])
+    return render_field_text(dataset=m, field=m.fields[0]).splitlines()
+
+
+def test_each_dialect_entry_of_a_field_is_rendered() -> None:
+    expression = ExpressionObject(sql="amount * 2", dialects=[
+        DialectEntry(dialect="DUCKDB", expression="amount * 2"), DialectEntry(dialect="SQLITE", expression="amount + amount")])
+    lines = _field_text(DatasetField(name="d", expression=expression, datatype=DataType.FLOAT))
+    assert [ln for ln in lines if ln.startswith("Expression")] == [
+        "Expression: amount * 2", "Expression (DUCKDB): amount * 2", "Expression (SQLITE): amount + amount"]
+
+
+def test_a_self_name_read_renders_no_definition() -> None:
+    lines = _field_text(DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT))
+    assert not [ln for ln in lines if ln.startswith(("Expression", "SQL"))]
+
+
+def test_a_deprecated_field_sql_still_renders() -> None:
+    lines = _field_text(DatasetField(name="d", sql="amount * 2", datatype=DataType.FLOAT))
+    assert "SQL: amount * 2" in lines
 
 
 def test_memory_with_many_tagged_entities_renders_all() -> None:

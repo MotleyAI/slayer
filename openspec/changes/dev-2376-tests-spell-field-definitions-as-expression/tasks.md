@@ -16,15 +16,16 @@
 - [x] 3.3 Decide each non-identifier site by the end-to-end comparison (decisions 1, 11, 15): `resolved_dataset` as written vs with the replacement, every field of the dataset, every dialect in its set (unobserved backends offline with that `ds_type` and recorded live types); portable iff all equal after the same sqlglot normalisation, else one dialect entry per dialect; never-resolved sites portable; conflicting outputs per AST node flagged for call-site rewriting. Verify: a substitution summary (file:line, old → new, rule).
 - [x] 3.4 Classify each `.sql` read on a `DatasetField`/`Column` (basedpyright references) outside deprecated-spelling tests and propose its intent-specific rewrite (decision 12); list tests whose expected value would change. Verify: entries in the summary.
 - [ ] 3.5 Show the owner the substitution summary and the changed-expectation list; wait for consent on the latter. Verify: owner's answer recorded on the tracker issue.
-- [ ] 3.6 Apply the value pass, including dict-literal fields (key and value, decision 6) and raw payloads by version (decision 18); re-run every touched test. Verify: touched tests pass; no non-identifier field `sql` remains outside the allowlist.
+- [x] 3.6 Apply the value pass, including dict-literal fields (key and value, decision 6) and raw payloads by version (decision 18); re-run every touched test. Verify: touched tests pass; no non-identifier field `sql` remains outside the allowlist.
 
 ## 4. Keyword pass (pr-implement)
 
-- [ ] 4.1 Load `la:deterministic-refactor`; dry-run `dr-refactor retarget --file slayer/core/models.py --symbol DatasetField.sql --target DatasetField.expression` with `--keep slayer --keep examples`, `--keep` per allowlisted site, `--without` per other class's `.sql`; type the typable blind spots (`la:make-refactor-target-compliant`), `--allow-blindspots` only as the skill prescribes; include helper `sql` parameters forwarding into a field (decision 7). Verify: the dry-run diff holds only constructor-keyword and dict-key edits (decision 13).
-- [ ] 4.2 Review, then `--apply`; run the skill's full gate. Verify: `la-typecheck` no new errors (baseline aligned by the tool, never `--write-baseline`), `dr-mock-lint` clean.
+- [x] 4.1 Load `la:deterministic-refactor`; dry-run `dr-refactor retarget --file slayer/core/models.py --symbol DatasetField.sql --target DatasetField.expression` with `--keep slayer --keep examples`, `--keep` per allowlisted site, `--without` per other class's `.sql`; `--allow-blindspots` for the untyped `.sql` receivers in tests, each checked to be an engine response (`execute`/`execute_sync` result), a sqlglot node or a `TypeProbe`, never a field; include helper `sql` parameters forwarding into a field (decision 7). Verify: the dry-run diff holds only constructor-keyword and dict-key edits (decision 13).
+- [x] 4.2 Review, then `--apply`; run the skill's full gate. Verify: `la-typecheck` no new errors (baseline aligned by the tool, never `--write-baseline`), `dr-mock-lint` clean.
+- [x] 4.3 `render_field_text` renders the field's `expression` (portable text and each dialect entry) as well as a deprecated `sql`; unit tests for both forms. Verify: `test_search_render.py` passes.
 
 ## 5. Finish
 
-- [ ] 5.1 Guard test green with only the allowlist; no field-level `sql=` / `"sql"` field key in `tests/` outside it. Verify: `poetry run pytest tests/test_field_expression_spelling_guard.py`.
+- [x] 5.1 Guard test green with only the allowlist; no field-level `sql=` / `"sql"` field key in `tests/` outside it. Verify: `poetry run pytest tests/test_field_expression_spelling_guard.py`.
 - [ ] 5.2 Local test scope per the flow (`la-affected-tests` + touched tests) passes; ruff, `la-typecheck`, `la-arch-check`, LikeC4 validation, `openspec validate --strict` clean. Verify: each command's output.
 - [ ] 5.3 CI green, including the path-gated per-backend integration workflows (decision 20). Verify: `la-fetch-failed-pr-checks` reports none.

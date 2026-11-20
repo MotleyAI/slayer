@@ -122,7 +122,7 @@ async def test_query_engine_execute_sync_inside_a_running_loop(pg_ds: Datasource
     await storage.save_datasource(pg_ds)
     await storage.save_dataset(SlayerDataset(
         name="orders", data_source=pg_ds.name, sql_table="orders",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
     ), _validate=False)
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"]})

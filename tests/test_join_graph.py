@@ -20,7 +20,7 @@ def _m(name: str, joins: list[DatasetRelationship] | None = None) -> SlayerDatas
         data_source="mydb",
         sql_table=name,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="x_id", datatype=DataType.INTEGER),
         ],
         relationships=joins or [],

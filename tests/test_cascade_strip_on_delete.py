@@ -33,7 +33,7 @@ async def storage(mydb_orders_storage: StorageBackend) -> StorageBackend:
             name="orders_archive",
             sql_table="orders_archive",
             data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", primary_key=True)],
         )
     )
     return mydb_orders_storage

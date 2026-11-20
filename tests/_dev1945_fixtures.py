@@ -49,10 +49,10 @@ def orders_dataset(*, default: Optional[str] = None) -> SlayerDataset:
             DatasetField(name="li_ts", datatype=DataType.DATETIME, expression="line_items.created_at"),
             # Local value, filter across the unproven hop.
             DatasetField(
-                name="li_flag_ts", datatype=DataType.DATETIME, sql="created_at",
+                name="li_flag_ts", datatype=DataType.DATETIME, expression="created_at",
                 filter="line_items.qty > 0",
             ),
-            DatasetField(name="bad_ts", datatype=DataType.DATETIME, sql=UNPARSEABLE_SQL),
+            DatasetField(name="bad_ts", datatype=DataType.DATETIME, expression=UNPARSEABLE_SQL),
             # Derived across the proven hop.
             DatasetField(name="cust_signup", datatype=DataType.DATETIME, expression="customers.signup_at"),
         ],

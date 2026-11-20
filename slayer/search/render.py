@@ -199,6 +199,22 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _definition_lines(field: DatasetField) -> list[str]:
+    """The field's definition: portable text, each dialect entry, a deprecated ``sql``; a self-name read is omitted."""
+    expression = field.expression
+    lines: list[str] = []
+    if isinstance(expression, str):
+        if expression.strip() != field.name:
+            lines.append(f"Expression: {expression}")
+    elif expression is not None:
+        if expression.sql:
+            lines.append(f"Expression: {expression.sql}")
+        lines.extend(f"Expression ({e.dialect}): {e.expression}" for e in expression.dialects or [])
+    if field.sql:
+        lines.append(f"SQL: {field.sql}")
+    return lines
+
+
 def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
     """Field doc: parent qualifier + per-field metadata + cached sample."""
     lines: list[str] = [
@@ -213,8 +229,7 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
         lines.append(f"Format: {field.format}")
     if field.allowed_aggregations:
         lines.append("Allowed aggregations: " + ", ".join(field.allowed_aggregations))
-    if field.sql:
-        lines.append(f"SQL: {field.sql}")
+    lines.extend(_definition_lines(field))
     if field.filter:
         lines.append(f"Filter: {field.filter}")
     # Prefer the structured ``sampled_values`` list (full top-50)

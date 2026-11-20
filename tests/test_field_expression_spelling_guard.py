@@ -117,6 +117,9 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestRewrite::test_mode_a_sql_untouched": 2,
         "TestStorageLoad::test_untouched_calls_stay_byte_identical": 1,
     }),
+    *_allow("test_search_render.py", "pins the search rendering of a deprecated field sql", {
+        "test_a_deprecated_field_sql_still_renders": 1,
+    }),
     *_allow("test_storage_type_refinement.py", _STORED, {
         "storage_with_v4_model": 5,
         "TestYamlStorageRefinementOnLoad::test_missing_datasource_entry_raises_on_v4_load": 1,

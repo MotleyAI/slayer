@@ -65,20 +65,20 @@ def _countries() -> SlayerDataset:
     return SlayerDataset(
         name="countries", sql_table="countries", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="gdp", sql="gdp", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="gdp", expression="gdp", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _regions(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.STRING),
-        DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
-        DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
-        DatasetField(name="country_id", sql="country_id", datatype=DataType.FLOAT),
-        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.DATETIME),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="name", expression="name", datatype=DataType.STRING),
+        DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
+        DatasetField(name="weight", expression="weight", datatype=DataType.FLOAT),
+        DatasetField(name="country_id", expression="country_id", datatype=DataType.FLOAT),
+        DatasetField(name="opened_at", expression="opened_at", datatype=DataType.DATETIME),
     ]
     if extra_columns:
         cols.extend(extra_columns)
@@ -91,11 +91,11 @@ def _regions(*, extra_columns=None) -> SlayerDataset:
 
 def _customers_v2(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-        DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
-        DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
-        DatasetField(name="status", sql="status", datatype=DataType.STRING),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+        DatasetField(name="lifetime_value", expression="lifetime_value", datatype=DataType.FLOAT),
+        DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
+        DatasetField(name="status", expression="status", datatype=DataType.STRING),
         # Target-LOCAL derived dims (expand to customers_v2-only fields):
         DatasetField(name="ltv_x2", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="lifetime_value * 2"), DialectEntry(dialect="POSTGRES", expression="lifetime_value * 2"), DialectEntry(dialect="SQLITE", expression="lifetime_value * 2")]), datatype=DataType.FLOAT),
         DatasetField(name="ltv_third", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="lifetime_value / 3.0"), DialectEntry(dialect="POSTGRES", expression="lifetime_value / 3.0"), DialectEntry(dialect="SQLITE", expression="lifetime_value / 3.0")]), datatype=DataType.INTEGER),
@@ -122,11 +122,11 @@ def _customers_v2(*, extra_columns=None) -> SlayerDataset:
 
 def _orders_x(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-        DatasetField(name="status", sql="status", datatype=DataType.STRING),
-        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+        DatasetField(name="status", expression="status", datatype=DataType.STRING),
+        DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
     ]
     if extra_columns:
         cols.extend(extra_columns)

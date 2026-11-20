@@ -68,7 +68,7 @@ def sales_dataset() -> SlayerDataset:
             DatasetField(name="cost", datatype=DataType.FLOAT),
             DatasetField(name="weight", datatype=DataType.FLOAT),
             DatasetField(name="sku", datatype=DataType.STRING),
-            DatasetField(name="hi_rev", datatype=DataType.FLOAT, sql="revenue",
+            DatasetField(name="hi_rev", datatype=DataType.FLOAT, expression="revenue",
                    filter="revenue > 15"),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],

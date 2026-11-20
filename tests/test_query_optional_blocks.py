@@ -153,7 +153,7 @@ def test_extract_walks_all_four_mode_a_surfaces():
         filters=["b >= '{b_from}'"],
         fields=[
             DatasetField(name="c1", expression="CASE WHEN {? c IN ({c}) ?} THEN 1 END"),
-            DatasetField(name="c2", sql="x", filter="d = '{d}'"),
+            DatasetField(name="c2", expression="x", filter="d = '{d}'"),
         ],
     )
     v = extract_dataset_variables(model)

@@ -239,8 +239,8 @@ async def test_owner_returns_input_columns_in_order(env) -> None:
 async def test_hidden_identifier_and_opaque_columns_are_never_profiled(env, monkeypatch: pytest.MonkeyPatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[
-        DatasetField(name="secret", sql="status", datatype=DataType.STRING, hidden=True),
-        DatasetField(name="blob", sql="status", datatype=DataType.OPAQUE),
+        DatasetField(name="secret", expression="status", datatype=DataType.STRING, hidden=True),
+        DatasetField(name="blob", expression="status", datatype=DataType.OPAQUE),
     ]))
     log = _record(engine=engine, monkeypatch=monkeypatch)
     cols = _cols(model, "id", "secret", "blob")
@@ -928,7 +928,7 @@ async def test_policy_failure_never_returns_persisted_samples(env: tuple[Any, St
 async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env: tuple[Any, StorageBackend]) -> None:
     _, storage = env
     await _save(storage, _orders(extra=[
-        DatasetField(name="secret", sql="status", datatype=DataType.STRING, hidden=True),
+        DatasetField(name="secret", expression="status", datatype=DataType.STRING, hidden=True),
         DatasetField(name="bad", expression=BAD_EXPRESSION, datatype=DataType.STRING),
     ]))
     for name in ("id", "secret", "bad"):

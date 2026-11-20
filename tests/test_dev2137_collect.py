@@ -57,7 +57,7 @@ class TestValues:
 
 def _typed_dataset(type_: DataType) -> Any:
     base = contractors_dataset()
-    extra = DatasetField(name="x", sql="id", datatype=type_)
+    extra = DatasetField(name="x", expression="id", datatype=type_)
     return base.model_copy(update={"fields": [*base.fields, extra]})
 
 

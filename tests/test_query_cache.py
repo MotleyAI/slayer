@@ -117,10 +117,10 @@ def _orders_dataset(ds: str = "ds") -> SlayerDataset:
         sql_table="orders",
         data_source=ds,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
         ],
     )
 

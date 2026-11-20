@@ -44,9 +44,9 @@ def _dataset_a_to_b(*, foo_sql: str) -> SlayerDataset:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
-            DatasetField(name="foo", sql=foo_sql, datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
+            DatasetField(name="foo", expression=foo_sql, datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
@@ -66,13 +66,13 @@ def _abc_chain(
     closes a back-edge needed to make a cycle through C.x reachable.
     """
     c_columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="x", sql=c_x_sql, datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="x", expression=c_x_sql, datatype=DataType.FLOAT),
     ]
     c_joins = []
     if c_joins_back_to_a:
         c_columns.insert(
-            1, DatasetField(name="a_id", sql="a_id", datatype=DataType.FLOAT),
+            1, DatasetField(name="a_id", expression="a_id", datatype=DataType.FLOAT),
         )
         c_joins.append(
             DatasetRelationship(to="A", from_columns=["a_id"], to_columns=["id"]),
@@ -89,8 +89,8 @@ def _abc_chain(
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="c_id", sql="c_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c_id", expression="c_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="C", from_columns=["c_id"], to_columns=["id"])],
     )
@@ -99,9 +99,9 @@ def _abc_chain(
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
-            DatasetField(name="foo", sql=a_foo_sql, datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
+            DatasetField(name="foo", expression=a_foo_sql, datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
@@ -120,7 +120,7 @@ async def test_save_model_rejects_same_model_cycle(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="c1", expression="A.c2 + 1", datatype=DataType.FLOAT),
             DatasetField(name="c2", expression="A.c1 - 1", datatype=DataType.FLOAT),
         ],
@@ -141,7 +141,7 @@ async def test_save_model_rejects_three_deep_cycle(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="c1", expression="A.c2 + 1", datatype=DataType.FLOAT),
             DatasetField(name="c2", expression="A.c3 + 1", datatype=DataType.FLOAT),
             DatasetField(name="c3", expression="A.c1 + 1", datatype=DataType.FLOAT),
@@ -164,7 +164,7 @@ async def test_save_model_rejects_self_referential_derived(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="c1", expression="A.c1 + 1", datatype=DataType.FLOAT),
         ],
     )
@@ -182,8 +182,8 @@ async def test_save_model_accepts_acyclic_derived_dag(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="a", sql="a", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a", expression="a", datatype=DataType.FLOAT),
             DatasetField(name="b", expression="a + 1", datatype=DataType.FLOAT),
             DatasetField(name="c", expression="a + 2", datatype=DataType.FLOAT),
             DatasetField(name="d", expression="A.b + A.c", datatype=DataType.FLOAT),
@@ -203,9 +203,9 @@ async def test_save_model_accepts_base_columns_only(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="a", sql="a", datatype=DataType.FLOAT),
-            DatasetField(name="b", sql="b", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a", expression="a", datatype=DataType.FLOAT),
+            DatasetField(name="b", expression="b", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(model)
@@ -222,7 +222,7 @@ async def test_save_model_accepts_quoted_self_identity_column(tmp_path) -> None:
         data_source="ds",
         sql_table="merchant",
         fields=[
-            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.STRING),
+            DatasetField(name="legalEntityType", expression='"legalEntityType"', datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(model)
@@ -250,8 +250,8 @@ async def test_save_model_rejects_cross_model_cycle_within_datasource(
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="a_id", sql="a_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a_id", expression="a_id", datatype=DataType.FLOAT),
             DatasetField(name="y", expression="A.x + 1", datatype=DataType.FLOAT),
         ],
         # No declared B→A edge: the ref resolves over the reverse hop;
@@ -265,8 +265,8 @@ async def test_save_model_rejects_cross_model_cycle_within_datasource(
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
             DatasetField(name="x", expression="B.y + 1", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
@@ -292,8 +292,8 @@ async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="a_id", sql="a_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a_id", expression="a_id", datatype=DataType.FLOAT),
             DatasetField(name="bar", expression="A.foo + 1", datatype=DataType.FLOAT),
         ],
     )
@@ -315,7 +315,7 @@ async def test_save_model_rejects_cycle_when_joinless_model_saves_last(
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="bar", expression="A.foo + 1", datatype=DataType.FLOAT),
         ],
     )
@@ -388,8 +388,8 @@ async def test_save_model_skips_subquery_scope_refs_in_cycle_detection(
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
             # c1 references c2 inside a subquery — out of scope for cycle
             # detection (the subquery's bare ``c2`` is not c2-on-this-dataset).
             # The root-scope expression uses only base raw_a, so no cycle.
@@ -427,7 +427,7 @@ async def test_save_model_template_method_runs_for_yaml_and_sqlite_backends(
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="c1", expression="A.c2 + 1", datatype=DataType.FLOAT),
             DatasetField(name="c2", expression="A.c1 - 1", datatype=DataType.FLOAT),
         ],
@@ -499,7 +499,7 @@ async def test_save_model_explicit_skip_validate_kwarg(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="c1", expression="A.c2 + 1", datatype=DataType.FLOAT),
             DatasetField(name="c2", expression="A.c1 - 1", datatype=DataType.FLOAT),
         ],

@@ -10,7 +10,7 @@ from slayer.live_schema.ingestion import _additive_merge_existing
 def _dataset(*, keys: set[str], columns: tuple[tuple[str, str | None], ...]) -> SlayerDataset:
     return SlayerDataset(
         name="supplies", sql_table="supplies", data_source="ds",
-        fields=[DatasetField(name=name, sql=sql, datatype=DataType.STRING, primary_key=name in keys) for name, sql in columns],
+        fields=[DatasetField(name=name, expression=sql, datatype=DataType.STRING, primary_key=name in keys) for name, sql in columns],
     )
 
 
@@ -54,7 +54,7 @@ def test_renamed_live_column_takes_its_key_and_comment():
     """A live ``_count`` is the dataset field ``count_col``."""
     def counts(*, key: bool, description: str | None) -> SlayerDataset:
         return SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
-            DatasetField(name="count_col", sql="_count", datatype=DataType.INTEGER, primary_key=key, description=description),
+            DatasetField(name="count_col", expression="_count", datatype=DataType.INTEGER, primary_key=key, description=description),
         ])
 
     result = _additive_merge_existing(

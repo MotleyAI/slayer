@@ -69,7 +69,7 @@ def test_diff_skips_non_ascii_leading_alias():
         sql_table="orders",
         fields=[
             DatasetField(name="year", expression="год", datatype=DataType.INTEGER),
-            DatasetField(name="year_ascii", sql="yr_phys", datatype=DataType.INTEGER),
+            DatasetField(name="year_ascii", expression="yr_phys", datatype=DataType.INTEGER),
         ],
     )
     live = LiveTable(columns={"amount": DataType.INTEGER})  # both physical names absent

@@ -115,7 +115,7 @@ def dev1900_datasets() -> List[SlayerDataset]:
         name="wgood", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.derived_pop")]))
     cust.fields.append(DatasetField(
-        name="bad_pop_spend", datatype=DataType.FLOAT, sql="spend",
+        name="bad_pop_spend", datatype=DataType.FLOAT, expression="spend",
         filter="regions.bad_pop > 0"))
 
     models.append(region_events_dataset())
@@ -158,7 +158,7 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
         name="wexpr_unparse", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql=")((( bad")]))
     customers.fields.append(DatasetField(
-        name="flagged_spend", datatype=DataType.FLOAT, sql="spend",
+        name="flagged_spend", datatype=DataType.FLOAT, expression="spend",
         filter="regions.unparseable > 0"))
     return models
 

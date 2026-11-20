@@ -73,12 +73,12 @@ def _claim_amount(
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="claim_id", datatype=DataType.INTEGER),
         DatasetField(name="amount", datatype=DataType.FLOAT),
-        DatasetField(name="total_amount", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="total_amount", expression="amount", datatype=DataType.FLOAT),
         # Same-dataset filter — must NOT trigger isolation.
-        DatasetField(name="paid_amount", sql="amount", filter="claim_id > 0", datatype=DataType.FLOAT),
+        DatasetField(name="paid_amount", expression="amount", filter="claim_id > 0", datatype=DataType.FLOAT),
         # Cross-dataset filter — must trigger.
         DatasetField(
-            name="loss_payment_amt", sql="amount",
+            name="loss_payment_amt", expression="amount",
             filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
         ),
     ]
@@ -86,7 +86,7 @@ def _claim_amount(
         cols.append(DatasetField(name="created_at", datatype=DataType.DATETIME))
     if with_filter_first:
         cols.append(DatasetField(
-            name="latest_payment", sql="amount",
+            name="latest_payment", expression="amount",
             filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
         ))
     return SlayerDataset(
@@ -133,7 +133,7 @@ def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
                 expression="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
             ),
             DatasetField(
-                name="eu_amount", sql="amount", filter=eu_amount_filter,
+                name="eu_amount", expression="amount", filter=eu_amount_filter,
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -253,7 +253,7 @@ class TestCrossModelPlannerTriggerPredicate:
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="revenue", datatype=DataType.FLOAT),
                 DatasetField(
-                    name="premium_rev", sql="revenue",
+                    name="premium_rev", expression="revenue",
                     filter="regions.is_premium = 1", datatype=DataType.FLOAT,
                 ),
             ],
@@ -322,7 +322,7 @@ class TestHostModelFiltersInteractions:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(
-                    name="loss_payment_amt", sql="amount",
+                    name="loss_payment_amt", expression="amount",
                     filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
                 ),
             ],
@@ -361,7 +361,7 @@ class TestHostModelFiltersInteractions:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(
-                name="loss_payment_amt", sql="amount",
+                name="loss_payment_amt", expression="amount",
                 filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
             ),
         ]

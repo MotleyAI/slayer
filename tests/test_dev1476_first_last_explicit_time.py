@@ -123,7 +123,7 @@ async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
                     DatasetField(name="signup_at", datatype=DataType.DATETIME),
                     DatasetField(
                         name="signup_at_alias",
-                        sql="signup_at",
+                        expression="signup_at",
                         datatype=DataType.DATETIME,
                     ),
                 ],
@@ -401,7 +401,7 @@ async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> Non
                     DatasetField(name="status", datatype=DataType.STRING),
                     DatasetField(
                         name="active_amount",
-                        sql="amount",
+                        expression="amount",
                         filter="status = 'active'",
                         datatype=DataType.FLOAT,
                     ),
@@ -510,7 +510,7 @@ def _u_customers() -> SlayerDataset:
             DatasetField(name="region_id", datatype=DataType.INTEGER),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="signup_at", datatype=DataType.DATETIME),
-            DatasetField(name="signup_at_alias", sql="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="signup_at_alias", expression="signup_at", datatype=DataType.DATETIME),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -759,7 +759,7 @@ class TestGateUsesSharedArgSelection:
 
     def test_scalar_first_arg_gate_requires_default_time(self) -> None:
         # no default_time_dimension, and two temporal fields: no sole-field default
-        orders = _u_orders(extra=[DatasetField(name="updated_at", sql="created_at", datatype=DataType.DATETIME)])
+        orders = _u_orders(extra=[DatasetField(name="updated_at", expression="created_at", datatype=DataType.DATETIME)])
         bundle = _u_bundle(orders)
         key = self._scalar_first_arg_key()
         with pytest.raises(ValueError, match="ranking time"):

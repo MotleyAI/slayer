@@ -298,12 +298,12 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         data_source="sf_test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="product_id", sql="product_id", datatype=DataType.INTEGER),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.INTEGER),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="product_id", expression="product_id", datatype=DataType.INTEGER),
+            DatasetField(name="quantity", expression="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -315,10 +315,10 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="customers",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="email", sql="email", datatype=DataType.STRING),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="email", expression="email", datatype=DataType.STRING),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
@@ -329,10 +329,10 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="products",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="category", sql="category", datatype=DataType.STRING),
-            DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="category", expression="category", datatype=DataType.STRING),
+            DatasetField(name="price", expression="price", datatype=DataType.FLOAT),
         ],
     )
     regions = SlayerDataset(
@@ -340,8 +340,8 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="regions",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     )
     for m in (orders, customers, products, regions):
@@ -909,7 +909,7 @@ def sf_dev1645_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
             sql_table="dev1645_accounts",
             data_source="sf_test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 # Written UNQUOTED — the fix must emit "StateFlag".
                 DatasetField(name="is_inactive", datatype=DataType.BOOLEAN,
                        expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),

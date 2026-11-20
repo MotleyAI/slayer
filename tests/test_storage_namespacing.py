@@ -59,7 +59,7 @@ def _dataset(name: str, data_source: str, *, sql_table: str | None = None) -> Sl
         name=name,
         sql_table=sql_table or name,
         data_source=data_source,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)],
     )
 
 

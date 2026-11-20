@@ -63,40 +63,40 @@ async def _save_datasets(storage: YAMLStorage) -> SlayerDataset:
     await storage.save_dataset(SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="revenue", sql="lifetime_revenue", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="revenue", expression="lifetime_revenue", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     ))
     await storage.save_dataset(SlayerDataset(
         name="suppliers", sql_table="suppliers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="revenue", sql="supplier_revenue", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="revenue", expression="supplier_revenue", datatype=DataType.FLOAT),
         ],
     ))
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="supplier_id", sql="supplier_id", datatype=DataType.INTEGER),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="activity_ts", sql="ActivityTs", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="flagged_amount", sql="amount", datatype=DataType.FLOAT,
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="supplier_id", expression="supplier_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="activity_ts", expression="ActivityTs", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="flagged_amount", expression="amount", datatype=DataType.FLOAT,
                    filter="customers.region = 'West'"),
             DatasetField(name="cust_region", expression="customers.region", datatype=DataType.STRING),
         ],
@@ -360,17 +360,17 @@ class TestJoinedRowColumnResolved:
         await storage.save_dataset(SlayerDataset(
             name="owners", sql_table="owners", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
         ))
         await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="owner_id", sql="owner_id", datatype=DataType.INTEGER),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="owner_id", expression="owner_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="owners", from_columns=["owner_id"], to_columns=["id"])],
         ))

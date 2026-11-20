@@ -100,8 +100,8 @@ async def pg_env(_pg_datasource, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="testpg",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
         ],
     )
     async with pg_query_engine(_pg_datasource, base_dir=str(tmp_path), datasets=[model]) as engine:

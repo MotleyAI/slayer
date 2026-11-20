@@ -80,10 +80,10 @@ def _orders_dataset(
         data_source=data_source,
         fields=columns
         or [
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
         ],
         relationships=joins or [],
         metrics=metrics or [],
@@ -239,8 +239,8 @@ class TestDiffSqlTableModel:
             sql_table="events",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="happened_at", sql="happened_at", datatype=DataType.DATE),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="happened_at", expression="happened_at", datatype=DataType.DATE),
             ],
         )
         # Live reports TIMESTAMP — same bucket as DATE.
@@ -301,10 +301,10 @@ class TestDiffSqlTableModel:
         # Dataset: ``customer_id`` semantic name maps to physical ``customer_fk``.
         model = _orders_dataset(
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_fk", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_fk", datatype=DataType.FLOAT),
             ],
             joins=[
                 DatasetRelationship(
@@ -343,8 +343,8 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders WHERE archived = true",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         live = {"id": DataType.FLOAT, "amount": DataType.FLOAT}
@@ -358,8 +358,8 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         # live_columns=None signals trial-execute failed
@@ -375,8 +375,8 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         entry, dropped = diff_sql_dataset(
@@ -393,8 +393,8 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         live = {"id": DataType.FLOAT, "amount": DataType.STRING}
@@ -408,8 +408,8 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         live = {"id": DataType.FLOAT, "amount": DataType.FLOAT, "extra": DataType.STRING}
@@ -529,10 +529,10 @@ class TestCascadeRules:
         """
         model = _orders_dataset(
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
                 # derived field referencing 'amount'
                 DatasetField(name="amount_x2", expression="amount * 2", datatype=DataType.FLOAT),
                 # transitively-derived: refs another derived field
@@ -601,8 +601,8 @@ class TestCascadeRules:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
             ],
             aggregations=[
                 Aggregation(name="rolling_avg", expression="AVG({value})"),
@@ -669,7 +669,7 @@ class TestCascadeRules:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
         # customers.id was dropped
@@ -713,9 +713,9 @@ class TestCascadeRules:
         """
         orders = _orders_dataset(
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
                 # derived cross-dataset ref
                 DatasetField(
                     name="customer_region",
@@ -735,8 +735,8 @@ class TestCascadeRules:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
         edit = EditDatasetDelete(
@@ -854,10 +854,10 @@ class TestCascadeRules:
         """PK drops don't cascade into derived fields / metrics / filters."""
         model = _orders_dataset(
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
                 # Derived field that *would* reference 'id' — but PK drops
                 # don't trigger cascade, so this field survives.
                 DatasetField(name="id_doubled", expression="id * 2", datatype=DataType.FLOAT),
@@ -916,8 +916,8 @@ class TestCrossDatasourceBoundary:
             sql_table="customers",
             data_source="ds_b",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
         # Drop region in ds_b
@@ -1001,8 +1001,8 @@ class TestValidateModelsEndToEnd:
                 sql_table="customers",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="region", expression="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -1012,10 +1012,10 @@ class TestValidateModelsEndToEnd:
                 sql_table="orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                    DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
                 ],
                 relationships=[
                     DatasetRelationship(
@@ -1097,9 +1097,9 @@ class TestValidateModelsEndToEnd:
                 data_source="ds_b",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="sku", sql="sku", datatype=DataType.STRING),
+                    DatasetField(name="sku", expression="sku", datatype=DataType.STRING),
                 ],
             )
         )
@@ -1189,9 +1189,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 0.5, 0.7, 0.9, 0.99],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                    name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
+                DatasetField(name="tempstabidx", expression="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         result = await engine.validate_datasets(data_source="ds")
@@ -1210,9 +1210,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 2, "abc", "xyz"],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                    name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
+                DatasetField(name="tempstabidx", expression="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         result = await engine.validate_datasets(data_source="ds")
@@ -1230,9 +1230,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 2, 3, 4, 5],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                    name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
+                DatasetField(name="tempstabidx", expression="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         result = await engine.validate_datasets(data_source="ds")
@@ -1261,10 +1261,10 @@ class TestValidateModelsSqliteProbe:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                        name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                     ),
                     DatasetField(
-                        name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER,
+                        name="tempstabidx", expression="tempstabidx", datatype=DataType.INTEGER,
                     ),
                 ],
             )
@@ -1290,9 +1290,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 0.5, 0.7],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                    name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
+                DatasetField(name="tempstabidx", expression="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         with patch(
@@ -1314,9 +1314,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 0.5, 0.7, 0.9],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                    name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
+                DatasetField(name="tempstabidx", expression="tempstabidx", datatype=DataType.INTEGER),
             ],
             metrics=[
                 DatasetMetric(
@@ -1337,9 +1337,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 0.5, 0.7, 0.9],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                    name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
+                DatasetField(name="tempstabidx", expression="tempstabidx", datatype=DataType.INTEGER),
                 DatasetField(name="doubled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="tempstabidx * 2")]), datatype=DataType.INTEGER),
             ],
         )

@@ -103,7 +103,7 @@ def _orders_dataset() -> SlayerDataset:
             # bare-identifier rename and a non-trivial expression.
             DatasetField(
                 name="created_at_alias",
-                sql="created_at",
+                expression="created_at",
                 datatype=DataType.DATETIME,
             ),
             DatasetField(

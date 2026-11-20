@@ -139,7 +139,7 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 _SCALED = DatasetField(name="scaled", expression="amount * {k}", datatype=DataType.FLOAT)
-_FLOORED = DatasetField(name="big", sql="amount", filter="amount >= {floor}", datatype=DataType.FLOAT)
+_FLOORED = DatasetField(name="big", expression="amount", filter="amount >= {floor}", datatype=DataType.FLOAT)
 _TAGGED = DatasetField(name="tagged", expression="name || '{suffix}'", datatype=DataType.STRING)
 _FLAGGED = DatasetField(name="flagged", expression="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.FLOAT)
 

@@ -42,7 +42,7 @@ def sales_dataset() -> SlayerDataset:
             DatasetField(name="quantity", datatype=DataType.FLOAT),
             DatasetField(name="unit_price", datatype=DataType.FLOAT),
             # amount restricted to product 'Q' — sparse by design.
-            DatasetField(name="q_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="q_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="product = 'Q'"),
         ],
         aggregations=[

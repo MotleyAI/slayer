@@ -165,7 +165,7 @@ CONFLICTS: dict[str, tuple[Callable[[SlayerDataset, SlayerDataset], SlayerDatase
     "new-model-edge-named-like-hidden-model": (_new_dataset_with_edge_named_like_hidden_dataset, "hr", "pub_edge"),
     "edge-named-like-pruned-edge": (_edge_named_like_pruned_edge, None, "pub_link"),
     "removed-key-column": (_without_key_column, None, "fin"),
-    "expression-key-column": (lambda fin, _: _key_column(fin, sql="id + 0"), None, "fin"),
+    "expression-key-column": (lambda fin, _: _key_column(fin, expression="id + 0"), None, "fin"),
     "filtered-key-column": (lambda fin, _: _key_column(fin, filter="staff_id > 0"), None, "fin"),
 }
 

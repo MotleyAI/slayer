@@ -15,7 +15,7 @@ tasks deferred from the field-expression change (`2026-11-19-dev-2175-…`, task
   reads of a field's `.sql` are rewritten by intent. Tests whose expected value would change wait for the owner.
 - Keyword pass: `sql=` and field dict keys respelled to `expression` with the deterministic refactor tooling.
 - Deprecated-spelling tests (those whose assertions depend on the deprecated input) keep `sql`.
-- No production code, behaviour, spec, model or arc42 change.
+- No production change except one: search text renders a field's `expression` (it rendered only the deprecated `sql`).
 
 ## Capabilities
 

@@ -121,7 +121,7 @@ class TestAmbiguousDefinitionRejected:
 
     async def test_column_filter_rejected_at_both_doors(self, tmp_path) -> None:
         model = _orders(
-            DatasetField(name="paris_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="paris_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="addresses.city = 'Paris'"),
             joins=_parallel(),
         )
@@ -290,7 +290,7 @@ class TestEdgeSetChangeWarnings:
 
     async def test_dependent_column_filter(self, tmp_path, door) -> None:
         crates = _m("crates", _int("order_id"), DatasetField(name="weight", datatype=DataType.FLOAT),
-                    DatasetField(name="paris_weight", datatype=DataType.FLOAT, sql="weight",
+                    DatasetField(name="paris_weight", datatype=DataType.FLOAT, expression="weight",
                            filter="orders.addresses.city = 'Paris'"),
                     joins=[_j("orders", "order_id")])
         storage = await _world(tmp_path, crates)

@@ -23,15 +23,15 @@ from slayer.engine.population.dimension_routing import (
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
+    return DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)
 
 
 def _d(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
+    return DatasetField(name=name, expression=name, datatype=DataType.FLOAT)
 
 
 def _t(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
+    return DatasetField(name=name, expression=name, datatype=DataType.STRING)
 
 
 def _dataset(

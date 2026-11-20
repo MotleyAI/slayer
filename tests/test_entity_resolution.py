@@ -65,20 +65,20 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", expression="status", datatype=DataType.STRING),
                     DatasetField(
                         name="customer_id",
-                        sql="customer_id",
+                        expression="customer_id",
                         datatype=DataType.FLOAT,
                     ),
                     DatasetField(
                         name="ordered_at",
-                        sql="ordered_at",
+                        expression="ordered_at",
                         datatype=DataType.DATETIME,
                     ),
                 ],
@@ -109,19 +109,19 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                    DatasetField(name="name", expression="name", datatype=DataType.STRING),
                     DatasetField(
                         name="region_id",
-                        sql="region_id",
+                        expression="region_id",
                         datatype=DataType.FLOAT,
                     ),
                     DatasetField(
                         name="orders",
-                        sql="orders_count",
+                        expression="orders_count",
                         datatype=DataType.FLOAT,
                     ),
                 ],
@@ -141,11 +141,11 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                    DatasetField(name="name", expression="name", datatype=DataType.STRING),
                 ],
             )
         )
@@ -160,11 +160,11 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -177,11 +177,11 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                    DatasetField(name="name", expression="name", datatype=DataType.STRING),
                 ],
             )
         )
@@ -196,7 +196,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
@@ -684,8 +684,8 @@ class TestExtractEntitiesFromQuery:
                 data_source="dev1500",
                 sql_table="customers",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
                 ],
                 aggregations=[
                     Aggregation(name="rolling_avg", expression="AVG({value})"),
@@ -696,8 +696,8 @@ class TestExtractEntitiesFromQuery:
                 data_source="dev1500",
                 sql_table="orders",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
                 ],
                 relationships=[
                     DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -737,7 +737,7 @@ class TestResolveEntityAmbiguousModel:
                     fields=[
                         DatasetField(
                             name="id",
-                            sql="id",
+                            expression="id",
                             datatype=DataType.FLOAT,
                             primary_key=True,
                         )
@@ -752,7 +752,7 @@ class TestResolveEntityAmbiguousModel:
                     fields=[
                         DatasetField(
                             name="id",
-                            sql="id",
+                            expression="id",
                             datatype=DataType.FLOAT,
                             primary_key=True,
                         )

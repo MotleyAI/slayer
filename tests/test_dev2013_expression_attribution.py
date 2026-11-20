@@ -151,8 +151,8 @@ def _sales_variant() -> SlayerDataset:
         DatasetField(name="prod_flag", datatype=DataType.INTEGER,
                expression="CASE WHEN product = 'P' THEN 1 ELSE 0 END"),
         DatasetField(name="bad", datatype=DataType.INTEGER, expression="amount +* )"),
-        DatasetField(name="city_q", datatype=DataType.STRING, sql="city", filter="product = 'Q'"),
-        DatasetField(name="city_n", datatype=DataType.STRING, sql="city", filter="region = 'North'"),
+        DatasetField(name="city_q", datatype=DataType.STRING, expression="city", filter="product = 'Q'"),
+        DatasetField(name="city_n", datatype=DataType.STRING, expression="city", filter="region = 'North'"),
     ]
     wavg = "SUM({value} * {weight}) / SUM({weight})"
     extra_aggs = [

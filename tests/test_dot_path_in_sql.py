@@ -108,7 +108,7 @@ class TestModeASurfacesPreservedVerbatim:
             DatasetField(
                 name="region_amount",
                 datatype=DataType.FLOAT,
-                sql="amount",
+                expression="amount",
                 filter="customers.regions.name = 'EU'",
             )
         ]

@@ -50,8 +50,8 @@ def _dataset(expression: str, *, name: str = "orders", data_source: str = _DS,
         sql=sql,
         data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
         aggregations=[Aggregation(name=agg, expression=expression)],
     )

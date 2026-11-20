@@ -157,7 +157,7 @@ class TestZonedColumnReadsNaive:
         a = SlayerDataset(name="a", sql_table="a", data_source="test", relationships=[
             DatasetRelationship(to="b", from_columns=["at"], to_columns=["bt"])], fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="at", sql="at_raw", datatype=DataType.DATETIME, db_type="TIMESTAMP"),
+            DatasetField(name="at", expression="at_raw", datatype=DataType.DATETIME, db_type="TIMESTAMP"),
             DatasetField(name="ts_shifted", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="TIMESTAMP_ADD(at_raw, INTERVAL 1 HOUR)")]), datatype=DataType.DATETIME)])
         b = SlayerDataset(name="b", sql_table="b", data_source="test", fields=[
             DatasetField(name="bt", datatype=DataType.DATETIME, db_type=target_db_type, primary_key=True),
@@ -171,8 +171,8 @@ class TestZonedColumnReadsNaive:
         a = SlayerDataset(name="a", sql_table="a", data_source="test", relationships=[
             DatasetRelationship(to="b", from_columns=["at"], to_columns=["bt"])], fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="at_copy", sql="at_raw", datatype=DataType.DATETIME),
-            DatasetField(name="at", sql="at_raw", datatype=DataType.DATETIME, db_type="TIMESTAMP")])
+            DatasetField(name="at_copy", expression="at_raw", datatype=DataType.DATETIME),
+            DatasetField(name="at", expression="at_raw", datatype=DataType.DATETIME, db_type="TIMESTAMP")])
         b = SlayerDataset(name="b", sql_table="b", data_source="test", fields=[
             DatasetField(name="bt", datatype=DataType.DATETIME, primary_key=True),
             DatasetField(name="label", datatype=DataType.STRING)])

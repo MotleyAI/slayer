@@ -73,7 +73,7 @@ def _orders(**overrides) -> SlayerDataset:
             DatasetField(name="net", expression="amount - tax", datatype=DataType.FLOAT),
             DatasetField(
                 name="ok_amount",
-                sql="amount",
+                expression="amount",
                 datatype=DataType.FLOAT,
                 filter="status = 'ok'",
             ),

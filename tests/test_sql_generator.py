@@ -208,15 +208,15 @@ def orders_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.DATETIME),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="delivery_at", expression="delivery_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
 
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="avg_revenue", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="distinct_customers", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="avg_revenue", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="distinct_customers", expression="customer_id", datatype=DataType.FLOAT),
         ],
     )
 
@@ -543,8 +543,8 @@ class TestFilters:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="order_status", sql="status_col", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="order_status", expression="status_col", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -590,8 +590,8 @@ class TestSubquery:
             name="recent_orders",
             sql="SELECT * FROM public.orders WHERE created_at > '2024-01-01'",
             data_source="test",
-            fields=[DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="recent_orders",
@@ -611,9 +611,9 @@ class TestBareColumnNames:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
 
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
@@ -634,7 +634,7 @@ class TestBareColumnNames:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
@@ -850,19 +850,19 @@ class TestFields:
         await storage.save_dataset(SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
             ],
         ))
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -921,26 +921,26 @@ class TestFields:
         await storage.save_dataset(SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         ))
         await storage.save_dataset(SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ))
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -1064,10 +1064,10 @@ class TestFields:
         model = SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="paid_revenue", sql="amount", filter="status = 'paid'", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="paid_revenue", expression="amount", filter="status = 'paid'", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery.model_validate({
@@ -1088,17 +1088,17 @@ class TestFields:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="flagged_revenue", sql="amount", filter="customers.region_id = 5", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="flagged_revenue", expression="amount", filter="customers.region_id = 5", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -1122,17 +1122,17 @@ class TestFields:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
             filters=["customers.region_id = 5"],
@@ -1276,16 +1276,16 @@ class TestFields:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -1388,7 +1388,7 @@ class TestFields:
     async def test_last_measure_type(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """A metric with last aggregation should use ROW_NUMBER + conditional aggregate."""
         orders_dataset.default_time_dimension = "created_at"
-        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT))
+        orders_dataset.fields.append(DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
@@ -1406,8 +1406,8 @@ class TestFields:
     async def test_last_with_explicit_time_column(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """last(ordered_at) should ORDER BY the explicit time column, not the default."""
         orders_dataset.default_time_dimension = "created_at"
-        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT))
-        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME))
+        orders_dataset.fields.append(DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
@@ -1421,8 +1421,8 @@ class TestFields:
     async def test_first_with_explicit_time_column(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """first(ordered_at) should ORDER BY the explicit time column ascending."""
         orders_dataset.default_time_dimension = "created_at"
-        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT))
-        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME))
+        orders_dataset.fields.append(DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
@@ -1435,9 +1435,9 @@ class TestFields:
     async def test_multiple_last_different_time_columns(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Two last metrics with different explicit time cols get separate ROW_NUMBER columns."""
         orders_dataset.default_time_dimension = "created_at"
-        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT))
-        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME))
-        orders_dataset.fields.append(DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME))
+        orders_dataset.fields.append(DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME))
+        orders_dataset.fields.append(DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
@@ -1458,8 +1458,8 @@ class TestFields:
     async def test_mixed_explicit_and_default_time_columns(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """One last with explicit time, one last with default — separate ROW_NUMBER columns."""
         orders_dataset.default_time_dimension = "created_at"
-        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT))
-        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME))
+        orders_dataset.fields.append(DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
@@ -1476,8 +1476,8 @@ class TestFields:
     async def test_same_explicit_time_column_shared(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Two first/last metrics with the same explicit time col share one ROW_NUMBER."""
         orders_dataset.default_time_dimension = "created_at"
-        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT))
-        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME))
+        orders_dataset.fields.append(DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
@@ -1725,7 +1725,7 @@ class TestFields:
         """Dimensions alias as `<dataset>.<name>` too, so they're reserved."""
         orders_dataset.default_time_dimension = "created_at"
         orders_dataset.fields.append(
-            DatasetField(name="_t0_growth", sql="customer_id", datatype=DataType.FLOAT)
+            DatasetField(name="_t0_growth", expression="customer_id", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -2144,10 +2144,10 @@ class TestTransformRequiresTimeDimension:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATE),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATE),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             default_time_dimension="created_at",
         )
         query = SlayerQuery(
@@ -2166,10 +2166,10 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATE),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATE),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             default_time_dimension="created_at",
         )
         query = SlayerQuery(
@@ -2187,10 +2187,10 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATE),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATE),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             default_time_dimension="created_at",
         )
@@ -2209,10 +2209,10 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATE),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATE),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -2335,13 +2335,13 @@ class TestMultiDialectGeneration:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
 
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
                 # Second numeric field so 2-arg stat aggregates (corr(other=...) / covar_*(other=...)) have a valid LHS+RHS pair.
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
             ],
         )
         return model
@@ -2400,9 +2400,9 @@ class TestMultiDialectGeneration:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="ts", expression="'2025-12-01'", datatype=DataType.DATETIME),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             ],
         )
         # Bare-literal time dim — must be cast.
@@ -2581,11 +2581,11 @@ class TestMultiDialectGeneration:
         m = SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         gen = SQLGenerator(dialect=dialect)
@@ -2644,10 +2644,10 @@ class TestStatAggsViaQueryEnrichment:
             sql_table="public.sales",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
-                DatasetField(name="latency", sql="latency", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="price", expression="price", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="latency", expression="latency", datatype=DataType.FLOAT),
             ],
         )
 
@@ -2698,16 +2698,16 @@ class TestPathAliasJoinInference:
         await s.save_dataset(SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
             ],
         ))
         await s.save_dataset(SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ))
@@ -2721,9 +2721,9 @@ class TestPathAliasJoinInference:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
                 DatasetField(
                     name="is_us",
                     expression="CASE WHEN customers.regions.name = 'US' THEN 1 ELSE 0 END",
@@ -2760,15 +2760,15 @@ class TestPathAliasJoinInference:
         await storage.save_dataset(SlayerDataset(
             name="orgs", sql_table="orgs", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="signup_date", sql="signup_date", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="signup_date", expression="signup_date", datatype=DataType.DATETIME),
             ],
         ))
         await storage.save_dataset(SlayerDataset(
             name="users", sql_table="users", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="org_id", sql="org_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="org_id", expression="org_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="orgs", from_columns=["org_id"], to_columns=["id"])],
         ))
@@ -2777,8 +2777,8 @@ class TestPathAliasJoinInference:
             sql_table="events",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="user_id", sql="user_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="user_id", expression="user_id", datatype=DataType.FLOAT),
                 DatasetField(
                     name="user_signup_date",
                     expression="users.orgs.signup_date",
@@ -2838,19 +2838,19 @@ class TestMeasureSourceSqlJoinInference:
         await s.save_dataset(SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
-                DatasetField(name="props", sql="props", datatype=DataType.STRING),
-                DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
-                DatasetField(name="payment_amount", sql="payment_amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
+                DatasetField(name="props", expression="props", datatype=DataType.STRING),
+                DatasetField(name="weight", expression="weight", datatype=DataType.FLOAT),
+                DatasetField(name="payment_amount", expression="payment_amount", datatype=DataType.FLOAT),
             ],
         ))
         await s.save_dataset(SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ))
@@ -2859,10 +2859,10 @@ class TestMeasureSourceSqlJoinInference:
     def _orders_dataset(self, *, extra_columns=None) -> SlayerDataset:
         """Build the orders dataset with the standard customer/regions chain and any extra derived fields the per-test wants."""
         cols = [
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ]
         if extra_columns:
             cols.extend(extra_columns)
@@ -2931,9 +2931,9 @@ class TestMeasureSourceSqlJoinInference:
         await engine.storage.save_dataset(SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-                DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ))
@@ -3096,7 +3096,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         model = self._orders_dataset(extra_columns=[
-            DatasetField(name="_val_0", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="_val_0", expression="amount", datatype=DataType.FLOAT),
             DatasetField(name="region_payment", expression="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
@@ -3432,8 +3432,8 @@ class TestMeasureSourceSqlJoinInference:
         await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -3462,8 +3462,8 @@ class TestMeasureSourceSqlJoinInference:
         await storage.save_dataset(SlayerDataset(
             name="customers_v2", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
                 DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
@@ -3471,8 +3471,8 @@ class TestMeasureSourceSqlJoinInference:
         await storage.save_dataset(SlayerDataset(
             name="orders_x", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],
         ))
@@ -3522,9 +3522,9 @@ class TestDev1709WidenedIsolationShapes:
         return SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
-                DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
+                DatasetField(name="weight", expression="weight", datatype=DataType.FLOAT),
             ],
         )
 
@@ -3533,9 +3533,9 @@ class TestDev1709WidenedIsolationShapes:
         return SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-                DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
@@ -3545,10 +3545,10 @@ class TestDev1709WidenedIsolationShapes:
         *, extra_columns=None, default_time_dimension=None, aggregations=None,
     ) -> SlayerDataset:
         cols = [
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ]
         cols.extend(extra_columns or [])
         return SlayerDataset(
@@ -3857,12 +3857,12 @@ class TestAggParamSanitization:
             sql_table="public.sales",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
 
-                DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="price", expression="price", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
             ],
         )
 
@@ -3943,7 +3943,7 @@ class TestAggParamSanitization:
         agg_dataset.fields.append(
             DatasetField(
                 name="active_revenue",
-                sql="amount",
+                expression="amount",
                 filter="status = 'active'",
                 datatype=DataType.FLOAT,
             )
@@ -3967,7 +3967,7 @@ class TestAggParamSanitization:
         agg_dataset.fields.append(
             DatasetField(
                 name="active_price",
-                sql="price",
+                expression="price",
                 filter="status = 'active'",
                 datatype=DataType.FLOAT,
             )
@@ -3991,7 +3991,7 @@ class TestFilteredMeasures:
 
     async def test_filtered_sum(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         orders_dataset.fields.append(
-            DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+            DatasetField(name="active_revenue", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.active_revenue)")])
         sql = await _generate(generator, query, orders_dataset)
@@ -4002,7 +4002,7 @@ class TestFilteredMeasures:
     async def test_filtered_count_star(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """COUNT on a filtered field becomes COUNT(CASE WHEN filter THEN col END)."""
         orders_dataset.fields.append(
-            DatasetField(name="active_count", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+            DatasetField(name="active_count", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(orders.active_count)")])
         sql = await _generate(generator, query, orders_dataset)
@@ -4012,7 +4012,7 @@ class TestFilteredMeasures:
 
     async def test_filtered_avg(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         orders_dataset.fields.append(
-            DatasetField(name="active_avg", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+            DatasetField(name="active_avg", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(population="orders", metrics=[QueryMetric(metric="avg(orders.active_avg)")])
         sql = await _generate(generator, query, orders_dataset)
@@ -4034,10 +4034,10 @@ class TestFilteredMeasures:
         masks the numerator's value but the denominator is the bare ``SUM(quantity)``
         — the weight is masked only if ITS field carries a filter."""
         orders_dataset.fields.append(
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT)
+            DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT)
         )
         orders_dataset.fields.append(
-            DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+            DatasetField(name="active_revenue", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4052,7 +4052,7 @@ class TestFilteredMeasures:
     async def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Query with both filtered and unfiltered metrics."""
         orders_dataset.fields.append(
-            DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+            DatasetField(name="active_revenue", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4071,7 +4071,7 @@ class TestFilteredMeasures:
         NULL. A row restriction belongs in a query filter, not the field."""
         orders_dataset.default_time_dimension = "created_at"
         orders_dataset.fields.append(
-            DatasetField(name="completed_balance", sql="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
+            DatasetField(name="completed_balance", expression="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4098,7 +4098,7 @@ class TestFilteredMeasures:
         runs ascending over every row."""
         orders_dataset.default_time_dimension = "created_at"
         orders_dataset.fields.append(
-            DatasetField(name="completed_balance", sql="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
+            DatasetField(name="completed_balance", expression="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4121,7 +4121,7 @@ class TestFilteredMeasures:
     ) -> None:
         """An unfiltered ``last`` ranks over every row — no WHERE of its own."""
         orders_dataset.default_time_dimension = "created_at"
-        orders_dataset.fields.append(DatasetField(name="balance", sql="amount", datatype=DataType.FLOAT))
+        orders_dataset.fields.append(DatasetField(name="balance", expression="amount", datatype=DataType.FLOAT))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -4141,9 +4141,9 @@ class TestFilteredMeasures:
         both ranking over the full row set (a DatasetField.filter masks the
         value, it is not a WHERE), the filtered one carrying its CASE mask."""
         orders_dataset.default_time_dimension = "created_at"
-        orders_dataset.fields.append(DatasetField(name="balance", sql="amount", datatype=DataType.FLOAT))
+        orders_dataset.fields.append(DatasetField(name="balance", expression="amount", datatype=DataType.FLOAT))
         orders_dataset.fields.append(
-            DatasetField(name="completed_balance", sql="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
+            DatasetField(name="completed_balance", expression="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4171,8 +4171,8 @@ class TestFilteredMeasures:
             sql_table="public.customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
@@ -4180,13 +4180,13 @@ class TestFilteredMeasures:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
 
                 DatasetField(
                     name="active_balance",
-                    sql="amount",
+                    expression="amount",
                     filter="customers.status = 'active'", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
@@ -4265,12 +4265,12 @@ class TestFilteredMeasures:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="url", sql="url", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="url", expression="url", datatype=DataType.STRING),
 
                 DatasetField(
                     name="vendor_revenue",
-                    sql="amount",
+                    expression="amount",
                     # The dot inside the literal is what would trip the regex.
                     filter="url LIKE 'foo.bar%'", datatype=DataType.FLOAT),
             ],
@@ -4294,10 +4294,10 @@ class TestFilteredMeasures:
         neither restricts the ranking with a WHERE."""
         orders_dataset.default_time_dimension = "created_at"
         orders_dataset.fields.append(
-            DatasetField(name="active_balance", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+            DatasetField(name="active_balance", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         )
         orders_dataset.fields.append(
-            DatasetField(name="completed_balance", sql="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
+            DatasetField(name="completed_balance", expression="amount", filter="orders.status = 'completed'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders",
@@ -4331,7 +4331,7 @@ class TestMeasureFilterInjection:
         orders_dataset.fields.append(
             DatasetField(
                 name="evil",
-                sql="amount",
+                expression="amount",
                 filter="status = 'a'; DROP TABLE orders; --'",
                 datatype=DataType.FLOAT,
             )
@@ -4346,7 +4346,7 @@ class TestMeasureFilterInjection:
         orders_dataset.fields.append(
             DatasetField(
                 name="evil",
-                sql="amount",
+                expression="amount",
                 filter="status = 'a' UNION SELECT * FROM users --'",
                 datatype=DataType.FLOAT,
             )
@@ -4360,7 +4360,7 @@ class TestMeasureFilterInjection:
         """``/* ... */`` block comments survive ``DatasetField`` construction — the SQL-mode validator does not parse them, only checks for DSL constructs (aggregation colon syntax, transform calls, ``OVER``)."""
         col = DatasetField(
             name="benign",
-            sql="amount",
+            expression="amount",
             filter="status = 'a' /* x */ OR 1=1",
             datatype=DataType.FLOAT,
         )
@@ -4377,7 +4377,7 @@ class TestMeasureFilterInjection:
         orders_dataset.fields.append(
             DatasetField(
                 name="irish_names",
-                sql="amount",
+                expression="amount",
                 # SQL-escaped literal (doubled single quote): O'Brien
                 filter="status = 'O''Brien'", datatype=DataType.FLOAT)
         )
@@ -4407,7 +4407,7 @@ class TestMeasureFilterInjection:
         orders_dataset.fields.append(
             DatasetField(
                 name="evil",
-                sql="amount",
+                expression="amount",
                 # Runtime filter string:  status = 'a\'
                 filter="status = 'a\\\\'", datatype=DataType.FLOAT)
         )
@@ -4431,7 +4431,7 @@ class TestMeasureFilterInjection:
         orders_dataset.fields.append(
             DatasetField(
                 name="evil",
-                sql="amount",
+                expression="amount",
                 # Runtime filter string:  status = 'a\b'
                 filter="status = 'a\\\\b'", datatype=DataType.FLOAT)
         )
@@ -4447,7 +4447,7 @@ class TestMeasureFilterInjection:
         orders_dataset.fields.append(
             DatasetField(
                 name="evil",
-                sql="amount",
+                expression="amount",
                 # Runtime filter string:  status like 'a\'
                 filter="status like 'a\\\\'", datatype=DataType.FLOAT)
         )
@@ -4462,7 +4462,7 @@ class TestMeasureFilterInjection:
         """A backslash-quote injection payload must either be rejected at sqlglot generation time or be confined to a properly-terminated string literal that round-trips cleanly."""
         evil = "status = 'a\\\\' OR 1=1 --"  # Runtime: status = 'a\\' OR 1=1 --
         try:
-            orders_dataset.fields.append(DatasetField(name="evil", sql="amount", filter=evil, datatype=DataType.FLOAT))
+            orders_dataset.fields.append(DatasetField(name="evil", expression="amount", filter=evil, datatype=DataType.FLOAT))
             query = SlayerQuery(
                 population="orders", metrics=[QueryMetric(metric="sum(orders.evil)")]
             )
@@ -4476,7 +4476,7 @@ class TestMeasureFilterInjection:
     ) -> None:
         """Sanity: ordinary filters (no backslashes, no apostrophes) keep producing the same SQL shape after the escape-hardening change."""
         orders_dataset.fields.append(
-            DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+            DatasetField(name="active_revenue", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         )
         query = SlayerQuery(
             population="orders", metrics=[QueryMetric(metric="sum(orders.active_revenue)")]
@@ -4499,9 +4499,9 @@ class TestInlineSQLJoins:
             sql="SELECT id, customer_id, amount FROM raw_orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
@@ -4512,9 +4512,9 @@ DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
@@ -4525,8 +4525,8 @@ DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
             sql_table="public.customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
 
@@ -4568,9 +4568,9 @@ DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
 _CUSTOMERS_SELF_REF = SlayerDataset(
     name="customers", sql_table="customers", data_source="test",
     fields=[
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.STRING),
-        DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="name", expression="name", datatype=DataType.STRING),
+        DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
     ],
 )
 
@@ -4588,17 +4588,17 @@ class TestSelfReferencingPaths:
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+DatasetField(name="score", expression="score", datatype=DataType.FLOAT)],
         )
         await storage.save_dataset(orders)
         await storage.save_dataset(customers)
@@ -4653,9 +4653,9 @@ class TestConstantSQLFilters:
             sql_table="Premium",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="has_premium", expression="1", datatype=DataType.FLOAT),
-DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="premium",
@@ -4681,7 +4681,7 @@ DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
             sql_table="Premium",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="has_premium", expression="1", datatype=DataType.FLOAT),
             ],
         )
@@ -4690,9 +4690,9 @@ DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
             sql_table="Policy_Amount",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="premium_id", sql="premium_id", datatype=DataType.FLOAT),
-DatasetField(name="total", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="premium_id", expression="premium_id", datatype=DataType.FLOAT),
+DatasetField(name="total", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="premium", from_columns=["premium_id"], to_columns=["id"])],
         )
 
@@ -4719,9 +4719,9 @@ DatasetField(name="total", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="safe_amount", expression="COALESCE(amount, 0)", datatype=DataType.FLOAT),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -4740,8 +4740,8 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
@@ -4749,9 +4749,9 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
@@ -4774,7 +4774,7 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="order_id", sql="order_id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="order_id", expression="order_id", datatype=DataType.FLOAT, primary_key=True),
 
             ],
         )
@@ -4793,8 +4793,8 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
 
             ],
         )
@@ -4813,8 +4813,8 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
 
             ],
         )
@@ -4832,8 +4832,8 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
 
             ],
         )
@@ -4851,8 +4851,8 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="quantity", sql="qty", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="quantity", expression="qty", datatype=DataType.FLOAT),
 
             ],
         )
@@ -4871,10 +4871,10 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
 
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
@@ -4896,10 +4896,10 @@ class TestDimensionAggregation:
             sql_table="amounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="policy_id", datatype=DataType.FLOAT),
 
-                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="policies", from_columns=["policy_id"], to_columns=["id"])],
         )
@@ -4908,8 +4908,8 @@ class TestDimensionAggregation:
             sql_table="policies",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="policy_number", sql="policy_number", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="policy_number", expression="policy_number", datatype=DataType.STRING),
 
             ],
         )
@@ -4946,10 +4946,10 @@ class TestCrossModelCustomAggFuncStyle:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         customers = SlayerDataset(
@@ -4957,8 +4957,8 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+DatasetField(name="score", expression="score", datatype=DataType.FLOAT)],
             aggregations=[
                 Aggregation(name="rolling_avg", expression="AVG({value})"),
             ],
@@ -4989,7 +4989,7 @@ class TestReachableAggDiscoveryUnbounded:
 
         a = SlayerDataset(
             name="a", sql_table="a", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="b_id", datatype=DataType.FLOAT),
 
             ],
@@ -4997,7 +4997,7 @@ class TestReachableAggDiscoveryUnbounded:
         )
         b = SlayerDataset(
             name="b", sql_table="b", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="c_id", datatype=DataType.FLOAT),
 
             ],
@@ -5005,7 +5005,7 @@ class TestReachableAggDiscoveryUnbounded:
         )
         c = SlayerDataset(
             name="c", sql_table="c", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="d_id", datatype=DataType.FLOAT),
 
             ],
@@ -5013,7 +5013,7 @@ class TestReachableAggDiscoveryUnbounded:
         )
         d = SlayerDataset(
             name="d", sql_table="d", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="e_id", datatype=DataType.FLOAT),
 
             ],
@@ -5021,8 +5021,8 @@ class TestReachableAggDiscoveryUnbounded:
         )
         e = SlayerDataset(
             name="e", sql_table="e", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+DatasetField(name="score", expression="score", datatype=DataType.FLOAT)],
             aggregations=[Aggregation(name="rolling_avg", expression="AVG({value})")],
         )
 
@@ -5048,15 +5048,15 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
 
         a = SlayerDataset(
             name="a", sql_table="a", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="b_id", datatype=DataType.FLOAT),
-DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             aggregations=[Aggregation(name="rolling_a", expression="AVG({value})")],
             relationships=[DatasetRelationship(to="b", from_columns=["b_id"], to_columns=["id"])],
         )
         b = SlayerDataset(
             name="b", sql_table="b", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="a_id", datatype=DataType.FLOAT),
 
             ],
@@ -5120,11 +5120,11 @@ class TestParameterizedAggCanonicalDistinct:
         m = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
@@ -5178,9 +5178,9 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
         m = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
@@ -5212,8 +5212,8 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
         """Backwards-compat: revenue:sum still produces orders.revenue_sum (no suffix)."""
         m = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(orders.revenue)"]})
@@ -5224,8 +5224,8 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
         """Backwards-compat: *:count still produces orders._count."""
         m = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"]})
@@ -5255,12 +5255,12 @@ def _orders_with_paid_amount_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             DatasetField(
-                name="paid_amount", sql="amount",
+                name="paid_amount", expression="amount",
                 filter="status = 'paid'", datatype=DataType.FLOAT,
             ),
         ],
@@ -5273,11 +5273,11 @@ def _orders_two_ts_dataset(*, default_td: "str | None" = None) -> SlayerDataset:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension=default_td,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -5647,17 +5647,17 @@ class TestDev1501HiddenFirstLastRender:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="signed_up_at", sql="signed_up_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="signed_up_at", expression="signed_up_at", datatype=DataType.DATETIME),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(
                 to="customers",
@@ -5762,18 +5762,18 @@ class TestDev1501HiddenFirstLastRender:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(
                 to="customers",
@@ -5812,12 +5812,12 @@ class TestDev1501HiddenFirstLastRender:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="signed_up_at", sql="signed_up_at", datatype=DataType.DATETIME),
-                DatasetField(name="active", sql="active", datatype=DataType.BOOLEAN),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="signed_up_at", expression="signed_up_at", datatype=DataType.DATETIME),
+                DatasetField(name="active", expression="active", datatype=DataType.BOOLEAN),
                 # Filtered field — only active customers' rows rank. active is BOOLEAN, so use = TRUE (Postgres rejects active = 1) for a valid CASE WHEN.
                 DatasetField(
-                    name="active_score", sql="score",
+                    name="active_score", expression="score",
                     filter="active = TRUE", datatype=DataType.FLOAT,
                 ),
             ],
@@ -5825,10 +5825,10 @@ class TestDev1501HiddenFirstLastRender:
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(
                 to="customers",
@@ -5867,17 +5867,17 @@ class TestDev1501HiddenFirstLastRender:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="signed_up_at", sql="signed_up_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="signed_up_at", expression="signed_up_at", datatype=DataType.DATETIME),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 # Derived time field whose sql crosses the customers join. No other slot drags ``customers`` into the FROM, so this is the ONLY signal join discovery has to add it.
                 DatasetField(
                     name="net_signed_at", expression="customers.signed_up_at",
@@ -6021,10 +6021,10 @@ class TestDev1501BroadTriggerAndGuards:
         m = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         async with _persist_and_engine(m) as engine:
@@ -6153,11 +6153,11 @@ class TestDev1501BroadTriggerAndGuards:
             name="orders", sql_table="orders", data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="cost", sql="cost", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="cost", expression="cost", datatype=DataType.FLOAT),
             ],
         )
         async with _persist_and_engine(m) as engine:
@@ -6222,8 +6222,8 @@ class TestMultiHopCrossModelMeasure:
             sql_table="policy_coverage_detail",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="coverage_code", sql="coverage_code", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="coverage_code", expression="coverage_code", datatype=DataType.STRING),
 
             ],
             relationships=[DatasetRelationship(to="claim_coverage", from_columns=["id"], to_columns=["pcd_id"])],
@@ -6233,7 +6233,7 @@ class TestMultiHopCrossModelMeasure:
             sql_table="claim_coverage",
             data_source="test",
             fields=[
-                DatasetField(name="pcd_id", sql="pcd_id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="pcd_id", expression="pcd_id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="claim_id", datatype=DataType.FLOAT),
 
             ],
@@ -6244,8 +6244,8 @@ class TestMultiHopCrossModelMeasure:
             sql_table="claim_amount",
             data_source="test",
             fields=[
-                DatasetField(name="claim_id", sql="claim_id", datatype=DataType.FLOAT, primary_key=True),
-DatasetField(name="total_claim_amount", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="claim_id", expression="claim_id", datatype=DataType.FLOAT, primary_key=True),
+DatasetField(name="total_claim_amount", expression="amount", datatype=DataType.FLOAT)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -6272,30 +6272,30 @@ DatasetField(name="total_claim_amount", sql="amount", datatype=DataType.FLOAT)],
 
         model_a = SlayerDataset(
             name="a", sql_table="a_table", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="b_id", datatype=DataType.FLOAT),
-                        DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                        DatasetField(name="status", expression="status", datatype=DataType.STRING),
 
             ], relationships=[DatasetRelationship(to="b", from_columns=["b_id"], to_columns=["id"])],
         )
         model_b = SlayerDataset(
             name="b", sql_table="b_table", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="c_id", datatype=DataType.FLOAT),
 
             ], relationships=[DatasetRelationship(to="c", from_columns=["c_id"], to_columns=["id"])],
         )
         model_c = SlayerDataset(
             name="c", sql_table="c_table", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="d_id", datatype=DataType.FLOAT),
 
             ], relationships=[DatasetRelationship(to="d", from_columns=["d_id"], to_columns=["id"])],
         )
         model_d = SlayerDataset(
             name="d", sql_table="d_table", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-DatasetField(name="value", sql="val", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+DatasetField(name="value", expression="val", datatype=DataType.FLOAT)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -6320,16 +6320,16 @@ DatasetField(name="value", sql="val", datatype=DataType.FLOAT)],
 
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="customer_id", datatype=DataType.FLOAT),
-                        DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                        DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+DatasetField(name="score", expression="score", datatype=DataType.FLOAT)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -6374,7 +6374,7 @@ class TestCrossModelRerootedSubquery:
                 DatasetField(name="policy_amount_identifier", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="policy_identifier", datatype=DataType.FLOAT),
                 DatasetField(name="effective_date", datatype=DataType.DATETIME),
-DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.FLOAT)],
+DatasetField(name="total_policy_amount", expression="policy_amount", datatype=DataType.FLOAT)],
             relationships=[
                 # No reverse edge onto policy: the policy → policy_amount
                 # declaration traverses both ways.
@@ -6477,7 +6477,7 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
             name="customers", sql_table="customers", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
-DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
+DatasetField(name="score", expression="score", datatype=DataType.FLOAT)],
         )
         warehouse = SlayerDataset(
             name="warehouse", sql_table="warehouse", data_source="test",
@@ -6585,7 +6585,7 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
                 DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.FLOAT),
                 DatasetField(name="status", datatype=DataType.STRING),
-DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             aggregations=[Aggregation(name="custom_sum", expression="SUM({value})")],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -6594,7 +6594,7 @@ DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
             fields=[
                 DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="name", datatype=DataType.STRING),
-DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT)],
+DatasetField(name="lifetime_value", expression="lifetime_value", datatype=DataType.FLOAT)],
             # No reverse edge: orders → customers traverses both ways.
         )
         async with self._setup_engine(orders, customers) as engine:
@@ -6619,10 +6619,10 @@ class TestOrderByCustomFieldName:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -6650,10 +6650,10 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -6672,11 +6672,11 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -6709,9 +6709,9 @@ class TestOrderByAggregation:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -6730,9 +6730,9 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -6752,10 +6752,10 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         customers = SlayerDataset(
@@ -6763,9 +6763,9 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+DatasetField(name="score", expression="score", datatype=DataType.FLOAT)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -6795,10 +6795,10 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         customers = SlayerDataset(
@@ -6806,10 +6806,10 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="region_id", datatype=DataType.FLOAT),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+DatasetField(name="score", expression="score", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         regions = SlayerDataset(
@@ -6817,8 +6817,8 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
             sql_table="regions",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_name", sql="region_name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_name", expression="region_name", datatype=DataType.STRING),
 
             ],
         )
@@ -6855,9 +6855,9 @@ class TestOrderByFormulaEnrichment:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -6877,10 +6877,10 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATE),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATE),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery(
             population="orders",
@@ -6908,8 +6908,8 @@ class TestJoinType:
             sql_table="customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
@@ -6917,9 +6917,9 @@ class TestJoinType:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"], join_type="inner")],
         )
 
@@ -6944,7 +6944,7 @@ class TestMeasureFilterCrossModelJoin:
             sql_table="Loss_Payment",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
             ],
         )
@@ -6953,9 +6953,9 @@ class TestMeasureFilterCrossModelJoin:
             sql_table="Claim_Amount",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
 
-                DatasetField(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
+                DatasetField(name="loss_amt", expression="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="loss_payment", from_columns=["id"], to_columns=["id"])],
         )
@@ -6985,8 +6985,8 @@ class TestMeasureFilterCrossModelJoin:
             sql_table="customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
@@ -6994,9 +6994,9 @@ class TestMeasureFilterCrossModelJoin:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
@@ -7020,12 +7020,12 @@ class TestIsolatedFilteredMeasureCTEs:
             sql_table="Claim_Amount",
             data_source="test",
             fields=[
-                DatasetField(name="claim_amount_id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="claim_amount_id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="claim_id", datatype=DataType.FLOAT),
 
-                DatasetField(name="loss_payment_amt", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
-                DatasetField(name="loss_reserve_amt", sql="amount", filter="loss_reserve.has_flag = 1", datatype=DataType.FLOAT),
-                DatasetField(name="total_amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="loss_payment_amt", expression="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
+                DatasetField(name="loss_reserve_amt", expression="amount", filter="loss_reserve.has_flag = 1", datatype=DataType.FLOAT),
+                DatasetField(name="total_amount", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="loss_payment", from_columns=["claim_amount_id"], to_columns=["claim_amount_id"], join_type=JoinType.INNER),
@@ -7040,22 +7040,22 @@ class TestIsolatedFilteredMeasureCTEs:
             "loss_payment": SlayerDataset(
                 name="loss_payment", sql_table="Loss_Payment", data_source="test",
                 fields=[
-                    DatasetField(name="claim_amount_id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="claim_amount_id", expression="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
                     DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
                 ],
             ),
             "loss_reserve": SlayerDataset(
                 name="loss_reserve", sql_table="Loss_Reserve", data_source="test",
                 fields=[
-                    DatasetField(name="claim_amount_id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="claim_amount_id", expression="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
                     DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
                 ],
             ),
             "claim": SlayerDataset(
                 name="claim", sql_table="Claim", data_source="test",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="claim_number", sql="claim_number", datatype=DataType.STRING),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="claim_number", expression="claim_number", datatype=DataType.STRING),
                 ],
             ),
         }
@@ -7258,23 +7258,23 @@ class TestIsolatedFilteredMeasureCTEs:
         customers = SlayerDataset(
             name="customers", sql_table="Customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
             ],
         )
         warehouse = SlayerDataset(
             name="warehouse", sql_table="Warehouse", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="Orders", data_source="test",
             fields=[
-                DatasetField(name="order_id", sql="order_id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT),
+                DatasetField(name="order_id", expression="order_id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="warehouse_id", expression="warehouse_id", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -7394,10 +7394,10 @@ class TestIsolatedFilteredMeasureCTEs:
         """Extend claim_amount_model with a timestamp dimension and first/last metrics."""
         claim_amount_dataset.default_time_dimension = "created_at"
         claim_amount_dataset.fields.append(
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         )
         claim_amount_dataset.fields.append(
-            DatasetField(name="latest_payment", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
+            DatasetField(name="latest_payment", expression="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
         )
         return claim_amount_dataset
 
@@ -7500,10 +7500,10 @@ class TestIsolatedFilteredMeasureCTEs:
         """Isolated first metric with explicit time_column uses correct ordering."""
         # Add a timestamp dimension and metric for the explicit time column.
         claim_amount_dataset_with_time.fields.append(
-            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
         )
         claim_amount_dataset_with_time.fields.append(
-            DatasetField(name="earliest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", datatype=DataType.FLOAT),
+            DatasetField(name="earliest_reserve", expression="amount", filter="loss_reserve.has_flag = 1", datatype=DataType.FLOAT),
         )
         # Explicit time column specified at query time: first(updated_at)
         query = SlayerQuery(
@@ -7532,7 +7532,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """Two isolated first/last metrics produce separate CTEs, no ROW_NUMBER in base."""
         # latest_payment already has cross-dataset filter; add another.
         claim_amount_dataset_with_time.fields.append(
-            DatasetField(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", datatype=DataType.FLOAT),
+            DatasetField(name="latest_reserve", expression="amount", filter="loss_reserve.has_flag = 1", datatype=DataType.FLOAT),
         )
         query = SlayerQuery(
             population="claim_amount",
@@ -7576,15 +7576,15 @@ class TestIsolatedFilteredMeasureCTEs:
         customers = SlayerDataset(
             name="customers", sql_table="Customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="Orders", data_source="test",
             fields=[
-                DatasetField(name="order_id", sql="order_id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="order_id", expression="order_id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -7612,29 +7612,29 @@ class TestIsolatedFilteredMeasureCTEs:
         regions = SlayerDataset(
             name="regions", sql_table="Regions", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="code", sql="code", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="code", expression="code", datatype=DataType.STRING),
             ],
         )
         customers = SlayerDataset(
             name="customers", sql_table="Customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         orders = SlayerDataset(
             name="orders", sql_table="Orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 # Derived field reaching `customers__regions.code` via a 2-hop walk (Mode A uses ``__`` between hops + single dot before the leaf).
                 DatasetField(name="region_code", expression="customers.regions.code", datatype=DataType.STRING),
                 # Filtered local metric: filter references the derived field.
                 DatasetField(
-                    name="eu_amount", sql="amount", filter="orders.region_code = 'EU'",
+                    name="eu_amount", expression="amount", filter="orders.region_code = 'EU'",
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -7737,7 +7737,7 @@ class TestIsolatedFilteredMeasureCTEs:
         # Need a time dimension for cumsum (which needs ordering).
         claim_amount_dataset.default_time_dimension = "created_at"
         claim_amount_dataset.fields.append(
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         )
         query = SlayerQuery(
             population="claim_amount",
@@ -7776,7 +7776,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """A plain metric filter (``sum(loss_payment_amt) > 1000``) beside a transform filter (``cumsum(sum(loss_payment_amt)) > 0``): both mask at the chain's final select, so the plain one never shrinks the series cumsum reads (Axiom 14)."""
         claim_amount_dataset.default_time_dimension = "created_at"
         claim_amount_dataset.fields.append(
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         )
         query = SlayerQuery(
             population="claim_amount",
@@ -7848,7 +7848,7 @@ class TestIsolatedFilteredMeasureCTEs:
     ) -> None:
         """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from ORDER BY keeps its ranking INSIDE its own CTE, and the outer ORDER BY resolves through that CTE's joined-back column."""
         claim_amount_dataset_with_time.fields.append(
-            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
         )
         query = SlayerQuery(
             population="claim_amount",
@@ -7885,7 +7885,7 @@ class TestIsolatedFilteredMeasureCTEs:
     ) -> None:
         """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from a host filter routes as an AGGREGATE-phase filter to the outer combined WHERE. The ranking stays inside the CTE; the outer SELECT applies the comparison against the joined-back column."""
         claim_amount_dataset_with_time.fields.append(
-            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
         )
         query = SlayerQuery(
             population="claim_amount",
@@ -8104,7 +8104,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """A no-dimension query with cross-dataset aggregates AND a host-local ROW filter must apply the filter at the placeholder ``_base`` (via ``WHERE`` + ``LIMIT 1``). The round-2 fix that dropped the host ``FROM`` to avoid N-row CROSS JOIN duplication also bypassed ``_build_where_having_from_planned``, silently ignoring host-local ROW filters (Codex round 4 / CodeRabbit)."""
         # Add a host field the filter references.
         claim_amount_dataset.fields.append(
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
         )
         query = SlayerQuery(
             population="claim_amount",
@@ -8154,7 +8154,7 @@ class TestIsolatedFilteredMeasureCTEs:
     ) -> None:
         """A query mixing a LOCAL first/last metric and a host ROW filter must apply the filter only INSIDE the ranked subquery (pre-ranking), not again on the outer ``_base`` SELECT. The first/last branch returns ``where_consumed=True``; the cross-dataset orchestrator must honour that and skip the outer WHERE application, otherwise the filter double-applies and changes first/last semantics by filtering AFTER ranking."""
         claim_amount_dataset_with_time.fields.append(
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
         )
         query = SlayerQuery(
             population="claim_amount",
@@ -8190,7 +8190,7 @@ class TestIsolatedFilteredMeasureCTEs:
         loss_payment = SlayerDataset(
             name="loss_payment", sql_table="Loss_Payment", data_source="test",
             fields=[
-                DatasetField(name="claim_amount_id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="claim_amount_id", expression="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="has_flag", expression="1", datatype=DataType.FLOAT),
             ],
         )
@@ -8198,18 +8198,18 @@ class TestIsolatedFilteredMeasureCTEs:
         backing_raw = SlayerDataset(
             name="claim_amount_raw", sql_table="Claim_Amount", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         # Use a dataset with `sql` (subquery) directly — simpler than source_queries plumbing, but still exercises the non-sql_table host-rooted CTE path.
         host_via_subquery = SlayerDataset(
             name="claim_amount", sql="SELECT * FROM Claim_Amount", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(
-                    name="loss_payment_amt", sql="amount",
+                    name="loss_payment_amt", expression="amount",
                     filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
                 ),
             ],
@@ -8253,9 +8253,9 @@ class TestGetResultColumnTypesSql:
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
 
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(name="safe_amount", expression="COALESCE(amount, 0)", datatype=DataType.FLOAT),
             ],
         )
@@ -8295,8 +8295,8 @@ class TestGetResultColumnTypesSql:
         await storage.save_dataset(SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
             ],
         ))
         await storage.save_dataset(SlayerDataset(
@@ -8304,9 +8304,9 @@ class TestGetResultColumnTypesSql:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(name="customer_score", expression="customers.score", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
@@ -8348,11 +8348,11 @@ class TestGetResultColumnTypesSql:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(
                     name="opaque",
-                    sql="amount",
+                    expression="amount",
                     datatype=DataType.FLOAT,
                     allowed_aggregations=[],
                 ),
@@ -8391,9 +8391,9 @@ class TestLogAliasPreservation:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 # Scalar log expressions inside DatasetField.sql — the primary path the issue surfaced through.
                 DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log10(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
                 DatasetField(name="log2_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log2(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
@@ -8471,9 +8471,9 @@ class TestLogAliasPreservation:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(
                     name="log_completed_amount",
                     expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log10(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "POSTGRES", "PRESTO", "REDSHIFT", "SPARK", "SQLITE", "TRINO", "TSQL")]),
@@ -8564,9 +8564,9 @@ def planets_dataset() -> SlayerDataset:
         sql_table="planets",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
             DatasetField(
                 name="rn",
                 expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="row_number() over (order by mass desc)")]),
@@ -8625,7 +8625,7 @@ class TestCastEmissionColumn:
                 sql_table="public.items",
                 data_source="test",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                     DatasetField(
                         name="x",
                         expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="json_extract(blob, '$.x')")]),
@@ -8658,7 +8658,7 @@ class TestCastEmissionColumn:
             sql_table="public.items",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="name_len", expression="length(name)", datatype=DataType.INTEGER),
             ],
         )
@@ -8712,9 +8712,9 @@ class TestCastEmissionColumn:
             sql_table="public.items",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="qty", sql=None, datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="qty", expression=None, datatype=DataType.INTEGER),
             ],
         )
         gen = SQLGenerator(dialect="sqlite")
@@ -8732,7 +8732,7 @@ class TestCastEmissionColumn:
             sql_table="public.items",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="x",
                     expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="CAST(json_extract(blob, '$.x') AS DOUBLE)")]),
@@ -8766,7 +8766,7 @@ class TestCastEmissionOpaqueType:
             sql_table="public.places",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="loc",
                     expression="coalesce(loc, home_loc)",
@@ -8787,8 +8787,8 @@ class TestCastEmissionOpaqueType:
             sql_table="public.places",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="city", sql="city", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="city", expression="city", datatype=DataType.STRING),
                 DatasetField(
                     name="loc",
                     expression="coalesce(loc, home_loc)",
@@ -8814,7 +8814,7 @@ class TestCastEmissionOpaqueType:
             sql_table="public.places",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="loc", datatype=DataType.OPAQUE, db_type="point"),
             ],
         )
@@ -8839,8 +8839,8 @@ class TestCastEmissionMeasure:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
 
@@ -8896,10 +8896,10 @@ class TestCastEmissionNonBasePaths:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
 
@@ -8965,7 +8965,7 @@ class TestCastEmissionNonBasePaths:
             sql_table="public.events",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="score",
                     expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="json_extract(payload, '$.score')")]),
@@ -8992,13 +8992,13 @@ class TestCastEmissionNonBasePaths:
             sql_table="public.events",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="score",
                     expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="json_extract(payload, '$.score')")]),
                     datatype=DataType.FLOAT,
                 ),
-                DatasetField(name="weight", sql="weight_col", datatype=DataType.FLOAT),
+                DatasetField(name="weight", expression="weight_col", datatype=DataType.FLOAT),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
@@ -9149,7 +9149,7 @@ class TestReplaceFunctionInPredicate:
         orders_dataset.fields.append(
             DatasetField(
                 name="cleaned_amt",
-                sql="amount",
+                expression="amount",
                 filter="replace(orders.status, ',', '') = 'foo'",
                 datatype=DataType.FLOAT,
             )
@@ -9175,12 +9175,12 @@ def _build_score_dataset_dev1539(*, name: str = "m", score_sql: str) -> SlayerDa
         sql_table=f"public.{name}",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="a", sql="a", datatype=DataType.FLOAT),
-            DatasetField(name="b", sql="b", datatype=DataType.FLOAT),
-            DatasetField(name="c", sql="c", datatype=DataType.FLOAT),
-            DatasetField(name="d", sql="d", datatype=DataType.FLOAT),
-            DatasetField(name="score", sql=score_sql, datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a", expression="a", datatype=DataType.FLOAT),
+            DatasetField(name="b", expression="b", datatype=DataType.FLOAT),
+            DatasetField(name="c", expression="c", datatype=DataType.FLOAT),
+            DatasetField(name="d", expression="d", datatype=DataType.FLOAT),
+            DatasetField(name="score", expression=score_sql, datatype=DataType.FLOAT),
         ],
     )
 
@@ -9194,11 +9194,11 @@ def _build_backslash_risk_dataset_dev1539(*, name: str = "m") -> tuple[SlayerDat
         sql_table=f"public.{name}",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="tag", sql="tag", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="tag", expression="tag", datatype=DataType.STRING),
             DatasetField(
                 name="risk",
-                sql=f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0",
+                expression=f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0",
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -9217,11 +9217,11 @@ async def _build_joined_customers_orders_engine_dev1539(
         sql_table="customers",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="a", sql="a", datatype=DataType.FLOAT),
-            DatasetField(name="b", sql="b", datatype=DataType.FLOAT),
-            DatasetField(name="tag", sql="tag", datatype=DataType.STRING),
-            DatasetField(name="score", sql=customers_score_sql, datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a", expression="a", datatype=DataType.FLOAT),
+            DatasetField(name="b", expression="b", datatype=DataType.FLOAT),
+            DatasetField(name="tag", expression="tag", datatype=DataType.STRING),
+            DatasetField(name="score", expression=customers_score_sql, datatype=DataType.FLOAT),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
@@ -9229,8 +9229,8 @@ async def _build_joined_customers_orders_engine_dev1539(
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     ))
@@ -9487,10 +9487,10 @@ class TestFilterOuterParenWrapDev1539:
             sql_table="public.sales",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="price", expression="price", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
@@ -9591,10 +9591,10 @@ class TestFilterOuterParenWrapDev1539:
             sql_table="public.m",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="archived", sql="archived", datatype=DataType.BOOLEAN),
-                DatasetField(name="deleted", sql="deleted", datatype=DataType.BOOLEAN),
-                DatasetField(name="active", sql=body_sql, datatype=DataType.BOOLEAN),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="archived", expression="archived", datatype=DataType.BOOLEAN),
+                DatasetField(name="deleted", expression="deleted", datatype=DataType.BOOLEAN),
+                DatasetField(name="active", expression=body_sql, datatype=DataType.BOOLEAN),
             ],
         )
         query = SlayerQuery(
@@ -9631,8 +9631,8 @@ class TestFilterOuterParenWrapDev1539:
             sql_table="public.m",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="archived", sql="archived", datatype=DataType.BOOLEAN),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="archived", expression="archived", datatype=DataType.BOOLEAN),
                 DatasetField(name="active", expression="NOT archived", datatype=DataType.BOOLEAN),
             ],
         )
@@ -9660,8 +9660,8 @@ class TestFilterOuterParenWrapDev1539:
             sql_table="public.m",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(name="midrange", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="amount BETWEEN 100 AND 500")]), datatype=DataType.BOOLEAN),
             ],
         )
@@ -9690,8 +9690,8 @@ class TestFilterOuterParenWrapDev1539:
             sql_table="public.m",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
                 DatasetField(name="active", expression="status IN ('a', 'b', 'c')", datatype=DataType.BOOLEAN),
             ],
         )
@@ -9886,20 +9886,20 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         await s.save_dataset(SlayerDataset(
             name="countries", sql_table="countries", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="gdp", sql="gdp", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="gdp", expression="gdp", datatype=DataType.FLOAT),
             ],
         ))
         await s.save_dataset(SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
-                DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
-                DatasetField(name="props", sql="props", datatype=DataType.STRING),
-                DatasetField(name="country_id", sql="country_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
+                DatasetField(name="weight", expression="weight", datatype=DataType.FLOAT),
+                DatasetField(name="props", expression="props", datatype=DataType.STRING),
+                DatasetField(name="country_id", expression="country_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="countries", from_columns=["country_id"], to_columns=["id"])],
         ))
@@ -9907,9 +9907,9 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     def _customers_v2(self, *, extra_columns=None, filters=None) -> SlayerDataset:
         cols = [
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-            DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="lifetime_value", expression="lifetime_value", datatype=DataType.FLOAT),
         ]
         if extra_columns:
             cols.extend(extra_columns)
@@ -9924,10 +9924,10 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         return SlayerDataset(
             name="orders_x", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             ],
             relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -10083,7 +10083,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
             # The ranking field must be one of the TARGET's own — the ranked CTE is rooted there and a host field is not in its scope.
-            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
         ]))
         query = SlayerQuery(
             population="orders_x",
@@ -10135,10 +10135,10 @@ class TestWindowedMeasureGuards:
         return SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
 
@@ -10168,16 +10168,16 @@ class TestWindowedMeasureGuards:
         await storage.save_dataset(SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         ))
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -10295,9 +10295,9 @@ class TestWindowedMeasureGuards:
         model = SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="amount_col", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="amount_col", expression="amount", datatype=DataType.FLOAT),
             ],
             aggregations=[Aggregation(name="myagg", expression="SUM({value})")],
         )
@@ -10334,12 +10334,12 @@ class TestWindowedMeasureGuards:
     )
     def test_windowed_guards_fire_at_plan_time(self, case: str) -> None:  # NOSONAR(S3776) — flat case dispatch for a parametrized guard matrix; each branch builds one (query, bundle, exc, match) tuple, kept inline so the guard scenario reads next to its expectation.
         """Decision D-a / Codex C1+C2: every windowed guard raises in the PLANNER (``plan_query``) — before any SQL is rendered. Proves the guards are plan-time (a renderer-only guard would fail this by not raising here)."""
-        created_at = DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME)
+        created_at = DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME)
         base_cols = [
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
             created_at,
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ]
         td = [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)]
 
@@ -10371,15 +10371,15 @@ class TestWindowedMeasureGuards:
             customers = SlayerDataset(
                 name="customers", sql_table="customers", data_source="test",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
             orders = SlayerDataset(
                 name="orders", sql_table="orders", data_source="test",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
                     created_at.model_copy(),
                 ],
                 relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
@@ -10448,9 +10448,9 @@ class TestWindowedMeasureGuards:
         model = SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             default_time_dimension="created_at",
         )

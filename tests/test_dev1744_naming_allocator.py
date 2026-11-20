@@ -101,8 +101,8 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="revenue", datatype=DataType.FLOAT),
                 # Case-only pair over two DIFFERENT physical columns.
-                DatasetField(name="Rev", sql="revx", datatype=DataType.FLOAT),
-                DatasetField(name="rev", sql="revy", datatype=DataType.FLOAT),
+                DatasetField(name="Rev", expression="revx", datatype=DataType.FLOAT),
+                DatasetField(name="rev", expression="revy", datatype=DataType.FLOAT),
             ],
         ),
         _validate=False,
@@ -123,7 +123,7 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
                 # isolation (its own _cm_ CTE).
                 DatasetField(
                     name="customers__revenue",
-                    sql="amount",
+                    expression="amount",
                     datatype=DataType.FLOAT,
                     filter="customers.region_id = 1",
                 ),
@@ -529,7 +529,7 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
-                DatasetField(name=column, sql="hostile", datatype=DataType.FLOAT),
+                DatasetField(name=column, expression="hostile", datatype=DataType.FLOAT),
             ],
         )
     )

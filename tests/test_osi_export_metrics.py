@@ -104,7 +104,7 @@ async def test_aggregate_sql(env, formula: str, expected: str) -> None:
 @pytest.mark.parametrize("formula", ["sum(amount)", "count(amount)", "count_distinct(customer_id)",
                                      "corr(amount, other=quantity)", "max(amount)"])
 async def test_masked_column_aggregates_read_the_masked_field(env, formula: str) -> None:
-    masked = col("amount", sql="amount", filter="status = 'completed'")
+    masked = col("amount", expression="amount", filter="status = 'completed'")
     columns = [masked if c.name == "amount" else c for c in orders_columns()]
     result = await export_datasets(env, customers(), orders(columns=columns, metrics=[slayer_metric("m", formula)]))
     orders_ds = dataset(result.document, "orders")

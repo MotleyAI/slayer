@@ -348,7 +348,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="rc", datatype=DataType.FLOAT, sql="spend",
+            name="rc", datatype=DataType.FLOAT, expression="spend",
             filter="regions.customers.spend > 0"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
@@ -581,7 +581,7 @@ def _revisit_query_datasets() -> list[SlayerDataset]:
             DatasetField(name="revisit_lead", datatype=DataType.FLOAT,
                    expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.regions.customers.spend"), DialectEntry(dialect="SQLITE", expression="customers.regions.customers.spend")])),
             DatasetField(name="chain", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.revisit_spend * 2"), DialectEntry(dialect="SQLITE", expression="customers.revisit_spend * 2")])),
-            DatasetField(name="filt_revisit", datatype=DataType.FLOAT, sql="spend",
+            DatasetField(name="filt_revisit", datatype=DataType.FLOAT, expression="spend",
                    filter="regions.customers.spend > 0"),
         ),
     )

@@ -36,7 +36,7 @@ async def _gen_with_reserved_column(query: SlayerQuery) -> str:
     """``gen`` over an ``orders`` carrying a stored ``__regroup__x`` field."""
     base, *rest = dev1740_datasets()
     model = base.model_copy(update={"fields": [
-        *base.fields, DatasetField(name="__regroup__x", sql="amount", datatype=DataType.FLOAT),
+        *base.fields, DatasetField(name="__regroup__x", expression="amount", datatype=DataType.FLOAT),
     ]})
     return await _engine_generate(
         query=query, dataset=model, extra_datasets=rest, dialect="duckdb", validate=False,

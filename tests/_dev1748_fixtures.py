@@ -240,7 +240,7 @@ def dev1748_datasets() -> List[SlayerDataset]:
             # A LOCAL derived time field on the target — the explicit
             # cross-dataset time arg that needs no further relationship.
             DatasetField(
-                name="signup_alias", datatype=DataType.DATETIME, sql="signup_at",
+                name="signup_alias", datatype=DataType.DATETIME, expression="signup_at",
             ),
             # A derived time field whose sql CROSSES customers -> regions.
             # Used as an explicit time arg this is the residual-hop shape.
@@ -271,17 +271,17 @@ def dev1748_datasets() -> List[SlayerDataset]:
             DatasetField(name="amount", datatype=DataType.FLOAT),
             # Filtered on a LOCAL field.
             DatasetField(
-                name="big_amount", datatype=DataType.FLOAT, sql="amount",
+                name="big_amount", datatype=DataType.FLOAT, expression="amount",
                 filter=f"amount > {BIG_AMOUNT_THRESHOLD}",
             ),
             # Filtered on a JOINED field.
             DatasetField(
-                name="gold_amount", datatype=DataType.FLOAT, sql="amount",
+                name="gold_amount", datatype=DataType.FLOAT, expression="amount",
                 filter="customers.tier = 'gold'",
             ),
             # Filtered on a DERIVED field (``amount_x2`` is local-derived).
             DatasetField(
-                name="doubled_big", datatype=DataType.FLOAT, sql="amount",
+                name="doubled_big", datatype=DataType.FLOAT, expression="amount",
                 filter=f"amount * 2 > {BIG_AMOUNT_THRESHOLD * 2}",
             ),
             # A derived value whose sql CROSSES into regions.
@@ -293,7 +293,7 @@ def dev1748_datasets() -> List[SlayerDataset]:
             DatasetField(name="amount_x2", datatype=DataType.FLOAT, expression="amount * 2"),
             # A local derived TIME field, for an explicit derived time arg.
             DatasetField(
-                name="created_alias", datatype=DataType.DATETIME, sql="created_at",
+                name="created_alias", datatype=DataType.DATETIME, expression="created_at",
             ),
         ],
         relationships=[
@@ -312,7 +312,7 @@ def dev1748_datasets() -> List[SlayerDataset]:
             DatasetField(name="shipped_at", datatype=DataType.DATETIME),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(
-                name="big_amount", datatype=DataType.FLOAT, sql="amount",
+                name="big_amount", datatype=DataType.FLOAT, expression="amount",
                 filter=f"amount > {BIG_AMOUNT_THRESHOLD}",
             ),
         ],

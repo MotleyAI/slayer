@@ -49,14 +49,14 @@ class TestMultiDialectGeneration:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
 
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
                 # Second numeric field so 2-arg stat aggregates
                 # (corr(other=...) / covar_*(other=...)) have a valid LHS+RHS pair.
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
             ],
         )
         return model
@@ -155,8 +155,8 @@ class TestMultiDialectGeneration:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="ordered_on", sql="ordered_on", datatype=DataType.DATE),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="ordered_on", expression="ordered_on", datatype=DataType.DATE),
             ],
         )
         sql = await _generate(
@@ -192,9 +192,9 @@ class TestMultiDialectGeneration:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="ts", expression="'2025-12-01'", datatype=DataType.DATETIME),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             ],
         )
         # Bare-literal time dim — must be cast.
@@ -506,9 +506,9 @@ class TestLogAliasPreservation:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 # Scalar log expressions inside DatasetField.sql — the primary
                 # path the issue surfaced through.
                 DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log10(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "PRESTO", "REDSHIFT", "SNOWFLAKE", "SPARK", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
@@ -595,9 +595,9 @@ class TestLogAliasPreservation:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(
                     name="log_completed_amount",
                     expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="log10(amount)") for d in ("BIGQUERY", "CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "POSTGRES", "PRESTO", "REDSHIFT", "SPARK", "SQLITE", "TRINO", "TSQL")]),

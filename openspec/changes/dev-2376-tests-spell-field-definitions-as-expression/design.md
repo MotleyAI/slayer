@@ -25,7 +25,7 @@ See proposal.md — Why. Measured on the base (DEV-2277 at `7a5fb8aa9` + origin/
 - A static guard keeps it so.
 
 **Non-Goals:**
-- Production code, behaviour, specs, the LikeC4 model and arc42 (no principle binds test code).
+- Production code, behaviour, specs, the LikeC4 model and arc42 (no principle binds test code), except the search-text fix (task 4.3).
 - `sql` on other classes: `AggregationParam`, `SlayerDataset` (sql-mode), Cube models, `translate(...)`, responses.
 - YAML fixtures (all foreign formats or frozen corpora).
 - A runtime warning guard (rejected for the static guard, decision 2).

@@ -774,7 +774,7 @@ class TestNullSafeJoinBackExecution:
                 DatasetField(name="status", datatype=DataType.STRING),
                 # Filter references a JOINED table → filtered-local
                 # isolation. High-ltv customers (2 & 3) have NULL status.
-                DatasetField(name="amt_hi", sql="amount", datatype=DataType.FLOAT,
+                DatasetField(name="amt_hi", expression="amount", datatype=DataType.FLOAT,
                        filter="customers_v2.lifetime_value > 15"),
             ],
             relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],

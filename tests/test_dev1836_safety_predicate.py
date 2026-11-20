@@ -58,7 +58,7 @@ class TestStructuralProof:
         target = SlayerDataset(
             name="loss_payment", data_source="test", sql_table="Loss_Payment",
             fields=[
-                DatasetField(name="id", sql="Claim_Amount_Identifier",
+                DatasetField(name="id", expression="Claim_Amount_Identifier",
                        datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
@@ -239,7 +239,7 @@ class TestMayInlineSeam:
         instead of desugaring onto a host-rooted producer."""
         host = orders_dataset()
         host.fields.append(DatasetField(
-            name="gold_amount", datatype=DataType.FLOAT, sql="amount",
+            name="gold_amount", datatype=DataType.FLOAT, expression="amount",
             filter="customers.tier = 'gold'",
         ))
         bundle = ResolvedSourceBundle(

@@ -88,8 +88,8 @@ async def env(tmp_path: Path) -> InspectEnv:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="status", datatype=DataType.STRING, label="Status", description="Order state"),
             DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT, description="Revenue per order"),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT, description="Revenue per order"),
+            DatasetField(name="quantity", expression="quantity", datatype=DataType.INTEGER),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             DatasetField(name="notes", datatype=DataType.STRING),
         ],
@@ -391,8 +391,8 @@ class TestMeasureTypeInference:
             name="t", sql_table="t", data_source="types_ds",
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
 
-                DatasetField(name="label", sql="label", datatype=DataType.STRING),
-                DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
+                DatasetField(name="label", expression="label", datatype=DataType.STRING),
+                DatasetField(name="price", expression="price", datatype=DataType.FLOAT),
             ],
         )
         await storage.save_dataset(model)
@@ -442,7 +442,7 @@ class TestMeasureTypeInference:
         model = SlayerDataset(
             name="t", sql_table="t", data_source="null_ds",
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-DatasetField(name="val", sql="val", datatype=DataType.FLOAT)
+DatasetField(name="val", expression="val", datatype=DataType.FLOAT)
             ],
         )
         await storage.save_dataset(model)

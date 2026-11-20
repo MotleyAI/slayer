@@ -453,7 +453,7 @@ class TestCoordinateSystemInvariant:
         OWN summary, not the parent's."""
         host = _orders()
         host.fields.append(
-            DatasetField(name="eu_amount", sql="amount",
+            DatasetField(name="eu_amount", expression="amount",
                    filter="customers.balance > 0", datatype=DataType.FLOAT),
         )
         bundle = ResolvedSourceBundle(

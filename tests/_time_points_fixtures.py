@@ -126,7 +126,7 @@ def _ev_columns() -> list[DatasetField]:
         DatasetField(name="amount", datatype=DataType.FLOAT),
         DatasetField(name="customer_id", datatype=DataType.INTEGER),
         DatasetField(name="raw_ts"),  # untyped
-        DatasetField(name="ts_copy", sql="ts", datatype=DataType.DATETIME),  # derived
+        DatasetField(name="ts_copy", expression="ts", datatype=DataType.DATETIME),  # derived
     ]
 
 

@@ -27,7 +27,7 @@ def _dataset(*, name: str = "m", ds: str = "ds", sql_table: str = "public.t") ->
         name=name,
         sql_table=sql_table,
         data_source=ds,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.STRING, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.STRING, primary_key=True)],
     )
 
 

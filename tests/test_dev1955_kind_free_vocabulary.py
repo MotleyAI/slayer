@@ -195,7 +195,7 @@ class TestFanningReferenceSpelling:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="big_item", sql="amount", datatype=DataType.FLOAT,
+            cols=(DatasetField(name="big_item", expression="amount", datatype=DataType.FLOAT,
                          filter="line_items.qty >= 2"),),
             joins=(_li_join(cardinality=RelationshipCardinality.ONE_TO_MANY),),
         )
@@ -213,7 +213,7 @@ class TestEngineDoorCrossModelAttribution:
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
         await storage.save_dataset(
-            _customers(cols=(DatasetField(name="bad", datatype=DataType.FLOAT, sql="spend",
+            _customers(cols=(DatasetField(name="bad", datatype=DataType.FLOAT, expression="spend",
                                     filter="regions.customers.spend > 0"),)),
             _validate=False,
         )

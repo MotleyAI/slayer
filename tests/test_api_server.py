@@ -289,7 +289,7 @@ class TestQuery:
             name="orders",
             sql_table="t",
             data_source="missing_ds",
-            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)],
         )))
         resp = client.post("/query", json={"population": "orders", "metrics": [{"metric": "sum(orders.revenue)"}]})
         assert resp.status_code == 400
@@ -362,7 +362,7 @@ class TestQueryBackedModelsAPI:
         run_sync(
             storage.save_dataset(SlayerDataset(
                 name="upstream", sql_table="t", data_source="ds",
-                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+                fields=[DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             ))
         )
         resp = client.post("/datasets", json={
@@ -394,7 +394,7 @@ class TestQueryBackedModelsAPI:
         run_sync(
             storage.save_dataset(SlayerDataset(
                 name="upstream", sql_table="t", data_source="ds",
-                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+                fields=[DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
             ))
         )
         resp = client.post("/datasets", json={
@@ -738,7 +738,7 @@ class TestOpenAPI400Documentation:
         ))
         run_sync(storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="ds",
-            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
         )))
         # Save a query-backed dataset whose stage does NOT have dry_run set.
         setup_resp = client.post("/datasets", json={

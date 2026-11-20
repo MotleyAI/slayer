@@ -80,7 +80,7 @@ def test_entity_ref_expression_remedy() -> None:
 
 def test_colon_in_name_reason() -> None:
     with pytest.raises(ValidationError) as ei:
-        DatasetField(name="a:b", sql="x")
+        DatasetField(name="a:b", expression="x")
     msg = str(ei.value)
     assert "legacy aggregation separator" in msg
     assert "revenue:sum" not in msg

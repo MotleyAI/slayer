@@ -188,11 +188,11 @@ def event_less_datasets(
             ],
         ))
         event_columns.append(DatasetField(
-            name="value_if_kind", datatype=DataType.FLOAT, sql="value",
+            name="value_if_kind", datatype=DataType.FLOAT, expression="value",
             filter="event_kinds.label = 'x' OR value >= 0"))
     if derived_events:
         event_columns += [
-            DatasetField(name="value_bare", datatype=DataType.FLOAT, sql="value"),
+            DatasetField(name="value_bare", datatype=DataType.FLOAT, expression="value"),
             DatasetField(name="value_x2", datatype=DataType.FLOAT, expression="value * 2"),
             DatasetField(name="value_x2_x2", datatype=DataType.FLOAT, expression="region_events.value_x2 * 2"),
             DatasetField(name="value_or_zero", datatype=DataType.FLOAT,

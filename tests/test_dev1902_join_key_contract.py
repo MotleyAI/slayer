@@ -83,8 +83,8 @@ class TestBaseColumnSeam:
         assert physical_column_sql(sql=sql, name=name) == expected
 
     def test_column_is_base_and_physical_name(self):
-        renamed = DatasetField(name="customer_id", sql="cust_fk")
-        quoted = DatasetField(name="id", sql='"CustPK"')
+        renamed = DatasetField(name="customer_id", expression="cust_fk")
+        quoted = DatasetField(name="id", expression='"CustPK"')
         plain = DatasetField(name="status")
         assert renamed.is_base
         assert quoted.is_base
@@ -102,12 +102,12 @@ class TestBaseColumnSeam:
 
 class TestSourceSideAtConstruction:
     def test_renamed_source_key_is_accepted(self):
-        model = _orders(DatasetField(name="customer_id", sql="cust_fk"),
+        model = _orders(DatasetField(name="customer_id", expression="cust_fk"),
                         pairs=[["customer_id", "id"]])
         assert model.relationships[0].column_pairs == [("customer_id", "id")]
 
     def test_quoted_base_source_key_is_accepted(self):
-        _orders(DatasetField(name="customer_id", sql='"CustFK"'), pairs=[["customer_id", "id"]])
+        _orders(DatasetField(name="customer_id", expression='"CustFK"'), pairs=[["customer_id", "id"]])
 
     def test_undeclared_source_key_rejected(self):
         with pytest.raises(ValueError) as exc:
@@ -118,7 +118,7 @@ class TestSourceSideAtConstruction:
         assert "suggestion:" in msg
 
     def test_physical_spelling_of_a_renamed_source_key_rejected(self):
-        fk = DatasetField(name="customer_id", sql="cust_fk")
+        fk = DatasetField(name="customer_id", expression="cust_fk")
         with pytest.raises(ValueError, match="relationship orders → customers key 'cust_fk'"):
             _orders(fk, pairs=[["cust_fk", "id"]])
 
@@ -131,7 +131,7 @@ class TestSourceSideAtConstruction:
         assert "base field" in msg
 
     def test_filtered_source_key_rejected(self):
-        fk = DatasetField(name="customer_id", sql="cust_fk", filter="status = 'ok'")
+        fk = DatasetField(name="customer_id", expression="cust_fk", filter="status = 'ok'")
         with pytest.raises(ValueError, match="relationship orders → customers key 'customer_id'"):
             _orders(fk, pairs=[["customer_id", "id"]])
 
@@ -287,20 +287,20 @@ _LIVE = LiveTable(columns={"id": DataType.INTEGER, "legalEntityType": DataType.S
 
 class TestDriftAndRefinement:
     def test_quoted_self_name_present_is_not_drift(self):
-        model = _parties(DatasetField(name="legalEntityType", sql='"legalEntityType"'))
+        model = _parties(DatasetField(name="legalEntityType", expression='"legalEntityType"'))
         entry, dropped = diff_sql_table_dataset(
             dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
         assert entry is None
         assert dropped == set()
 
     def test_quoted_rename_present_keeps_its_join(self):
-        model = _parties(DatasetField(name="entity_type", sql='"legalEntityType"'))
+        model = _parties(DatasetField(name="entity_type", expression='"legalEntityType"'))
         entry, _ = diff_sql_table_dataset(
             dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
         assert entry is None
 
     def test_quoted_base_column_missing_is_drift(self):
-        model = _parties(DatasetField(name="entity_type", sql='"entityKind"'))
+        model = _parties(DatasetField(name="entity_type", expression='"entityKind"'))
         entry, dropped = diff_sql_table_dataset(
             dataset=model, live_table=_LIVE, available_datasets_in_ds={"parties", "entities"})
         assert isinstance(entry, EditDatasetDelete)

@@ -388,7 +388,7 @@ async def orders_agg_sql(
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="quantity", datatype=DataType.FLOAT),
             DatasetField(name="status", datatype=DataType.STRING),
-            DatasetField(name="completed_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="completed_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="orders.status = 'completed'"),
         ],
         aggregations=aggregations or [],

@@ -116,7 +116,7 @@ class TestPreservedGuardsVerbatim:
         # A second temporal field leaves no sole-field default either.
         models[0] = models[0].model_copy(update={
             "default_time_dimension": None,
-            "fields": [*models[0].fields, DatasetField(name="updated_at", sql="ordered_at", datatype=DataType.DATETIME)],
+            "fields": [*models[0].fields, DatasetField(name="updated_at", expression="ordered_at", datatype=DataType.DATETIME)],
         })
         query = q(
             dimensions=["orders.region"],

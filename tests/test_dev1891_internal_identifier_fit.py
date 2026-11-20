@@ -331,14 +331,14 @@ class TestUserSurfacesExempt:
 
     async def test_column_sql_survives(self) -> None:
         model = self._orders(extra_columns=[
-            DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
+            DatasetField(name="wide", expression=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
         ])
         sql = await _dry_sql([model], self._query("sum(orders.wide)"))
         assert f'"{PHYS_COL}"' in sql
 
     async def test_column_filter_survives(self) -> None:
         model = self._orders(extra_columns=[
-            DatasetField(name="okwide", sql="amount", filter=f'"{PHYS_COL}" > 0', datatype=DataType.FLOAT),
+            DatasetField(name="okwide", expression="amount", filter=f'"{PHYS_COL}" > 0', datatype=DataType.FLOAT),
         ])
         sql = await _dry_sql([model], self._query("sum(orders.okwide)"))
         assert f'"{PHYS_COL}"' in sql
@@ -360,7 +360,7 @@ class TestUserSurfacesExempt:
 
     async def test_extension_measure_survives(self) -> None:
         model = self._orders(extra_columns=[
-            DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
+            DatasetField(name="wide", expression=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
         ])
         ext = DatasetExtension(
             dataset="orders",
@@ -377,7 +377,7 @@ class TestUserSurfacesExempt:
 
     async def test_non_root_named_stage_model_survives(self) -> None:
         wide_src = self._orders(name="wide_src", extra_columns=[
-            DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
+            DatasetField(name="wide", expression=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
         ])
         inner = SlayerQuery(
             name="s1", population="wide_src",
@@ -413,7 +413,7 @@ class TestUserSurfacesExempt:
 
     async def test_inline_model_survives(self) -> None:
         stored = self._orders(name="inline_orders", extra_columns=[
-            DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
+            DatasetField(name="wide", expression=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
             population="inline_orders",
@@ -428,7 +428,7 @@ class TestUserSurfacesExempt:
             name="dims", data_source=DS, sql_table="dims",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
+                DatasetField(name="wide", expression=f'"{PHYS_COL}"', datatype=DataType.FLOAT),
             ],
         )
         host = self._orders(

@@ -397,7 +397,7 @@ class TestFirstLastDerivedGrain:
         ``DatasetField(name="renamed", sql="_val_0")`` exports ``_val_0`` through
         ``target.*``, so the allocator must reserve the physical name too — not
         just ``c.name`` (Codex)."""
-        customers_extra = [DatasetField(name="renamed", sql="_val_0", datatype=DataType.INTEGER)]
+        customers_extra = [DatasetField(name="renamed", expression="_val_0", datatype=DataType.INTEGER)]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
@@ -442,7 +442,7 @@ class TestSiblingPathsDerivedGrain:
         gate, so it is a regression guard — must pass before AND after the fix."""
         # amt_hi's filter references a joined table → filtered-local isolation.
         orders_extra = [DatasetField(
-            name="amt_hi", sql="amount", datatype=DataType.FLOAT,
+            name="amt_hi", expression="amount", datatype=DataType.FLOAT,
             filter="customers_v2.lifetime_value > 15")]
         query = SlayerQuery(
             population="orders_x",
@@ -601,7 +601,7 @@ def _sqlite_datasets() -> "list[SlayerDataset]":
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
                 # Filter references a JOINED table → filtered-local
                 # isolation (used by the filtered-local + derived-grain test).
-                DatasetField(name="amt_hi", sql="amount", datatype=DataType.FLOAT,
+                DatasetField(name="amt_hi", expression="amount", datatype=DataType.FLOAT,
                        filter="customers_v2.lifetime_value > 15"),
             ],
             relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],

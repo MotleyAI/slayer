@@ -24,8 +24,9 @@ def _native(sql: str) -> ExpressionObject:
     "amount; amount",
 ])
 def test_a_statement_is_rejected_naming_the_column(sql: str) -> None:
+    expression = _native(sql)
     with pytest.raises(ValidationError, match="leaky"):
-        DatasetField(name="leaky", expression=_native(sql), datatype=DataType.FLOAT)
+        DatasetField(name="leaky", expression=expression, datatype=DataType.FLOAT)
 
 
 @pytest.mark.parametrize("sql", [

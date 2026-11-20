@@ -23,10 +23,10 @@ def _dataset_a() -> SlayerDataset:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.INTEGER),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="bar", expression="bar", datatype=DataType.FLOAT),
+            DatasetField(name="b_id", expression="b_id", datatype=DataType.INTEGER),
+            DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
             # Local derived chain: c2 references sibling derived c1.
             DatasetField(name="c1", expression="raw_a + 1", datatype=DataType.FLOAT),
             DatasetField(name="c2", expression="A.c1 * 2", datatype=DataType.FLOAT),
@@ -43,8 +43,8 @@ def _dataset_b() -> SlayerDataset:
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="foo_raw", expression="foo_raw", datatype=DataType.FLOAT),
             DatasetField(name="foo_normalized", expression="foo_raw / 100.0", datatype=DataType.FLOAT),
         ],
     )
@@ -98,7 +98,7 @@ def test_cycle_raises_column_cycle_error() -> None:
         data_source="ds",
         sql_table="C",
         fields=[
-            DatasetField(name="x", sql="x", datatype=DataType.FLOAT),
+            DatasetField(name="x", expression="x", datatype=DataType.FLOAT),
             DatasetField(name="c1", expression="C.c2 + 1", datatype=DataType.FLOAT),
             DatasetField(name="c2", expression="C.c1 - 1", datatype=DataType.FLOAT),
         ],

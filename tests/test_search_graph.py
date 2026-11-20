@@ -70,15 +70,15 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 data_source="shop",
                 description="Order transactions",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                     DatasetField(
                         name="amount",
-                        sql="amount",
+                        expression="amount",
                         datatype=DataType.FLOAT,
                         label="Order amount",
                         description="Net order value in USD",
                     ),
-                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                    DatasetField(name="status", expression="status", datatype=DataType.STRING),
                     DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
                 ],
                 metrics=[
@@ -111,9 +111,9 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 data_source="shop",
                 description="Customer master data",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="email", sql="email", datatype=DataType.STRING),
-                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="email", expression="email", datatype=DataType.STRING),
+                    DatasetField(name="region", expression="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -125,9 +125,9 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 data_source="analytics",
                 description="Clickstream events",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                     DatasetField(
-                        name="event_type", sql="event_type", datatype=DataType.STRING
+                        name="event_type", expression="event_type", datatype=DataType.STRING
                     ),
                 ],
             )

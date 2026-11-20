@@ -142,13 +142,13 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
             sql_table="orders",
             data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
 
-                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="avg_amount", expression="amount", datatype=DataType.FLOAT),
                 # A genuine DOUBLE PRECISION expression field.
                 # ``amount`` is NUMERIC, so ``round(sum(amount), 2)`` works on
                 # Postgres natively; the non-bare DOUBLE-typed sql gets wrapped
@@ -163,9 +163,9 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
             sql_table="customers",
             data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
 
             ],
         )
@@ -465,23 +465,23 @@ async def pg_cross_dataset_env(postgresql):
         name="orders", sql_table="orders", data_source="testpg",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
 
-            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testpg",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
 
-            DatasetField(name="avg_score", sql="score", datatype=DataType.FLOAT),
+            DatasetField(name="avg_score", expression="score", datatype=DataType.FLOAT),
         ],
     )))
     async with owned_query_engine(storage=storage) as engine:
@@ -1050,9 +1050,9 @@ async def planets_pg_env(postgresql):
             sql_table="planets",
             data_source="planets_pg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
                     expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="row_number() over (order by mass desc)")]),
@@ -1114,8 +1114,8 @@ async def pg_derived_chain_env(postgresql):
             data_source="testpg",
             sql_table="b_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", expression="foo_raw", datatype=DataType.FLOAT),
                 DatasetField(name="foo_normalized", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="foo_raw / 100.0")]), datatype=DataType.FLOAT),
             ],
         )
@@ -1126,10 +1126,10 @@ async def pg_derived_chain_env(postgresql):
             data_source="testpg",
             sql_table="a_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
-                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", expression="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
+                DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
                     expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="a_tbl.bar / b_tbl.foo_normalized")]),
@@ -1271,21 +1271,21 @@ def _pg_dev1645_storage(postgresql_proc, tmp_path_factory):
             name="clusters", sql_table="clusters", data_source="testpg",
             fields=[
                 # PK column name is mixed-case and written UNQUOTED in the dataset.
-                DatasetField(name="CLSTR_PIN", sql="CLSTR_PIN", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                DatasetField(name="CLSTR_PIN", expression="CLSTR_PIN", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
             ],
         )
         accounts_model = SlayerDataset(
             name="accounts", sql_table="accounts", data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 # Derived boolean referencing mixed-case StateFlag UNQUOTED (the
                 # fake_account_23 repro). Fix must emit "StateFlag".
                 DatasetField(name="is_inactive", datatype=DataType.BOOLEAN,
                        expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
-                DatasetField(name="acct_form", sql="acct_form", datatype=DataType.STRING),
-                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.INTEGER),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="acct_form", expression="acct_form", datatype=DataType.STRING),
+                DatasetField(name="clu_ref", expression="clu_ref", datatype=DataType.INTEGER),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             ],
             # Relationship key CLSTR_PIN written UNQUOTED (the fake_account_15 repro).
             relationships=[DatasetRelationship(to="clusters", from_columns=["clu_ref"], to_columns=["CLSTR_PIN"])],
@@ -1454,27 +1454,27 @@ def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
         merchant = SlayerDataset(
             name="merchant", sql_table='"Merchant"', data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
         grant = SlayerDataset(
             name="grant", sql_table='"Grant"', data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="namespace", sql="namespace", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="merchantId", sql="merchantId", datatype=DataType.INTEGER),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="namespace", expression="namespace", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="merchantId", expression="merchantId", datatype=DataType.INTEGER),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             ],
             relationships=[DatasetRelationship(to="merchant", from_columns=["merchantId"], to_columns=["id"])],
         )
         usage = SlayerDataset(
             name="usage", sql_table="usage", data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INTEGER),
-                DatasetField(name="qty", sql="qty", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="grant_id", expression="grant_id", datatype=DataType.INTEGER),
+                DatasetField(name="qty", expression="qty", datatype=DataType.INTEGER),
                 # derived field referencing the reserved joined dataset `grant`
                 DatasetField(name="bumped", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="grant.amount + 1")]), datatype=DataType.FLOAT),
             ],

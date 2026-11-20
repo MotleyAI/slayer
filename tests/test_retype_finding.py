@@ -149,7 +149,7 @@ async def _save_pg_datasets(storage: YAMLStorage) -> None:
     # As 1.6.0 reflection typed the table (interval TEXT, json UNKNOWN, oid TEXT, money DOUBLE, xml TEXT),
     # plus ``duration`` stored as TIMESTAMP over the interval.
     await storage.save_dataset(SlayerDataset(name="pg_table", sql_table="pgtypes", data_source="pg", fields=[
-        _pk(), DatasetField(name="duration", sql="dur", datatype=DataType.DATETIME), DatasetField(name="dur", datatype=DataType.STRING),
+        _pk(), DatasetField(name="duration", expression="dur", datatype=DataType.DATETIME), DatasetField(name="dur", datatype=DataType.STRING),
         DatasetField(name="payload", datatype=DataType.OPAQUE), DatasetField(name="ref", datatype=DataType.STRING),
         DatasetField(name="amount", datatype=DataType.FLOAT), DatasetField(name="doc", datatype=DataType.STRING),
     ]))
@@ -421,7 +421,7 @@ class TestSqliteProbe:
         ds = DatasourceConfig(name="s", type="sqlite", database=str(db))
         model = SlayerDataset(name="t", sql_table="t", data_source="s", fields=[
             _pk(), DatasetField(name="code", datatype=DataType.INTEGER), DatasetField(name="amt", datatype=DataType.INTEGER),
-            DatasetField(name="amount", sql='"amt"', datatype=DataType.INTEGER)])
+            DatasetField(name="amount", expression='"amt"', datatype=DataType.INTEGER)])
         findings: list[schema_drift.RetypeFinding] = []
         client = SlayerSQLClient(datasource=ds)
         try:

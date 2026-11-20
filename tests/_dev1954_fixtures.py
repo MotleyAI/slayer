@@ -74,7 +74,7 @@ def dev1954_datasets(*, named: bool = True) -> List[SlayerDataset]:
 
     orders = _by_name(models, "orders")
     orders.fields.append(DatasetField(
-        name="north_amount", datatype=DataType.FLOAT, sql="amount",
+        name="north_amount", datatype=DataType.FLOAT, expression="amount",
         filter="customers.regions.rname = 'North'"))
     orders.fields.append(DatasetField(
         name="region_label", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.regions.rname"), DialectEntry(dialect="SQLITE", expression="customers.regions.rname")])))

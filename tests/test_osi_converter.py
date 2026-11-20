@@ -1333,7 +1333,7 @@ def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
 
 def test_a_cycle_of_cross_model_refs_has_no_end(monkeypatch: pytest.MonkeyPatch):
     model = SlayerDataset(name="m", sql_table="m", data_source="testds", fields=[
-        DatasetField(name=n, sql=f"x.{n}", datatype=DataType.FLOAT) for n in ("a", "b", "c")])
+        DatasetField(name=n, expression=f"x.{n}", datatype=DataType.FLOAT) for n in ("a", "b", "c")])
     nxt = {"a": "b", "b": "c", "c": "a"}
     def _single_ref(
         self: OsiToSlayerConverter, dataset: SlayerDataset, sql: str,

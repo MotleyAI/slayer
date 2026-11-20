@@ -74,14 +74,14 @@ def test_folded_and_exact_live_spellings_are_ambiguous(dialect: str) -> None:
 
 
 def test_unquoted_mixed_case_reference_reads_the_exact_column_on_postgres() -> None:
-    lower, exact = DatasetField(name="lower", sql="orderamount"), DatasetField(name="exact", sql='"OrderAmount"')
+    lower, exact = DatasetField(name="lower", expression="orderamount"), DatasetField(name="exact", expression='"OrderAmount"')
     index = PhysicalIndex([lower, exact], dialect="postgres", live=["orderamount", "OrderAmount"])
     assert index.reader(exp.to_identifier("OrderAmount")) is exact
     assert index.reader(exp.to_identifier("orderamount")) is lower
 
 
 def test_case_insensitive_dialect_matches_any_case() -> None:
-    col = DatasetField(name="amount", sql="orderamount")
+    col = DatasetField(name="amount", expression="orderamount")
     index = PhysicalIndex([col], dialect="duckdb", live=["orderamount"])
     assert index.reader(exp.to_identifier("OrderAmount")) is col
 
@@ -316,10 +316,10 @@ def test_table_location_keeps_the_quoting_of_its_names() -> None:
 
 def _keyed(*, cardinality: RelationshipCardinality) -> list[SlayerDataset]:
     customers = SlayerDataset(name="customers", data_source=DS, sql_table="customers", fields=[
-        DatasetField(name="id", sql='"id"', datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
+        DatasetField(name="id", expression='"id"', datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
         relationships=[DatasetRelationship(to="orders", from_columns=["id"], to_columns=["cust"], cardinality=cardinality)])
     orders = SlayerDataset(name="orders", data_source=DS, sql_table="orders", fields=[
-        DatasetField(name="oid", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="cust", sql='"cust_key"', datatype=DataType.INTEGER),
+        DatasetField(name="oid", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="cust", expression='"cust_key"', datatype=DataType.INTEGER),
         DatasetField(name="status", datatype=DataType.STRING)])
     return [customers, orders]
 

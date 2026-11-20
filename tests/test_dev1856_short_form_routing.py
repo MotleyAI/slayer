@@ -44,19 +44,19 @@ def _norm(s: str) -> str:
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
+    return DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)
 
 
 def _d(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
+    return DatasetField(name=name, expression=name, datatype=DataType.FLOAT)
 
 
 def _t(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
+    return DatasetField(name=name, expression=name, datatype=DataType.STRING)
 
 
 def _ts(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.DATETIME)
+    return DatasetField(name=name, expression=name, datatype=DataType.DATETIME)
 
 
 def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
@@ -74,7 +74,7 @@ def _chain_datasets(
         name="Consumer", sql_table="Consumer", data_source="test",
         fields=[
             _pk(), _t("name"), _t("email"), _ts("signup_at"), _d("amount"),
-            DatasetField(name="geo", sql="geo", datatype=DataType.OPAQUE),
+            DatasetField(name="geo", expression="geo", datatype=DataType.OPAQUE),
         ],
         metrics=[DatasetMetric(
             name="aov", expression="sum(amount) / count(*)", datatype=DataType.FLOAT

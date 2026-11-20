@@ -134,7 +134,7 @@ def _orders() -> SlayerDataset:
             DatasetField(name="select", datatype=DataType.STRING),
             DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT),
             # DatasetField.filter — Mode-A predicate crossing a relationship
-            DatasetField(name="eu_amount", sql="amount",
+            DatasetField(name="eu_amount", expression="amount",
                    filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
             # raw ref that inlines to a constant (dual-scan contract)
             DatasetField(name="flag_const", expression="1", datatype=DataType.INTEGER),

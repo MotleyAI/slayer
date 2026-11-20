@@ -67,19 +67,19 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _stores(*, extra=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.STRING),
-        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.DATETIME),
-        DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
+        DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", expression="name", datatype=DataType.STRING),
+        DatasetField(name="opened_at", expression="opened_at", datatype=DataType.DATETIME),
+        DatasetField(name="region_id", expression="region_id", datatype=DataType.INTEGER),
     ]
     cols += extra or []
     return SlayerDataset(
@@ -90,13 +90,13 @@ def _stores(*, extra=None) -> SlayerDataset:
 
 def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-        DatasetField(name="status", sql="status", datatype=DataType.STRING),
+        DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="status", expression="status", datatype=DataType.STRING),
         DatasetField(name="status_up", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="upper(status)")]), datatype=DataType.STRING),
-        DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME),
-        DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.DATETIME),
-        DatasetField(name="store_id", sql="store_id", datatype=DataType.INTEGER),
-        DatasetField(name="order_total", sql="order_total", datatype=DataType.FLOAT),
+        DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME),
+        DatasetField(name="delivery_at", expression="delivery_at", datatype=DataType.DATETIME),
+        DatasetField(name="store_id", expression="store_id", datatype=DataType.INTEGER),
+        DatasetField(name="order_total", expression="order_total", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(

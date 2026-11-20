@@ -37,8 +37,8 @@ class TestSqliteJsonExtractInGenerator:
             sql_table="users",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="payload", sql="payload", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="payload", expression="payload", datatype=DataType.STRING),
                 DatasetField(
                     name="tier",
                     expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="json_extract(payload, '$.tier')")]),
@@ -91,8 +91,8 @@ class TestSqliteJsonExtractInGenerator:
             ),
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="tier", expression="tier", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
@@ -489,11 +489,11 @@ class TestTsqlDialect:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
             ],
         )
 

@@ -114,11 +114,11 @@ def customers_dataset() -> SlayerDataset:
             DatasetField(name="spend", datatype=DataType.FLOAT),
             DatasetField(name="signup_at", datatype=DataType.DATETIME),
             # Target-local filtered field (safe; CASE-WHEN at aggregation time):
-            DatasetField(name="gold_spend", datatype=DataType.FLOAT, sql="spend",
+            DatasetField(name="gold_spend", datatype=DataType.FLOAT, expression="spend",
                    filter="tier = 'gold'"),
             # Unsafe-input probes (only planned when referenced):
             DatasetField(name="seg_label", datatype=DataType.STRING, expression="segments.label"),
-            DatasetField(name="vip_spend", datatype=DataType.FLOAT, sql="spend",
+            DatasetField(name="vip_spend", datatype=DataType.FLOAT, expression="spend",
                    filter="segments.label = 'Alpha'"),
         ],
         relationships=[

@@ -49,7 +49,7 @@ def _dataset(*, arrays: bool) -> SlayerDataset:
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="amount", datatype=DataType.FLOAT),
         DatasetField(name="double_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * 2"), DialectEntry(dialect="SQLITE", expression="amount * 2")]), datatype=DataType.FLOAT),
-        DatasetField(name="qty", sql="quantity", datatype=DataType.INTEGER),
+        DatasetField(name="qty", expression="quantity", datatype=DataType.INTEGER),
         DatasetField(name="order_total", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression='"Order Total"'), DialectEntry(dialect="SQLITE", expression='"Order Total"')]), datatype=DataType.FLOAT),
         DatasetField(name="ordered_at", datatype=DataType.DATE),
         DatasetField(name="ordered_ts", datatype=DataType.DATETIME),

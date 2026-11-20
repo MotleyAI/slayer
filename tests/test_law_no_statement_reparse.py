@@ -183,8 +183,8 @@ def _stats_datasets() -> list[SlayerDataset]:
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="tier", expression="tier", datatype=DataType.STRING),
         ],
     )
     return [orders, customers]
@@ -236,8 +236,8 @@ async def test_query_backed_expansion_composes_without_a_statement_render(ds_typ
     _, sql = await _expand(
         ds_type=ds_type,
         columns=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
         ],
         dimensions=["orders.status"],
     )
