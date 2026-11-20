@@ -57,9 +57,10 @@ principles every layer obeys.
      well-defined only when the home determines every grain member; so in 2.2 the
      constituent stands for its grain members. It contributes no leaf, and its
      interior is never inspected.
-   - **2.4 Aggregation.** An aggregation over a row-level source is homed on the
-     deepest dataset that determines the source's home (2.2) and every column-valued
-     parameter and non-overridden definition default — each a row-level expression
+   - **2.4 Aggregation.** An aggregation over a row-level source is homed on its
+     source anchor (2.6) when the anchor determines the source's home (2.2) and every
+     column-valued parameter and non-overridden definition default, else on the deepest
+     dataset that determines them all — each a row-level expression
      under 2.1, defaults resolved as references from the owning model with
      **cancellation**: a qualifier naming a dataset already on its path reads that
      row (`a.b.a ≡ a`) rather than re-joining, any other unreachable qualifier
@@ -82,7 +83,7 @@ principles every layer obeys.
      naming a dataset on the anchor's path cancelling back to it, any other qualifier
      the anchor cannot reach forward read as a query reference (Principle 1) instead. The home,
      when it exists, is among the inputs' paths and their longest common prefix;
-     candidates are tried deepest-first, ties preferring the anchor.
+     the anchor is tried first, then the other candidates deepest-first.
    - **2.7 Spelling-invariance.** The home depends only on the inputs' paths and
      types: `sum(customers.spend)` and `sum(customers.spend + 0)` share one home.
      A single-column source is the one-leaf case of 2.2 — the model
@@ -100,6 +101,7 @@ principles every layer obeys.
    [enforced: test:tests/test_dev1931_default_home.py]
    [enforced: test:tests/test_dev1908_default_cancellation.py]
    [enforced: test:tests/test_dev2013_expression_attribution.py]
+   [enforced: test:tests/test_dev2367_list_elements_across_joins.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
@@ -164,7 +166,7 @@ principles every layer obeys.
    per-query row number)
    [enforced: test:tests/test_dev1841_association_exec.py]
    [enforced: test:tests/test_dev1910_home_rooted_association.py]
-   [enforced: test:tests/test_dev2216_keyless_association.py]; broadcast (the
+   [enforced: test:tests/test_dev2216_keyless_association.py] [enforced: test:tests/test_dev2367_list_elements_across_joins.py]; broadcast (the
    value repeats across the dimension's cells, with a self-announcing warning;
    spec: `queries/semantics` › Loud degradation)
    [enforced: test:tests/test_dev1836_broadcast_strict.py]; and error (refuse)

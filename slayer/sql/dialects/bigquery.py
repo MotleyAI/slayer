@@ -25,6 +25,7 @@ from slayer.sql.dialects.base import (
     NativeFn,
     COMPARISON_NODES,
     LIST_ELEMENT,
+    LIST_POSITION,
     LIST_VALUE,
     ListRelation,
     PORTABLE_LIBRARY,
@@ -59,7 +60,7 @@ _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "S
 _DATETIME = exp.DataType.build("DATETIME")
 
 
-_ELEMENT, _WANTED = LIST_ELEMENT, "__slayer_w"
+_ELEMENT, _WANTED, _OFFSET = LIST_ELEMENT, "__slayer_w", "__slayer_o"
 
 
 def _over_elements(values: Expression, name: str) -> exp.Select:
@@ -186,13 +187,18 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False,
+        distinct: bool = False, positioned: bool = False,
     ) -> ListRelation:
-        """``UNNEST`` of a ``STRUCT<value>`` array, so the element reads as ``alias.value``."""
+        """``UNNEST`` of a ``STRUCT<value[, position]>`` array, so the element reads as ``alias.value``."""
         element_ref = exp.column(_ELEMENT)
-        rows = exp.Select(kind="STRUCT").select(exp.alias_(element_ref, LIST_VALUE)).from_(exp.Unnest(
+        elements = exp.Unnest(
             expressions=[values.copy()], alias=exp.TableAlias(columns=[exp.to_identifier(_ELEMENT)]),
-        )).where(is_not_null(element_ref))
+            offset=exp.to_identifier(_OFFSET) if positioned else None,
+        )
+        rows = exp.Select(kind="STRUCT").select(exp.alias_(element_ref, LIST_VALUE)).from_(elements).where(
+            is_not_null(element_ref))
+        if positioned:
+            rows = rows.select(exp.alias_(exp.column(_OFFSET), LIST_POSITION))
         rows = rows.distinct() if distinct else rows
         return ListRelation(relation=exp.Unnest(
             expressions=[exp.Array(expressions=[rows])], alias=exp.TableAlias(columns=[alias.copy()]),

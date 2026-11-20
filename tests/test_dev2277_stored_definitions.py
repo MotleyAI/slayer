@@ -240,8 +240,7 @@ async def _outcome(engine: SlayerQueryEngine, body: dict[str, Any]) -> Any:
 
 @pytest.mark.parametrize(("weight", "template"), [
     ("*", "SUM({value} * {weight})"),
-    pytest.param("skills.value", "SUM({value} * length({weight}))", id="list-element", marks=pytest.mark.xfail(
-        strict=True, reason="DEV-2367: a list-element default's outcome depends on the population")),
+    pytest.param("skills.value", "SUM({value} * length({weight}))", id="list-element"),
 ], ids=["star", "list-element"])
 async def test_custom_aggregation_default_reads_like_from_its_home(weight: str, template: str) -> None:
     base = contractors_dataset()
@@ -254,7 +253,6 @@ async def test_custom_aggregation_default_reads_like_from_its_home(weight: str, 
     assert other == home
 
 
-@pytest.mark.xfail(strict=True, reason="DEV-2367: counting list elements across a join fails")
 async def test_list_element_saved_metric() -> None:
     datasets = _list_datasets(metrics=[DatasetMetric(name="n_skills", expression="count(skills.*)"),
                                        DatasetMetric(name="n_go", expression="count(skills.*) FILTER (WHERE skills.value = 'go')")])

@@ -15,7 +15,7 @@ from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
-    PORTABLE_LIBRARY,
+    LIST_POSITION, PORTABLE_LIBRARY,
     NativeFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit,
     non_null_elements, text_try_cast, unnest_elements,
 )
@@ -133,10 +133,13 @@ class PrestoFamilyDialect(SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False,
+        distinct: bool = False, positioned: bool = False,
     ) -> ListRelation:
         kept = non_null_elements(values)
-        return ListRelation(relation=unnest_elements(anon("ARRAY_DISTINCT", kept) if distinct else kept, alias=alias))
+        relation = unnest_elements(anon("ARRAY_DISTINCT", kept) if distinct else kept, alias=alias)
+        if positioned:
+            relation.set("offset", exp.to_identifier(LIST_POSITION))
+        return ListRelation(relation=relation)
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         return anon("CONTAINS", non_null_elements(values), value)

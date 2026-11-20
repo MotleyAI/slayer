@@ -289,6 +289,15 @@ class TestCancelThenFanningHop:
         assert plain == pytest.approx(explicit)
 
 
+class TestReverseHopNotOnThePath:
+    async def test_reverse_hop_default_homes_on_customers(self):
+        # Rooted at regions, `customers` is not on the path: nothing cancels, the
+        # default homes on customers, and it plans exactly as its explicit twin.
+        default = await _gen("wsum_cust_spend(pop)", source_dataset="regions")
+        explicit = await _gen("wsum_cust_spend(pop, weight=customers.spend)", source_dataset="regions")
+        assert default == explicit
+
+
 class TestFailClosed:
     async def test_cancel_then_miss_fails_closed(self):
         # D3: `regions` cancels, then `plans` misses (not a hop from regions) —
@@ -306,13 +315,3 @@ class TestFailClosed:
         with pytest.raises(ValueError, match="(?i)circular"):
             await _gen("sum(customers.regions.customers.spend)")
 
-    @pytest.mark.parametrize("formula", [
-        "wsum_cust_spend(regions.pop)",
-        "wsum_cust_spend(regions.pop, weight=customers.spend)"])
-    async def test_reverse_hop_not_on_the_path_stays_refused(self, formula):
-        # Rooted at regions, `customers` is not on the path: nothing cancels, and
-        # BOTH the default and its explicit twin fail with the same input-safety
-        # error naming customers.
-        with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
-            await _gen(formula, source_dataset="regions")
-        assert "customers" in str(ei.value)

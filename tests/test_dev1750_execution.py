@@ -179,25 +179,28 @@ class TestSiblingProtectionUnderFanOut:
     own CTEs, so the sibling stays true — a claim only a fan-out dataset can
     actually test (Codex F1)."""
 
-    async def test_one_to_many_fragment_fails_closed(
+    async def test_one_to_many_fragment_homes_on_line_items(
         self, exec_engine
     ) -> None:
-        """Class-(d) crossed-argument ledger row: the 1:N
-        ``line_items`` param fanned the SUM silently — now a hard error naming
-        the hop and the remedy. Sibling protection under fan-out survives as a
-        structural property of producer isolation, pinned by the proven-hop
-        shapes above."""
-        query = _q(metrics=[
+        """The 1:N ``line_items`` param homes the SUM on ``line_items``, which determines
+        ``orders.amount``; the sibling ``sum(amount)`` is not multiplied by the fan-out."""
+        resp = await exec_engine.execute(_q(metrics=[
             QueryMetric(metric="sum(orders.amount)", alias="s"),
             QueryMetric(metric="liscaled_sum(orders.amount)", alias="li"),
             QueryMetric(
                 metric="time_shift(liscaled_sum(orders.amount), -1)", alias="prev"),
-        ])
-        with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(query)
-        message = str(ei.value)
-        assert "line_items" in message
-        assert any(w in message.lower() for w in ("cardinality", "unique", "declare"))
+        ]))
+        plain = await exec_engine.execute(_q(metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")]))
+        from_line_items = await exec_engine.execute(SlayerQuery.model_validate({
+            "population": "line_items", "time_dimensions": month_td("orders.ordered_at"),
+            "metrics": [{"metric": "sum(orders.amount * line_items.factor)", "alias": "li"}],
+        }))
+        by = _by_month(resp)
+        assert {k: float(r["s"]) for k, r in by.items()} == {
+            k: float(r["s"]) for k, r in _by_month(plain).items()}
+        expected = {month_key(r["orders.ordered_at"]): float(r["li"])
+                    for r in from_line_items.data}
+        assert {k: float(r["li"]) for k, r in by.items()} == expected
 
 
 class TestConsecutivePeriodsExecution:

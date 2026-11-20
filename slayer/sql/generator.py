@@ -88,13 +88,12 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.dialects.base import bare_comparands
+from slayer.sql.dialects.base import LIST_POSITION, bare_comparands
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
     ROW_IDENTITY_FIELD,
     AliasAllocator,
-    is_row_identity,
-    with_row_identity,
+    identified_datasets,
     canonical_aggregate_alias,
     cte_name_from_alias,
     dialect_folds_case,
@@ -3954,9 +3953,12 @@ class SQLGenerator:
                 f"absent from the bundle's referenced datasets."
             )
         kernel = getattr(attach, "kernel", None)
-        if isinstance(kernel, AssociationProducerKernel) and any(map(is_row_identity, kernel.entity_keys)):
-            root = with_row_identity(root)
-        return bundle.rerooted(root)
+        if not isinstance(kernel, AssociationProducerKernel):
+            return bundle.rerooted(root)
+        root, numbered = identified_datasets(
+            root=root, entity_keys=kernel.entity_keys, datasets_by_name=bundle.datasets_by_name,
+        )
+        return bundle.rerooted(root, replacing=numbered)
 
     def _assemble_with_chain(
         self, *, entries, final, external_names=frozenset(),
@@ -4427,6 +4429,7 @@ class SQLGenerator:
             base_from = self._emit_relation(dataset=parent, alias=parent_alias, bundle=bundle)
             joins.append(self._list_join(
                 parent=parent, field=column, parent_alias=parent_alias, alias=source_relation, bundle=bundle,
+                positioned=source_dataset.get_field(LIST_POSITION) is not None,
             ))
             emitted_aliases.add(parent_alias)
         else:
@@ -4456,7 +4459,7 @@ class SQLGenerator:
 
     def _list_relation(
         self, *, parent: SlayerDataset, field: str, parent_alias: str, alias: str, bundle, leading: bool,
-        distinct: bool = False,
+        distinct: bool = False, positioned: bool = False,
     ):
         """``parent``'s list ``field`` (read at ``parent_alias``) as its element relation ``alias``."""
         col = parent.get_field(field)
@@ -4467,12 +4470,16 @@ class SQLGenerator:
         )
         return self._dialect.list_relation(
             values, alias=exp.to_identifier(alias), element=col.element_type, leading=leading, distinct=distinct,
+            positioned=positioned,
         )
 
-    def _list_join(self, *, parent, field: str, parent_alias: str, alias: str, bundle, distinct: bool = False):
+    def _list_join(
+        self, *, parent, field: str, parent_alias: str, alias: str, bundle, distinct: bool = False,
+        positioned: bool = False,
+    ):
         relation = self._list_relation(
             parent=parent, field=field, parent_alias=parent_alias, alias=alias, bundle=bundle, leading=False,
-            distinct=distinct,
+            distinct=distinct, positioned=positioned,
         )
         return relation.relation, None, relation.join_kind
 
