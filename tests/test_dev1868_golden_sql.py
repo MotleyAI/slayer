@@ -23,7 +23,8 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"field": "ordered_at", "granularity": "month"}]
+def _month(pop: str) -> list:
+    return [{"field": f"{pop}.ordered_at", "granularity": "month"}]
 
 
 def _orders(**kw) -> SlayerQuery:
@@ -33,7 +34,7 @@ def _orders(**kw) -> SlayerQuery:
 
 def _sales(**kw) -> SlayerQuery:
     kw.setdefault("population", "sales")
-    kw.setdefault("time_dimensions", _MONTH)
+    kw.setdefault("time_dimensions", _month("sales"))
     return SlayerQuery(**kw)
 
 
@@ -62,15 +63,15 @@ def _cases() -> dict:
         ),
         # W2 — cross-dataset partitioned inners under transforms.
         "w2/cumsum_part_tier": _orders(
-            dimensions=["customers.tier"], time_dimensions=_MONTH,
+            dimensions=["customers.tier"], time_dimensions=_month("orders"),
             metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],
         ),
         "w2/change_last_region": _orders(
-            dimensions=["customers.regions.name"], time_dimensions=_MONTH,
+            dimensions=["customers.regions.name"], time_dimensions=_month("orders"),
             metrics=[{"metric": f"change({LAST_REGION})", "alias": "ch"}],
         ),
         "w2/shared_inner": _orders(
-            dimensions=["customers.tier"], time_dimensions=_MONTH,
+            dimensions=["customers.tier"], time_dimensions=_month("orders"),
             filter=[f"{CM_PART_TIER} > 100"],
             metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],
         ),
@@ -114,16 +115,16 @@ def _cases() -> dict:
         # Residue split — the two permanent typed errors, recorded as raises.
         "res/transform_no_aggregate": _orders(
             dimensions=["customers.tier",
-                        {"field": "CASE WHEN cumsum(amount) > 50 "
+                        {"field": "CASE WHEN cumsum(orders.amount) > 50 "
                                        "THEN 1 ELSE 0 END", "alias": "b"}],
-            time_dimensions=_MONTH,
+            time_dimensions=_month("orders"),
             metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
         "res/transform_ungrained": _orders(
             dimensions=["customers.tier",
-                        {"field": "CASE WHEN cumsum(sum(amount)) > 50 "
+                        {"field": "CASE WHEN cumsum(sum(orders.amount)) > 50 "
                                        "THEN 1 ELSE 0 END", "alias": "b"}],
-            time_dimensions=_MONTH,
+            time_dimensions=_month("orders"),
             metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
     }

@@ -356,7 +356,7 @@ class TestFailClosedEveryMode:
     @pytest.mark.parametrize("mode", MODES)
     async def test_transform_parameter_grain_not_determined(self, orders_engine, mode):
         """Scenario: Transform parameter whose grain the home does not determine fails closed."""
-        q = mode_q(mode, time_dimensions=ordered_month_td(), metrics=[_m(CUMSUM_PARAM)])
+        q = mode_q(mode, time_dimensions=ordered_month_td("orders"), metrics=[_m(CUMSUM_PARAM)])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")

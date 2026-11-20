@@ -87,8 +87,8 @@ def _cases() -> dict:
         "lift/dim_mixed_windowed": q(
             dimensions=[
                 "orders.region", "orders.city",
-                {"field": "rank(sum(amount, window='90d', partition_by=region)"
-                               " - sum(amount, partition_by=city), direction='desc')", "alias": "x"},
+                {"field": "rank(sum(orders.amount, window='90d', partition_by=orders.region)"
+                               " - sum(orders.amount, partition_by=orders.city), direction='desc')", "alias": "x"},
             ],
             time_dimensions=month_td(),
             metrics=[s],
@@ -96,8 +96,8 @@ def _cases() -> dict:
         "lift/dim_mixed_first_last": q(
             dimensions=[
                 "orders.region", "orders.city",
-                {"field": "rank(last(amount, partition_by=region) - "
-                               "sum(amount, partition_by=city), direction='desc')", "alias": "x"},
+                {"field": "rank(last(orders.amount, partition_by=orders.region) - "
+                               "sum(orders.amount, partition_by=orders.city), direction='desc')", "alias": "x"},
             ],
             metrics=[s],
         ),
@@ -113,9 +113,9 @@ def _cases() -> dict:
         "guard/dim_kwarg_outside_union": q(
             dimensions=[
                 "orders.region", "orders.city",
-                {"field": "rank(sum(amount, partition_by=region) - "
-                               "sum(amount, partition_by=city), "
-                               "partition_by=channel, direction='desc')", "alias": "x"},
+                {"field": "rank(sum(orders.amount, partition_by=orders.region) - "
+                               "sum(orders.amount, partition_by=orders.city), "
+                               "partition_by=orders.channel, direction='desc')", "alias": "x"},
             ],
             metrics=[s],
         ),

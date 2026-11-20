@@ -114,7 +114,7 @@ class TestDualPhaseEmissionOrder:
             dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
-            time_dimensions=month_td())
+            time_dimensions=month_td("monthly"))
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_carrier_precedes_reaggregation_on_every_dialect(self, dialect) -> None:
@@ -137,7 +137,7 @@ class TestDualPhaseEmissionOrder:
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
                       QueryMetric(metric=REAGG_MAX_STANDALONE, alias="c"),
                       QueryMetric(metric=HANDWRITTEN_MAX, alias="d")],
-            time_dimensions=month_td()), dialect="duckdb")
+            time_dimensions=month_td("monthly")), dialect="duckdb")
         ctes = _cm_ctes_in_order(sql)
         assert len(ctes) == 4, ctes
 
@@ -158,7 +158,7 @@ class TestDualPhaseEmissionOrder:
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
                       QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
-            time_dimensions=month_td())
+            time_dimensions=month_td("monthly"))
         resp = await engine.execute(query)
         assert resp.data
         dry = await engine.execute(query, dry_run=True)

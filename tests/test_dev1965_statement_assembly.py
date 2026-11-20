@@ -44,7 +44,7 @@ from tests._dev1965_fixtures import (
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
 from tests.test_dev1756_identifier_length import _assert_within_limit
 
-_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "orders.created_at", "direction": "desc"}]
 _FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 
@@ -337,7 +337,7 @@ class TestQueryBackedWrap:
             dialect="duckdb", seed=seed, datasets=[*_qb_datasets("test"), qb],
         ) as (engine, _db):
             resp = await engine.execute(SlayerQuery.model_validate({
-                "population": "qb", "dimensions": [f"customers__{LONG}"],
+                "population": "qb", "dimensions": [f"qb.customers__{LONG}"],
                 "metrics": ["sum(qb.amount_sum)"],
             }))
         assert {
@@ -354,7 +354,7 @@ class TestQueryBackedWrap:
 
 
 def _stat_seams(expression: str) -> dict:
-    month = [{"field": "created_at", "granularity": "month"}]
+    month = [{"field": "orders.created_at", "granularity": "month"}]
     measure = [{"metric": expression, "alias": "w"}]
     return {
         "producer_hoist": SlayerQuery.model_validate({

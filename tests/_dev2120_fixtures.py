@@ -580,7 +580,7 @@ RETURNING_GRID: dict[str, dict[int, Any]] = {
 
 def _returning_cases() -> list[Case]:
     return [_v(f"json_value|returning-grid-{target.lower()}", ["RETURNING"],
-               f"json_value(doc, '$.v' RETURNING {target})", only(expected))
+               f"json_value(lib.doc, '$.v' RETURNING {target})", only(expected))
             for target, expected in RETURNING_GRID.items()]
 
 

@@ -29,8 +29,8 @@ from tests._dev1847_fixtures import (
     sales_q,
 )
 
-COMPOSITE = ("sum(q_amount, partition_by=[city, region]) + "
-             "sum(amount, partition_by=region)")
+COMPOSITE = ("sum(sales.q_amount, partition_by=[sales.city, sales.region]) + "
+             "sum(sales.amount, partition_by=sales.region)")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -187,7 +187,7 @@ class TestComputedDimensionConsumer:
     async def test_dimension_bands_a_reaggregated_value(self, exec_engine):
         """Deferred from stage 2: a computed dimension consumes a re-aggregated
         value (region avg of city totals) at ROW phase and bands by it."""
-        rlevel = {"field": f"CASE WHEN avg({INNER_CR}, partition_by=region) "
+        rlevel = {"field": f"CASE WHEN avg({INNER_CR}, partition_by=sales.region) "
                                 f"> 50 THEN 'high' ELSE 'low' END",
                   "alias": "rlevel"}
         resp = await exec_engine.execute(sales_q(

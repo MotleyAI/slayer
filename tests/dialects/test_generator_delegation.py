@@ -207,7 +207,7 @@ class TestMedianPercentilePerDialect:
 
     @pytest.mark.parametrize("p", ["0.05", "0.25", "0.5", "0.95"])
     async def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
-        sql = await orders_agg_sql(f"percentile(amount, p={p})", dialect="clickhouse")
+        sql = await orders_agg_sql(f"percentile(orders.amount, p={p})", dialect="clickhouse")
         assert f"quantile({p})(orders.amount)" in sql
 
     async def test_build_percentile_duckdb(self) -> None:
@@ -395,12 +395,12 @@ class TestStatAggsPerDialect:
     async def test_build_two_arg_stat_emits_two_arg_call(
         self, dialect: str, agg: str, sql_fn: str,
     ) -> None:
-        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect=dialect)
+        sql = await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect=dialect)
         assert f"{sql_fn}(orders.amount, orders.quantity)" in sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_clickhouse(self, agg: str) -> None:
-        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="clickhouse")
+        sql = await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect="clickhouse")
         # ClickHouse casing is its own thing; assert the call shape only.
         assert f"{agg.lower()}(orders.amount, orders.quantity)" in sql.lower()
 
@@ -408,7 +408,7 @@ class TestStatAggsPerDialect:
     async def test_build_two_arg_stat_mysql_emits_formula(self, agg: str) -> None:
         # MySQL has no native CORR / COVAR_SAMP / COVAR_POP but can express them
         # via the variance-decomposition formula: cov(x,y) = (var(x+y)-var(x)-var(y))/2
-        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="mysql")
+        sql = await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect="mysql")
         assert "VAR_SAMP(" in sql or "VAR_POP(" in sql
         assert f"{agg.upper()}(" not in sql
         assert "/" in sql
@@ -419,7 +419,7 @@ class TestStatAggsPerDialect:
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_emits_formula(self, agg: str) -> None:
         # T-SQL has no native CORR / COVAR_SAMP / COVAR_POP; use variance-decomposition
-        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect="tsql")
         assert "VAR(" in sql or "VARP(" in sql
         assert f"{agg.upper()}(" not in sql
         assert "/" in sql
@@ -448,7 +448,7 @@ class TestStatAggsPerDialect:
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_unsafe_other_rejected(self, agg: str) -> None:
         with pytest.raises(ValueError, match="DROP TABLE x"):
-            await orders_agg_sql(f"{agg}(amount, other='quantity); DROP TABLE x; --')")
+            await orders_agg_sql(f"{agg}(orders.amount, other='quantity); DROP TABLE x; --')")
 
     def test_build_stddev_samp_over_a_masked_value(self) -> None:
         gen = SQLGenerator(dialect="postgres")
@@ -620,31 +620,31 @@ class TestTsqlDialect:
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_uses_var_function(self, agg: str) -> None:
         """covar/corr on T-SQL must use T-SQL VAR() not Postgres VAR_SAMP()."""
-        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect="tsql")
         assert "VAR(" in sql or "VARP(" in sql, f"Expected VAR()/VARP() in formula, got: {sql}"
         assert "VAR_SAMP(" not in sql, f"VAR_SAMP is not a T-SQL function: {sql}"
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_no_direct_call(self, agg: str) -> None:
         """T-SQL doesn't have COVAR_SAMP / COVAR_POP / CORR natively."""
-        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect="tsql")
         assert f"{agg.upper()}(" not in sql, sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_contains_both_columns(self, agg: str) -> None:
-        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect="tsql")
         assert "orders.amount" in sql
         assert "orders.quantity" in sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_uses_division(self, agg: str) -> None:
-        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect="tsql")
         assert "/" in sql, f"Variance-decomposition formula must contain division: {sql}"
 
     @pytest.mark.parametrize("agg", ["covar_samp", "covar_pop"])
     async def test_build_covar_tsql_null_guards_both_columns(self, agg: str) -> None:
         """Both columns are NULL-guarded against each other in the formula."""
-        upper = (await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")).upper()
+        upper = (await orders_agg_sql(f"{agg}(orders.amount, other=orders.quantity)", dialect="tsql")).upper()
         assert "CASE WHEN" in upper, upper
         assert "IS NOT NULL" in upper or "IS NULL" in upper, upper
 
