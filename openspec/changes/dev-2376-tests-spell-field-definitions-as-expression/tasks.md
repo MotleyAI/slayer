@@ -27,5 +27,5 @@
 ## 5. Finish
 
 - [x] 5.1 Guard test green with only the allowlist; no field-level `sql=` / `"sql"` field key in `tests/` outside it. Verify: `poetry run pytest tests/test_field_expression_spelling_guard.py`.
-- [ ] 5.2 Local test scope per the flow (`la-affected-tests` + touched tests) passes; ruff, `la-typecheck`, `la-arch-check`, LikeC4 validation, `openspec validate --strict` clean. Verify: each command's output.
+- [x] 5.2 Local test scope per the flow (`la-affected-tests` + touched tests) passes; ruff, `la-typecheck`, `la-arch-check`, LikeC4 validation, `openspec validate --strict` clean. Verify: each command's output.
 - [ ] 5.3 CI green, including the path-gated per-backend integration workflows (decision 20). Verify: `la-fetch-failed-pr-checks` reports none.
