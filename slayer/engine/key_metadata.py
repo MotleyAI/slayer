@@ -27,7 +27,6 @@ from slayer.core.keys import (
     SqlFragmentKey,
     StarKey,
     TimeTruncKey,
-    TransformKey,
     ValueKey,
     aggregation_source_type,
     list_element_type,
@@ -95,8 +94,6 @@ def _minted_type(leaf: str) -> Optional[Callable[[], Optional[DataType]]]:
         if found is not None:
             return found
     return None
-# Leaves that read rows: a value without any is built from literals alone.
-_ROW_READING = (FieldKey, FieldSqlKey, StarKey, SqlFragmentKey, AggregateKey, TransformKey)
 
 
 class SlotTyping:
@@ -150,15 +147,17 @@ class SlotTyping:
         return value_type(key, field_type=self.field_type, aggregate_type=self.expression_type)
 
     def type_of(self, key: ValueKey) -> DataType:
-        """``key``'s slot type: a NULL-only value is INT."""
+        """``key``'s slot type: a NULL-only value (no field leaf left unresolved) is INT."""
         found = self.value_type(key)
         if found is not None:
             return found
-        if not any(isinstance(k, _ROW_READING) for k in walk_value_keys(key)):
+        leaves = list(walk_value_keys(key))
+        unresolved = [k for k in leaves if isinstance(k, (FieldKey, FieldSqlKey)) and self.field_type(k) is None]
+        if not unresolved and not any(isinstance(k, SqlFragmentKey) for k in leaves):
             return DataType.INTEGER
         if self._population is not None:
             # The walker's own refusal (an ambiguous or broken hop) names the cause.
-            for k in walk_value_keys(key):
+            for k in unresolved:
                 if isinstance(k, FieldKey) and k.path:
                     follow(root=self._population, path=tuple(k.path), datasets_by_name=self._datasets)
         raise TypeError(f"no type derives for {key!r}: a field it reads does not resolve")

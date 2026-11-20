@@ -26,6 +26,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_sch
 from slayer.sql.render.row_expr import data_type_target
 from tests._dev2373_fixtures import (
     DIALECTS,
+    bundle,
     DS,
     cast_target,
     customers,
@@ -367,6 +368,16 @@ class TestUnresolvableField:
         key = FieldKey(path=("customers",), leaf="name")
         with pytest.raises(AmbiguousRelationshipPathError):
             typing.type_of(key)
+
+    def test_an_unknown_local_field_is_still_refused(self) -> None:
+        typing = SlotTyping(scope=DatasetScope(population=orders()), bundle=bundle())
+        key = FieldKey(leaf="nope")
+        with pytest.raises(TypeError):
+            typing.type_of(key)
+
+    @pytest.mark.parametrize("expr", ["nullif(null, orders.quantity)", "iif(orders.flag, null, null)"])
+    def test_a_null_only_value_reading_a_field_is_int(self, expr: str) -> None:
+        assert emitted_types(_dim(expr), names=["x"]) == {"x": INT}
 
 
 class TestArithmeticNullOperand:

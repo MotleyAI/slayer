@@ -102,7 +102,7 @@ def _booleans_as_integers(root: Expression) -> Optional[Expression]:
     """``root`` (annotated) with every BOOLEAN value in a numeric position — directly or through a ``COALESCE``
     chain, where each boolean argument of the chain is read so — cast to INT; ``None`` when there is none."""
     sites: list[Expr] = []
-    for node in list(root.walk()):
+    for node in root.walk():
         # A numeric operator is typed BOOLEAN only by its operands: those are the values read.
         if isinstance(node, (exp.Paren, exp.Coalesce, *_NUMERIC_POSITIONS)) or not _is_boolean(node):
             continue
