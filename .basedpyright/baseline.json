@@ -3931,7 +3931,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 26,
+                    "endColumn": 34,
                     "lineCount": 1
                 }
             },
@@ -4023,7 +4023,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 50,
+                    "endColumn": 57,
                     "lineCount": 1
                 }
             },
@@ -4031,7 +4031,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 26,
+                    "endColumn": 34,
                     "lineCount": 1
                 }
             },
@@ -4065,7 +4065,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 26,
+                    "endColumn": 34,
                     "lineCount": 1
                 }
             }
@@ -4365,7 +4365,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 50,
+                    "endColumn": 57,
                     "lineCount": 1
                 }
             },
@@ -4373,7 +4373,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 26,
+                    "endColumn": 34,
                     "lineCount": 1
                 }
             }
@@ -4471,7 +4471,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 50,
+                    "endColumn": 57,
                     "lineCount": 1
                 }
             },
@@ -4479,7 +4479,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 26,
+                    "endColumn": 34,
                     "lineCount": 1
                 }
             }
@@ -4539,7 +4539,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 17,
-                    "endColumn": 43,
+                    "endColumn": 36,
                     "lineCount": 1
                 }
             },
@@ -4547,7 +4547,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 17,
-                    "endColumn": 43,
+                    "endColumn": 36,
                     "lineCount": 1
                 }
             },
@@ -4645,7 +4645,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 50,
+                    "endColumn": 57,
                     "lineCount": 1
                 }
             },
@@ -4653,7 +4653,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
-                    "endColumn": 26,
+                    "endColumn": 34,
                     "lineCount": 1
                 }
             }
@@ -12752,24 +12752,8 @@
             {
                 "code": "reportOptionalMemberAccess",
                 "range": {
-                    "startColumn": 41,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
                     "startColumn": 38,
                     "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 41,
                     "lineCount": 1
                 }
             },

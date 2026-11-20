@@ -947,18 +947,18 @@ class TestSubstituteHelperScope:
         assert _literals(out.sql) == ["US"]
         assert len(out.filters) == 1
         assert _literals(out.filters[0]) == [5]
-        assert _literals(_col(out, "scaled").expression) == [2]
+        assert _literals(_col(out, "scaled").definition_sql) == [2]
         assert _literals(_col(out, "flt").filter) == ["US"]
-        assert _literals(_col(out, "hid").expression) == [2]
+        assert _literals(_col(out, "hid").definition_sql) == [2]
         # Saved metric expressions substitute (Mode-B regime); Aggregation.expression never does:
         assert _literals(out.metrics[0].text) == [2]
         assert out.aggregations[0].expression == "SUM({expr}) * {mult}"
         # Input dataset is NOT mutated — every Mode-A surface stays templated:
         assert model.sql == "SELECT * FROM t WHERE r = '{region}'"
         assert model.filters == ["a >= {floor}"]
-        assert model.get_field("scaled").expression == "amount * {mult}"
+        assert _col(model, "scaled").expression == "amount * {mult}"
         assert model.get_field("flt").filter == "r = '{region}'"
-        assert model.get_field("hid").expression == "amount * {mult}"
+        assert _col(model, "hid").expression == "amount * {mult}"
 
     def test_empty_variables_is_noop(self) -> None:
 
@@ -971,7 +971,7 @@ class TestSubstituteHelperScope:
         out = _substitute_dataset_sql_surfaces(
             dataset=model, variables={}, dialect=SqliteDialect()
         )
-        assert _parse(_col(out, "j").expression) == _parse("json_extract(x, '$.a')")
+        assert _parse(_col(out, "j").definition_sql) == _parse("json_extract(x, '$.a')")
 
     def test_list_value_substituted_on_all_four_mode_a_surfaces(self) -> None:
         """One list variable bound into each of the four Mode-A surfaces."""
