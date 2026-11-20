@@ -89,35 +89,35 @@ def _chain_storage(postgresql_proc, tmp_path_factory):
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxConsumerProfile", sql_table="consumers", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="email", sql="email", datatype=DataType.STRING),
-                DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="email", expression="email", datatype=DataType.STRING),
+                DatasetField(name="lifetimeValue", expression="lifetime_value", datatype=DataType.FLOAT),
             ],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxCustomerAccount", sql_table="customers", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="consumer_id", expression="consumer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="SandboxConsumerProfile", from_columns=["consumer_id"], to_columns=["id"])],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxSubscriptionRecord", sql_table="subscriptions", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="SandboxCustomerAccount", from_columns=["customer_id"], to_columns=["id"])],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxInvoiceV2", sql_table="invoices", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.FLOAT),
-                DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="totalAmount", expression="total_amount", datatype=DataType.FLOAT),
+                DatasetField(name="subscription_id", expression="subscription_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(
                 to="SandboxSubscriptionRecord", from_columns=["subscription_id"], to_columns=["id"],

@@ -9,6 +9,7 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
@@ -76,14 +77,14 @@ def _duckdb_env_storage(tmp_path_factory):
         sql_table="orders",
         data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
 
-            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="avg_amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
     customers_model = SlayerDataset(
@@ -91,9 +92,9 @@ def _duckdb_env_storage(tmp_path_factory):
         sql_table="customers",
         data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
 
         ],
     )
@@ -125,8 +126,7 @@ class TestDuckDBQueries:
         orders = await duckdb_env.storage.get_dataset("orders")
         assert orders is not None
         await duckdb_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]), datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
@@ -638,7 +638,7 @@ class TestDuckDBStatAggregations:
         existing = await duckdb_env.storage.get_dataset("orders")
         assert existing is not None
         cols = list(existing.fields) + [
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
+            DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="log10(amount)")]), datatype=DataType.FLOAT),
         ]
         await duckdb_env.save_dataset(
             SlayerDataset(
@@ -719,12 +719,12 @@ async def planets_duckdb_env(tmp_path):
             sql_table="planets",
             data_source="planets_duckdb",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -776,9 +776,9 @@ async def duckdb_derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="b_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", expression="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="foo_raw / 100.0")]), datatype=DataType.FLOAT),
             ],
         )
     )
@@ -788,12 +788,12 @@ async def duckdb_derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="a_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", expression="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="a_tbl.bar / b_tbl.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -866,28 +866,28 @@ def _dev1531_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="regions", sql_table="regions", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="payment_amount", sql="payment_amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="payment_amount", expression="payment_amount", datatype=DataType.FLOAT),
         ],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
-            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="region_payment", sql="customers.regions.payment_amount", datatype=DataType.FLOAT),
-            DatasetField(name="cust_balance", sql="customers.balance", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="region_payment", expression="customers.regions.payment_amount", datatype=DataType.FLOAT),
+            DatasetField(name="cust_balance", expression="customers.balance", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
@@ -1009,19 +1009,19 @@ def _dev1709_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="line_items", sql_table="line_items", data_source="dev1709duckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="order_id", sql="order_id", datatype=DataType.INTEGER),
-            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", expression="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", expression="qty", datatype=DataType.FLOAT),
         ],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="dev1709duckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )))
@@ -1159,17 +1159,17 @@ def _f1f4_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="f1f4duckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="f1f4duckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
@@ -1206,16 +1206,16 @@ class TestF1F4SemanticValues:
         assert float(result.data[0]["customers.balance_sum"]) == pytest.approx(200.0)
 
     async def test_f4_scalar_cross_model_agg_no_matching_host_rows(self, f1f4_env) -> None:
-        # "Without matching host rows": a host filter matching NO orders
-        # empties the host base, so there is no host row to attach the target
-        # scalar onto — the query returns zero rows.
+        # A host filter matching no orders still returns the unit row, the target
+        # scalar reading its empty value (NULL).
         query = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(metric="sum(customers.balance)")],
             filter=["orders.status = 'nonexistent'"],
         )
         result = await f1f4_env.execute(query=query)
-        assert result.row_count == 0, result.data
+        assert result.row_count == 1, result.data
+        assert result.data == [{"customers.balance_sum": None}]
 
     async def test_cross_model_scalar_broadcasts_to_every_host_group(self, f1f4_env) -> None:
         # A cross-dataset aggregate that shares no grain with the host dimension
@@ -1292,19 +1292,19 @@ def _dev1728_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="regions", sql_table="regions", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
-            DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
-            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
-            DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="lifetime_value", expression="lifetime_value", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="ltv_x2", expression="lifetime_value * 2", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         default_time_dimension="signup_at",
@@ -1312,10 +1312,10 @@ def _dev1728_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         default_time_dimension="created_at",
@@ -1433,9 +1433,9 @@ def _dev1753_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="disc", sql="disc", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="disc", expression="disc", datatype=DataType.FLOAT),
         ],
     )))
     return storage

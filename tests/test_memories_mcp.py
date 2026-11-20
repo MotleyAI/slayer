@@ -104,13 +104,13 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="orders",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                    name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
                 DatasetField(
                     name="customer_id",
-                    sql="customer_id",
+                    expression="customer_id",
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -136,9 +136,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="customers",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                    name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
     )
@@ -149,9 +149,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="invoices",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                    name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
     )

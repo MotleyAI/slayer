@@ -54,7 +54,7 @@ def _orders() -> SlayerDataset:
             DatasetField(
                 name="revenue_2",
                 datatype=DataType.FLOAT,
-                sql="amount * 2",
+                expression="amount * 2",
             ),
         ],
         relationships=[
@@ -79,7 +79,7 @@ def _customers() -> SlayerDataset:
             DatasetField(
                 name="revenue_doubled",
                 datatype=DataType.FLOAT,
-                sql="revenue * 2",
+                expression="revenue * 2",
             ),
         ],
         relationships=[
@@ -524,7 +524,7 @@ class TestWindowInFilter:
                 DatasetField(
                     name="rolling_rank",
                     datatype=DataType.INTEGER,
-                    sql="RANK() OVER (PARTITION BY status ORDER BY amount)",
+                    expression="RANK() OVER (PARTITION BY status ORDER BY amount)",
                 ),
             ],
         })

@@ -12,6 +12,7 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -188,25 +189,25 @@ def event_less_datasets(
             ],
         ))
         event_columns.append(DatasetField(
-            name="value_if_kind", datatype=DataType.FLOAT, sql="value",
+            name="value_if_kind", datatype=DataType.FLOAT, expression="value",
             filter="event_kinds.label = 'x' OR value >= 0"))
     if derived_events:
         event_columns += [
-            DatasetField(name="value_bare", datatype=DataType.FLOAT, sql="value"),
-            DatasetField(name="value_x2", datatype=DataType.FLOAT, sql="value * 2"),
-            DatasetField(name="value_x2_x2", datatype=DataType.FLOAT, sql="region_events.value_x2 * 2"),
+            DatasetField(name="value_bare", datatype=DataType.FLOAT, expression="value"),
+            DatasetField(name="value_x2", datatype=DataType.FLOAT, expression="value * 2"),
+            DatasetField(name="value_x2_x2", datatype=DataType.FLOAT, expression="region_events.value_x2 * 2"),
             DatasetField(name="value_or_zero", datatype=DataType.FLOAT,
-                   sql="COALESCE(value, 0)"),
+                   expression="COALESCE(value, 0)"),
             DatasetField(name="value_or_zero_x2", datatype=DataType.FLOAT,
-                   sql="region_events.value_or_zero * 2"),
-            DatasetField(name="one", datatype=DataType.INTEGER, sql="1"),
-            DatasetField(name="in_empty", datatype=DataType.BOOLEAN, sql="value IN ()"),
+                   expression="region_events.value_or_zero * 2"),
+            DatasetField(name="one", datatype=DataType.INTEGER, expression="1"),
+            DatasetField(name="in_empty", datatype=DataType.BOOLEAN, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="value IN ()") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])),
             DatasetField(name="col_in_list", datatype=DataType.BOOLEAN,
-                   sql="value IN (30, 50)"),
+                   expression="value IN (30, 50)"),
             DatasetField(name="lit_in_list", datatype=DataType.BOOLEAN,
-                   sql="1 IN (value, 1)"),
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="1 IN (value, 1)") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])),
             DatasetField(name="lit_between", datatype=DataType.BOOLEAN,
-                   sql="1 BETWEEN value AND 0"),
+                   expression="1 BETWEEN value AND 0"),
         ]
     region_events = SlayerDataset(
         name="region_events", data_source="test", sql_table="region_events",

@@ -70,7 +70,7 @@ def _seed_db(db_path: str) -> None:
 
 
 def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INTEGER) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=dtype, primary_key=pk)
+    return DatasetField(name=name, expression=name, datatype=dtype, primary_key=pk)
 
 
 def _datasets() -> list[SlayerDataset]:
@@ -278,7 +278,7 @@ class TestVerdicts:
         # A computed key over the dataset's own source is a valid relationship key.
         columns = [
             _col("id", pk=True),
-            DatasetField(name="ck", sql="customer_id + 0", datatype=DataType.INTEGER),
+            DatasetField(name="ck", expression="customer_id + 0", datatype=DataType.INTEGER),
         ]
         joins = [DatasetRelationship(to="customers", from_columns=["ck"], to_columns=["id"])]
         model = SlayerDataset(
@@ -497,7 +497,7 @@ class TestSideStatsSqlShape:
 
     def test_keys_read_as_slayer_reads_them_on_snowflake(self) -> None:
         model = SlayerDataset(name="orders", data_source="ds", sql_table="orders", fields=[
-            DatasetField(name="customer_id", datatype=DataType.INTEGER), DatasetField(name="exact", sql='"exact_key"', datatype=DataType.INTEGER)])
+            DatasetField(name="customer_id", datatype=DataType.INTEGER), DatasetField(name="exact", expression='"exact_key"', datatype=DataType.INTEGER)])
         rows_sql, _ = _side_stats_sql(
             table="orders", key_cols=_physical_keys(dataset=model, keys=["customer_id", "exact"]),
             sqlglot_name="snowflake",

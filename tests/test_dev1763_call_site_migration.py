@@ -24,6 +24,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import RenderContextMissingFacilityError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -76,10 +77,10 @@ def _orders() -> SlayerDataset:
             DatasetField(name="qty", datatype=DataType.FLOAT),
             DatasetField(name="disc", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="net", sql="amount - 1", datatype=DataType.FLOAT),
+            DatasetField(name="net", expression="amount - 1", datatype=DataType.FLOAT),
             # A NON-trivial DERIVED TIMESTAMP: the filter-CAST policy must
             # suppress the CAST for temporal types (Codex F9 / _filter_cast_type).
-            DatasetField(name="net_ts", sql="coalesce(created_at, created_at)",
+            DatasetField(name="net_ts", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="coalesce(created_at, created_at)")]),
                    datatype=DataType.DATETIME),
             # A MIXED-CASE physical column: quoting must survive on the
             # shifted-CTE WHERE path, which stringifies without a re-parse
@@ -98,7 +99,7 @@ def _customers() -> SlayerDataset:
             DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="region_id", datatype=DataType.FLOAT),
             DatasetField(name="spend", datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )

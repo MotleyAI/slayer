@@ -23,7 +23,7 @@ from slayer.core.vocabulary import extension_dataset, is_extension_object
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
     "SlayerModel": 28,
-    "SlayerQuery": 17,
+    "SlayerQuery": 18,
     "DatasourceConfig": 3,
     "Memory": 13,
     "Embedding": 2,
@@ -196,6 +196,12 @@ def with_root_extension(data: dict, *, extension: Any, base: Any, key: str = "so
 
 
 register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(hoist_root_extension)
+
+
+@register_migration(entity="SlayerQuery", source_version=17, stored_only=True)
+def _query_v17_to_v18(data: dict) -> dict:
+    """v18: ``population_inferred`` (default ``false``), stamp only."""
+    return data
 
 
 _OSI_OLD, _OSI_NEW = "osi_custom_extensions", "osi_nonportable_extensions"

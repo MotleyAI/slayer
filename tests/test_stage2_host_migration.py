@@ -63,8 +63,8 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
@@ -73,9 +73,9 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -85,8 +85,8 @@ def _warehouses() -> SlayerDataset:
     return SlayerDataset(
         name="warehouses", sql_table="warehouses", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -107,11 +107,11 @@ class TestJoinOrderParity:
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="wh_pop", sql="warehouses.regions.population",
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="warehouse_id", expression="warehouse_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="wh_pop", expression="warehouses.regions.population",
                        datatype=DataType.FLOAT),
             ],
             relationships=[
@@ -143,19 +143,21 @@ class TestJoinOrderParity:
         assert_scope_closed(sql)
 
 
-class TestPlaceholderLimitOne:
-    async def test_host_local_filter_keeps_limit_1(self) -> None:
-        # A cross-dataset metric (customers.balance:sum) drives the _cm_ path; a
-        # host-local ROW filter (amount > 100, no join, not routed to the CTE)
-        # forces the host-rooted placeholder (gen:5123) to fire with LIMIT 1 so
-        # the CROSS JOIN to the scalar _cm_ does not duplicate the aggregate,
-        # while WHERE still gates the whole result (D-J LIMIT-1 semantics).
+def _exists_text(sql: str) -> str:
+    """Every EXISTS restriction of ``sql``, normalized to one quote-free line."""
+    tree = sqlglot.parse_one(sql, dialect="postgres")
+    return " ".join(" ".join(e.sql(dialect="postgres").split()).replace('"', "") for e in tree.find_all(exp.Exists))
+
+
+class TestUnitHostFilters:
+    async def test_host_local_filter_restricts_by_association(self) -> None:
+        # The unit row always exists (Law 10); the host filter restricts the cross-dataset aggregate by association.
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -169,32 +171,26 @@ class TestPlaceholderLimitOne:
         sql = await _engine_generate(
             query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
-        assert "LIMIT 1" in sql                       # placeholder collapses host to one row
-        assert "amount > 100" in sql or "amount > 100" in sql.replace('"', "")
+        assert "LIMIT 1" not in sql
+        assert "amount > 100" in _exists_text(sql)
         assert_scope_closed(sql)
 
-    async def test_host_local_crossing_filter_pulls_join_into_placeholder(self) -> None:
-        # D-J placeholder join registration (Round 6 / Codex): the cross-dataset
-        # metric (customers.balance:sum) empties the host base, and a host-local
-        # ROW filter that CROSSES a *different* join (shippers.code = 'X' — not
-        # reachable from the customers CTE root, so not routed there) must pull
-        # its LEFT JOIN into the placeholder FROM through the SAME single resolver
-        # the main host base uses (_resolve_where_filter_joins_via_scope). Without
-        # the join, the placeholder WHERE references an unbound alias. LIMIT 1
-        # still collapses the host to a single row.
+    async def test_host_local_crossing_filter_joins_inside_the_restriction(self) -> None:
+        # The unit row always exists (Law 10); a host filter crossing another join restricts the cross-dataset
+        # aggregate by association, its join inside that restriction.
         shippers = SlayerDataset(
             name="shippers", sql_table="shippers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="code", sql="code", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="code", expression="code", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="shipper_id", sql="shipper_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="shipper_id", expression="shipper_id", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -210,24 +206,10 @@ class TestPlaceholderLimitOne:
             query=query, dataset=orders,
             extra_datasets=[_customers(), _regions(), shippers],
         )
-        # Scope the assertions to the placeholder SELECT itself (the one-row
-        # ``_placeholder`` scan with LIMIT 1) so a regression that moves the join
-        # or predicate to another query block can't pass (CodeRabbit).
-        tree = sqlglot.parse_one(sql, dialect="postgres")
-        placeholder = next(
-            (
-                s for s in tree.find_all(exp.Select)
-                if s.args.get("limit") is not None
-                and any(p.alias_or_name == "_placeholder" for p in s.expressions)
-            ),
-            None,
-        )
-        assert placeholder is not None, f"no placeholder SELECT found in:\n{sql}"
-        ph = " ".join(placeholder.sql(dialect="postgres").split()).replace('"', "")
-        assert "LIMIT 1" in ph                          # placeholder collapses host
-        # the crossing filter's LEFT JOIN + predicate live in the SAME placeholder.
-        assert "LEFT JOIN shippers AS shippers" in ph
-        assert "shippers.code = 'X'" in ph
+        restriction = _exists_text(sql)
+        assert "LIMIT 1" not in sql
+        assert "JOIN shippers AS orders__shippers" in restriction
+        assert "code = 'X'" in restriction
         assert_scope_closed(sql)
 
 
@@ -243,15 +225,15 @@ class TestTypedJoinKeyMixedCaseQuoted:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="CustId", sql="CustId", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+                DatasetField(name="CustId", expression="CustId", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="cust_ref", sql="cust_ref", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="cust_ref", expression="cust_ref", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["cust_ref"], to_columns=["CustId"])],
         )

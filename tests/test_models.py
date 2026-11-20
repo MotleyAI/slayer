@@ -458,13 +458,13 @@ class TestSlayerModel:
 
     def test_dimension_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in dimension sql are left as-is."""
-        dim = DatasetField(name="cust_name", sql="customers.name", datatype=DataType.FLOAT)
-        assert dim.sql == "customers.name"
+        dim = DatasetField(name="cust_name", expression="customers.name", datatype=DataType.FLOAT)
+        assert dim.expression == "customers.name"
 
     def test_measure_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in field sql are left as-is."""
-        meas = DatasetField(name="total", sql="orders.amount", datatype=DataType.FLOAT)
-        assert meas.sql == "orders.amount"
+        meas = DatasetField(name="total", expression="orders.amount", datatype=DataType.FLOAT)
+        assert meas.expression == "orders.amount"
 
     def test_model_name_allows_double_underscore(self) -> None:
         # `__` is legal in dataset names (the dotted-canonical flip
@@ -483,7 +483,7 @@ class TestSlayerModel:
 
     def test_measure_name_allows_double_underscore(self) -> None:
         """__ is allowed in metric names — used for flattened relationship paths in virtual datasets."""
-        meas = DatasetField(name="stores__tax_rate_sum", sql="tax_rate", datatype=DataType.FLOAT)
+        meas = DatasetField(name="stores__tax_rate_sum", expression="tax_rate", datatype=DataType.FLOAT)
         assert meas.name == "stores__tax_rate_sum"
 
     def test_query_name_allows_double_underscore(self) -> None:
@@ -511,14 +511,14 @@ class TestSlayerModel:
     def test_measure_name_rejects_dot(self) -> None:
         """Dots are path syntax, not allowed in metric names."""
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            DatasetField(name="customers.name_sum", sql="name", datatype=DataType.FLOAT)
+            DatasetField(name="customers.name_sum", expression="name", datatype=DataType.FLOAT)
 
     def test_dimension_name_without_dot_allowed(self) -> None:
         dim = DatasetField(name="region_name")
         assert dim.name == "region_name"
 
     def test_measure_name_without_dot_allowed(self) -> None:
-        meas = DatasetField(name="order_total_sum", sql="total", datatype=DataType.FLOAT)
+        meas = DatasetField(name="order_total_sum", expression="total", datatype=DataType.FLOAT)
         assert meas.name == "order_total_sum"
 
     def test_model_data_source_rejects_dot(self) -> None:
@@ -601,8 +601,8 @@ class TestWithinListDuplicateNames:
 
     def test_duplicate_column_names_rejected(self) -> None:
         columns = [
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="revenue", sql="net_amount", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="net_amount", datatype=DataType.FLOAT),
         ]
         with pytest.raises(ValueError, match="duplicate.*field|field.*duplicate"):
             SlayerDataset(
@@ -613,7 +613,7 @@ class TestWithinListDuplicateNames:
             )
 
     def test_duplicate_measure_names_rejected(self) -> None:
-        columns = [DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)]
+        columns = [DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)]
         measures = [
             DatasetMetric(name="aov", expression="sum(amount) / count(*)"),
             DatasetMetric(name="aov", expression="avg(amount)"),
@@ -630,7 +630,7 @@ class TestWithinListDuplicateNames:
     def test_unnamed_model_measure_rejected(self) -> None:
         """A dataset metric must have a name."""
         raw = {"name": "orders", "sql_table": "t", "data_source": "test",
-               "fields": [{"name": "amount", "sql": "amount", "datatype": "Float"}],
+               "fields": [{"name": "amount", "expression": "amount", "datatype": "Float"}],
                "metrics": [{"expression": "sum(amount)"}]}
         with pytest.raises(ValueError, match="must have a name"):
             SlayerDataset.model_validate(raw)
@@ -641,8 +641,8 @@ class TestWithinListDuplicateNames:
             sql_table="t",
             data_source="test",
             fields=[
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
             metrics=[
                 DatasetMetric(name="aov", expression="sum(amount) / count(*)"),
@@ -1603,11 +1603,11 @@ class TestAggregationValidation:
 
 class TestDimensionLabel:
     def test_label_optional(self) -> None:
-        d = DatasetField(name="status", sql="status", datatype=DataType.FLOAT)
+        d = DatasetField(name="status", expression="status", datatype=DataType.FLOAT)
         assert d.label is None
 
     def test_label_set(self) -> None:
-        d = DatasetField(name="status", sql="status", label="Order Status", datatype=DataType.FLOAT)
+        d = DatasetField(name="status", expression="status", label="Order Status", datatype=DataType.FLOAT)
         assert d.label == "Order Status"
 
     def test_label_in_model_dump(self) -> None:
@@ -1623,30 +1623,30 @@ class TestDimensionLabel:
 
 class TestMeasureLabel:
     def test_label_optional(self) -> None:
-        m = DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)
+        m = DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)
         assert m.label is None
 
     def test_label_set(self) -> None:
-        m = DatasetField(name="revenue", sql="amount", label="Total Revenue", datatype=DataType.FLOAT)
+        m = DatasetField(name="revenue", expression="amount", label="Total Revenue", datatype=DataType.FLOAT)
         assert m.label == "Total Revenue"
 
 
 class TestMeasureFilter:
     def test_filter_optional(self) -> None:
-        m = DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)
+        m = DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)
         assert m.filter is None
 
     def test_filter_set(self) -> None:
-        m = DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+        m = DatasetField(name="active_revenue", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         assert m.filter == "status = 'active'"
 
     def test_filter_in_model_dump(self) -> None:
-        m = DatasetField(name="x", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+        m = DatasetField(name="x", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         data = m.model_dump(exclude_none=True)
         assert data["filter"] == "status = 'active'"
 
     def test_filter_excluded_when_none(self) -> None:
-        m = DatasetField(name="x", sql="amount", datatype=DataType.FLOAT)
+        m = DatasetField(name="x", expression="amount", datatype=DataType.FLOAT)
         data = m.model_dump(exclude_none=True)
         assert "filter" not in data
 
@@ -1720,7 +1720,7 @@ def _prefix_datasets() -> list[SlayerDataset]:
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),

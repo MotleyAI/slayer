@@ -187,7 +187,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False, positioned: bool = False,
+        positioned: bool = False,
     ) -> ListRelation:
         """``UNNEST`` of a ``STRUCT<value[, position]>`` array, so the element reads as ``alias.value``."""
         element_ref = exp.column(_ELEMENT)
@@ -199,7 +199,6 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             is_not_null(element_ref))
         if positioned:
             rows = rows.select(exp.alias_(exp.column(_OFFSET), LIST_POSITION))
-        rows = rows.distinct() if distinct else rows
         return ListRelation(relation=exp.Unnest(
             expressions=[exp.Array(expressions=[rows])], alias=exp.TableAlias(columns=[alias.copy()]),
         ))

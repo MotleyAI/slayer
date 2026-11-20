@@ -272,11 +272,10 @@ class ClickhouseDialect(SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False, positioned: bool = False,
+        positioned: bool = False,
     ) -> ListRelation:
         """``ARRAY JOIN`` of named tuples, so the element reads as ``alias.value``; ``positioned``: one array of
         ``(value, position)`` tuples, compacted once."""
-        assert not (distinct and positioned), "a distinct list relation carries no position"
         element_name = exp.to_identifier(LIST_ELEMENT)
         kind = (element or DataType.OPAQUE).kind.value
         if positioned:
@@ -285,8 +284,7 @@ class ClickhouseDialect(SqlDialect):
         row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {kind}>")
         as_row = exp.Lambda(this=exp.Cast(this=anon("tuple", exp.Column(this=element_name.copy())), to=row_type),
                             expressions=[element_name])
-        kept = anon("arrayDistinct", _compact(values)) if distinct else _compact(values)
-        rows = exp.Anonymous(this="arrayMap", expressions=[as_row, kept])
+        rows = exp.Anonymous(this="arrayMap", expressions=[as_row, _compact(values)])
         return ListRelation(relation=exp.Alias(this=rows, alias=alias.copy()), join_kind="ARRAY")
 
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:

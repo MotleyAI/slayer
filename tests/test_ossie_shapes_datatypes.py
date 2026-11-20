@@ -247,9 +247,9 @@ async def test_drift_reports_the_finer_live_type(tmp_path: Path) -> None:
         con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, price DECIMAL(10, 2), \"at\" TIMESTAMPTZ)")
     finally:
         con.close()
-    stale = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-             DatasetField(name="price", sql="price", datatype=DataType.STRING),
-             DatasetField(name="at", sql="at", datatype=DataType.STRING)]
+    stale = [DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+             DatasetField(name="price", expression="price", datatype=DataType.STRING),
+             DatasetField(name="at", expression="at", datatype=DataType.STRING)]
     async with owned_query_engine(storage=YAMLStorage(base_dir=str(tmp_path / "store"))) as engine:
         await engine.storage.save_datasource(DatasourceConfig(name="d", type="duckdb", database=path))
         await engine.storage.save_dataset(SlayerDataset(name="t", sql_table="t", data_source="d", fields=stale))

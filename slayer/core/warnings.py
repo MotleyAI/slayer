@@ -88,29 +88,14 @@ DICE_SLICE_HINT = (
 )
 
 
-def association_fallback_hint(reason: str) -> str:
-    """The hint of a broadcast the default mode fell back to because association does not support ``reason``."""
-    return (
-        f"association does not support {reason} yet, so the value repeats across the cells; "
-        "filter on the dimension instead, or drop the dimension(s) it cannot be attributed to."
-    )
-
-
 class BroadcastGrainWarningPayload(SlayerWarning):
-    """A cross-dataset aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
+    """A cross-dataset aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason."""
 
     kind: Literal["broadcast"] = "broadcast"
     metric: str
     location: str
     dimensions: list[BroadcastDimension]
-    association_unsupported: Optional[str] = None
     hint: str = DICE_SLICE_HINT
-
-    @model_validator(mode="after")
-    def _fallback_hint(self) -> "BroadcastGrainWarningPayload":
-        if self.association_unsupported is not None and "hint" not in self.model_fields_set:
-            self.hint = association_fallback_hint(self.association_unsupported)
-        return self
 
     def human_message(self) -> str:
         dims = ", ".join(f"{d.dimension} ({d.reason})" for d in self.dimensions)
@@ -166,11 +151,17 @@ class UnrelatedDatasetWarningPayload(SlayerWarning):
 
     kind: Literal["unrelated_dataset"] = "unrelated_dataset"
     dataset: str
-    population: str
+    #: ``None`` in a query without dimensions, whose measure homes no relationship path connects.
+    population: Optional[str] = None
     metrics: list[str]
     location: str
 
     def human_message(self) -> str:
+        if self.population is None:
+            return (
+                f"{', '.join(repr(m) for m in self.metrics)} (at {self.location}) read {self.dataset!r}, which no "
+                f"relationship path connects to the query's other measures: each is aggregated over its own rows"
+            )
         return (
             f"{', '.join(repr(m) for m in self.metrics)} (at {self.location}) read {self.dataset!r}, which no "
             f"relationship path reaches from {self.population!r}: unrelated dataset, aggregated over its own rows and "

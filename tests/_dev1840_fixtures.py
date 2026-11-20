@@ -166,7 +166,7 @@ def customers_dataset(*, declare_reverse: bool = False) -> SlayerDataset:
         ))
         # Derived over the declared 1:N hop — classification-by-deps probe.
         columns.append(DatasetField(
-            name="last_status", datatype=DataType.STRING, sql="orders.status",
+            name="last_status", datatype=DataType.STRING, expression="orders.status",
         ))
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",

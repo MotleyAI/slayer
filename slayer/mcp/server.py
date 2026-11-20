@@ -1924,19 +1924,22 @@ def _json_metadata(result: SlayerResponse) -> dict[str, Any]:
     attributes = _json_attributes(result.attributes)
     if attributes:
         meta["attributes"] = attributes
-    population = _inferred_population(result)
-    if population is not None:
-        meta["population"] = population
+    if result.population_inferred:
+        if result.population is not None:
+            meta["population"] = result.population
         meta["population_inferred"] = True
+        meta["row_sources"] = list(result.row_sources)
     return meta
 
 
 def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
     """``body`` wrapped in the metadata: leading `#` lines for csv, footers for markdown."""
     population = _inferred_population(result)
+    sources = result.row_sources if result.population_inferred else []
     if fmt == "csv":
         return (
             _population_comment(population)
+            + ("" if not sources else f"# row sources: {', '.join(sources)}\n")
             + _csv_attribute_comments(result)
             + _csv_warning_comments(result)
             + body
@@ -1945,6 +1948,7 @@ def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
         body
         + _attributes_footer(result.attributes)
         + _population_footer(population)
+        + _row_sources_footer(sources, after_population=population is not None)
         + _format_warnings(result)
     )
 
@@ -2051,6 +2055,14 @@ def _format_dry_run(result: SlayerResponse, fmt: str) -> str:
 def _population_footer(population: str | None) -> str:
     """Trailing note naming the inferred population (markdown), or empty."""
     return "" if population is None else f"\n\nPopulation: {population} (inferred)"
+
+
+def _row_sources_footer(sources: list[str], *, after_population: bool) -> str:
+    """Trailing note listing the row sources (markdown), its own paragraph unless it follows the population's."""
+    if not sources:
+        return ""
+    separator = "\n" if after_population else "\n\n"
+    return f"{separator}Row sources: {', '.join(sources)}"
 
 
 def _population_comment(population: str | None) -> str:

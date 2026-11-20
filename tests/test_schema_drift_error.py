@@ -86,8 +86,8 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
     )
@@ -97,10 +97,10 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(
-                    name="customer_id", sql="customer_id", datatype=DataType.FLOAT
+                    name="customer_id", expression="customer_id", datatype=DataType.FLOAT
                 ),
             ],
             relationships=[
@@ -155,8 +155,8 @@ class TestSchemaDriftErrorWrap:
             sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         await engine.storage.save_dataset(broken_model)
@@ -183,8 +183,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -206,7 +206,7 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT NO_SUCH_FUNCTION(1) AS x",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="x", sql="x", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="x", expression="x", datatype=DataType.FLOAT, primary_key=True),
                 ],
             )
         )
@@ -227,8 +227,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -260,8 +260,8 @@ class TestSchemaDriftErrorWrap:
                 ),
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -291,8 +291,8 @@ class TestSchemaDriftErrorWrap:
                 ),
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -317,8 +317,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -427,7 +427,7 @@ class TestIntrospectionUnavailable:
             ds = self._ds_with_one_table(tmpdir)
             model = SlayerDataset(
                 name="t", sql_table="t", data_source="live",
-                fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+                fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
             )
             async with _client(ds) as client:
                 with patch(

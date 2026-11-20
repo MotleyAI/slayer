@@ -206,7 +206,7 @@ async def test_a_stage_extension_reaches_the_stored_model_beside_a_root_of_anoth
 def test_a_stage_source_written_in_another_case_is_read(data_source: str) -> None:
     backed = SlayerDataset(name="backed", data_source=data_source, source_queries=[
         q(population="customers", dimensions=["customers.name", "customers.region_label"])])
-    label = DatasetField(name="region_label", sql="regions.name", datatype=DataType.STRING)
+    label = DatasetField(name="region_label", expression="regions.name", datatype=DataType.STRING)
     models = [m.model_copy(update={"fields": [*m.fields, label]}) if m.name == "Customers" else m
               for m in respelled_dataset(_datasets(), name="customers", spelling="Customers")]
     assert {(DS, "Customers"), (DS, "regions")} <= datasets_read_by(backed, datasets=models)
@@ -250,7 +250,7 @@ async def test_a_stage_source_is_local_to_its_own_stage(stages: list[SlayerQuery
     assert {row[column] for row in resp.data} - {None} <= {"Ann", "Bob", "Cid", "Dee", "Eve"}
 
 
-_LABELS = _cities({"name": "label", "sql": "city", "datatype": "String"}, name="labels_src")
+_LABELS = _cities({"name": "label", "expression": "city", "datatype": "String"}, name="labels_src")
 _STORED_LABEL_READ = {"population": "orders", "dimensions": ["customers.label"],
                       "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
@@ -263,7 +263,7 @@ async def test_a_stored_derived_column_closes_over_its_own_definition_beside_ano
     stages: list[SlayerQuery | dict],
 ) -> None:
     labelled = customers(DatasetRelationship(to="regions", from_columns=[p[0] for p in _REGION_PAIRS], to_columns=[p[1] for p in _REGION_PAIRS])).model_copy(update={"fields": [
-        *customers().fields, DatasetField(name="label", sql="upper(customers.name)", datatype=DataType.STRING)]})
+        *customers().fields, DatasetField(name="label", expression="upper(customers.name)", datatype=DataType.STRING)]})
     async with shop("sqlite", [labelled if m.name == "customers" else m for m in _datasets()] + [_LABELS]) as engine:
         _, reads = await _planned(engine, stages)
     assert {("customers", "label"), ("customers", "name")} <= reads.fields

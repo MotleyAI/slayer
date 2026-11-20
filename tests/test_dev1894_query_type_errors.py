@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from slayer.api.server import create_app
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import (
-    AssociationError,
     CanonicalAliasShadowsFieldError,
     ComputedDimensionError,
     DimensionTypeError,
@@ -39,7 +38,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests import _dev1739_fixtures as f1739
 from tests import _dev1740_fixtures as f1740
 from tests import _dev1832_fixtures as f1832
-from tests import _dev1841_fixtures as f1841
 from tests import _dev1846_fixtures as f1846
 from tests import _dev1847_fixtures as f1847
 from tests import _dev1945_fixtures as f1945
@@ -127,11 +125,6 @@ FAMILY_CASES = [
          "dimensions": ["orders.region", {"field": "CASE WHEN sum(orders.amount) > 5000 THEN 1 ELSE 0 END", "alias": "band"}],
      }), f1740.dev1740_datasets()),
      ComputedDimensionError, "dimension 'band'", False),
-    ("association",
-     lambda: (f1841.assoc_q(dimensions=["orders.status"], metrics=[_m("sum(customers.spend, window='90d')", "cm")],
-                            time_dimensions=[TimeDimension(field="customers.signup_at", granularity=TimeGranularity.MONTH)]),
-              f1841.dev1840_datasets()),
-     AssociationError, "metric 'cm'", True),
     ("parameter-grain",
      lambda: (f1847.sales_q(dimensions=["sales.region"], metrics=[_m(f"wavg({f1847.INNER_CR}, weight=sales.id)", "w")]), f1847.dev1847_datasets()),
      ParameterGrainError, "metric 'w'", True),

@@ -97,7 +97,7 @@ def _extend_graph_a(datasets: List[SlayerDataset]) -> None:
     cust.fields.extend([
         DatasetField(name="discount", datatype=DataType.FLOAT),
         # Filtered joined-dataset leaf: spend restricted to North customers.
-        DatasetField(name="north_spend", datatype=DataType.FLOAT, sql="spend",
+        DatasetField(name="north_spend", datatype=DataType.FLOAT, expression="spend",
                filter="regions.name = 'North'"),
     ])
     # Customers-owned custom aggregation; default weight is customers-local, so

@@ -37,8 +37,8 @@ def order_lines(*, line_no_aggs=None) -> SlayerDataset:
     return SlayerDataset(
         name="order_lines", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="order_id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="line_no", sql="customer_id", datatype=DataType.INTEGER, primary_key=True,
+            DatasetField(name="order_id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="line_no", expression="customer_id", datatype=DataType.INTEGER, primary_key=True,
                    allowed_aggregations=line_no_aggs),
             DatasetField(name="status", datatype=DataType.STRING, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT),

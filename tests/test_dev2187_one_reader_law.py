@@ -207,7 +207,8 @@ async def test_a_literal_naming_a_query_backed_model_does_not_splice_it(
 async def test_a_filter_literal_naming_a_query_backed_model_splices_nothing(
     engine: SlayerQueryEngine, spliced: list[str],
 ) -> None:
-    await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL["filter"]("qb.x")}, dry_run=True)
+    await engine.execute({"population": "orders", "time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL["filter"]("qb.x")},
+                         dry_run=True)
     assert "qb" not in spliced
 
 

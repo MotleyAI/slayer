@@ -39,6 +39,7 @@ from sqlalchemy.exc import DBAPIError
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import SlayerError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -256,12 +257,12 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
             sql_table="orders",
             data_source="testclickhouse",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="avg_amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
@@ -269,9 +270,9 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
             sql_table="customers",
             data_source="testclickhouse",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )))
         run_sync(storage.save_dataset(streak_dataset("testclickhouse")))
@@ -303,7 +304,7 @@ class TestClickHouseQueries:
         orders = await clickhouse_env.storage.get_dataset("orders")
         assert orders is not None
         await clickhouse_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
+            *orders.fields, DatasetField(name="rx", expression="CASE WHEN status LIKE '%pend%' "
                         "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
@@ -615,21 +616,21 @@ def clickhouse_cross_dataset_env(clickhouse_container):
         name="orders", sql_table="orders", data_source="testclickhouse",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testclickhouse",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="avg_score", sql="score", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="avg_score", expression="score", datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -688,6 +689,59 @@ class TestCrossModelAndMultistageClickHouse:
         by_tier = {r["tier"]: r["orders._count"] for r in result.data}
         assert by_tier["high"] == 3
         assert by_tier["low"] == 3
+
+
+@pytest.fixture
+def clickhouse_key_union_env(clickhouse_container):
+    """``kdim`` with nullable decimal / timestamp / text keys; ``facta`` reaches it, ``factb`` only by an orphan key."""
+    db_name = _create_module_db(clickhouse_container)
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE kdim (key_id String, k_dec Nullable(Decimal(10, 3)), k_ts Nullable(DateTime), "
+                "k_txt Nullable(String)) ENGINE = MergeTree() ORDER BY key_id"))
+            for fact, pk, value in (("facta", "a_id", "x"), ("factb", "b_id", "y")):
+                conn.execute(sa.text(
+                    f"CREATE TABLE {fact} ({pk} String, key_id String, {value} Float64) "
+                    f"ENGINE = MergeTree() ORDER BY {pk}"))
+            conn.execute(sa.text(
+                "INSERT INTO kdim VALUES ('K1', 1.5, '2025-01-01 10:00:00', 'a'), ('K2', NULL, '2025-02-01 00:00:00', 'b')"))
+            conn.execute(sa.text("INSERT INTO facta VALUES ('A1', 'K1', 1), ('A2', 'K2', 2)"))
+            conn.execute(sa.text("INSERT INTO factb VALUES ('B1', 'K9', 5)"))
+
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp())
+    run_sync(storage.save_datasource(_ds_config(clickhouse_container, db_name)))
+    run_sync(storage.save_dataset(SlayerDataset(
+        name="kdim", sql_table="kdim", data_source="testclickhouse",
+        fields=[DatasetField(name="key_id", datatype=DataType.STRING, primary_key=True),
+                DatasetField(name="k_dec", datatype=DataType.DECIMAL),
+                DatasetField(name="k_ts", datatype=DataType.DATETIME),
+                DatasetField(name="k_txt", datatype=DataType.STRING)],
+    )))
+    for fact, pk, value in (("facta", "a_id", "x"), ("factb", "b_id", "y")):
+        run_sync(storage.save_dataset(SlayerDataset(
+            name=fact, sql_table=fact, data_source="testclickhouse",
+            fields=[DatasetField(name=pk, datatype=DataType.STRING, primary_key=True),
+                    DatasetField(name="key_id", datatype=DataType.STRING),
+                    DatasetField(name=value, datatype=DataType.FLOAT)],
+            relationships=[DatasetRelationship(to="kdim", from_columns=["key_id"], to_columns=["key_id"])],
+        )))
+    yield SlayerQueryEngine(storage=storage)
+    _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestRootlessKeyUnionClickHouse:
+    async def test_key_types_agree_across_row_sources(self, clickhouse_key_union_env: SlayerQueryEngine) -> None:
+        keys = ["kdim.k_dec", "kdim.k_ts", "kdim.k_txt"]
+        result = await clickhouse_key_union_env.execute(query=SlayerQuery.model_validate({
+            "dimensions": keys,
+            "metrics": [{"metric": "sum(facta.x)", "alias": "x"}, {"metric": "sum(factb.y)", "alias": "y"}],
+        }))
+        assert len(result.data) == 3
+        assert [r["y"] for r in result.data if all(r[k] is None for k in keys)] == [5.0]
+        for k in keys:
+            assert len({type(r[k]) for r in result.data if r[k] is not None}) == 1, k
 
 
 # ---------------------------------------------------------------------------
@@ -909,9 +963,9 @@ def clickhouse_log10_env(clickhouse_container):
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testclickhouse",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="CLICKHOUSE", expression="log10(amount)")]), datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -981,12 +1035,12 @@ def planets_clickhouse_env(clickhouse_container):
             sql_table="planets",
             data_source="testclickhouse",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="CLICKHOUSE", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1040,9 +1094,9 @@ def clickhouse_derived_chain_env(clickhouse_container):
             data_source="testclickhouse",
             sql_table="b_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", expression="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", expression="foo_raw / 100.0", datatype=DataType.FLOAT),
             ],
         )
     ))
@@ -1052,13 +1106,13 @@ def clickhouse_derived_chain_env(clickhouse_container):
             data_source="testclickhouse",
             sql_table="a_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
-                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", expression="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
+                DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="CLICKHOUSE", expression="a_tbl.bar / b_tbl.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1200,9 +1254,9 @@ def _clickhouse_esc_storage(clickhouse_container, tmp_path_factory):
             data_source="testclickhouse",
             filters=["status = '{v}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )))
         yield storage

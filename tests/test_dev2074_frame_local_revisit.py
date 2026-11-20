@@ -100,10 +100,10 @@ def _customers() -> SlayerDataset:
             DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="last_order_id", datatype=DataType.INTEGER),
             DatasetField(name="first_order_id", datatype=DataType.INTEGER),
-            DatasetField(name="last_amount", datatype=DataType.FLOAT, sql="last_order.amount",
+            DatasetField(name="last_amount", datatype=DataType.FLOAT, expression="last_order.amount",
                    label="Latest amount", format=CURRENCY),
-            DatasetField(name="first_amount", datatype=DataType.FLOAT, sql="first_order.amount"),
-            DatasetField(name="last_ordered_at", datatype=DataType.DATETIME, sql="last_order.ordered_at"),
+            DatasetField(name="first_amount", datatype=DataType.FLOAT, expression="first_order.amount"),
+            DatasetField(name="last_ordered_at", datatype=DataType.DATETIME, expression="last_order.ordered_at"),
         ],
         relationships=[
             DatasetRelationship(to="orders", name="last_order",
@@ -132,9 +132,9 @@ def _cycle_datasets() -> list[SlayerDataset]:
         )
 
     return [
-        node("x", "y", [DatasetField(name="zv", datatype=DataType.STRING, sql="y.z.v")]),
+        node("x", "y", [DatasetField(name="zv", datatype=DataType.STRING, expression="y.z.v")]),
         node("y", "z"),
-        node("z", "x", [DatasetField(name="xzv", datatype=DataType.STRING, sql="x.zv")]),
+        node("z", "x", [DatasetField(name="xzv", datatype=DataType.STRING, expression="x.zv")]),
     ]
 
 
@@ -143,7 +143,7 @@ def _ab_datasets() -> list[SlayerDataset]:
         name="a", data_source=DS, sql_table="a",
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                  DatasetField(name="b_id", datatype=DataType.INTEGER),
-                 DatasetField(name="bw", datatype=DataType.FLOAT, sql="to_b.w")],
+                 DatasetField(name="bw", datatype=DataType.FLOAT, expression="to_b.w")],
         relationships=[DatasetRelationship(to="b", name="to_b", from_columns=["b_id"], to_columns=["id"], cardinality=M2O)],
     )
     b = SlayerDataset(
@@ -151,7 +151,7 @@ def _ab_datasets() -> list[SlayerDataset]:
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                  DatasetField(name="a_id", datatype=DataType.INTEGER),
                  DatasetField(name="w", datatype=DataType.FLOAT),
-                 DatasetField(name="abw", datatype=DataType.FLOAT, sql="to_a.bw")],
+                 DatasetField(name="abw", datatype=DataType.FLOAT, expression="to_a.bw")],
         relationships=[DatasetRelationship(to="a", name="to_a", from_columns=["a_id"], to_columns=["id"], cardinality=M2O)],
     )
     return [a, b]
@@ -302,7 +302,7 @@ class TestDerivedColumnsCompose:
         models = [_orders(), _customers(), *_cycle_datasets(), *_ab_datasets()]
         for model in models:
             await engine.save_dataset(model.model_copy(update={
-                "fields": [c for c in model.fields if c.sql is None], "metrics": []}))
+                "fields": [c for c in model.fields if c.is_base], "metrics": []}))
         for model in models:
             await engine.save_dataset(model)
         for name in ("customers", "z", "b"):

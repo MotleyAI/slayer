@@ -154,8 +154,8 @@ def ledger_dataset(*, data_source: str = "test") -> SlayerDataset:
         name="ledger", sql_table="ledger", data_source=data_source,
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="Revenue", sql="rev_a", datatype=DataType.FLOAT),
-            DatasetField(name="revenue", sql="rev_b", datatype=DataType.FLOAT),
+            DatasetField(name="Revenue", expression="rev_a", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="rev_b", datatype=DataType.FLOAT),
         ],
     )
 

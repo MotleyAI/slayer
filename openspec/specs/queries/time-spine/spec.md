@@ -84,7 +84,7 @@ A dataset SHALL reach the spine by its nearest axis along a chain of provably to
 
 ### Requirement: A spine query's population is the spine times P
 
-A query with one or more time dimensions on `time_spine.timestamp` SHALL have population `time_spine × P`, where P is the population of its remaining determination items — its other dimensions and time dimensions and the field-typed filters not on the spine column — inferred by the dimension-determined default, or the model named by `population`, or the one-row unit when there are no remaining items (`population: time_spine` also denotes the unit). The result SHALL have one row per combination of a spine bucket in range and a distinct value combination of P's dimensions among P's filtered rows; adding or removing a measure SHALL never change this row set. This SHALL hold for every query of a query list alike: the main query and each named stage.
+A query with one or more time dimensions on `time_spine.timestamp` SHALL have population `time_spine × P`, where P is the model named by `population`, else the dimension anchor of its other dimensions and time dimensions (`queries/population` › Dimension-determined default; field filters restrict P by association and never choose it), or the one-row unit when there are no other dimensions (`population: time_spine` also denotes the unit). The result SHALL have one row per combination of a spine bucket in range and a distinct value combination of P's dimensions among P's filtered rows; adding or removing a measure SHALL never change this row set, and a query omitting `population` SHALL keep this row set rather than its row supply. This SHALL hold for every query of a query list alike: the main query and each named stage.
 
 #### Scenario: Every month in range, both facts on one axis
 
@@ -125,6 +125,14 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 
 - **WHEN** the main query over the stage `monthly` groups by months Jan–Jun and selects `sum(monthly.o)`
 - **THEN** the stage's axis is its month column and the rows are Jan 150, Feb 70, then NULL for Mar–Jun
+
+#### Scenario: A filter on a finer dataset keeps P
+- **WHEN** the per-group query omits `population` and adds the filter `orders.amount > 60`
+- **THEN** P stays `customers`, restricted to customers with such an order, and the population is reported `time_spine × customers`
+
+#### Scenario: An orphan beside the spine is not yet a row
+- **WHEN** the per-group query omits `population` and an order references no customer
+- **THEN** no NULL-region row appears: the spine query keeps `time_spine × customers`
 
 ### Requirement: Spine bounds decide which buckets exist
 

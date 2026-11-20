@@ -109,7 +109,7 @@ class TestAggIsReserved:
 
     async def test_a_measure_or_column_named_agg_is_legal(self) -> None:
         with_column = orders_dataset().model_copy(update={"fields": [
-            *orders_dataset().fields, DatasetField(name="agg", sql="amount", datatype=DataType.FLOAT)]})
+            *orders_dataset().fields, DatasetField(name="agg", expression="amount", datatype=DataType.FLOAT)]})
         with_measure = SlayerDataset(name="totals", sql_table="orders", data_source="test",
                                    fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                                             DatasetField(name="amount", datatype=DataType.FLOAT)],

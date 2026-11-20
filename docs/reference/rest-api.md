@@ -55,6 +55,10 @@ Response:
 }
 ```
 
+The response also carries `population` (the named population, else the inferred dimension anchor), `population_inferred`
+(whether the rows were inferred) and `row_sources`, the datasets whose rows supplied the result (`["unit"]` with no dimensions) — see
+[Population](../concepts/queries.md#population).
+
 Cell values use SLayer's one JSON encoding: a list is a JSON array, a decimal a number with its exact digits, a
 UUID its string, bytes `\x` + lowercase hex, an interval an ISO-8601 duration and NaN / ±Infinity `null`;
 `"distinct_dimension_values": false` returns one row per record, list fields included.

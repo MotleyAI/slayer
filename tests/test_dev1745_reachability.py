@@ -68,7 +68,7 @@ def _regions() -> SlayerDataset:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="population", datatype=DataType.FLOAT),
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
+            DatasetField(name="pop_x2", expression="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
@@ -109,23 +109,23 @@ def _orders() -> SlayerDataset:
             # a dataset and a field that share a name — the heuristic's blind spot
             DatasetField(name="customers", datatype=DataType.STRING),
             # derived, LOCAL to the host, but its SQL crosses INTO customers
-            DatasetField(name="host_derived_crossing", sql="customers.balance * 2",
+            DatasetField(name="host_derived_crossing", expression="customers.balance * 2",
                    datatype=DataType.FLOAT),
             # derived, local, purely local sql
-            DatasetField(name="host_derived_local", sql="amount * 2",
+            DatasetField(name="host_derived_local", expression="amount * 2",
                    datatype=DataType.FLOAT),
             # derived, host-declared, sql that is BOTH host-local AND crossing
-            DatasetField(name="host_derived_mixed", sql="amount * customers.balance",
+            DatasetField(name="host_derived_mixed", expression="amount * customers.balance",
                    datatype=DataType.FLOAT),
             # derived referencing TWO datasets
             DatasetField(name="multi_dataset",
-                   sql="customers.balance + customers.regions.population",
+                   expression="customers.balance + customers.regions.population",
                    datatype=DataType.FLOAT),
             # derived-of-derived across two hops
-            DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
+            DatasetField(name="deep_pop", expression="customers.regions.pop_x2",
                    datatype=DataType.FLOAT),
             # quoted dotted identifier
-            DatasetField(name="quoted_cross", sql='"customers"."balance"',
+            DatasetField(name="quoted_cross", expression='"customers"."balance"',
                    datatype=DataType.FLOAT),
         ],
         relationships=[
@@ -453,7 +453,7 @@ class TestCoordinateSystemInvariant:
         OWN summary, not the parent's."""
         host = _orders()
         host.fields.append(
-            DatasetField(name="eu_amount", sql="amount",
+            DatasetField(name="eu_amount", expression="amount",
                    filter="customers.balance > 0", datatype=DataType.FLOAT),
         )
         bundle = ResolvedSourceBundle(

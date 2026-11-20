@@ -9,6 +9,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.relationship_walker import list_child, with_list_children
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
@@ -188,7 +189,7 @@ class TestComposition:
         assert _per(resp, "skills.value") == {"go": 3, "sql": 2}
 
     async def test_derived_list_column(self) -> None:
-        derived = DatasetField(name="a_skills", sql="CASE WHEN team = 'A' THEN skills END", datatype=DataType.ARRAY,
+        derived = DatasetField(name="a_skills", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="CASE WHEN team = 'A' THEN skills END")]), datatype=DataType.ARRAY,
                          element_type=DataType.STRING)
         base = contractors_dataset()
         model = base.model_copy(update={"fields": [*base.fields, derived]})

@@ -152,12 +152,12 @@ async def test_root_model_keeps_every_row(engine: SlayerQueryEngine) -> None:
     }
 
 
-async def test_inferred_root_keeps_rows_without_facts(engine: SlayerQueryEngine) -> None:
+async def test_inferred_rows_are_the_metric_homes_cells(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "dimensions": ["regions.name"], "metrics": [{"metric": "count(customers.id)", "alias": "n_customers"}],
     })
     rows = fx.rows_by(resp, key=".name")
-    assert {k: fx.value(r, ".n_customers") for k, r in rows.items()} == {"North": 2, "South": 2, "East": 1, "West": 0}
+    assert {k: fx.value(r, ".n_customers") for k, r in rows.items()} == {"North": 2, "South": 2, "East": 1}
 
 
 def test_population_guidance_drops_factless_rows_only_at_a_fact_root() -> None:

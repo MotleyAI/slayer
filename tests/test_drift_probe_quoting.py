@@ -28,8 +28,8 @@ async def _engine(tmp_path: Path) -> tuple[SlayerQueryEngine, str]:
 
 def _dataset(sql: str) -> SlayerDataset:
     return SlayerDataset(name="m", sql=sql, data_source="ds", fields=[
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
     ])
 
 

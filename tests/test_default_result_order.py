@@ -89,7 +89,7 @@ def _orders() -> SlayerDataset:
             # Sorts opposite to order_total: big orders label "a-big".
             DatasetField(
                 name="size_label", datatype=DataType.STRING,
-                sql="CASE WHEN order_total >= 50 THEN 'a-big' ELSE 'b-small' END",
+                expression="CASE WHEN order_total >= 50 THEN 'a-big' ELSE 'b-small' END",
             ),
         ],
         relationships=[

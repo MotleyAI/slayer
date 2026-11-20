@@ -47,7 +47,7 @@ def dev2177_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
                     params=[AggregationParam(name="flag", sql="TRUE")]),
     ]})
     regions = regions.model_copy(update={"fields": [
-        *regions.fields, DatasetField(name="rank", sql="id", datatype=DataType.INTEGER),
+        *regions.fields, DatasetField(name="rank", expression="id", datatype=DataType.INTEGER),
     ], "aggregations": [
         Aggregation(name="weighted_avg", expression="SUM({value} * {weight}) * 1.0 / SUM({weight})",
                     params=[AggregationParam(name="weight", sql="1")]),

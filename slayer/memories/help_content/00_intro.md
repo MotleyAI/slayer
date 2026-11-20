@@ -11,9 +11,9 @@ aggregates of joined datasets and aggregates of aggregates. The syntax is on the
 ## Judgment calls the tool docs can't make for you
 
 1. **Choose the population deliberately.** `population` decides which rows exist
-   in the result. Omit it to let the engine infer the smallest dataset determining
-   your dimensions and row-level filter fields (the choice is reported back);
-   name it explicitly when the question implies a different row set. A query
+   in the result. Omit it and the rows are every dimension combination some
+   metric's rows reach (reported back); name it explicitly when the question
+   implies a different row set. A query
    rooted at `orders` enriched from `customers` omits customers with no orders;
    rooted at `customers` it keeps them.
 2. **Check a field before trusting it.** `inspect` it with `compact=false` and read `Description:` and

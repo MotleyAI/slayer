@@ -141,7 +141,7 @@ def orders_dataset() -> SlayerDataset:
             DatasetField(name="shipped_at", datatype=DataType.DATETIME),
             DatasetField(name="refunded_at", datatype=DataType.DATETIME),
             DatasetField(name="created_txt", datatype=DataType.STRING),
-            DatasetField(name="eff", datatype=DataType.DATETIME, sql="COALESCE(shipped_at, created_at)"),
+            DatasetField(name="eff", datatype=DataType.DATETIME, expression="COALESCE(shipped_at, created_at)"),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),

@@ -128,7 +128,7 @@ class TestUnprovenHopAssociatesByDefault:
     async def test_rootless_returns_ossies_numbers(self, dialect, mode) -> None:
         async with ossie_engine(dialect) as engine:
             resp = await engine.execute(query(dimensions=["customers.region"], metrics=REV_ROOTLESS, **mode))
-        assert cells(resp, "region", "rev") == AMOUNT_BY_REGION
+        assert cells(resp, "region", "rev") == AMOUNT_BY_REGION_ROOTED
         assert kinds(resp, "associated")
         assert not kinds(resp, "broadcast")
 
@@ -224,7 +224,7 @@ class TestRowIdentity:
 
     async def test_a_regroup_prefixed_home_column_does_not_shadow_the_row_identity(self, dialect) -> None:
         models = ossie_datasets()
-        models[1].fields = [*models[1].fields, DatasetField(name="__regroup__row_id", sql="id", datatype=DataType.INTEGER)]
+        models[1].fields = [*models[1].fields, DatasetField(name="__regroup__row_id", expression="id", datatype=DataType.INTEGER)]
         async with ossie_engine(dialect, datasets=models) as engine:
             resp = await engine.execute(query(
                 population="orders", dimensions=["orders.status"], metrics=[metric("sum(customers.spend)", "sp")]))

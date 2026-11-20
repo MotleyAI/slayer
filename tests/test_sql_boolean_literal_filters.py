@@ -42,9 +42,9 @@ def _make_engine() -> SlayerQueryEngine:
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="is_active", sql="is_active", datatype=DataType.BOOLEAN),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="is_active", expression="is_active", datatype=DataType.BOOLEAN),
         ],
     )))
     return SlayerQueryEngine(storage=storage)

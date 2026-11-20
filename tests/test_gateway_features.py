@@ -127,7 +127,7 @@ class TestGatewayServesEveryFeature:
     async def test_model_validation(self, tmp_path: Path, shop_db: str) -> None:
         ds = shop_datasource(shop_db)
         drifted = orders_dataset()
-        drifted.fields.append(DatasetField(name="ghost", sql="ghost", datatype=DataType.STRING))
+        drifted.fields.append(DatasetField(name="ghost", expression="ghost", datatype=DataType.STRING))
 
         async def build(base: str) -> StorageBackend:
             return await shop_storage(base, datasource=ds, datasets=[drifted, customers_dataset(), paid_sql_dataset()])

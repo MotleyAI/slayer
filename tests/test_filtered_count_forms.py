@@ -35,9 +35,9 @@ async def _gen(expression: str) -> str:
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="t",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="amt", sql="amount", datatype=DataType.FLOAT, filter="region = 'US'"),
-            DatasetField(name="cust", sql="customer_id", datatype=DataType.INTEGER, filter="region = 'US'"),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amt", expression="amount", datatype=DataType.FLOAT, filter="region = 'US'"),
+            DatasetField(name="cust", expression="customer_id", datatype=DataType.INTEGER, filter="region = 'US'"),
         ],
     )
     q = SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression)])

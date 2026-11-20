@@ -114,7 +114,7 @@ async def test_first_segments_follow_the_identifier_case_rule(engine: SlayerQuer
 
 async def test_stored_definitions_stay_dataset_local(backend: str) -> None:
     customers = customers_dataset(
-        fields=[DatasetField(name="region_label", datatype=DataType.STRING, sql="upper(region)")],
+        fields=[DatasetField(name="region_label", datatype=DataType.STRING, expression="upper(region)")],
         filters=["region <> 'TEST'"],
         metrics=[DatasetMetric(name="aov", expression="sum(orders.amount) / count(*)")],
     )
@@ -174,7 +174,7 @@ async def test_a_directed_cycle_takes_its_to_one_path(backend: str) -> None:
     async with cycle_engine(backend) as eng:
         resp = await eng.execute({"population": "x", "dimensions": ["x.v"],
                                   "metrics": ["sum(z.amount)", "sum(x.z.amount)"]})
-    assert by(resp, "x.v", "z.amount_sum") == {"x1": 10.0, "x2": 20.0}
+    assert by(resp, "x.v", "z.amount_sum") == {"x1": None, "x2": 30.0}
     assert by(resp, "x.v", "x.z.amount_sum") == {"x1": None, "x2": 30.0}
 
 
