@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.generator import SQLGenerator
 
 from tests._engine_helpers import _engine_generate
+from tests._field_builders import public_orders
 
 
 async def _noop_async(**kw):  # NOSONAR(S7503) — must remain async to match resolver-callback contract
@@ -48,16 +48,4 @@ async def _generate(
 
 @pytest.fixture
 def orders_dataset() -> SlayerDataset:
-    return SlayerDataset(
-        name="orders",
-        sql_table="public.orders",
-        data_source="test",
-        default_time_dimension="created_at",
-        fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", expression="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
-            DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
-        ],
-    )
+    return public_orders()

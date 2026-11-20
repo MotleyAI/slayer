@@ -202,13 +202,11 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
 def _definition_lines(field: DatasetField) -> list[str]:
     """The field's definition: portable text, each dialect entry, a deprecated ``sql``; a self-name read is omitted."""
     expression = field.expression
+    portable = expression.sql if expression is not None and not isinstance(expression, str) else expression
     lines: list[str] = []
-    if isinstance(expression, str):
-        if expression.strip() != field.name:
-            lines.append(f"Expression: {expression}")
-    elif expression is not None:
-        if expression.sql:
-            lines.append(f"Expression: {expression.sql}")
+    if portable and portable.strip() != field.name:
+        lines.append(f"Expression: {portable}")
+    if expression is not None and not isinstance(expression, str):
         lines.extend(f"Expression ({e.dialect}): {e.expression}" for e in expression.dialects or [])
     if field.sql:
         lines.append(f"SQL: {field.sql}")

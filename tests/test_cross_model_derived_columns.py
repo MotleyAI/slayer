@@ -24,6 +24,12 @@ from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationsh
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._field_builders import col, pk
+
+
+def _model_a(*fields: DatasetField) -> SlayerDataset:
+    """Dataset ``A`` keyed by ``id``, with ``fields``."""
+    return SlayerDataset(name="A", data_source="test", sql_table="A", fields=[pk(), *fields])
 
 
 def _norm(s: str) -> str:
@@ -242,17 +248,7 @@ async def test_cross_model_base_column_still_works(tmp_path) -> None:
 
 async def test_local_columnsql_references_local_derived(tmp_path) -> None:
     engine, _ = _engine_with_storage(tmp_path)
-    model_a = SlayerDataset(
-        name="A",
-        data_source="test",
-        sql_table="A",
-        fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
-            DatasetField(name="c1", expression="raw_a + 1", datatype=DataType.FLOAT),
-            DatasetField(name="c2", expression="A.c1 * 2", datatype=DataType.FLOAT),
-        ],
-    )
+    model_a = _model_a(col("raw_a"), col("c1", expression="raw_a + 1"), col("c2", expression="A.c1 * 2"))
     query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c2")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -271,18 +267,7 @@ async def test_local_columnsql_references_local_derived(tmp_path) -> None:
 
 async def test_chain_of_three_derived_columns(tmp_path) -> None:
     engine, _ = _engine_with_storage(tmp_path)
-    model_a = SlayerDataset(
-        name="A",
-        data_source="test",
-        sql_table="A",
-        fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
-            DatasetField(name="c1", expression="raw_a + 1", datatype=DataType.FLOAT),
-            DatasetField(name="c2", expression="A.c1 + 10", datatype=DataType.FLOAT),
-            DatasetField(name="c3", expression="A.c2 + 100", datatype=DataType.FLOAT),
-        ],
-    )
+    model_a = _model_a(col("raw_a"), col("c1", expression="raw_a + 1"), col("c2", expression="A.c1 + 10"), col("c3", expression="A.c2 + 100"))
     query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c3")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -490,16 +475,7 @@ async def test_diamond_join_derived(tmp_path) -> None:
 
 async def test_cycle_detection(tmp_path) -> None:
     engine, _ = _engine_with_storage(tmp_path)
-    model_a = SlayerDataset(
-        name="A",
-        data_source="test",
-        sql_table="A",
-        fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="c1", expression="A.c2 + 1", datatype=DataType.FLOAT),
-            DatasetField(name="c2", expression="A.c1 - 1", datatype=DataType.FLOAT),
-        ],
-    )
+    model_a = _model_a(col("c1", expression="A.c2 + 1"), col("c2", expression="A.c1 - 1"))
     query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c1")])
     with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle") as exc_info:
         await _gen_sql(engine, query, model_a)
@@ -1773,17 +1749,7 @@ async def test_dev1410_local_bare_ref_to_local_derived(tmp_path) -> None:
     """Bare ref ``c1`` (no ``A.`` prefix) to a derived sibling field must
     inline the sibling's sql, not auto-qualify to ``A.c1``."""
     engine, _ = _engine_with_storage(tmp_path)
-    model_a = SlayerDataset(
-        name="A",
-        data_source="test",
-        sql_table="A",
-        fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
-            DatasetField(name="c1", expression="raw_a + 1", datatype=DataType.FLOAT),
-            DatasetField(name="c2", expression="A.c1 * 2", datatype=DataType.FLOAT),
-        ],
-    )
+    model_a = _model_a(col("raw_a"), col("c1", expression="raw_a + 1"), col("c2", expression="A.c1 * 2"))
     query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c2")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -1798,18 +1764,7 @@ async def test_dev1410_local_bare_ref_to_local_derived(tmp_path) -> None:
 async def test_dev1410_local_bare_ref_three_deep(tmp_path) -> None:
     """Three-deep chain of bare-ref derived fields expands fully."""
     engine, _ = _engine_with_storage(tmp_path)
-    model_a = SlayerDataset(
-        name="A",
-        data_source="test",
-        sql_table="A",
-        fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
-            DatasetField(name="c1", expression="raw_a + 1", datatype=DataType.FLOAT),
-            DatasetField(name="c2", expression="A.c1 + 10", datatype=DataType.FLOAT),
-            DatasetField(name="c3", expression="A.c2 + 100", datatype=DataType.FLOAT),
-        ],
-    )
+    model_a = _model_a(col("raw_a"), col("c1", expression="raw_a + 1"), col("c2", expression="A.c1 + 10"), col("c3", expression="A.c2 + 100"))
     query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c3")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -1881,14 +1836,14 @@ async def test_dev1410_local_bare_ref_inside_case_coalesce_nullif_cast(tmp_path)
             ),
         ],
     )
-    for col in ("A.case_use", "A.coalesce_use", "A.nullif_use", "A.cast_use"):
-        query = SlayerQuery(population="A", dimensions=[QueryDimension(field=col)])
+    for ref in ("A.case_use", "A.coalesce_use", "A.nullif_use", "A.cast_use"):
+        query = SlayerQuery(population="A", dimensions=[QueryDimension(field=ref)])
         sql = await _gen_sql(engine, query, model_a)
         norm = _norm(sql)
         assert _no_bare_derived_ref(norm, "A", "score"), (
-            f"score leaked as A.score in {col}:\n{sql}"
+            f"score leaked as A.score in {ref}:\n{sql}"
         )
-        assert "A.x * 10" in norm, f"score body not inlined in {col}:\n{sql}"
+        assert "A.x * 10" in norm, f"score body not inlined in {ref}:\n{sql}"
 
 
 async def test_dev1410_local_bare_ref_to_derived_inside_subquery_left_alone(
@@ -2005,8 +1960,8 @@ async def test_dev1410_local_bare_ref_to_derived_inside_union_left_alone(
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
+            pk(),
+            col("raw_a"),
             DatasetField(name="score", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="raw_a + 1")]), datatype=DataType.FLOAT),
             DatasetField(
                 name="union_use",
@@ -2037,8 +1992,8 @@ async def test_dev1410_local_bare_ref_to_derived_inside_values_left_alone(
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
+            pk(),
+            col("raw_a"),
             DatasetField(name="score", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="raw_a + 1")]), datatype=DataType.FLOAT),
             # Bare ``score`` inside a sub-SELECT with VALUES is a column of
             # the VALUES rowset, not A.score.
@@ -2149,16 +2104,7 @@ async def test_dev1410_local_bare_ref_cycle_raises_at_compile_time(tmp_path) -> 
     The error must also be catchable as ValueError (dual-inheritance for
     backwards compat with existing call sites)."""
     engine, _ = _engine_with_storage(tmp_path)
-    model_a = SlayerDataset(
-        name="A",
-        data_source="test",
-        sql_table="A",
-        fields=[
-            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="c1", expression="A.c2 + 1", datatype=DataType.FLOAT),
-            DatasetField(name="c2", expression="A.c1 - 1", datatype=DataType.FLOAT),
-        ],
-    )
+    model_a = _model_a(col("c1", expression="A.c2 + 1"), col("c2", expression="A.c1 - 1"))
     query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c1")])
     with pytest.raises(DatasetFieldCycleError) as exc_info:
         await _gen_sql(engine, query, model_a)

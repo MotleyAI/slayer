@@ -92,11 +92,11 @@ def dev1900_datasets() -> List[SlayerDataset]:
         cardinality=RelationshipCardinality.ONE_TO_MANY,
     ))
     regions.fields.append(
-        DatasetField(name="bad_pop", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="pop + region_events.value"), DialectEntry(dialect="SQLITE", expression="pop + region_events.value")])))
+        DatasetField(name="bad_pop", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="pop + region_events.value") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])))
     regions.fields.append(
-        DatasetField(name="bad_pop2", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.bad_pop * 2"), DialectEntry(dialect="SQLITE", expression="regions.bad_pop * 2")])))
+        DatasetField(name="bad_pop2", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="regions.bad_pop * 2") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])))
     regions.fields.append(
-        DatasetField(name="derived_pop", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="pop * 2"), DialectEntry(dialect="SQLITE", expression="pop * 2")])))
+        DatasetField(name="derived_pop", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="pop * 2") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])))
     # A region-owned aggregation whose weight defaults to the BARE owner-local
     # derived field bad_pop (which crosses the fanning hop) — the bare-default
     # counterpart to customers' dotted wsumx.
@@ -144,7 +144,7 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
     models = dev1900_datasets()
     regions = _regions(models)
     regions.fields.append(
-        DatasetField(name="unparseable", datatype=DataType.FLOAT, expression=")((( bad"))
+        DatasetField(name="unparseable", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression=")((( bad") for d in ("DUCKDB", "SQLITE")])))
     regions.fields.append(
         DatasetField(name="cyc", datatype=DataType.FLOAT, expression="regions.cyc + 1"))
     customers = _customers(models)

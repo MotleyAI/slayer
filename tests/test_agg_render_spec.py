@@ -54,7 +54,9 @@ from slayer.sql.generator import (  # type: ignore[attr-defined]
     SQLGenerator,
 )
 from slayer.sql.render.aggregates import resolve_agg_entry
-
+from slayer.sql.dialects import get_dialect
+from slayer.sql.naming import AliasAllocator
+from slayer.sql.scope import ScopeFrame
 
 # These imports drive the failing-test contract — neither name exists on
 # the current codebase. Stage A landing flips them green.
@@ -347,7 +349,7 @@ class TestBuilderColumnKey:
         assert spec.expression is None
 
     def test_columnsqlkey_derived_uses_column_sql(self):
-        # The derived ``net_amount`` field has ``sql = "amount - tax"`` and
+        # The derived ``net_amount`` field has ``expression = "amount - tax"`` and
         # type DOUBLE; aggregating it must surface the expression as
         # ``spec.sql``.
         key = AggregateKey(
@@ -805,3 +807,23 @@ class TestBuildAggRegistryDispatch:
         spec = self._spec("definitely_not_an_aggregation")
         with pytest.raises(ValueError, match="no expression"):
             gen._build_agg(spec)
+
+
+class TestUnresolvedFieldFallbacks:
+    """The no-bundle fallbacks read an unresolved field's definition, never its name."""
+
+    def test_dimension_reads_the_definition(self) -> None:
+        expr = SQLGenerator(dialect="postgres")._dim_field_expr_from_planned(  # type: ignore[attr-defined]
+            source_dataset=_orders_dataset(), source_relation="orders", leaf="net_amount")
+        assert expr.sql(dialect="postgres") == "CAST(amount - tax AS DOUBLE PRECISION)"
+
+    def test_ranked_value_reads_the_definition(self) -> None:
+        orders = _orders_dataset()
+        alloc = AliasAllocator()
+        bundle = ResolvedSourceBundle(dialect="postgres", population=orders)
+        scope = ScopeFrame(scope_id=alloc.next_scope_id("orders"), root_dataset=orders, root_relation="orders",
+                           bundle=bundle, dialect=get_dialect("postgres"), allocator=alloc)
+        expr = SQLGenerator(dialect="postgres")._ranked_value_expr(  # type: ignore[attr-defined]
+            key=AggregateKey(source=FieldKey(path=(), leaf="net_amount"), agg="max"),
+            root_dataset=orders, root_relation="orders", bundle=bundle, scope=scope)
+        assert expr.sql(dialect="postgres") == "CAST(amount - tax AS DOUBLE PRECISION)"

@@ -554,7 +554,7 @@ def orders_dataset_with_json() -> SlayerDataset:
             DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="json_data",
-                expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="json_extract(blob, '$.k')")]),
+                expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="json_extract(blob, '$.k')") for d in ("POSTGRES", "SQLITE", "TSQL")]),
                 datatype=DataType.STRING,
             ),
         ],

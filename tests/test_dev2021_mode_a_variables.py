@@ -213,11 +213,11 @@ class TestLiteralValuesBind:
 #: (field, dataset) pairs whose placeholder stands in a non-literal position.
 _NON_LITERAL = {
     "model-sql-table": _sql_dataset("SELECT * FROM {table}"),
-    "column-function-name": _table_dataset(extra=(DatasetField(name="c", expression="{f}(amount)", datatype=DataType.FLOAT),)),
-    "column-quoted-identifier": _table_dataset(extra=(DatasetField(name="c", expression='"{c}"', datatype=DataType.FLOAT),)),
-    "column-comment": _table_dataset(extra=(DatasetField(name="c", expression="amount /* {c} */", datatype=DataType.FLOAT),)),
-    "column-type-name": _table_dataset(extra=(DatasetField(name="c", expression="CAST(amount AS {t})", datatype=DataType.FLOAT),)),
-    "column-partial-in-list": _table_dataset(extra=(DatasetField(name="c", expression="status IN ('x', {s})", datatype=DataType.BOOLEAN),)),
+    "column-function-name": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="{f}(amount)") for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.FLOAT),)),
+    "column-quoted-identifier": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression='"{c}"') for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.FLOAT),)),
+    "column-comment": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="amount /* {c} */") for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.FLOAT),)),
+    "column-type-name": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="CAST(amount AS {t})") for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.FLOAT),)),
+    "column-partial-in-list": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="status IN ('x', {s})") for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.BOOLEAN),)),
 }
 #: A bare slot is a literal position: saved, and refused at query time when its value is no number or boolean.
 _BARE_SLOT = _table_dataset(extra=(DatasetField(name="c", expression="{col} * 2", datatype=DataType.FLOAT),))

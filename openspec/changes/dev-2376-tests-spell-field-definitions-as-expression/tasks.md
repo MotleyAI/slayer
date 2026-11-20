@@ -23,6 +23,7 @@
 - [x] 4.1 Load `la:deterministic-refactor`; dry-run `dr-refactor retarget --file slayer/core/models.py --symbol DatasetField.sql --target DatasetField.expression` with `--keep slayer --keep examples`, `--keep` per allowlisted site, `--without` per other class's `.sql`; `--allow-blindspots` for the untyped `.sql` receivers in tests, each checked to be an engine response (`execute`/`execute_sync` result), a sqlglot node or a `TypeProbe`, never a field; include helper `sql` parameters forwarding into a field (decision 7). Verify: the dry-run diff holds only constructor-keyword and dict-key edits (decision 13).
 - [x] 4.2 Review, then `--apply`; run the skill's full gate. Verify: `la-typecheck` no new errors (baseline aligned by the tool, never `--write-baseline`), `dr-mock-lint` clean.
 - [x] 4.3 `render_field_text` renders the field's `expression` (portable text and each dialect entry) as well as a deprecated `sql`; unit tests for both forms. Verify: `test_search_render.py` passes.
+- [x] 4.4 The generator's three fallback reads of a field's deprecated `sql` (aggregate-spec builder, root value, bucket source in `slayer/sql/generator.py`) read `definition_sql`; a unit test on an unresolved `expression` field fails without it. Verify: `test_agg_render_spec.py` passes.
 
 ## 5. Finish
 

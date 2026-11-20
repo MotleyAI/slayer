@@ -92,7 +92,7 @@ def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
         DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="status", expression="status", datatype=DataType.STRING),
-        DatasetField(name="status_up", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="upper(status)")]), datatype=DataType.STRING),
+        DatasetField(name="status_up", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="upper(status)") for d in ("CLICKHOUSE", "DUCKDB", "MYSQL", "POSTGRES", "SQLITE")]), datatype=DataType.STRING),
         DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME),
         DatasetField(name="delivery_at", expression="delivery_at", datatype=DataType.DATETIME),
         DatasetField(name="store_id", expression="store_id", datatype=DataType.INTEGER),

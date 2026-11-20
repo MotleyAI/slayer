@@ -48,6 +48,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
 import slayer.engine.bundle_builder
+from tests._field_builders import public_orders
 
 
 def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> List[str]:
@@ -699,19 +700,7 @@ class TestTimeShiftCteDecollision:
         consecutive_periods metrics are hidden inner slots that share the
         placeholder ``_consecutive_periods_inner`` — their cp_reset/cp_value
         CTEs and value aliases must be de-collided, exactly like time_shift."""
-        model = SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            default_time_dimension="created_at",
-            fields=[
-                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", expression="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
-                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
-            ],
-        )
+        model = public_orders()
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],

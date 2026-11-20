@@ -97,17 +97,17 @@ def _customers_v2(*, extra_columns=None) -> SlayerDataset:
         DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
         DatasetField(name="status", expression="status", datatype=DataType.STRING),
         # Target-LOCAL derived dims (expand to customers_v2-only fields):
-        DatasetField(name="ltv_x2", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="lifetime_value * 2"), DialectEntry(dialect="POSTGRES", expression="lifetime_value * 2"), DialectEntry(dialect="SQLITE", expression="lifetime_value * 2")]), datatype=DataType.FLOAT),
-        DatasetField(name="ltv_third", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="lifetime_value / 3.0"), DialectEntry(dialect="POSTGRES", expression="lifetime_value / 3.0"), DialectEntry(dialect="SQLITE", expression="lifetime_value / 3.0")]), datatype=DataType.INTEGER),
+        DatasetField(name="ltv_x2", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="lifetime_value * 2") for d in ("CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "REDSHIFT", "SNOWFLAKE", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
+        DatasetField(name="ltv_third", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="lifetime_value / 3.0") for d in ("CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "REDSHIFT", "SNOWFLAKE", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.INTEGER),
         # Derived, one-hop crossing (customers_v2 → regions):
-        DatasetField(name="deep_pop", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.population"), DialectEntry(dialect="POSTGRES", expression="regions.population"), DialectEntry(dialect="SQLITE", expression="regions.population")]), datatype=DataType.FLOAT),
-        DatasetField(name="deep_pop_x2", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.population * 2"), DialectEntry(dialect="POSTGRES", expression="regions.population * 2"), DialectEntry(dialect="SQLITE", expression="regions.population * 2")]), datatype=DataType.FLOAT),
-        DatasetField(name="deep_weight", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.weight"), DialectEntry(dialect="POSTGRES", expression="regions.weight"), DialectEntry(dialect="SQLITE", expression="regions.weight")]), datatype=DataType.FLOAT),
+        DatasetField(name="deep_pop", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="regions.population") for d in ("CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "REDSHIFT", "SNOWFLAKE", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
+        DatasetField(name="deep_pop_x2", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="regions.population * 2") for d in ("CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "REDSHIFT", "SNOWFLAKE", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
+        DatasetField(name="deep_weight", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="regions.weight") for d in ("CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "REDSHIFT", "SNOWFLAKE", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
         # Derived, TWO-hop crossing (customers_v2 → regions → countries):
-        DatasetField(name="deep_gdp", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.countries.gdp"), DialectEntry(dialect="POSTGRES", expression="regions.countries.gdp"), DialectEntry(dialect="SQLITE", expression="regions.countries.gdp")]), datatype=DataType.FLOAT),
+        DatasetField(name="deep_gdp", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="regions.countries.gdp") for d in ("CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "REDSHIFT", "SNOWFLAKE", "SQLITE", "TRINO", "TSQL")]), datatype=DataType.FLOAT),
         # Derived TIME dim whose sql crosses a further relationship:
         DatasetField(name="region_opened_eff",
-               expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="coalesce(regions.opened_at, signup_at)"), DialectEntry(dialect="POSTGRES", expression="coalesce(regions.opened_at, signup_at)"), DialectEntry(dialect="SQLITE", expression="coalesce(regions.opened_at, signup_at)")]),
+               expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="coalesce(regions.opened_at, signup_at)") for d in ("CLICKHOUSE", "DATABRICKS", "DUCKDB", "MYSQL", "ORACLE", "POSTGRES", "REDSHIFT", "SNOWFLAKE", "SQLITE", "TRINO", "TSQL")]),
                datatype=DataType.DATETIME),
     ]
     if extra_columns:

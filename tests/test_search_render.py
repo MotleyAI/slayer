@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from slayer.core.enums import DataType
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
@@ -37,7 +39,6 @@ from slayer.search.render import (
     render_memory_text,
     render_dataset_text,
 )
-
 
 # ---------------------------------------------------------------------------
 # Datasource
@@ -554,8 +555,9 @@ def test_each_dialect_entry_of_a_field_is_rendered() -> None:
         "Expression: amount * 2", "Expression (DUCKDB): amount * 2", "Expression (SQLITE): amount + amount"]
 
 
-def test_a_self_name_read_renders_no_definition() -> None:
-    lines = _field_text(DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT))
+@pytest.mark.parametrize("expression", ["amount", ExpressionObject(sql="amount")], ids=["shorthand", "object"])
+def test_a_self_name_read_renders_no_definition(expression) -> None:
+    lines = _field_text(DatasetField(name="amount", expression=expression, datatype=DataType.FLOAT))
     assert not [ln for ln in lines if ln.startswith(("Expression", "SQL"))]
 
 

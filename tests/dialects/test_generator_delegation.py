@@ -41,13 +41,13 @@ class TestSqliteJsonExtractInGenerator:
                 DatasetField(name="payload", expression="payload", datatype=DataType.STRING),
                 DatasetField(
                     name="tier",
-                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="json_extract(payload, '$.tier')")]),
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="json_extract(payload, '$.tier')") for d in ("POSTGRES", "SQLITE")]),
                     datatype=DataType.STRING,
                 ),
                 DatasetField(
                     name="is_gold",
                     expression=(
-                        ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END")])
+                        ExpressionObject(dialects=[DialectEntry(dialect=d, expression="CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END") for d in ("POSTGRES", "SQLITE")])
                     ),
                     datatype=DataType.FLOAT,
                 ),
