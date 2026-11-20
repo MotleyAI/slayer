@@ -2258,24 +2258,6 @@
                 }
             }
         ],
-        "./slayer/sql/scope_check.py": [
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 31,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/sql/sql_expr.py": [
             {
                 "code": "reportPrivateImportUsage",

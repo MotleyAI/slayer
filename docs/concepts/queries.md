@@ -813,6 +813,7 @@ Example: `{"population": "orders", "dimensions": ["status"], "metrics": ["sum(cu
 Association serves every plain scalar aggregate. A dataset without a primary key uses a
 per-query row identity. This includes datasets with a standalone unique field that may
 contain NULLs. Each source row counts separately, and copies made by a join count once.
+A list element is told apart by its parent row and its position in the list.
 
 `window=` and `first`/`last` cannot associate yet: by default they broadcast with a `broadcast` warning whose `association_unsupported` names the reason, while an explicit `associate` (or an explicit `partition_by=` needing association) returns a typed error. An input crossing an unproven hop fails with a typed error in every mode. Each cell aggregates over the metric's own home rows by the home's relationship path, so an entity with no population row still counts in the cells its path reaches. An aggregate reads like a field of a dataset keyed by its grain, so an entity with no related row counts in the NULL cell whenever the result has one, however the query is rooted. A pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate- or transform-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))` weights each customer by its region's order total under `broadcast`, `associate` and `error` alike.
 
@@ -829,7 +830,7 @@ Cross-dataset aggregates also support `window=`, `partition_by=`, and `first` /
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 
-An [aggregated expression](expressions.md#expression-aggregation) may mix host and joined-dataset fields (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the relationship hop's cardinality decides exact grain vs association exactly as for a single cross-dataset metric.
+An [aggregated expression](expressions.md#expression-aggregation) may mix host and joined-dataset fields (`sum(amount - customers.discount)`); it is homed on the source's own dataset when that determines every operand, else the deepest dataset that does, so the relationship hop's cardinality decides exact grain vs association exactly as for a single cross-dataset metric.
 
 A cross-dataset **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target field do not collide:
 

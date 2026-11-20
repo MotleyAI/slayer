@@ -9,11 +9,12 @@ never renders one (``slayer/sql`` keeps sole Node-building authority).
 
 from __future__ import annotations
 
-from typing import Protocol, Tuple, Union, runtime_checkable
+from collections.abc import Mapping
+from typing import Dict, Literal, Protocol, Tuple, Union, runtime_checkable
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, Field as PydanticField, model_validator
 
-from slayer.core.keys import AggregateKey, Grain, TransformKey, ValueKey
+from slayer.core.keys import AggregateKey, Grain, TransformKey, ValueKey, is_reaggregation_key, source_anchor_path
 import slayer.core.enums
 
 
@@ -41,6 +42,48 @@ class StoredDataset(_Term, frozen=True):
         return "dataset"
 
 
+#: Where an aggregation is computed: the host, a dataset below it, its operand dataset (second-order), or nowhere
+#: resolved (no dataset determines its inputs, or the query has no dataset host).
+HomeKind = Literal["host", "physical_target", "operand_dataset", "unresolved"]
+
+
+class AggregateHome(BaseModel, frozen=True):
+    """An aggregation's home (semantics Axiom 2): its kind and path relative to the host."""
+
+    kind: HomeKind
+    path: Tuple[str, ...] = ()
+
+
+class AggregateHomes(BaseModel, frozen=True):
+    """Every aggregate's home in one elaborated environment."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    by_key: Dict[AggregateKey, AggregateHome] = PydanticField(default_factory=dict)
+
+    def of(self, key: AggregateKey) -> AggregateHome:
+        home = self.by_key.get(key)
+        if home is None:
+            raise RuntimeError(f"Aggregate {key!r} has no resolved home in this environment.")
+        return home
+
+    def target_rooted(self, key: ValueKey) -> bool:
+        """``key`` is computed by a target-rooted producer: at its home below the host; any other home keeps its
+        source anchor's routing (a host home's producer roots at the host, an unresolved one's input check names
+        the offending hop)."""
+        if not isinstance(key, AggregateKey) or key.locus == "host" or is_reaggregation_key(key):
+            return False
+        return self.of(key).kind == "physical_target" or bool(source_anchor_path(key.source))
+
+    def carried(self, rebuilt: Mapping[ValueKey, ValueKey]) -> "AggregateHomes":
+        """These homes, each rebuilt aggregate keeping its original's."""
+        extra = {
+            new: self.of(old) for old, new in rebuilt.items()
+            if isinstance(old, AggregateKey) and isinstance(new, AggregateKey)
+        }
+        return self.model_copy(update={"by_key": {**self.by_key, **extra}})
+
+
 #: Concrete datasets an ``Aggregate`` may aggregate over, or a ``Field`` live on.
 DatasetT = Union[StoredDataset, "Aggregate"]
 
@@ -50,13 +93,15 @@ class Aggregate(_Term, frozen=True):
 
     ``home_path`` is the resolved home dataset (Axiom 2) as a relationship path relative
     to the environment's host: the deepest dataset that determines every input;
-    ``()`` is the host itself. Resolved once in the elaborator (``engine/population/home``).
+    ``()`` is the host itself; ``home_kind`` classifies it. Resolved once in the elaborator
+    (``engine/population/home``).
     """
 
     home: DatasetT
     recipe: AggregateKey
     grain: Grain
     home_path: Tuple[str, ...] = ()
+    home_kind: HomeKind = "host"
 
     @property
     def kind(self) -> str:

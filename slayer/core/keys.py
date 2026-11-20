@@ -1936,15 +1936,6 @@ def is_local_partitioned_agg(k: ValueKey) -> bool:
     )
 
 
-def is_cross_dataset_agg(k: ValueKey) -> bool:
-    """A cross-dataset AggregateKey (source lives on another dataset); a host-grain wrap (locus="host") is excluded."""
-    return (
-        isinstance(k, AggregateKey)
-        and bool(source_anchor_path(k.source))
-        and k.locus != "host"
-    )
-
-
 def is_local_combined_regroup_ref(
     k: ValueKey, *, row_agg_set: frozenset = frozenset(),
 ) -> bool:

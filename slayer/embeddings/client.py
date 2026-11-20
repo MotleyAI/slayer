@@ -1,24 +1,11 @@
-"""Litellm wrapper for embedding generation (DEV-1386).
+"""Litellm wrapper for embedding generation; the only (lazy) importer of ``litellm``.
 
-This module is the only place that imports ``litellm`` (and only lazily).
-When the ``advanced_search`` extra is not installed, ``is_available()``
-returns ``False`` and every call returns the no-op shape — the caller is
-expected to short-circuit and skip the embedding channel entirely.
-
-Environment contract: ``SLAYER_EMBEDDING_MODEL`` overrides the default
-``openai/text-embedding-3-small``. Provider credentials
-(``OPENAI_API_KEY``, ``AZURE_API_KEY``, etc.) are read by litellm itself
-per its standard env-var conventions.
-
-DEV-1557: ``embed_batch`` no longer treats one over-cap input as a
-batch-killer. Each text is token-truncated to the model's reported cap
-(minus a 256-token margin) via ``truncate_text_for_model`` before the
-call; if the batch still raises ``BadRequestError``, we fall back to
-embedding each text individually so good inputs survive.
+``SLAYER_EMBEDDING_MODEL`` overrides the default model; litellm reads provider credentials itself.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -35,12 +22,7 @@ SLAYER_EMBEDDING_MODEL_ENV = "SLAYER_EMBEDDING_MODEL"
 _log = logging.getLogger(__name__)
 
 
-# litellm's GLOBAL_LOGGING_WORKER enqueues an async_success_handler coroutine
-# after every aembedding call. Under run_sync (notebook / CLI) each call gets a
-# fresh event loop that is torn down before the worker drains its queue, so
-# litellm's next call nils _queue on loop-change detection and GC surfaces the
-# orphans as RuntimeWarnings. The work is litellm-internal telemetry with no
-# off-switch — filter the one warning at the import-time boundary.
+# litellm's logging worker orphans this coroutine when run_sync tears down its loop; telemetry only.
 warnings.filterwarnings(
     "ignore",
     message=r"coroutine 'Logging\.async_success_handler' was never awaited",
@@ -58,34 +40,9 @@ def current_model() -> str:
 
 @lru_cache(maxsize=1)
 def is_available() -> bool:
-    """Return True iff the embedding channel is usable.
-
-    Two conditions, both required:
-
-    1. The ``advanced_search`` extra is installed (``litellm`` imports).
-    2. The configured embedding model has a usable API key in the
-       environment, per ``litellm.validate_environment``.
-
-    Both "extra not installed" and "extra installed but no API key" yield
-    ``False`` — the write-side refresh hooks short-circuit silently in
-    that case, and the search service emits a single user-visible
-    warning into ``SearchResponse.warnings``. This distinction matters
-    on CI where the extra is installed (for unit-test imports) but no
-    provider key is configured: per-entity refresh warnings would
-    otherwise spam ``save_memory`` / ``ingest`` / ``edit_model``
-    responses for a "feature not configured" case.
-
-    A genuine runtime error (rate limit, network blip, revoked key) is
-    a separate code path: ``embed_batch`` catches the exception there
-    and per-entity warnings *do* bubble up, surfacing the failure to
-    the user.
-
-    Cached for the lifetime of the process; tests should clear with
-    ``is_available.cache_clear()`` after touching env vars or patching
-    the symbol.
-    """
+    """True iff ``litellm`` imports and the configured model has an API key; cached per process."""
     try:
-        import litellm
+        import litellm  # ALLOW(import-not-top): optional dep, lazy
     except ImportError:
         return False
     try:
@@ -96,16 +53,14 @@ def is_available() -> bool:
     return bool(validation.get("keys_in_environment", False))
 
 
-# DEV-1557: 256-token margin between the model's reported cap and our
-# usable budget. text-embedding-3-small reports cap=8191 from litellm
-# and accepts up to 8192 tokens server-side; 256 leaves room for any
-# provider-side BOS/role-token overhead and minor cap-introspection
-# drift across litellm versions, while still keeping the budget useful
-# for very large caps (Voyage's 32K → 31744-token budget).
+async def is_available_async() -> bool:
+    """``is_available()`` run in a worker thread, so its lazy import never blocks the loop."""
+    return await asyncio.to_thread(is_available)
+
+
+# Headroom below the reported cap for provider token overhead and cap drift.
 _TRUNCATE_MARGIN_TOKENS = 256
 _CAP_FALLBACK = 8192
-# Hash bytes logged on truncation events. SHA-256 prefix is enough to
-# correlate two log lines without leaking the embedded user content.
 _HASH_PREFIX_CHARS = 16
 
 
@@ -113,10 +68,9 @@ _CAP_CACHE: dict[str, int] = {}
 
 
 def _try_get_max_tokens(model: str) -> int | None:
-    """Best-effort ``litellm.utils.get_max_tokens`` lookup. Returns the
-    cap if it's a positive int, else ``None``. Never raises."""
+    """The model's positive-int cap from litellm, else ``None``; never raises."""
     try:
-        from litellm import utils as litellm_utils
+        from litellm import utils as litellm_utils  # ALLOW(import-not-top): optional dep, lazy
     except Exception:  # noqa: BLE001 — litellm absent or import-broken
         return None
     try:
@@ -129,9 +83,7 @@ def _try_get_max_tokens(model: str) -> int | None:
 
 
 def _resolve_model_cap(resolved_model: str) -> int | None:
-    """Look up the model's max-token cap, trying provider-prefixed name
-    first and the bare name as a fallback. Caches only positive-int
-    successes so a transient lookup failure isn't sticky."""
+    """Max-token cap by prefixed then bare name; only successes are cached."""
     cached = _CAP_CACHE.get(resolved_model)
     if cached is not None:
         return cached
@@ -146,22 +98,16 @@ def _resolve_model_cap(resolved_model: str) -> int | None:
 
 
 def _clear_cap_cache() -> None:
-    """Test hook (matches the ``cache_clear`` shape used by lru_cache)."""
     _CAP_CACHE.clear()
 
 
-# Surface ``cache_clear`` on the function itself so test fixtures can
-# clear it uniformly with the lru-cached encoder helper below.
 _resolve_model_cap.cache_clear = _clear_cap_cache  # type: ignore[attr-defined]
 
 
 @lru_cache(maxsize=8)
 def _resolve_encoder(bare_model_name: str) -> Any:
-    """Return a tiktoken encoder for the given bare model name (with
-    provider prefix already stripped). Falls back to ``cl100k_base`` on
-    KeyError. Raises ``ImportError`` if tiktoken is unavailable —
-    callers must catch and degrade to identity truncation."""
-    import tiktoken  # noqa: PLC0415 — lazy import gated by advanced_search
+    """Tiktoken encoder for a bare model name, else ``cl100k_base``; raises ``ImportError`` without tiktoken."""
+    import tiktoken  # noqa: PLC0415  # ALLOW(import-not-top): optional dep, lazy
     try:
         return tiktoken.encoding_for_model(bare_model_name)
     except KeyError:
@@ -175,32 +121,14 @@ def _strip_provider_prefix(model: str) -> str:
 def truncate_text_for_model(
     text: str, *, model: str | None = None,
 ) -> str:
-    """Truncate ``text`` to the resolved model's token cap minus a
-    fixed 256-token margin (DEV-1557).
-
-    Returns ``text`` unchanged when already under budget (no decode
-    round-trip). Head-keep slicing — the prefix of the input is
-    preserved because SLayer's rendered entity / memory text leads
-    with the most signal-rich fields.
-
-    Defensive: if tiktoken is unavailable (the lazy import in
-    ``_resolve_encoder`` raises) or any other encoder-resolution
-    failure surfaces, returns ``text`` unchanged. The per-input retry
-    in :func:`embed_batch` is what saves the batch when truncation
-    degrades to identity.
-    """
+    """Keep the head of ``text`` within the model's token cap minus a margin; unchanged on any encoder failure."""
     resolved_model = model or current_model()
     try:
         encoder = _resolve_encoder(_strip_provider_prefix(resolved_model))
     except Exception:  # noqa: BLE001 — tiktoken missing / unknown failure
         return text
 
-    # ``disallowed_special=()`` keeps tiktoken from raising on literal
-    # ``<|endoftext|>`` and similar markers that a user-controlled
-    # memory / entity description might happen to contain — without
-    # this, a single such input would propagate the ValueError out
-    # past embed_batch's per-input retry and regress to the all-None
-    # batch-killer this PR is supposed to fix.
+    # User text may contain literal special tokens such as ``<|endoftext|>``.
     try:
         tokens = encoder.encode(text, disallowed_special=())
     except Exception:  # noqa: BLE001 — tokenisation failure → degrade gracefully
@@ -213,11 +141,7 @@ def truncate_text_for_model(
 
     truncated_tokens = tokens[:budget]
     truncated = encoder.decode(truncated_tokens) if truncated_tokens else ""
-    # Log a content hash, not a preview. The preview was originally
-    # there for operator correlation, but it leaks embedded user
-    # content into application logs — the hash gives correlation
-    # (two log lines for the same input share a digest) without
-    # leaking the content.
+    # A hash, not a preview, so user content stays out of the logs.
     text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[
         :_HASH_PREFIX_CHARS
     ]
@@ -231,22 +155,17 @@ def truncate_text_for_model(
 
 
 def _get_bad_request_exception_classes() -> tuple[type[BaseException], ...]:
-    """Return the exception class(es) representing litellm's
-    ``BadRequestError`` — empty tuple if neither ``litellm`` nor
-    ``litellm.exceptions`` exposes one. Tuple form lets us use the
-    result directly in an ``except`` clause; an empty tuple safely
-    catches nothing so the generic-exception fallback path takes over.
-    """
+    """litellm's ``BadRequestError`` class(es) for an ``except`` clause; empty when absent."""
     classes: list[type[BaseException]] = []
     try:
-        import litellm  # noqa: PLC0415 — lazy
+        import litellm  # noqa: PLC0415  # ALLOW(import-not-top): optional dep, lazy
     except Exception:  # noqa: BLE001
         return ()
     cls = getattr(litellm, "BadRequestError", None)
     if inspect.isclass(cls) and issubclass(cls, BaseException):
         classes.append(cls)
     try:
-        from litellm import exceptions as _exc_mod  # noqa: PLC0415
+        from litellm import exceptions as _exc_mod  # noqa: PLC0415  # ALLOW(import-not-top): optional dep, lazy
     except Exception:  # noqa: BLE001
         _exc_mod = None
     if _exc_mod is not None:
@@ -261,8 +180,7 @@ def _get_bad_request_exception_classes() -> tuple[type[BaseException], ...]:
 
 
 def _parse_vectors(response: Any, n: int) -> list[list[float] | None]:
-    """Pack a litellm aembedding response into ``n`` per-slot vectors,
-    padding short responses with ``None``."""
+    """``n`` vectors from an aembedding response, ``None``-padded."""
     data = getattr(response, "data", None) or []
     out: list[list[float] | None] = []
     for entry in data:
@@ -285,11 +203,7 @@ async def _per_input_retry(
     truncated_texts: list[str],
     bad_request_classes: tuple[type[BaseException], ...],
 ) -> list[list[float] | None]:
-    """Embed each text in ``truncated_texts`` individually. On a
-    per-text ``BadRequestError`` the slot is ``None`` and the loop
-    continues; on any other exception we treat it as a global failure
-    shape (rate limit / auth / network), mark the current slot and
-    every remaining slot ``None``, and return early."""
+    """Embed each text alone: a ``BadRequestError`` voids its slot; any other error voids the rest."""
     results: list[list[float] | None] = []
     for idx, text in enumerate(truncated_texts):
         try:
@@ -319,36 +233,23 @@ async def _per_input_retry(
     return results
 
 
+def _truncate_all(texts: list[str], model: str) -> list[str]:
+    return [truncate_text_for_model(t, model=model) for t in texts]
+
+
 async def embed_batch(
     texts: list[str], *, model: str | None = None,
 ) -> list[list[float] | None]:
-    """Embed a batch of texts via ``litellm.aembedding`` (DEV-1557).
-
-    Each text is preemptively truncated to fit the resolved model's
-    token cap (see :func:`truncate_text_for_model`). If the batch call
-    still raises ``litellm.BadRequestError``, we fall back to embedding
-    each text individually so a single over-cap input no longer
-    poisons the whole batch.
-
-    Returns one vector (or ``None``) per input text in input order:
-
-    * Empty ``texts`` → ``[]`` (no API call).
-    * ``is_available()`` False → ``[None] * len(texts)`` (no truncation,
-      no API call).
-    * Batch ``BadRequestError`` → per-input retry; each text gets its
-      own success/failure verdict.
-    * Any other batch exception (rate limit / auth / network) → log
-      warning, return ``[None] * len(texts)``.
-    """
+    """One vector or ``None`` per text, in order; a batch ``BadRequestError`` retries per text."""
     if not texts:
         return []
-    if not is_available():
+    if not await is_available_async():
         return [None] * len(texts)
     resolved_model = model or current_model()
-    truncated = [
-        truncate_text_for_model(t, model=resolved_model) for t in texts
-    ]
-    import litellm  # noqa: PLC0415 — lazy
+    truncated = await asyncio.to_thread(
+        _truncate_all, texts, resolved_model,
+    )
+    import litellm  # noqa: PLC0415  # ALLOW(import-not-top): optional dep, lazy
     bad_request_classes = _get_bad_request_exception_classes()
     try:
         response = await litellm.aembedding(
@@ -377,24 +278,13 @@ _QUERY_CACHE_MAX = 64
 
 
 async def embed_query(text: str, *, model: str | None = None) -> list[float] | None:
-    """Embed a single query string with a small process-wide LRU cache.
-
-    Returns ``None`` when the extra is not installed or the embedding call
-    failed — the search service skips channel 3 in that case.
-
-    LRU semantics: on a cache hit, refresh recency by re-inserting the
-    key at the end of the insertion-order dict. Eviction pops the
-    oldest entry (front of the dict). Without the on-hit refresh the
-    cache degenerates into FIFO and frequently-used keys still age out.
-    """
+    """Embed one query through a process-wide LRU cache; ``None`` when unavailable or failed."""
     if not text or not text.strip():
         return None
     resolved_model = model or current_model()
     key = (resolved_model, text)
     cached = _QUERY_CACHE.get(key)
     if cached is not None:
-        # Move-to-end on hit so eviction pops the genuinely least-
-        # recently-used entry, not just the oldest inserted one.
         _QUERY_CACHE.pop(key, None)
         _QUERY_CACHE[key] = cached
         return cached

@@ -37,6 +37,7 @@ from slayer.sql.dialects.base import (
     is_null,
     lit,
     operand_copy,
+    ordinal_elements,
     pad_fill,
 )
 from slayer.sql.dialects.patterns import POSTGRES, RegexFlavour
@@ -335,6 +336,15 @@ class PostgresDialect(SqlDialect):
 
     def list_length(self, values: Expression) -> Expression:
         return anon("CARDINALITY", values)
+
+    def positioned_elements(self, values: Expression) -> exp.Select:
+        """The non-NULL elements ``WITH ORDINALITY``, compacted in list order by ``IS NOT NULL`` (``ARRAY_REMOVE``
+        needs an equality operator ``json`` lacks)."""
+        rows = ordinal_elements(values)
+        value, position = (s.copy() for s in rows.selects)
+        assert isinstance(value, Expression)
+        kept = rows.select(value, append=False).where(is_not_null(value.copy())).order_by(position)
+        return ordinal_elements(exp.Array(expressions=[kept]))
 
     def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
         """``ARRAY(SELECT DISTINCT e FROM UNNEST(x) e … ORDER BY e)``, ``x`` read as its element's canonical array

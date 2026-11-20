@@ -20,7 +20,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
-    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
+    LIST_POSITION, LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
     case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
 )
@@ -244,11 +244,17 @@ class SnowflakeDialect(SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False,
+        distinct: bool = False, positioned: bool = False,  # NOSONAR(S1172) — FLATTEN always exposes INDEX
     ) -> ListRelation:
         """``FLATTEN`` of the list cast to ``ARRAY(T)``, so ``value`` is typed; no correlated subquery reads it."""
         rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element, distinct)))
         return ListRelation(relation=exp.TableFromRows(this=rows, alias=exp.TableAlias(this=alias.copy())))
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:
+        """A list element's position reads as FLATTEN's own ``INDEX``."""
+        if isinstance(column, exp.Column) and column.name == LIST_POSITION:
+            return exp.Column(this=exp.to_identifier("INDEX"), table=column.args.get("table"))
+        return super().read_column(column, zoned=zoned)
 
     def list_exists(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,

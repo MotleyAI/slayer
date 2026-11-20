@@ -56,7 +56,7 @@ def _discover(query: SlayerQuery, bundle: ResolvedSourceBundle) -> List[RootDisp
     env = elaborate_query(query=query, bundle=bundle)
     return discover_roots(
         env.prebound, filter_typings=list(env.filter_typings),
-        scope=env.scope, bundle=env.bundle,
+        scope=env.scope, bundle=env.bundle, homes=env.homes,
     )
 
 
