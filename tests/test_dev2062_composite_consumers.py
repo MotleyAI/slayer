@@ -51,7 +51,7 @@ def _assert_cells_equal(actual: dict, expected: dict) -> None:
 # --------------------------------------------------------------------------- #
 # The reported query: saved aov + cumsum(aov)
 # --------------------------------------------------------------------------- #
-_SPELLINGS = {"saved": ("aov", "cumsum(aov)"), "inline": (AOV, f"cumsum({AOV})")}
+_SPELLINGS = {"saved": ("orders.aov", "cumsum(orders.aov)"), "inline": (AOV, f"cumsum({AOV})")}
 _TIME_FILTERS = {
     "date_range": {"time_dimensions": month_td(date_range=DATE_RANGE)},
     "date_filter": {"filter": [DATE_FILTER]},
@@ -85,7 +85,7 @@ _CONSUMERS = {
     "change_pct": "change_pct(({r}))",
     "consecutive_periods": "consecutive_periods(({r}) > 15)",
     "rank": "rank(({r}), direction='desc')",
-    "transform_over_ratio": "cumsum(sum(amount)) / ({r})",
+    "transform_over_ratio": "cumsum(sum(orders.amount)) / ({r})",
     "transform_plus_ratio": "cumsum(({r})) + ({r})",
     "transform_of_larger": "cumsum(({r}) * 2)",
 }
@@ -133,7 +133,7 @@ async def test_selected_larger_expression_alongside_its_transform(exec_engine, r
     _assert_cells_equal(by_month(both, "c"), by_month(alone_c, "c"))
 
 
-@pytest.mark.parametrize("measure", [AOV, "sum(amount)"])
+@pytest.mark.parametrize("measure", [AOV, "sum(orders.amount)"])
 async def test_change_and_change_pct_in_one_step(exec_engine, measure) -> None:
     # change_pct contains change's composite; siblings of one step never read each other's alias.
     ch, cp = f"change(({measure}))", f"change_pct(({measure}))"
@@ -156,7 +156,7 @@ async def test_measure_filter_on_transform_of_selected_ratio(exec_engine, ratio)
     predicate = f"cumsum(({r})) > {threshold}"
     with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), filter=[predicate], to_many_handling="broadcast"))
     without = await _run(exec_engine, monthly_q(
-        m("sum(amount)", "s"), filter=[predicate], to_many_handling="broadcast"))
+        m("sum(orders.amount)", "s"), filter=[predicate], to_many_handling="broadcast"))
     assert set(by_month(without, "s")) == kept
     assert by_month(with_ratio, "a") == approx_map({k: ratio_values[k] for k in kept})
 
@@ -166,7 +166,7 @@ async def test_order_by_transform_of_selected_ratio(exec_engine, ratio) -> None:
     r, ratio_values = _RATIOS[ratio]
     order = [{"field": f"cumsum(({r}))", "direction": "desc"}]
     with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), order=order, to_many_handling="broadcast"))
-    without = await _run(exec_engine, monthly_q(m("sum(amount)", "s"), order=order, to_many_handling="broadcast"))
+    without = await _run(exec_engine, monthly_q(m("sum(orders.amount)", "s"), order=order, to_many_handling="broadcast"))
     assert month_order(without) == [MAR, FEB, JAN]
     assert month_order(with_ratio) == [MAR, FEB, JAN]
     assert by_month(with_ratio, "a") == approx_map(ratio_values)

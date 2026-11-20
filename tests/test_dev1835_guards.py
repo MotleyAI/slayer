@@ -95,8 +95,8 @@ class TestDeletedGuardResidue:
 class TestPreservedGuardsVerbatim:
     async def test_g8_malformed_duration(self) -> None:
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='90x')", alias="w")],
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90x')", alias="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -104,8 +104,8 @@ class TestPreservedGuardsVerbatim:
 
     async def test_g2_no_resolvable_time_dimension(self) -> None:
         query = q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -119,8 +119,8 @@ class TestPreservedGuardsVerbatim:
             "fields": [*models[0].fields, DatasetField(name="updated_at", sql="ordered_at", datatype=DataType.DATETIME)],
         })
         query = q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="last(amount)", alias="l")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query, datasets=models)

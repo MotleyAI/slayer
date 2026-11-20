@@ -321,7 +321,7 @@ def _dataset() -> SlayerDataset:
 
 
 def _query() -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"], "filter": ["amount > 1"]})
+    return SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"], "filter": ["orders.amount > 1"]})
 
 
 _EXT_METRIC = {"name": "aov", "expression": "sum(amount) / count(*)"}
@@ -375,7 +375,7 @@ ATTRIBUTES: dict[str, AttributeCase] = {
     "query.source_model": AttributeCase(make=_query, old="source_model", new="population", assign=lambda: "customers"),
     "query.measures": AttributeCase(
         make=_query, old="measures", new="metrics",
-        assign=lambda: SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(amount)"]}).metrics),
+        assign=lambda: SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(orders.amount)"]}).metrics),
     "query.filters": AttributeCase(make=_query, old="filters", new="filter", assign=lambda: ["amount > 2"]),
     "query.source_model_name": AttributeCase(make=_query, old="source_model_name", new="population_name"),
     "refinement.measures": AttributeCase(
@@ -456,7 +456,7 @@ ATTRIBUTES: dict[str, AttributeCase] = {
         make=lambda: SpineRelationshipDroppedWarning(dataset="d", relationship="r"), old="join",
         new="relationship", assign=lambda: "s"),
     "unrelated.measures": AttributeCase(
-        make=lambda: UnrelatedDatasetWarningPayload(dataset="d", population="p", metrics=["m"], location="q"),
+        make=lambda: UnrelatedDatasetWarningPayload(dataset="d", population="p", metrics=["p.m"], location="q"),
         old="measures", new="metrics", assign=lambda: ["n"]),
     "whole_periods.column": AttributeCase(
         make=lambda: WholePeriodsNonNestingWarningPayload(field="c", granularities=[], location="q"),

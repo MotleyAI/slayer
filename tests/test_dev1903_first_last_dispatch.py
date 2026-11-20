@@ -111,7 +111,7 @@ def _outcome(query: SlayerQuery):
 class TestParseIsOneNode:
     @pytest.mark.parametrize("fn", ["first", "last"])
     @pytest.mark.parametrize("arg", [
-        "revenue", "1", "sum(revenue)", "sum(revenue) + 1",
+        "revenue", "1", "sum(sales.revenue)", "sum(revenue) + 1",
         "sum(revenue) > 100", "cumsum(weight)", "rev", "rev * 2",
         "qty * avg(revenue, partition_by=store)",
     ])
@@ -122,7 +122,7 @@ class TestParseIsOneNode:
 
     def test_aggregated_operand_is_not_decided_in_the_parser(self):
         """engine P2: the parser makes no grain decision."""
-        parsed = parse_expr("first(sum(revenue))")
+        parsed = parse_expr("first(sum(sales.revenue))")
         assert isinstance(parsed, AggCall)
         assert isinstance(parsed.source, AggCall)
 
@@ -133,8 +133,8 @@ class TestParseIsOneNode:
 
 class TestBindDispatch:
     @pytest.mark.parametrize("formula", [
-        "first(sum(revenue))", "last(sum(revenue))", "first(sum(revenue) + 1)",
-        "first(sum(revenue) > 100)",
+        "first(sum(sales.revenue))", "last(sum(sales.revenue))", "first(sum(sales.revenue) + 1)",
+        "first(sum(sales.revenue) > 100)",
     ])
     def test_aggregated_operand_binds_to_transform(self, formula):
         key = _metric_key(formula)
@@ -142,18 +142,18 @@ class TestBindDispatch:
         assert key.op == formula.split("(")[0]
 
     @pytest.mark.parametrize("formula, ranking", [
-        ("last(revenue)", None), ("last(revenue, ordered_at)", "ordered_at"),
+        ("last(sales.revenue)", None), ("last(sales.revenue, sales.ordered_at)", "sales.ordered_at"),
     ])
     def test_row_operand_binds_to_ranked_aggregate(self, formula, ranking):
         key = _metric_key(formula)
         assert isinstance(key, AggregateKey), key
         assert key.agg == "last"
         assert key == _metric_key(
-            "last(revenue)" if ranking is None else f"last(revenue, {ranking})",
+            "last(sales.revenue)" if ranking is None else f"last(sales.revenue, {ranking})",
         )
 
     @pytest.mark.parametrize("formula, kw", [
-        ("first(qty * avg(revenue, partition_by=store))", {"dimensions": ["store"]}),
+        ("first(sales.qty * avg(sales.revenue, partition_by=sales.store))", {"dimensions": ["sales.store"]}),
         ("first(1)", {}),
     ])
     def test_row_grain_expression_binds_to_ranked_aggregate(self, formula, kw):
@@ -166,12 +166,12 @@ class TestBindDispatch:
             ValueError,
             match="Transform 'first' does not accept keyword argument 'partition_by'",
         ):
-            _metric_key("first(sum(revenue), partition_by=store)")
+            _metric_key("first(sum(sales.revenue), partition_by=sales.store)")
 
     def test_transform_operand_reaches_the_checker(self):
         """Dispatch does not pre-empt transform-input validation."""
         with pytest.raises(ValueError) as ei:
-            _metric_key("first(cumsum(weight))")
+            _metric_key("first(cumsum(sales.weight))")
         msg = str(ei.value)
         assert "The transform cannot consume the row-level" in msg, msg
         assert "\n  at transform 'cumsum'\n" in msg, msg
@@ -180,9 +180,9 @@ class TestBindDispatch:
 
 class TestSavedMeasureOperand:
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(sum(revenue))"),
-        ("first(rev * 2)", "first(sum(revenue) * 2)"),
-        ("last(rev)", "last(sum(revenue))"),
+        ("first(sales.rev)", "first(sum(sales.revenue))"),
+        ("first(sales.rev * 2)", "first(sum(sales.revenue) * 2)"),
+        ("last(sales.rev)", "last(sum(sales.revenue))"),
     ])
     def test_binds_to_the_inline_transform(self, saved, inline):
         key = _metric_key(saved)
@@ -190,8 +190,8 @@ class TestSavedMeasureOperand:
         assert key == _metric_key(inline)
 
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(sum(revenue))"),
-        ("first(rev * 2)", "first(sum(revenue) * 2)"),
+        ("first(sales.rev)", "first(sum(sales.revenue))"),
+        ("first(sales.rev * 2)", "first(sum(sales.revenue) * 2)"),
     ])
     def test_plans_identically(self, saved, inline):
         def plan(formula):
@@ -214,8 +214,8 @@ async def exec_engine(request):
 
 class TestSavedMeasureExecution:
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(sum(revenue))"),
-        ("first(rev * 2)", "first(sum(revenue) * 2)"),
+        ("first(sales.rev)", "first(sum(sales.revenue))"),
+        ("first(sales.rev * 2)", "first(sum(sales.revenue) * 2)"),
     ])
     async def test_values_match_inline(self, exec_engine: SlayerQueryEngine, saved, inline):
         got = await exec_engine.execute(
@@ -239,20 +239,20 @@ PARITY = {
     "recursive_saved": lambda fn: {
         "metrics": [QueryMetric(metric=f"{fn}(rev_twice)", alias="m")]},
     "alias_in_filter": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(revenue)", alias="r")],
+        "metrics": [QueryMetric(metric="sum(sales.revenue)", alias="r")],
         "filter": [f"{fn}(r) > 0"]},
     "alias_in_order": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(revenue)", alias="r")],
+        "metrics": [QueryMetric(metric="sum(sales.revenue)", alias="r")],
         "order": [{"field": f"{fn}(r)", "direction": "desc"}]},
     "unselected_saved_in_filter": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(qty)", alias="q")],
+        "metrics": [QueryMetric(metric="sum(sales.qty)", alias="q")],
         "filter": [f"{fn}(rev) > 0"]},
     "unselected_saved_in_order": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(qty)", alias="q")],
+        "metrics": [QueryMetric(metric="sum(sales.qty)", alias="q")],
         "order": [{"field": f"{fn}(rev)", "direction": "desc"}]},
     "sibling_wrappers": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(revenue)", alias="r"),
-                     QueryMetric(metric="sum(qty)", alias="s")],
+        "metrics": [QueryMetric(metric="sum(sales.revenue)", alias="r"),
+                     QueryMetric(metric="sum(sales.qty)", alias="s")],
         "filter": [f"{fn}(r) + {fn}(s) > 0"]},
     "wrapper_of_wrapper": lambda fn: {
         "metrics": [QueryMetric(metric=f"{fn}({fn}(sum(revenue)))", alias="m")]},
@@ -261,7 +261,7 @@ PARITY = {
             metric=f"{fn}(sum(revenue)) * 2 + {fn}(sum(revenue)) + cumsum(sum(qty))",
             alias="m")]},
     "partitioned_operand": lambda fn: {
-        "dimensions": ["store"],
+        "dimensions": ["sales.store"],
         "metrics": [QueryMetric(metric=f"{fn}(sum(revenue, partition_by=store))", alias="m")]},
     "cross_model_composite": lambda fn: {
         "metrics": [QueryMetric(metric=f"{fn}(regions.tf * 2 + rev)", alias="m")]},

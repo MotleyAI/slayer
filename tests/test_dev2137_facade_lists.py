@@ -115,7 +115,7 @@ class TestPgWireValues:
     async def test_a_collected_list_over_the_postgres_wire(self) -> None:
         writer = await _run(_startup(user="u", database=DS) + _query("SELECT cities FROM contractors") + _terminate(),
                             storage=_PgStorage({DS: [_dataset()]}),
-                            engine=_PgEngine([{"contractors.cities": ["Oslo", "Rome"]}]))
+                            engine=_PgEngine([{"cities": ["Oslo", "Rome"]}]))
         msgs = _messages(writer.buffer)
         (_name, oid, _fmt), = _parse_row_description(next(b for t, b in msgs if t == "T"))
         assert oid == proto.OID_TEXT
@@ -134,7 +134,7 @@ class _ArrowField(Protocol):
 def _flight_text(value: Any) -> Any:
     handlers = FlightHandlers(
         engine=_FlightEngine(  # type: ignore[arg-type]
-            response=SlayerResponse(data=[{"contractors.cities": value}]), storage=_FlightStorage({DS: [_dataset()]}),
+            response=SlayerResponse(data=[{"cities": value}]), storage=_FlightStorage({DS: [_dataset()]}),
         ),
     )
     result = handlers._translate("SELECT cities FROM contractors")

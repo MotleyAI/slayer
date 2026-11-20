@@ -747,13 +747,30 @@ class QueryDimension(BaseModel):
 
 
 def computed_dimension_name(expression: str) -> str:
-    """An unnamed computed dimension's name: its expression's legacy naming seed, sanitised, so every
-    spelling of one expression names it alike."""
+    """An unnamed computed dimension's name: its expression's legacy naming seed read from its references' common
+    leading segments, sanitised, so every spelling of one expression names it alike."""
     try:
-        seed = legacy_result_name_seed(parse_expr(expression))
+        parsed = parse_expr(expression)
+        for head in () if isinstance(parsed, (Ref, DottedRef)) else _common_head(parsed):
+            parsed = root_relative(parsed, head)
+        seed = legacy_result_name_seed(parsed)
     except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
         seed = expression
     return auto_name_from_expression(seed)
+
+
+def _common_head(parsed: Any) -> tuple[str, ...]:
+    """The leading segments every reference in ``parsed`` shares before its leaf; empty with any bare reference."""
+    paths = [n.parts[:-1] if isinstance(n, DottedRef) else () for n in walk_parsed(parsed) if isinstance(n, (Ref, DottedRef))]
+    if not paths:
+        return ()
+    head = paths[0]
+    for path in paths[1:]:
+        k = 0
+        while k < min(len(head), len(path)) and head[k] == path[k]:
+            k += 1
+        head = head[:k]
+    return tuple(head)
 
 
 def _time_dimension_name_identity(td: "TimeDimension") -> tuple[str, tuple] | None:
@@ -1491,32 +1508,34 @@ class SlayerQuery(BaseModel):
         default=None,
         description=(
             'Values to return: expression strings or {"metric": ..., "alias": ...} (alias sets the '
-            "result key; a bare name references a saved dataset metric). Expressions combine "
-            "aggregations with arithmetic, also across datasets: rooted at customers, "
-            "sum(orders.amount) / count(*) divides the orders' total by the number of customers.\n"
-            "- Aggregations: count(*), sum(amount), count_distinct(customer_id), "
-            "avg(amount - cost), percentile(amount, p=0.9); a joined dataset's field by dotted path.\n"
+            "result key). Every field, metric and row count names its dataset first: orders.amount, "
+            "orders.revenue (a saved metric), count(orders.*); a bare name is an alias of this query. "
+            "The engine joins the datasets. Expressions combine aggregations with arithmetic, also "
+            "across datasets: rooted at customers, sum(orders.amount) / count(customers.*) divides "
+            "the orders' total by the number of customers.\n"
+            "- Aggregations: count(orders.*), sum(orders.amount), count_distinct(orders.customer_id), "
+            "avg(orders.amount - orders.cost), percentile(orders.amount, p=0.9).\n"
             "- agg(x) FILTER (WHERE c) aggregates only the rows where c holds: "
-            "count(*) FILTER (WHERE status = 'paid').\n"
+            "count(orders.*) FILTER (WHERE orders.status = 'paid').\n"
             "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
-            "spell its keys exactly like the query's dimensions (a joined field by its dotted "
-            "path; its bare name fails). Share of group: "
-            "sum(amount) / sum(amount, partition_by=customers.regions.name); share of the grand "
-            "total: sum(amount) / sum(amount, partition_by=[]).\n"
+            "spell its keys exactly like the query's dimensions. Share of group: "
+            "sum(orders.amount) / sum(orders.amount, partition_by=customers.regions.name); share of "
+            "the grand total: sum(orders.amount) / sum(orders.amount, partition_by=[]).\n"
             "- window= turns any aggregation into a trailing time window ending at each time "
             "bucket, in compact durations only ('90d', '3m', '1y'; never '3 months'): "
-            "count_distinct(customer_id, window='90d').\n"
+            "count_distinct(orders.customer_id, window='90d').\n"
             "- Nesting aggregates per-group values: "
-            "avg(sum(amount, partition_by=[customers.regions.name, customers.id]), "
+            "avg(sum(orders.amount, partition_by=[customers.regions.name, customers.id]), "
             "partition_by=[customers.regions.name]) averages the per-customer totals in each region.\n"
             "- Transforms wrap an aggregate; all but the rank family need a time dimension: "
-            "cumsum(sum(amount)) running total; change(sum(amount)) / change_pct(sum(amount)) "
-            "period-over-period delta / ratio; time_shift(sum(amount), -1) the previous "
+            "cumsum(sum(orders.amount)) running total; change(sum(orders.amount)) / "
+            "change_pct(sum(orders.amount)) period-over-period delta / ratio; "
+            "time_shift(sum(orders.amount), -1) the previous "
             "bucket's value ('year' as a third argument for year-over-year); lag(x, n) / "
             "lead(x, n) n rows back / ahead; rank(x, direction='desc') / "
             "dense_rank(x, direction='asc') with direction required and partition_by= to rank "
             "within groups; ntile(x, n=4) buckets, lowest first; "
-            "consecutive_periods(sum(amount) > 0) trailing run length.\n"
+            "consecutive_periods(sum(orders.amount) > 0) trailing run length.\n"
             "- A joined dataset's aggregate such as sum(customers.credit) from orders is computed "
             "over that dataset's own rows, each customer once. Sliced by a dimension it cannot "
             "be attributed to (an order's status), each group aggregates the distinct customers "
@@ -1529,7 +1548,7 @@ class SlayerQuery(BaseModel):
             "it again. An aggregate over a dataset no relationship path reaches from the root is computed "
             "over that dataset's own rows and repeated on every row (per bucket of a time_spine "
             "time dimension), with an unrelated_dataset warning: rooted at customers, "
-            "count(events.id) / count(*).\n"
+            "count(events.id) / count(customers.*).\n"
             "More (every aggregation, empty-input values, nesting and transform rules): "
             'inspect(reference=["memory:help.aggregations", "memory:help.transforms"], '
             'entity_type="memory").'
@@ -1590,15 +1609,15 @@ class SlayerQuery(BaseModel):
     dimensions: DimensionsField = Field(
         default=None,
         description=(
-            "Group-by fields, one result row per distinct combination: names, dotted paths to "
-            "joined fields (customers.regions.name), row-level expressions, or "
-            '{"field": ..., "alias": ...}. '
+            "Group-by fields, one result row per distinct combination: fields named by their "
+            "dataset (orders.status), a route from it (customers.regions.name), row-level "
+            'expressions, or {"field": ..., "alias": ...}. '
             "date_trunc('<unit>', expr) buckets a timestamp like a time_dimensions entry: "
-            "date_trunc('month', created_at); units are second, minute, hour, day, week, week_sunday, "
-            "month, quarter, year, or the datasource's custom ones, while month(created_at) is the "
-            "month of year (an integer). An aggregate inside a "
+            "date_trunc('month', orders.created_at); units are second, minute, hour, day, week, "
+            "week_sunday, month, quarter, year, or the datasource's custom ones, while "
+            "month(orders.created_at) is the month of year (an integer). An aggregate inside a "
             "computed dimension needs partition_by= to fix its grain: "
-            "{\"field\": \"iif(sum(amount, partition_by=customers.id) > 150, 'high', "
+            "{\"field\": \"iif(sum(orders.amount, partition_by=customers.id) > 150, 'high', "
             "'low')\", \"alias\": \"spend_band\"}. Group by naturally readable labels: a name "
             "(customers.regions.name), never by an id alone unless ids are asked for; when a name "
             "may repeat (people, products), by the id and the name."
@@ -1610,7 +1629,7 @@ class SlayerQuery(BaseModel):
         description=(
             "Time-bucketed group-bys — one result row per bucket. Each entry is a "
             "TimeDimension dict or the string date_trunc('<unit>', expr), e.g. "
-            "\"date_trunc('month', created_at)\"; the field may be any date or time expression, with an "
+            "\"date_trunc('month', orders.created_at)\"; the field may be any date or time expression, with an "
             "optional alias. Buckets without rows are absent. To return every bucket, "
             "empty ones included, bucket time_spine.timestamp with a lower date_range bound and "
             "aggregate datasets by dotted path: "
@@ -1637,8 +1656,8 @@ class SlayerQuery(BaseModel):
             "JSON payload ->> 'key'; strings are single-quoted ('paid'); build them from the "
             "field's sampled values.\n"
             "- Aggregates and transforms filter too, by expression or by a metric's name: "
-            "sum(amount) > 100; top N per group: "
-            "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
+            "sum(orders.amount) > 100; top N per group: "
+            "rank(sum(orders.amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
             "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
             "orders.\n"
             "- A list tags: contains(tags, 'x') or tags.value = 'x'; contains_any(tags, ['x', "
@@ -1674,8 +1693,8 @@ class SlayerQuery(BaseModel):
             "{placeholder} values scoped to this query object / stage; the "
             "tool-level variables argument overrides. A placeholder binds a literal value only: "
             "its text inside quotes ('{s}'), a number, numeric string or boolean in a bare slot, "
-            "a list as the whole right-hand side of IN (status in ({statuses}); over a list field, one "
-            "list: tags in ({wanted})) or as a list literal anywhere else (tags = {wanted}, a "
+            "a list as the whole right-hand side of IN (items.status in ({statuses}); over a list field, one "
+            "list: items.tags in ({wanted})) or as a list literal anywhere else (items.tags = {wanted}, a "
             "list-function argument). A placeholder in a name position is an error."
         ),
     )
@@ -1685,7 +1704,7 @@ class SlayerQuery(BaseModel):
             'Sort keys, [{"field": ..., "direction": "asc" | "desc", "nulls": "first" | "last"}] '
             "(nulls optional). field is a result column name or any aggregate or transform "
             "expression, displayed or not: with "
-            'metrics ["count(*)"], [{"field": "sum(amount)", "direction": "desc"}] sorts by '
+            'metrics ["count(orders.*)"], [{"field": "sum(orders.amount)", "direction": "desc"}] sorts by '
             "an amount it does not return. Add limit for the top N. Return only the columns the "
             "question asks for: never add the sort value to metrics just to sort by it."
         ),
@@ -1713,7 +1732,7 @@ class SlayerQuery(BaseModel):
             "combinations (GROUP BY the projected dimensions). Set false for "
             "raw per-record rows — requires empty `metrics` and no metric "
             "reference in `filter`/`order`. For rows plus a count, keep the "
-            "default and add `count(*)`."
+            "default and add `count(<dataset>.*)`."
         ),
     )
 
@@ -1969,6 +1988,18 @@ class QueryRefinement(BaseModel):
     def filters(self, value: str | list[str] | None) -> None:
         attribute_used(self, old="filters", new="filter")
         self.filter = value
+
+
+def declared_aliases(*sources: "SlayerQuery | QueryRefinement") -> list[str]:
+    """The names the entries of ``sources`` declare: aliases and unaliased computed dimensions' names."""
+    names: list[str] = []
+    for source in sources:
+        names.extend(m.alias for m in source.metrics or [] if m.alias)
+        for d in source.dimensions or []:
+            if d.alias or d.ref is None:
+                names.append(d.name)
+        names.extend(td.alias for td in source.time_dimensions or [] if td.alias)
+    return names
 
 
 def deprecated_inputs_of(

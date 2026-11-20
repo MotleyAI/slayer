@@ -65,9 +65,9 @@ async def test_pushdown_body_over_a_masked_column(db: Path) -> None:
     models = result.datasets
     assert await counts_by(datasets=models, db=db, dataset="orders", dimension="status") == {"PAID": 2, "OPEN": 1}
     out = await rows(datasets=models, db=db, payload={
-        "population": "orders", "dimensions": ["id"], "order": [{"field": "id"}], "variables": {"status": ["paid"]}})
+        "population": "orders", "dimensions": ["orders.id"], "order": [{"field": "orders.id"}], "variables": {"status": ["paid"]}})
     assert [r["orders.id"] for r in out] == [1, 2]
-    assert await value(datasets=models, db=db, dataset="orders", expression="count(*)") == 3
+    assert await value(datasets=models, db=db, dataset="orders", expression="count(orders.*)") == 3
 
 
 class TestHiddenReader:

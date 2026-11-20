@@ -26,13 +26,13 @@ def _orders() -> SlayerDataset:
 
 
 def _query(date_range) -> SlayerQuery:
-    td: dict = {"field": "created_at", "granularity": "month"}
+    td: dict = {"field": "orders.created_at", "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range
     return SlayerQuery.model_validate({
         "population": "orders",
         "time_dimensions": [td],
-        "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
     })
 
 

@@ -278,9 +278,9 @@ class TestSaveMemoryQuery:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
-            filter=["status = 'paid'"],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            filter=["orders.status = 'paid'"],
         )
         result = await _call(
             mcp_server,
@@ -306,7 +306,7 @@ class TestSaveMemoryQuery:
     ) -> None:
         query_dict = {
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
         }
         result = await _call(
             mcp_server,
@@ -327,7 +327,7 @@ class TestSaveMemoryQuery:
     ) -> None:
         query = SlayerQuery(
             population="customers",
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(customers.*)")],
         )
         result = await _call(
             mcp_server,

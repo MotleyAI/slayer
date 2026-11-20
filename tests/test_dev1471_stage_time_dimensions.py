@@ -113,7 +113,7 @@ class TestStageBinder:
     def test_dotted_name_on_stage_raises_illegal_scope(self) -> None:
         # Fails as from a stored root: no relationship to ``customers``.
         stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.DATETIME))
-        td = TimeDimension(field="customers.created_at", granularity=TG.MONTH)
+        td = TimeDimension(field="s1.customers.created_at", granularity=TG.MONTH)
         bundle = _bundle(stage)
         with pytest.raises(UnresolvableDimensionRelationshipError):
             bind_time_dimension(td, scope=stage, bundle=bundle)
@@ -187,13 +187,13 @@ class TestStageBindingErrorsEndToEnd:
         engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.DAY)],
-            "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.DAY)],
+            "metrics": [{"metric": "sum(s1.rev)", "alias": "rev"}],
         })
         with pytest.raises(TimeDimensionFieldError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -205,17 +205,17 @@ class TestStageBindingErrorsEndToEnd:
         engine = await _dryrun_engine([orders_dataset()])
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         s2 = SlayerQuery.model_validate({
-            "name": "s2", "population": "s1", "dimensions": ["created_at"],
-            "metrics": [{"metric": "sum(rev)"}],
+            "name": "s2", "population": "s1", "dimensions": ["s1.created_at"],
+            "metrics": [{"metric": "sum(s1.rev)"}],
         })
         s3 = SlayerQuery.model_validate({
             "population": "s2",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.DAY)],
-            "metrics": [{"metric": "sum(rev_sum)"}],
+            "time_dimensions": [TimeDimension(field="s2.created_at", granularity=TG.DAY)],
+            "metrics": [{"metric": "sum(s2.rev_sum)"}],
         })
         with pytest.raises(TimeDimensionFieldError):
             await engine.execute(query=[s1, s2, s3], dry_run=True)
@@ -223,13 +223,13 @@ class TestStageBindingErrorsEndToEnd:
     async def test_non_temporal_column_end_to_end(self) -> None:
         engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
-            "name": "s1", "population": "orders", "dimensions": ["region"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "name": "s1", "population": "orders", "dimensions": ["orders.region"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [TimeDimension(field="region", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="s1.region", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(s1.rev)", "alias": "rev"}],
         })
         with pytest.raises(TimeDimensionFieldError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -238,13 +238,13 @@ class TestStageBindingErrorsEndToEnd:
         engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [TimeDimension(field="nope", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="s1.nope", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(s1.rev)", "alias": "rev"}],
         })
         with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's fields
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -253,13 +253,13 @@ class TestStageBindingErrorsEndToEnd:
         engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [TimeDimension(field="customers.created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="s1.customers.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(s1.rev)", "alias": "rev"}],
         })
         with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -290,14 +290,14 @@ class TestStageReBucketExecuted:
             "time_dimensions": [TimeDimension(
                 field="customers.regions.last_activity_at", granularity=TG.MONTH,
             )],
-            "metrics": [{"metric": "count(*)", "alias": "n"}],
+            "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(
-                field="customers__regions__last_activity_at", granularity=TG.MONTH,
+                field="s1.customers__regions__last_activity_at", granularity=TG.MONTH,
             )],
-            "metrics": [{"metric": "sum(n)"}],
+            "metrics": [{"metric": "sum(s1.n)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=tables, datasets=region_chain_datasets(), stages=[inner, outer])
@@ -308,13 +308,13 @@ class TestStageReBucketExecuted:
     async def test_coarser_year_over_month(self, backend: str) -> None:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.YEAR)],
-            "metrics": [{"metric": "sum(rev)"}],
+            "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.YEAR)],
+            "metrics": [{"metric": "sum(s1.rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[inner, outer])
@@ -323,13 +323,13 @@ class TestStageReBucketExecuted:
 
     async def test_raw_temporal_column(self, backend: str) -> None:
         inner = SlayerQuery.model_validate({
-            "name": "s1", "population": "orders", "dimensions": ["created_at"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "name": "s1", "population": "orders", "dimensions": ["orders.created_at"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(rev)"}],
+            "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(s1.rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[inner, outer])
@@ -339,14 +339,14 @@ class TestStageReBucketExecuted:
     async def test_cohort_partition_by_auto_name_with_same_column_filter(self, backend: str) -> None:
         col = "created_at_max_partition_by_customer_id"
         inner = SlayerQuery.model_validate({
-            "name": "s1", "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"metric": "max(created_at, partition_by=customer_id)"}],
+            "name": "s1", "population": "orders", "dimensions": ["orders.customer_id"],
+            "metrics": [{"metric": "max(orders.created_at, partition_by=orders.customer_id)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [TimeDimension(field=col, granularity=TG.MONTH)],
-            "filter": [f"{col} >= '2025-01-01'"],
-            "metrics": [{"metric": "count(*)", "alias": "cohort_size"}],
+            "time_dimensions": [TimeDimension(field=f"s1.{col}", granularity=TG.MONTH)],
+            "filter": [f"s1.{col} >= '2025-01-01'"],
+            "metrics": [{"metric": "count(s1.*)", "alias": "cohort_size"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             engine = await make_engine(
@@ -355,29 +355,29 @@ class TestStageReBucketExecuted:
                 tables=[orders_table_spec(_COHORT)], datasets=[orders_dataset()],
             )
             resp = await engine.execute(query=[inner, outer])
-            got = {date_str(r[f"s1.{col}"]): r["s1.cohort_size"] for r in resp.data}
+            got = {date_str(r[f"s1.{col}"]): r["cohort_size"] for r in resp.data}
             assert got == {"2025-02-01": 2, "2025-03-01": 2}
             # Every granularity binds on an aggregate-output field — day too.
             day_outer = outer.model_copy(update={
-                "time_dimensions": [TimeDimension(field=col, granularity=TG.DAY)],
+                "time_dimensions": [TimeDimension(field=f"s1.{col}", granularity=TG.DAY)],
             })
             await engine.execute(query=[inner, day_outer], dry_run=True)  # must not raise
 
     async def test_three_stage_chain(self, backend: str) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         s2 = SlayerQuery.model_validate({
             "name": "s2", "population": "s1",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(rev)"}],
+            "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(s1.rev)"}],
         })
         s3 = SlayerQuery.model_validate({
             "population": "s2",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.YEAR)],
-            "metrics": [{"metric": "sum(rev_sum)"}],
+            "time_dimensions": [TimeDimension(field="s2.created_at", granularity=TG.YEAR)],
+            "metrics": [{"metric": "sum(s2.rev_sum)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[s1, s2, s3])
@@ -386,13 +386,13 @@ class TestStageReBucketExecuted:
 
     async def test_stage_dimension_joins_stage_bucket_grain(self, backend: str) -> None:
         inner = SlayerQuery.model_validate({
-            "name": "s1", "population": "orders", "dimensions": ["region", "created_at"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "name": "s1", "population": "orders", "dimensions": ["orders.region", "orders.created_at"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
-            "population": "s1", "dimensions": ["region"],
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"metric": "sum(rev)"}],
+            "population": "s1", "dimensions": ["s1.region"],
+            "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
+            "metrics": [{"metric": "sum(s1.rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_GRAIN)], datasets=[orders_dataset()], stages=[inner, outer])

@@ -54,7 +54,7 @@ class TestBroadcastReason:
         (fanning) hop, so its reason must not say 'unreachable'."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], metrics=[CM], to_many_handling="broadcast"))
+            dimensions=["orders.status"], metrics=[CM], to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         reason = " ".join(d.reason for d in w.dimensions).lower()
         assert "unreachable" not in reason
@@ -62,14 +62,14 @@ class TestBroadcastReason:
 
 
 class TestDiceSliceHint:
-    @pytest.mark.parametrize("filters", [None, ["channel = 'app'"]])
+    @pytest.mark.parametrize("filters", [None, ["orders.channel = 'app'"]])
     async def test_broadcast_carries_hint_unconditionally(
         self, exec_backend, filters,
     ):
         """Scenario: broadcast warning carries the dice–slice hint — present
         whether or not the query contains a filter, naming associate mode."""
         _, engine = exec_backend
-        kw = {"dimensions": ["status"], "metrics": [CM], "to_many_handling": "broadcast"}
+        kw = {"dimensions": ["orders.status"], "metrics": [CM], "to_many_handling": "broadcast"}
         if filters:
             kw["filter"] = filters
         resp = await engine.execute(q(**kw))
@@ -88,7 +88,7 @@ class TestAssociatedWarning:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(
-                assoc_q(dimensions=["status"], metrics=[CM]))
+                assoc_q(dimensions=["orders.status"], metrics=[CM]))
         (w,) = associated_warnings(resp)
         assert "cm" in w.metric or "spend" in w.metric
         assert "status" in " ".join(getattr(w, "dimensions", []) or []) \
@@ -100,13 +100,13 @@ class TestAssociatedWarning:
         yet still carries the correct per-cell distinct-entity values."""
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="cm")]))
+                metric="sum(customers.spend, partition_by=orders.status)", alias="cm")]))
         assert associated_warnings(resp) == []
         by = status_key(resp)
         for status, spend in ASSOC_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend)
+            assert float(by[(status,)]["cm"]) == pytest.approx(spend)
 
 
 class TestPushedFilterInformational:
@@ -120,7 +120,7 @@ class TestPushedFilterInformational:
             _warnings.simplefilter("always")
             resp = await engine.execute(SlayerQuery(
                 population="orders", dimensions=["customers.tier"],
-                metrics=[CM], filter=["channel = 'app'"],
+                metrics=[CM], filter=["orders.channel = 'app'"],
                 to_many_handling=mode))
         (info,) = pushed_filter_infos(resp)
         assert "channel" in info.human_message() or "channel" in str(

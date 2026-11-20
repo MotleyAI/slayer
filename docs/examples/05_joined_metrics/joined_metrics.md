@@ -11,7 +11,7 @@ For metrics from joined datasets to be useful, we must ensure that querying a me
 ```
 
 ```json
-{"population": "customers", "metrics": ["count(*)"], "dimensions": ["name"]}
+{"population": "customers", "metrics": ["count(customers.*)"], "dimensions": ["customers.name"]}
 ```
 
 How do we achieve that? Through a sub-query. Suppose we have a query that references a metric from a joined dataset. We split that query into two parts: one that contains the [cross-dataset metric](../../concepts/queries.md#cross-dataset-metrics) reference, and the other that contains all the other fields. We evaluate the second one as usual; and for the first one, we change the population to the dataset of that metric, then drop all dimensions that are not reachable from that dataset.
@@ -25,7 +25,7 @@ This way we guarantee that the values of that joined metric are exactly the same
 ```json
 {
   "population": "orders",
-  "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
+  "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
   "metrics": [
     "count(customers.*)",
     {"metric": "cumsum(count(customers.*))", "alias": "cumulative_customers"}

@@ -61,23 +61,23 @@ def by(resp: SlayerResponse, *, dim: str, key: str) -> dict:
 # Date comparisons
 # --------------------------------------------------------------------------- #
 REPRO = "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))"
-REPRO_KEY = "regions.customers.orders.iif_order_date_2025_01_01_1_0_sum"
+REPRO_KEY = "customers.orders.iif_order_date_2025_01_01_1_0_sum"
 
 
 async def test_repro_date_comparison_inside_a_scalar_call(engine) -> None:
     for _ in range(2):
-        resp = await engine.execute(q(population="regions", dimensions=["name"], metrics=[REPRO]))
+        resp = await engine.execute(q(population="regions", dimensions=["regions.name"], metrics=[REPRO]))
         assert by(resp, dim="regions.name", key=REPRO_KEY) == {"north": 1, "south": 1}
 
 
 @pytest.mark.parametrize(
     ("formula", "key", "value"),
     [
-        ("sum(iif(ordered_at == '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 2),
-        ("sum(iif(ordered_at != '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 4),
-        ("sum(iif(date_trunc('month', ordered_at) >= '2024-02', 1, 0))", "orders.iif_date_trunc_month_ordered_at_2024_02_1_0_sum", 5),
-        ("sum(amount > 5 and ordered_at >= '2024-02-01')", "orders.amount_5_and_ordered_at_2024_02_01_sum", 4),
-        ("sum(iif('2024-02-01' <= ordered_at, 1, 0))", "orders.iif_2024_02_01_ordered_at_1_0_sum", 5),
+        ("sum(iif(orders.ordered_at == '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 2),
+        ("sum(iif(orders.ordered_at != '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 4),
+        ("sum(iif(date_trunc('month', orders.ordered_at) >= '2024-02', 1, 0))", "orders.iif_date_trunc_month_ordered_at_2024_02_1_0_sum", 5),
+        ("sum(orders.amount > 5 and orders.ordered_at >= '2024-02-01')", "orders.amount_5_and_ordered_at_2024_02_01_sum", 4),
+        ("sum(iif('2024-02-01' <= orders.ordered_at, 1, 0))", "orders.iif_2024_02_01_ordered_at_1_0_sum", 5),
     ],
 )
 async def test_date_comparison_forms(engine, formula, key, value) -> None:
@@ -89,16 +89,16 @@ async def test_date_comparison_forms(engine, formula, key, value) -> None:
 async def test_relative_point_names_by_its_text_under_any_clock(dialect, now, value) -> None:
     async for e in make_exec_engine(dialect, clock=lambda: now):
         assert await only_value(
-            e, "sum(iif(ordered_at >= 'last month', 1, 0))", "orders.iif_ordered_at_last_month_1_0_sum",
+            e, "sum(iif(orders.ordered_at >= 'last month', 1, 0))", "orders.iif_ordered_at_last_month_1_0_sum",
         ) == value
 
 
 async def test_date_comparison_as_the_whole_source(engine) -> None:
-    assert await only_value(engine, "sum(ordered_at >= '2024-02-01')", "orders.ordered_at_2024_02_01_sum") == 5
+    assert await only_value(engine, "sum(orders.ordered_at >= '2024-02-01')", "orders.ordered_at_2024_02_01_sum") == 5
 
 
 async def test_plain_comparison_as_the_whole_source(engine) -> None:
-    assert await only_value(engine, "sum(amount > 5)", "orders.amount_5_sum") == 5
+    assert await only_value(engine, "sum(orders.amount > 5)", "orders.amount_5_sum") == 5
 
 
 # --------------------------------------------------------------------------- #
@@ -106,7 +106,7 @@ async def test_plain_comparison_as_the_whole_source(engine) -> None:
 # --------------------------------------------------------------------------- #
 async def test_nested_aggregate_operand(engine) -> None:
     value = await only_value(
-        engine, "sum(amount * avg(amount, partition_by=status))", "orders.amount_avg_amount_partition_by_status_sum",
+        engine, "sum(orders.amount * avg(orders.amount, partition_by=orders.status))", "orders.amount_avg_amount_partition_by_status_sum",
     )
     assert value == pytest.approx(5456.25)
 
@@ -116,10 +116,10 @@ NESTED_TRANSFORM_KEY = (
 )
 
 
-@pytest.mark.parametrize("partition", ["[status, ordered_at]", "[ordered_at, status]"])
+@pytest.mark.parametrize("partition", ["[orders.status, orders.ordered_at]", "[orders.ordered_at, orders.status]"])
 async def test_nested_transform_operand(engine: SlayerQueryEngine, partition) -> None:
-    formula = f"sum(cumsum(sum(amount, partition_by={partition})) - 1)"
-    month = {"field": "ordered_at", "granularity": "month"}
+    formula = f"sum(cumsum(sum(orders.amount, partition_by={partition})) - 1)"
+    month = {"field": "orders.ordered_at", "granularity": "month"}
     for _ in range(2):
         resp = await engine.execute(q(metrics=[formula], time_dimensions=[month]))
         key = next(c for c in resp.columns if c != "orders.ordered_at")
@@ -131,12 +131,12 @@ async def test_nested_transform_operand(engine: SlayerQueryEngine, partition) ->
 
 
 async def test_decimal_literal_spelled_plainly(engine) -> None:
-    value = await only_value(engine, "sum(amount * 0.0000001)", "orders.amount_0_0000001_sum")
+    value = await only_value(engine, "sum(orders.amount * 0.0000001)", "orders.amount_0_0000001_sum")
     assert value == pytest.approx(0.0000175)
 
 
 async def test_null_literal_spelled_null(engine) -> None:
-    assert await only_value(engine, "sum(coalesce(amount, null))", "orders.coalesce_amount_null_sum") == 175
+    assert await only_value(engine, "sum(coalesce(orders.amount, null))", "orders.coalesce_amount_null_sum") == 175
 
 
 # --------------------------------------------------------------------------- #
@@ -145,18 +145,18 @@ async def test_null_literal_spelled_null(engine) -> None:
 @pytest.mark.parametrize(
     ("formula", "key", "value"),
     [
-        ("sum(customers.spend - 1)", "orders.customers.spend_1_sum", 347),
-        ("sum(customers.spend - customers.regions.weight)", "orders.customers.spend_regions_weight_sum", 343),
-        ("sum(customers.spend_x2 + 1)", "orders.customers.spend_x2_1_sum", 703),
+        ("sum(customers.spend - 1)", "customers.spend_1_sum", 347),
+        ("sum(customers.spend - customers.regions.weight)", "customers.spend_regions_weight_sum", 343),
+        ("sum(customers.spend_x2 + 1)", "customers.spend_x2_1_sum", 703),
         (
             "sum(iif(date_trunc('month', customers.signup_at) >= '2024-02', 1, 0))",
-            "orders.customers.iif_date_trunc_month_signup_at_2024_02_1_0_sum", 2,
+            "customers.iif_date_trunc_month_signup_at_2024_02_1_0_sum", 2,
         ),
         (
             "sum(iif(customers.region_id in (1, 3), customers.spend, 0))",
-            "orders.customers.iif_region_id_in_1_3_spend_0_sum", 150,
+            "customers.iif_region_id_in_1_3_spend_0_sum", 150,
         ),
-        ("sum(amount - customers.spend)", "orders.amount_customers_spend_sum", -525),
+        ("sum(orders.amount - customers.spend)", "sum_orders_amount_customers_spend", -525),
     ],
 )
 async def test_home_relative_operand_spelling(engine, formula, key, value) -> None:
@@ -164,10 +164,8 @@ async def test_home_relative_operand_spelling(engine, formula, key, value) -> No
 
 
 async def test_nested_constituent_keeps_its_spelling(engine) -> None:
-    key = "orders.customers." + auto_name_from_expression(
-        "spend * sum(amount, partition_by=[customers.regions.name])",
-    ) + "_sum"
-    formula = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
+    formula = "sum(customers.spend * sum(orders.amount, partition_by=customers.regions.name))"
+    key = auto_name_from_expression("sum(customers.spend * orders.amount:sum(partition_by=customers.regions.name))")
     assert await only_value(engine, formula, key) == 29000
 
 
@@ -175,7 +173,7 @@ async def test_nested_constituent_keeps_its_spelling(engine) -> None:
 # Collisions
 # --------------------------------------------------------------------------- #
 async def test_equal_and_not_equal_date_comparisons_collide_loudly(engine) -> None:
-    eq, ne = "sum(iif(ordered_at == '2024-02', 1, 0))", "sum(iif(ordered_at != '2024-02', 1, 0))"
+    eq, ne = "sum(iif(orders.ordered_at == '2024-02', 1, 0))", "sum(iif(orders.ordered_at != '2024-02', 1, 0))"
     query = q(metrics=[eq, ne])
     with pytest.raises(NameCollisionError, match="(?s)Rename") as exc:
         await engine.execute(query)
@@ -215,15 +213,15 @@ def test_constituents_differing_only_in_locus_never_share_a_slot() -> None:
 # --------------------------------------------------------------------------- #
 _REFERENCED = [
     pytest.param(
-        {"population": "regions", "dimensions": ["name"],
+        {"population": "regions", "dimensions": ["regions.name"],
          "metrics": ["sum(iif(customers.orders.order_date >= '2024-02-01', 1, 0))"]},
-        "name", "customers.orders.iif_order_date_2024_02_01_1_0_sum",
+        "regions.name", "customers.orders.iif_order_date_2024_02_01_1_0_sum",
         {"north": 3, "south": 2}, id="pathed-date-comparison",
     ),
     pytest.param(
-        {"population": "orders", "dimensions": ["status"],
-         "metrics": ["sum(iif(ordered_at >= 'last month', 1, 0))"]},
-        "status", "iif_ordered_at_last_month_1_0_sum",
+        {"population": "orders", "dimensions": ["orders.status"],
+         "metrics": ["sum(iif(orders.ordered_at >= 'last month', 1, 0))"]},
+        "orders.status", "orders.iif_ordered_at_last_month_1_0_sum",
         {"paid": 3, "pending": 2}, id="relative-point",
     ),
     pytest.param(
@@ -235,34 +233,35 @@ _REFERENCED = [
 ]
 
 
-def _rows(resp, *, root: str, dim: str, key: str) -> list:
-    return [(r[f"{root}.{dim}"], r[f"{root}.{key}"]) for r in resp.data]
+def _rows(resp, *, dim: str, key: str) -> list:
+    return [(r[dim], r[key]) for r in resp.data]
 
 
 @pytest.mark.parametrize(("query", "dim", "key", "values"), _REFERENCED)
 async def test_derived_key_in_filter(engine, query, dim, key, values) -> None:
-    root, top = query["population"], max(values.values())
+    top = max(values.values())
     resp = await engine.execute(SlayerQuery.model_validate({**query, "filter": [f"{key} >= {top}"]}))
-    assert _rows(resp, root=root, dim=dim, key=key) == [(k, v) for k, v in values.items() if v == top]
+    assert _rows(resp, dim=dim, key=key) == [(k, v) for k, v in values.items() if v == top]
 
 
 @pytest.mark.parametrize(("query", "dim", "key", "values"), _REFERENCED)
 async def test_derived_key_in_order(engine, query, dim, key, values) -> None:
-    root = query["population"]
     for direction, reverse in (("asc", False), ("desc", True)):
         resp = await engine.execute(SlayerQuery.model_validate(
             {**query, "order": [{"field": key, "direction": direction}]},
         ))
-        assert _rows(resp, root=root, dim=dim, key=key) == sorted(
+        assert _rows(resp, dim=dim, key=key) == sorted(
             values.items(), key=lambda kv: kv[1], reverse=reverse,
         )
 
 
 @pytest.mark.parametrize(("query", "dim", "key", "values"), _REFERENCED)
 async def test_derived_key_from_a_downstream_stage(engine, query, dim, key, values) -> None:
-    flat_dim, flat_key = dim.replace(".", "__"), key.replace(".", "__")
+    root = f"{query['population']}."
+    flat_dim, flat_key = (k.removeprefix(root).replace(".", "__") for k in (dim, key))
     inner = SlayerQuery.model_validate({**query, "name": "s"})
-    outer = SlayerQuery.model_validate({"population": "s", "dimensions": [flat_dim], "metrics": [f"max({flat_key})"]})
+    outer = SlayerQuery.model_validate({"population": "s", "dimensions": [f"s.{flat_dim}"],
+                                        "metrics": [f"max(s.{flat_key})"]})
     resp = await engine.execute([inner, outer])
     assert {r[f"s.{flat_dim}"]: r[f"s.{flat_key}_max"] for r in resp.data} == values
 
@@ -274,10 +273,10 @@ async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, sp
     models[0].relationships[0].name = "buyer"
     inner = SlayerQuery.model_validate({
         "population": "orders", "name": "s",
-        "dimensions": ["buyer.regions.name"], "metrics": ["sum(buyer.spend - 1)"],
+        "dimensions": ["orders.buyer.regions.name"], "metrics": ["sum(orders.buyer.spend - 1)"],
     })
     outer = SlayerQuery.model_validate({
-        "population": "s", "dimensions": ["buyer__regions__name"], "metrics": [f"max({spelling})"],
+        "population": "s", "dimensions": ["s.buyer__regions__name"], "metrics": [f"max(s.{spelling})"],
     })
     async for e in make_exec_engine(dialect, datasets=models):
         resp = await e.execute([inner, outer])

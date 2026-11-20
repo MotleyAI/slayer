@@ -73,7 +73,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount_paid)")],
+                metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
             ),
         )
         await storage.save_memory(
@@ -81,7 +81,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             entities=["warehouse.customers.email"],
             query=SlayerQuery(
                 population="customers",
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(customers.*)")],
             ),
         )
         yield storage

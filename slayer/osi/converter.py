@@ -303,6 +303,8 @@ _IMPORT_INPUTS = "Import every dataset it reads."
 class OsiConversionResult(ConversionResult):
     """The converted datasets, plus query-backed restorations to save through the engine after them."""
     query_backed: list[SlayerDataset] = Field(default_factory=list)
+    #: Per query-backed dataset, the stored version each saved query was written at (``None``: unversioned).
+    stage_versions: dict[str, list[int | None]] = Field(default_factory=dict)
 
 
 class _PendingMetric(BaseModel):
@@ -367,6 +369,7 @@ class OsiToSlayerConverter:
         self._field_payloads: dict[tuple[str, str], tuple[ext.FieldPayload, bool]] = {}
         self._pending: list[_PendingMetric] = []
         self._query_backed: list[SlayerDataset] = []
+        self._stage_versions: dict[str, list[int | None]] = {}
 
     # ---- report helpers ----
 
@@ -464,6 +467,7 @@ class OsiToSlayerConverter:
             unconverted_metrics=self._unconverted,
             warnings=self._warnings,
             query_backed=self._query_backed,
+            stage_versions=self._stage_versions,
         )
 
     def _doc_datasets(self, doc: OSIDocument) -> list[str]:
@@ -1730,3 +1734,5 @@ class OsiToSlayerConverter:
                            suggestion=_REEXPORT)
                 continue
             self._query_backed.append(restored)
+            self._stage_versions[name] = [q.get("version") if isinstance(q, dict) else None
+                                          for q in source.source_queries]

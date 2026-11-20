@@ -21,8 +21,8 @@ connectives, `IN` predicates, nested aggregates and nested transforms — and SH
 never contain an internal representation; it is identical across runs and
 independent of the evaluation clock. A decimal literal SHALL be spelled as a plain
 decimal and a null literal as `null`. A row-level column operand SHALL be spelled
-relative to the expression's home path, which the key already carries as its
-prefix; references inside a nested aggregate or transform keep their own spelling.
+relative to the expression's anchor and route (`queries/references`), which the
+key carries as its prefix, and in full, with no prefix on the key, when the operands share no anchor; references inside a nested aggregate or transform keep their own spelling.
 A date-literal comparison as the whole source SHALL be named like any other
 expression source. An explicit rename overrides the derived key. Two distinct
 expressions whose derived keys collide SHALL fail with a clear duplicate-key error
@@ -34,8 +34,8 @@ referenceable in filters, in order and from a downstream stage.
 - **THEN** its result key is `orders.amount_cost_sum` (same sanitizer as a computed dimension named from `amount - cost`)
 
 #### Scenario: Dotted leaf in the derived key
-- **WHEN** a measure on model `orders` is written `sum(amount - customers.discount)`
-- **THEN** its result key is `orders.amount_customers_discount_sum`, and `name`
+- **WHEN** a query with population `orders` measures `sum(orders.amount - customers.discount)`
+- **THEN** its result key is `orders_amount_customers_discount_sum`, its operands sharing no anchor, and `name`
   overrides it as for any measure
 
 #### Scenario: Colliding derived keys fail loudly
@@ -59,7 +59,7 @@ referenceable in filters, in order and from a downstream stage.
 #### Scenario: Date comparison inside a scalar call
 - **WHEN** a query rooted at `regions` (`customers → regions`, `orders → customers`)
   selects `sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))`
-- **THEN** its result key is `regions.customers.orders.iif_order_date_2025_01_01_1_0_sum`,
+- **THEN** its result key is `customers.orders.iif_order_date_2025_01_01_1_0_sum`,
   identical across runs, with the values unchanged
 
 #### Scenario: Date comparison forms
@@ -99,9 +99,9 @@ referenceable in filters, in order and from a downstream stage.
 #### Scenario: Home-relative operand spelling
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend - 1)` and
   `sum(customers.spend - customers.regions.weight)`, both homed at `customers`
-- **THEN** their result keys are `orders.customers.spend_1_sum` and
-  `orders.customers.spend_regions_weight_sum` — the home path spelled once, as for
-  `sum(customers.spend)` → `orders.customers.spend_sum`; the same holds for a
+- **THEN** their result keys are `customers.spend_1_sum` and
+  `customers.spend_regions_weight_sum` — the home path spelled once, as for
+  `sum(customers.spend)` → `customers.spend_sum`; the same holds for a
   pathed derived column, a pathed bucketed column and a pathed `IN` operand
 
 #### Scenario: Nested constituent keeps its spelling

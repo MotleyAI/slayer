@@ -48,6 +48,8 @@ __all__ = [
     "is_product_edge",
     "is_lateral_edge",
     "is_unrelated_edge",
+    "PRODUCT_TOKEN_PREFIX",
+    "product_token",
     "list_child",
     "list_child_name",
     "with_list_children",
@@ -281,12 +283,24 @@ def _detached_edge(*, source: SlayerDataset, target: SlayerDataset) -> OrientedR
     )
 
 
-def _unrelated_edge(*, source: SlayerDataset, target: SlayerDataset) -> OrientedRelationship:
-    """The population and a dataset no relationship path reaches, meeting only as a product."""
+#: A product hop's token when its source has a relationship spelled like its target (reserved: never a declared name).
+PRODUCT_TOKEN_PREFIX = "__slayer_product__"
+
+
+def product_token(*, source: SlayerDataset, target: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> str:
+    """The token of the product hop ``source → target``: the target's spelling, else, when one of ``source``'s
+    relationships is spelled the same, a reserved token naming the target alone."""
+    incident = neighbors(dataset=source, datasets_by_name=datasets_by_name)
+    return PRODUCT_TOKEN_PREFIX + target.name if matching_edges(incident, target.spelling) else target.spelling
+
+
+def _unrelated_edge(*, source: SlayerDataset, target: SlayerDataset, token: str | None = None) -> OrientedRelationship:
+    """The population and a dataset no relationship path reaches, meeting only as a product (``token`` when it is not
+    the target's spelling)."""
     return OrientedRelationship(
         source_dataset=source.name, to=target.name, column_pairs=[],
         join_type=PRODUCT_JOIN_TYPE, cardinality=RelationshipCardinality.MANY_TO_MANY,
-        name=None, declaring_dataset=source.name,
+        name=token, declaring_dataset=source.name,
         source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
         product="unrelated",
     )
@@ -509,7 +523,11 @@ def _unrelated_hops(
 ) -> list[OrientedRelationship]:
     """The product hop from a query frame's population to the unrelated dataset ``token`` names."""
     targets = [datasets_by_name[n] for n in sorted(current.unrelated_datasets) if n in datasets_by_name]
-    return matching_edges([_unrelated_edge(source=current, target=t) for t in targets], token, quoted=quoted)
+    edges = []
+    for t in targets:
+        hop = product_token(source=current, target=t, datasets_by_name=datasets_by_name)
+        edges.append(_unrelated_edge(source=current, target=t, token=None if hop == t.spelling else hop))
+    return matching_edges(edges, token, quoted=quoted)
 
 
 def addresses_alone(*, edge: OrientedRelationship, incident: list[OrientedRelationship]) -> bool:

@@ -107,8 +107,8 @@ class TestStoredModels:
         model = await storage.get_dataset("rev2_q", data_source=DS)
         assert model is not None
         _assert_upgraded((model.source_queries or [None])[0])
-        resp = await run(storage, {"population": "rev2_q", "dimensions": ["customers__region"],
-                                   "metrics": [{"metric": "sum(rev2)", "alias": "t"}]})
+        resp = await run(storage, {"population": "rev2_q", "dimensions": ["rev2_q.customers__region"],
+                                   "metrics": [{"metric": "sum(rev2_q.rev2)", "alias": "t"}]})
         assert by_dimension(resp, dim_suffix="customers__region") == RECORDED
 
     async def test_a_saved_query_run_by_name_returns_its_rows(self, tmp_path, shop_ds) -> None:
@@ -196,9 +196,9 @@ class TestExtensionColumnFilterLiterals:
     @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize(("stage", "repaired", "expected"), [
         pytest.param(_legacy_root_stage("extended_date >= '2024/01/01'"),
-                     "CAST(CAST(ordered_at AS DATE) AS DATE) >= '2024-01-01'", 200.0,
+                     "CAST(CAST(orders.ordered_at AS DATE) AS DATE) >= '2024-01-01'", 200.0,
                      id="legacy-root-extension-column"),
-        pytest.param(_legacy_root_stage("ordered_at >= '2024/01/01'"), "ordered_at >= '2024-01-01'", 200.0,
+        pytest.param(_legacy_root_stage("ordered_at >= '2024/01/01'"), "orders.ordered_at >= '2024-01-01'", 200.0,
                      id="legacy-root-base-column"),
         pytest.param(_extensions_stage("customers.signup_day >= '2024/01/01'"),
                      "CAST(CAST(customers.signed_up_at AS DATE) AS DATE) >= '2024-01-01'", 180.0,
@@ -213,7 +213,7 @@ class TestExtensionColumnFilterLiterals:
         loaded = await _loaded_stage(storage)
         assert loaded.filter == [repaired]
         _assert_no_extension_columns(loaded)
-        resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev_x.rev)"]})
         assert measure_total(resp, measure="rev_sum") == expected
 
     async def test_a_non_temporal_extension_column_literal_stays_verbatim(self, tmp_path, shop_ds) -> None:
@@ -221,9 +221,9 @@ class TestExtensionColumnFilterLiterals:
         storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(), customers_v10(), qb])
         loaded = await _loaded_stage(storage)
-        assert loaded.filter == ["status = '2024/01/01'"]
+        assert loaded.filter == ["orders.status = '2024/01/01'"]
         _assert_no_extension_columns(loaded)
-        resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev_x.rev)"]})
         assert measure_total(resp, measure="rev_sum") == 60.0
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -235,6 +235,6 @@ class TestExtensionColumnFilterLiterals:
                                   models=[orders_v10(), customers_v10()], memories=[memory])
         loaded = await storage.get_memory("m_ext_f")
         assert loaded.query is not None
-        assert loaded.query.filter == ["CAST(CAST(ordered_at AS DATE) AS DATE) >= '2024-01-01'"]
+        assert loaded.query.filter == ["CAST(CAST(orders.ordered_at AS DATE) AS DATE) >= '2024-01-01'"]
         _assert_no_extension_columns(loaded.query)
         assert measure_total(await run(storage, loaded.query), measure="rev") == 200.0

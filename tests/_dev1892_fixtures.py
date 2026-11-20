@@ -267,13 +267,13 @@ def weighted_source_queries_dataset() -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name="cr_wtotals", population="sales",
-                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
-                metrics=[QueryMetric(metric="sum(amount)", alias="ct"),
-                          QueryMetric(metric="count(id)", alias="cc")]),
+                dimensions=[QueryDimension(field="sales.region"), QueryDimension(field="sales.city")],
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="ct"),
+                          QueryMetric(metric="count(sales.id)", alias="cc")]),
             SlayerQuery(
                 population="cr_wtotals",
-                dimensions=[QueryDimension(field="region")],
-                metrics=[QueryMetric(metric="weighted_avg(ct, weight=cc)",
+                dimensions=[QueryDimension(field="cr_wtotals.region")],
+                metrics=[QueryMetric(metric="weighted_avg(cr_wtotals.ct, weight=cr_wtotals.cc)",
                                        alias="w")]),
         ])
 

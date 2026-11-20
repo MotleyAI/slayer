@@ -80,7 +80,7 @@ class TestGuardOwnership:
         """(b) ``time_shift(wscaled_sum(amount))`` — the planner migrates the
         crossing-fragment inner onto the regroup primitive: the shift wraps a
         placeholder answered by a HOST-rooted producer attach."""
-        planned = _plan("time_shift(wscaled_sum(amount), -1)")
+        planned = _plan("time_shift(wscaled_sum(orders.amount), -1)")
         layer = next(
             layer for layer in planned.transform_layers if layer.op == "time_shift"
         )
@@ -120,7 +120,7 @@ class TestGuardOwnership:
                 population="orders", time_dimensions=month_td(),
                 metrics=[
                     QueryMetric(metric="sum(customers.spend)", alias="cm"),
-                    QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                    QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
                 ],
             ),
             bundle=_bundle(),

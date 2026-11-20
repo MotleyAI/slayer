@@ -128,14 +128,14 @@ class TestStoredSourceQueriesTopoSort:
                         # real exported field ("id"; "kpi_id" is only a label).
                         "relationships": [{"to": "kpi", "from_columns": ["id"], "to_columns": ["id"]}],
                     })],
-                    "dimensions": ["status"],
+                    "dimensions": ["orders.status"],
                     "metrics": [{"metric": "sum(kpi._count)"}],
                 }),
                 SlayerQuery.model_validate({
                     "name": "kpi",
                     "population": "orders",
-                    "metrics": [{"metric": "count(*)"}],
-                    "dimensions": [{"field": "id", "label": "kpi_id"}],
+                    "metrics": [{"metric": "count(orders.*)"}],
+                    "dimensions": [{"field": "orders.id", "label": "kpi_id"}],
                 }),
                 SlayerQuery(population="main"),
             ],
@@ -167,14 +167,14 @@ class TestStoredSourceQueriesTopoSort:
                         # real exported field ("id"; "kpi_id" is only a label).
                         "relationships": [{"to": "kpi", "from_columns": ["id"], "to_columns": ["id"]}],
                     })],
-                    "dimensions": ["status"],
+                    "dimensions": ["orders.status"],
                     "metrics": [{"metric": "sum(kpi._count)"}],
                 }),
                 SlayerQuery.model_validate({
                     "name": "kpi",
                     "population": "orders",
-                    "metrics": [{"metric": "count(*)"}],
-                    "dimensions": [ {"field": "id", "label": "kpi_id"} ],
+                    "metrics": [{"metric": "count(orders.*)"}],
+                    "dimensions": [ {"field": "orders.id", "label": "kpi_id"} ],
                 }),
                 SlayerQuery(population="main"),
             ],
@@ -284,8 +284,8 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
@@ -305,8 +305,8 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
@@ -330,8 +330,8 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)", datatype=DataType.FLOAT)],
-                dimensions=["status"],
+                metrics=[QueryMetric(metric="count(orders.*)", datatype=DataType.FLOAT)],
+                dimensions=["orders.status"],
             )],
         )
         engine, tmp = await _engine()
@@ -359,13 +359,13 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery(
                 population="orders",
-                dimensions=["status"],
+                dimensions=["orders.status"],
                 metrics=[
                     # rank uses *:count as a hidden inner; intern order
                     # hoists *:count hidden first, then the public
                     # *:count entry promotes the same slot.
-                    {"metric": "rank(count(*), direction='desc')", "alias": "ranked"},
-                    {"metric": "count(*)"},
+                    {"metric": "rank(count(orders.*), direction='desc')", "alias": "ranked"},
+                    {"metric": "count(orders.*)"},
                 ],
             )],
         )
@@ -401,8 +401,8 @@ class TestVirtualModelColumns:
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"metric": "adjusted_total"}],
-                    "dimensions": ["status"],
+                    "metrics": [{"metric": "orders.adjusted_total"}],
+                    "dimensions": ["orders.status"],
                 })],
             )
             saved = await engine.save_dataset(m)
@@ -444,8 +444,8 @@ class TestVirtualModelColumns:
                     # Bare-ref + explicit ``name="rounded_total"`` keeps
                     # the column alias as the user-chosen name so the
                     # test can look it up unambiguously.
-                    "metrics": [{"metric": "rounded_total", "alias": "rounded_total"}],
-                    "dimensions": ["status"],
+                    "metrics": [{"metric": "orders.rounded_total", "alias": "rounded_total"}],
+                    "dimensions": ["orders.status"],
                 })],
             )
             saved = await engine.save_dataset(m)
@@ -466,8 +466,8 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
@@ -485,8 +485,8 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
@@ -512,7 +512,7 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery(
                 population="orders",
-                dimensions=["status"],
+                dimensions=["orders.status"],
             )],
         )
         engine, tmp = await _engine()
@@ -536,8 +536,8 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery(
                 population="orders",
-                dimensions=["status"],
-                metrics=[QueryMetric(metric="rank(sum(amount), direction='desc')", alias="rank_by_amt")],
+                dimensions=["orders.status"],
+                metrics=[QueryMetric(metric="rank(sum(orders.amount), direction='desc')", alias="rank_by_amt")],
             )],
         )
         engine, tmp = await _engine()
@@ -570,8 +570,8 @@ class TestSourceModelOriginDropped:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
@@ -629,8 +629,8 @@ class TestGetResultColumnTypesTypedPipeline:
             data_source="prod",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         ))
 
@@ -650,8 +650,8 @@ class TestGetResultColumnTypesTypedPipeline:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
@@ -719,8 +719,8 @@ class TestNestedQueryBackedSavePath:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "customers",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": ["region"],
+                "metrics": [{"metric": "count(customers.*)"}],
+                "dimensions": ["customers.region"],
             })],
         )
         # qb_A relates to qb_B inline AND references a field on it (so the
@@ -737,7 +737,7 @@ class TestNestedQueryBackedSavePath:
                         "from_columns": ["region"], "to_columns": ["region"],
                     }],
                 })],
-                "dimensions": ["status"],
+                "dimensions": ["orders.status"],
                 "metrics": [{"metric": "sum(qb_b_customers_kpi._count)"}],
             })],
         )
@@ -760,9 +760,9 @@ class TestSavePath:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["status"],
-                "filter": ["amount > {threshold}"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
+                "filter": ["orders.amount > {threshold}"],
             })],
         )
         engine, tmp = await _engine()
@@ -792,13 +792,13 @@ class TestSavePath:
                 SlayerQuery.model_validate({
                     "name": "filtered",
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
-                    "dimensions": ["status"],
-                    "filter": ["amount > {threshold}"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
+                    "dimensions": ["orders.status"],
+                    "filter": ["orders.amount > {threshold}"],
                 }),
                 SlayerQuery(
                     population="filtered",
-                    dimensions=["status"],
+                    dimensions=["filtered.status"],
                 ),
             ],
         )
@@ -842,8 +842,8 @@ class TestSavePath:
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders_a",
-                    "metrics": [{"metric": "sum(amount)"}],
-                    "dimensions": ["status"],
+                    "metrics": [{"metric": "sum(orders_a.amount)"}],
+                    "dimensions": ["orders_a.status"],
                 })],
             )
             saved1 = await engine.save_dataset(m1)
@@ -853,8 +853,8 @@ class TestSavePath:
                 data_source="ds",  # deliberately stale
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders_b",
-                    "metrics": [{"metric": "sum(amount)"}],
-                    "dimensions": ["status"],
+                    "metrics": [{"metric": "sum(orders_b.amount)"}],
+                    "dimensions": ["orders_b.status"],
                 })],
             )
             saved2 = await engine.save_dataset(m2)
@@ -872,8 +872,8 @@ class TestSavePath:
             built = await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
-                    "dimensions": ["status"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
+                    "dimensions": ["orders.status"],
                 }),
                 name="built_no_save",
                 save=False,
@@ -901,8 +901,8 @@ class TestNestedQueryBackedExpansion:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "customers",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": ["region"],
+                "metrics": [{"metric": "count(customers.*)"}],
+                "dimensions": ["customers.region"],
             })],
         )
         engine, tmp = await _engine(_customers_dataset(), kpi_model)
@@ -920,7 +920,7 @@ class TestNestedQueryBackedExpansion:
                     }],
                 })],
                 "metrics": [{"metric": "sum(customers_kpi._count)"}],
-                "dimensions": ["status"],
+                "dimensions": ["orders.status"],
             })
             resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
@@ -939,8 +939,8 @@ class TestNestedQueryBackedExpansion:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "sum(amount)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         engine, tmp = await _engine(qb)
@@ -951,8 +951,8 @@ class TestNestedQueryBackedExpansion:
                     dataset="qb_base",
                     metrics=[DatasetMetric(name="extra", expression="sum(amount_sum)")],
                 )],
-                "dimensions": ["status"],
-                "metrics": ["extra"],
+                "dimensions": ["qb_base.status"],
+                "metrics": ["qb_base.extra"],
             })
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
@@ -970,8 +970,8 @@ class TestNestedQueryBackedExpansion:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "sum(amount)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         engine, tmp = await _engine(qb)
@@ -981,10 +981,10 @@ class TestNestedQueryBackedExpansion:
                 SlayerQuery.model_validate({
                     "name": "s",
                     "population": "qb_inner",
-                    "dimensions": ["status"],
-                    "metrics": [{"metric": "sum(amount_sum)"}],
+                    "dimensions": ["qb_inner.status"],
+                    "metrics": [{"metric": "sum(qb_inner.amount_sum)"}],
                 }),
-                SlayerQuery(population="s", dimensions=["status"]),
+                SlayerQuery(population="s", dimensions=["s.status"]),
             ]
             resp = await engine.execute(queries, dry_run=True)
             assert resp.sql is not None
@@ -1026,7 +1026,7 @@ class TestCrossDatasourceJoin:
                         "from_columns": ["region"], "to_columns": ["region"],
                     }],
                 })],
-                dimensions=["status", "customers.name"],
+                dimensions=["orders.status", "customers.name"],
             )],
         )
         engine = SlayerQueryEngine(storage=storage)
@@ -1054,8 +1054,8 @@ class TestWrapperAliasShapes:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "sum(amount)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         engine, tmp = await _engine()
@@ -1094,7 +1094,7 @@ class TestWrapperAliasShapes:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
+                "dimensions": ["orders.status"],
                 "metrics": [{"metric": "sum(customers.revenue)"}],
             })],
         )
@@ -1133,7 +1133,7 @@ class TestWrapperAliasShapes:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
+                "dimensions": ["orders.status"],
                 "metrics": [{"metric": "percentile(customers.revenue, p=0.5)"}],
             })],
         )
@@ -1163,7 +1163,7 @@ class TestWrapperAliasShapes:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customers.name", "customers.signup_at"],
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
@@ -1224,7 +1224,7 @@ class TestP4ClosureBehavior:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
+                "dimensions": ["orders.status"],
                 "metrics": [{"metric": "sum(customers.revenue)"}],
             })],
         )
@@ -1239,15 +1239,15 @@ class TestP4ClosureBehavior:
             # The flat-name form MUST work.
             flat_q = SlayerQuery.model_validate({
                 "population": "qb_already_aggregated",
-                "metrics": [{"metric": "sum(customers__revenue_sum)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "sum(qb_already_aggregated.customers__revenue_sum)"}],
+                "dimensions": ["qb_already_aggregated.status"],
             })
             resp_flat = await engine.execute(flat_q, dry_run=True)
             assert resp_flat.sql is not None
             dotted_q = SlayerQuery.model_validate({
                 "population": "qb_already_aggregated",
                 "metrics": [{"metric": "sum(customers.revenue)"}],
-                "dimensions": ["status"],
+                "dimensions": ["qb_already_aggregated.status"],
             })
             resp = await engine.execute(dotted_q, dry_run=True)
             assert any(

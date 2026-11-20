@@ -1,4 +1,4 @@
-version: 26
+version: 28
 name: orders
 sql_table: orders
 source_kind: table
@@ -6,14 +6,14 @@ query_variables: {}
 data_source: jaffle_shop
 fields:
 - name: id
-  sql: id
+  expression: id
   datatype: String
   primary_key: true
   unique: false
   label: Order ID
   hidden: false
 - name: customer_id
-  sql: customer_id
+  expression: customer_id
   datatype: String
   primary_key: false
   unique: false
@@ -21,7 +21,7 @@ fields:
   label: Customer ID
   hidden: false
 - name: ordered_at
-  sql: ordered_at
+  expression: ordered_at
   datatype: Date
   primary_key: false
   unique: false
@@ -29,7 +29,7 @@ fields:
   label: Order Date
   hidden: false
 - name: store_id
-  sql: store_id
+  expression: store_id
   datatype: String
   primary_key: false
   unique: false
@@ -37,7 +37,7 @@ fields:
   label: Store ID
   hidden: false
 - name: subtotal
-  sql: subtotal
+  expression: subtotal
   datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
@@ -50,7 +50,7 @@ fields:
     precision: 2
     symbol: $
 - name: tax_paid
-  sql: tax_paid
+  expression: tax_paid
   datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
@@ -63,7 +63,7 @@ fields:
     precision: 2
     symbol: $
 - name: order_total
-  sql: order_total
+  expression: order_total
   datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
@@ -76,7 +76,7 @@ fields:
     precision: 2
     symbol: $
 - name: status
-  sql: status
+  expression: status
   datatype: String
   primary_key: false
   unique: false
@@ -85,7 +85,7 @@ fields:
   label: Status
   hidden: false
 - name: item_skus
-  sql: item_skus
+  expression: item_skus
   datatype: Array
   element_type: String
   db_type: VARCHAR[]

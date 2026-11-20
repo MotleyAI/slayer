@@ -24,11 +24,11 @@ async def _sql(
     dialect: str, *, filters: list[str], date_range=None, granularity: str = "month", column: str = "ts",
     metrics: list | None = None,
 ) -> str:
-    td: dict = {"field": column, "granularity": granularity}
+    td: dict = {"field": f"ev.{column}", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     query = {
-        "population": "ev", "metrics": metrics or [{"metric": "count(*)", "alias": "n"}],
+        "population": "ev", "metrics": metrics or [{"metric": "count(ev.*)", "alias": "n"}],
         "time_dimensions": [td], "filter": filters,
     }
     return await _engine_generate(
@@ -48,7 +48,7 @@ def _flat(sql: str) -> str:
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_lowered_bounds_render(dialect) -> None:
-    sql = await _sql(dialect, date_range="2025-Q1", filters=["ts > 'last 6 hours'", "date_trunc('month', ts) = date_trunc('month', shipped_at)"])
+    sql = await _sql(dialect, date_range="2025-Q1", filters=["ev.ts > 'last 6 hours'", "date_trunc('month', ev.ts) = date_trunc('month', ev.shipped_at)"])
     assert "2025-01-01" in sql, sql
     assert "2025-04-01" in sql, sql
     assert "2026-09-29 12:00:00" in sql, sql  # > last 6 hours ⇔ >= next_start
@@ -60,7 +60,7 @@ async def test_lowered_bounds_render(dialect) -> None:
 
 @pytest.mark.parametrize("dialect", TYPED)
 async def test_typed_dialects_compare_against_build_temporal_literal(dialect) -> None:
-    sql = _flat(await _sql(dialect, date_range="2025-Q1", filters=["ts > 'last 6 hours'"]))
+    sql = _flat(await _sql(dialect, date_range="2025-Q1", filters=["ev.ts > 'last 6 hours'"]))
     for value in (datetime(2025, 1, 1), datetime(2025, 4, 1), datetime(2026, 9, 29, 12)):
         assert _flat(_literal(dialect, value)) in sql, (value, sql)
 
@@ -82,7 +82,7 @@ async def test_one_sided_range_renders_a_single_bound(dialect) -> None:
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_granularity_call_non_literal_comparison_truncates_both_sides(dialect) -> None:
-    sql = _flat(await _sql(dialect, filters=["date_trunc('month', ts) = date_trunc('month', shipped_at)"], granularity="day"))
+    sql = _flat(await _sql(dialect, filters=["date_trunc('month', ev.ts) = date_trunc('month', ev.shipped_at)"], granularity="day"))
     d = get_dialect(dialect)
     for col in ("ts", "shipped_at"):
         trunc = d.build_date_trunc(exp.column(col, table="ev"), TimeGranularity.MONTH).sql(dialect=d.sqlglot_name)
@@ -91,19 +91,19 @@ async def test_granularity_call_non_literal_comparison_truncates_both_sides(dial
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_granularity_call_literal_comparison_is_a_raw_column_bound(dialect) -> None:
-    sql = await _sql(dialect, filters=["date_trunc('month', ts) >= '2024-03-15'"], granularity="day")
+    sql = await _sql(dialect, filters=["date_trunc('month', ev.ts) >= '2024-03-15'"], granularity="day")
     assert "2024-04-01" in sql, sql
     assert "2024-03-15" not in sql, sql
 
 
 @pytest.mark.parametrize(("filt", "measures"), [
-    ("ts >= '2025-Q1'", None),
-    ("date_add(ts, 1, 'day') >= '2025-Q1'", None),
-    ("date_add(d, 1, 'day') >= '2025-Q1'", None),
-    ("date_add(d, 2, 'hour') >= '2025-Q1'", None),
-    ("date_trunc('month', ts) >= '2025-Q1'", None),
+    ("ev.ts >= '2025-Q1'", None),
+    ("date_add(ev.ts, 1, 'day') >= '2025-Q1'", None),
+    ("date_add(ev.d, 1, 'day') >= '2025-Q1'", None),
+    ("date_add(ev.d, 2, 'hour') >= '2025-Q1'", None),
+    ("date_trunc('month', ev.ts) >= '2025-Q1'", None),
     ("now() >= '2025-Q1'", None),
-    ("max(ts) >= '2025-Q1'", [{"metric": "count(*)", "alias": "n"}]),
+    ("max(ev.ts) >= '2025-Q1'", [{"metric": "count(ev.*)", "alias": "n"}]),
 ], ids=["column", "timestamp_add", "date_add", "datetime_add", "trunc", "now", "aggregate"])
 async def test_bigquery_bounds_are_plain_iso_text(filt, measures) -> None:
     sql = _flat(await _sql("bigquery", filters=[filt], metrics=measures))
@@ -113,7 +113,7 @@ async def test_bigquery_bounds_are_plain_iso_text(filt, measures) -> None:
 
 
 async def test_sqlite_midnight_half_open_bounds_stay_plain_text() -> None:
-    sql = _flat(await _sql("sqlite", date_range="2025-Q1", filters=["ts < '2025-03'"]))
+    sql = _flat(await _sql("sqlite", date_range="2025-Q1", filters=["ev.ts < '2025-03'"]))
     assert re.search(r"\bts\s*>=\s*'2025-01-01'", sql), sql
     assert re.search(r"\bts\s*<\s*'2025-04-01'", sql), sql
     assert re.search(r"\bts\s*<\s*'2025-03-01'", sql), sql
@@ -121,11 +121,11 @@ async def test_sqlite_midnight_half_open_bounds_stay_plain_text() -> None:
 
 
 @pytest.mark.parametrize(("filt", "op", "value"), [
-    ("ts >= '2025-03-01 10:00:00'", ">=", "2025-03-01 10:00:00"),
-    ("'2025-03-01 10:00:00' <= ts", ">=", "2025-03-01 10:00:00"),
-    ("ts > 'last 6 hours'", ">=", "2026-09-29 12:00:00"),
-    ("ts <= '2025-03-01 10:00:00'", "<=", "2025-03-01 10:00:00"),
-    ("ts = '2024-06-01 00:00:00'", "=", "2024-06-01 00:00:00"),
+    ("ev.ts >= '2025-03-01 10:00:00'", ">=", "2025-03-01 10:00:00"),
+    ("'2025-03-01 10:00:00' <= ev.ts", ">=", "2025-03-01 10:00:00"),
+    ("ev.ts > 'last 6 hours'", ">=", "2026-09-29 12:00:00"),
+    ("ev.ts <= '2025-03-01 10:00:00'", "<=", "2025-03-01 10:00:00"),
+    ("ev.ts = '2024-06-01 00:00:00'", "=", "2024-06-01 00:00:00"),
 ], ids=["sub-day", "literal-left", "relative", "inclusive-instant", "instant-equality"])
 async def test_sqlite_other_comparisons_normalise_both_sides(filt, op, value) -> None:
     sql = _flat(await _sql("sqlite", filters=[filt]))

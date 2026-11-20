@@ -60,10 +60,10 @@ def _cm_declared_first_query() -> SlayerQuery:
     """A cross-dataset metric declared BEFORE a local one; B7 keeps its position."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders_x.status")],
         metrics=[
             QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="cm_first"),
-            QueryMetric(metric="sum(amount)", alias="local_second"),
+            QueryMetric(metric="sum(orders_x.amount)", alias="local_second"),
         ],
     )
 
@@ -72,14 +72,14 @@ def _windowed_declared_first_query() -> SlayerQuery:
     """A windowed metric declared BEFORE a local one."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders_x.status")],
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders_x.created_at",
             granularity=TimeGranularity.MONTH,
         )],
         metrics=[
-            QueryMetric(metric="sum(amount, window='90d')", alias="w_first"),
-            QueryMetric(metric="sum(amount)", alias="local_second"),
+            QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="w_first"),
+            QueryMetric(metric="sum(orders_x.amount)", alias="local_second"),
         ],
     )
 
@@ -89,11 +89,11 @@ def _interleaved_query() -> SlayerQuery:
     because any such scheme emits all host slots before all ``_cm_`` ones."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders_x.status")],
         metrics=[
-            QueryMetric(metric="sum(amount)", alias="a_local"),
+            QueryMetric(metric="sum(orders_x.amount)", alias="a_local"),
             QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="b_cross"),
-            QueryMetric(metric="avg(amount)", alias="c_local"),
+            QueryMetric(metric="avg(orders_x.amount)", alias="c_local"),
         ],
     )
 
@@ -180,10 +180,10 @@ class TestB7DeclarationOrderProjection:
         """``response.columns`` is read off the emitted outer SELECT, so its order follows the projection."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
                 QueryMetric(metric="sum(customers.spend)", alias="cm_first"),
-                QueryMetric(metric="sum(amount)", alias="local_second"),
+                QueryMetric(metric="sum(orders.amount)", alias="local_second"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -201,7 +201,7 @@ class TestB7DeclarationOrderProjection:
         query = SlayerQuery(
             population="orders_x",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
@@ -296,9 +296,9 @@ class TestB7DeclarationOrderProjection:
         """Unified trimming: an order-only aggregate never reaches the public projection — it is simply not in ``projection``."""
         query = SlayerQuery(
             population="orders_x",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
-            order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
+            dimensions=[QueryDimension(field="orders_x.status")],
+            metrics=[QueryMetric(metric="count(orders_x.*)", alias="n")],
+            order=[OrderItem.model_validate({"field": "sum(orders_x.amount)", "direction": "desc"})],
         )
         sql = await _gen(query, dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
@@ -314,12 +314,12 @@ class TestB7DeclarationOrderProjection:
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.tier")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
             order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert _alias_suffixes(list(resp.columns)) == ["tier", "n"], resp.columns
-        assert [r["orders.customers.tier"] for r in resp.data] == ["gold", None], (
+        assert [r["customers.tier"] for r in resp.data] == ["gold", None], (
             f"hidden cross-dataset order slot did not drive the ordering: {resp.data}"
         )
 
@@ -354,12 +354,12 @@ class TestProjectionInvariant:
         query = SlayerQuery(
             population="orders_x",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(amount, window='90d')", alias="wa"),
-                QueryMetric(metric="sum(amount, window='90d')", alias="wb"),
+                QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="wa"),
+                QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="wb"),
             ],
         )
         planned = plan_query(query=query, bundle=_chain_bundle())
@@ -455,12 +455,12 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             population="orders_x",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount))", alias="zz_running"),
-                QueryMetric(metric="avg(amount)", alias="aa_total"),
+                QueryMetric(metric="cumsum(sum(orders_x.amount))", alias="zz_running"),
+                QueryMetric(metric="avg(orders_x.amount)", alias="aa_total"),
             ],
         )
 
@@ -468,11 +468,11 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             population="orders_x",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount))", alias="zz_running"),
+                QueryMetric(metric="cumsum(sum(orders_x.amount))", alias="zz_running"),
                 QueryMetric(
                     metric="sum(customers_v2.lifetime_value)", alias="aa_cross",
                 ),
@@ -483,12 +483,12 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             population="orders_x",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="time_shift(sum(amount), -1)", alias="zz_prev"),
-                QueryMetric(metric="avg(amount)", alias="aa_total"),
+                QueryMetric(metric="time_shift(sum(orders_x.amount), -1)", alias="zz_prev"),
+                QueryMetric(metric="avg(orders_x.amount)", alias="aa_total"),
             ],
         )
 
@@ -496,14 +496,14 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             population="orders_x",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
                 QueryMetric(
-                    metric="consecutive_periods(sum(amount) > 0)", alias="zz_streak",
+                    metric="consecutive_periods(sum(orders_x.amount) > 0)", alias="zz_streak",
                 ),
-                QueryMetric(metric="avg(amount)", alias="aa_total"),
+                QueryMetric(metric="avg(orders_x.amount)", alias="aa_total"),
             ],
         )
 
@@ -563,19 +563,19 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount))", alias="zz_running"),
-                QueryMetric(metric="sum(amount)", alias="aa_total"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="zz_running"),
+                QueryMetric(metric="sum(orders.amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
-        assert [r["orders.zz_running"] for r in resp.data] == pytest.approx(
+        assert [r["zz_running"] for r in resp.data] == pytest.approx(
             [15.0, 42.0],
         ), f"cumulative sum changed under the reorder: {resp.data}"
-        assert [r["orders.aa_total"] for r in resp.data] == pytest.approx(
+        assert [r["aa_total"] for r in resp.data] == pytest.approx(
             [15.0, 27.0],
         ), resp.data
 
@@ -586,21 +586,21 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount))", alias="zz_running"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="zz_running"),
                 QueryMetric(metric="sum(customers.spend)", alias="aa_cross"),
             ],
             to_many_handling="broadcast",
         )
         resp = await exec_engine.execute(query)
-        assert [r["orders.zz_running"] for r in resp.data] == pytest.approx(
+        assert [r["zz_running"] for r in resp.data] == pytest.approx(
             [15.0, 42.0],
         ), resp.data
         # The scalar cross-dataset total is the same on every row (no shared grain).
-        assert [r["orders.aa_cross"] for r in resp.data] == pytest.approx(
+        assert [r["aa_cross"] for r in resp.data] == pytest.approx(
             [1325.0, 1325.0],
         ), resp.data
 
@@ -611,18 +611,18 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="time_shift(sum(amount), -1)", alias="zz_prev"),
-                QueryMetric(metric="sum(amount)", alias="aa_total"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="zz_prev"),
+                QueryMetric(metric="sum(orders.amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
         by_month = {
             str(r["orders.created_at"])[:7]: (
-                r["orders.aa_total"], r["orders.zz_prev"],
+                r["aa_total"], r["zz_prev"],
             )
             for r in resp.data
         }
@@ -640,18 +640,18 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
                 QueryMetric(
-                    metric="consecutive_periods(sum(amount) > 0)", alias="zz_streak",
+                    metric="consecutive_periods(sum(orders.amount) > 0)", alias="zz_streak",
                 ),
-                QueryMetric(metric="sum(amount)", alias="aa_total"),
+                QueryMetric(metric="sum(orders.amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
-        assert [r["orders.zz_streak"] for r in resp.data] == [1, 2], (
+        assert [r["zz_streak"] for r in resp.data] == [1, 2], (
             f"consecutive-period streak changed under the reorder: {resp.data}"
         )
 
@@ -663,7 +663,7 @@ class TestB11JoinOrdering:
             SlayerQuery(
                 population="orders_x",
                 dimensions=[QueryDimension(field="customers_v2.status")],
-                metrics=[QueryMetric(metric="sum(amount)")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
             ),
             dialect="postgres",
         )
@@ -674,8 +674,8 @@ class TestB11JoinOrdering:
         sql = await _gen(
             SlayerQuery(
                 population="orders_x",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(amount)")],
+                dimensions=[QueryDimension(field="orders_x.status")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
                 filter=["customers_v2.status == 'active'"],
             ),
             dialect="postgres",
@@ -691,8 +691,8 @@ class TestB11JoinOrdering:
         sql = await _gen(
             SlayerQuery(
                 population="orders_x",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(amount)")],
+                dimensions=[QueryDimension(field="orders_x.status")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
                 filter=["customers_v2.deep_pop > 0"],
             ),
             dialect="postgres",
@@ -710,7 +710,7 @@ class TestB11JoinOrdering:
             SlayerQuery(
                 population="orders_x",
                 dimensions=[QueryDimension(field="customers_v2.deep_gdp")],
-                metrics=[QueryMetric(metric="sum(amount)")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
             ),
             dialect="postgres",
         )
@@ -734,7 +734,7 @@ class TestB11JoinOrdering:
                 QueryDimension(field="customers_v2.status"),
                 QueryDimension(field="customers_v2.deep_pop"),
             ],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amount)")],
             filter=["customers_v2.status != 'x'"],
         )
         first = await _gen(query, dialect="postgres")
@@ -747,7 +747,7 @@ class TestB11JoinOrdering:
             SlayerQuery(
                 population="orders_x",
                 dimensions=[QueryDimension(field="customers_v2.deep_pop")],
-                metrics=[QueryMetric(metric="sum(amount)")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
                 filter=["customers_v2.status != 'x'"],
             ),
             dialect="postgres",
@@ -764,11 +764,11 @@ class TestB11JoinOrdering:
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
-            metrics=[QueryMetric(metric="sum(amount)", alias="revenue")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="revenue")],
         )
         resp = await exec_engine.execute(query)
         by_region = {
-            r["orders.customers.regions.name"]: r["orders.revenue"]
+            r["customers.regions.name"]: r["revenue"]
             for r in resp.data
         }
         assert by_region.get("West") == pytest.approx(30.0), resp.data
@@ -779,7 +779,7 @@ class TestB11JoinOrdering:
         query = SlayerQuery(
             population="orders_x",
             dimensions=[QueryDimension(field="customers_v2.deep_pop")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amount)")],
         )
         sequences = {}
         for dialect in ("postgres", "sqlite", "duckdb"):

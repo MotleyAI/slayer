@@ -19,7 +19,7 @@ EMPTY = {
     "sum": None, "avg": None, "min": None, "max": None, "median": None,
     "count": 0, "count_distinct": 0,
 }
-WEST = ["region == 'west'"]
+WEST = ["orders.region == 'west'"]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -37,21 +37,21 @@ def _metrics(source: str, *, suffix: str = "") -> List[QueryMetric]:
 EXPECTED = {**EMPTY, "bsum": None, "bmax": None}
 
 LOCATIONS: Dict[str, Callable[[], object]] = {
-    "local": lambda: orders_q(dimensions=["region"], metrics=_metrics("amount"), filter=WEST),
+    "local": lambda: orders_q(dimensions=["orders.region"], metrics=_metrics("orders.amount"), filter=WEST),
     "partition": lambda: orders_q(
-        dimensions=["region", "status"], metrics=_metrics("amount", suffix=", partition_by=region"), filter=WEST,
+        dimensions=["orders.region", "orders.status"], metrics=_metrics("orders.amount", suffix=", partition_by=orders.region"), filter=WEST,
     ),
     "window": lambda: orders_q(
-        time_dimensions=month_td(), metrics=_metrics("amount", suffix=", window='30d'"), filter=WEST,
+        time_dimensions=month_td(), metrics=_metrics("orders.amount", suffix=", window='30d'"), filter=WEST,
     ),
     "cross_model": lambda: orders_q(metrics=_metrics("customers.score")),
     "stage": lambda: [
-        {"name": "s1", "population": "orders", "dimensions": ["region", "status"],
-         "metrics": [{"metric": "sum(amount)", "alias": "x"}]},
-        {"population": "s1", "dimensions": ["region"], "metrics": _metrics("x"), "filter": WEST},
+        {"name": "s1", "population": "orders", "dimensions": ["orders.region", "orders.status"],
+         "metrics": [{"metric": "sum(orders.amount)", "alias": "x"}]},
+        {"population": "s1", "dimensions": ["s1.region"], "metrics": _metrics("s1.x"), "filter": ["s1.region == 'west'"]},
     ],
     "association": lambda: SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["region"], "metrics": _metrics("customers.score"),
+        "population": "orders", "dimensions": ["orders.region"], "metrics": _metrics("customers.score"),
         "to_many_handling": "associate",
     }),
 }
@@ -61,7 +61,6 @@ LOCATIONS: Dict[str, Callable[[], object]] = {
 async def test_empty_value_in_every_location(engine, location: str) -> None:
     resp = await engine.execute(LOCATIONS[location]())
     assert resp.data
-    model = "s1" if location == "stage" else "orders"
     for row in resp.data:
-        got = {name: row[f"{model}.{name}"] for name in EXPECTED}
+        got = {name: row[name] for name in EXPECTED}
         assert got == EXPECTED, (location, row)

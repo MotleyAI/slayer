@@ -33,7 +33,7 @@ from tests._stored_upgrade_fixtures import (
     stored_bytes,
 )
 
-REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(amount)"]}
+REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(orders.amount)"]}
 
 
 @pytest.fixture(params=["duckdb", "sqlite"])

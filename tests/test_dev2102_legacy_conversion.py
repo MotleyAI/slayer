@@ -112,7 +112,7 @@ class TestFreshInputConverts:
 
 
 #: The legacy form over the deprecated-input helpers' engine.
-LEGACY_RUN = {"population": {"source_name": "orders"}, "metrics": ["count(*)"]}
+LEGACY_RUN = {"population": {"source_name": "orders"}, "metrics": ["count(orders.*)"]}
 
 
 class TestStructuredDeprecation:

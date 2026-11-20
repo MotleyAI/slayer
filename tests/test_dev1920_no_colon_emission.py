@@ -127,25 +127,25 @@ class TestFacade:
     def test_aggregates_and_having(self) -> None:
         result = _translated(
             "SELECT status, COUNT(*), SUM(revenue) FROM orders GROUP BY status HAVING SUM(revenue) > 1000")
-        assert [m.metric for m in result.query.metrics or []] == ["count(*)", "sum(revenue)"]
-        assert result.query.filter == ["sum(revenue) > 1000"]
+        assert [m.metric for m in result.query.metrics or []] == ["count(orders.*)", "sum(orders.revenue)"]
+        assert result.query.filter == ["sum(orders.revenue) > 1000"]
         assert dict(result.field_name_mapping) == {
-            "orders.status": "status", "orders.row_count": "row_count", "orders.revenue_sum": "revenue_sum"}
+            "orders.status": "status", "row_count": "row_count", "revenue_sum": "revenue_sum"}
 
     @pytest.mark.parametrize(("sql", "formula"), [
-        ("SELECT COUNT(status) FROM orders", "count(status)"),
-        ("SELECT COUNT(DISTINCT status) FROM orders", "count_distinct(status)"),
-        ("SELECT AVG(revenue) FROM orders", "avg(revenue)"),
-        ("SELECT row_count FROM orders", "count(*)"),
-        ("SELECT revenue_sum FROM orders", "sum(revenue)"),
+        ("SELECT COUNT(status) FROM orders", "count(orders.status)"),
+        ("SELECT COUNT(DISTINCT status) FROM orders", "count_distinct(orders.status)"),
+        ("SELECT AVG(revenue) FROM orders", "avg(orders.revenue)"),
+        ("SELECT row_count FROM orders", "count(orders.*)"),
+        ("SELECT revenue_sum FROM orders", "sum(orders.revenue)"),
     ])
     def test_projected_metric(self, sql: str, formula: str) -> None:
         assert [m.metric for m in _translated(sql).query.metrics or []] == [formula]
 
     @pytest.mark.parametrize(("sql", "filters"), [
-        ("SELECT status FROM orders WHERE revenue_sum > 1000", ["sum(revenue) > 1000"]),
-        ("SELECT status FROM orders WHERE row_count > 1", ["count(*) > 1"]),
-        ("SELECT status, COUNT(*) FROM orders GROUP BY status HAVING COUNT(*) >= 5", ["count(*) >= 5"]),
+        ("SELECT status FROM orders WHERE revenue_sum > 1000", ["sum(orders.revenue) > 1000"]),
+        ("SELECT status FROM orders WHERE row_count > 1", ["count(orders.*) > 1"]),
+        ("SELECT status, COUNT(*) FROM orders GROUP BY status HAVING COUNT(*) >= 5", ["count(orders.*) >= 5"]),
     ])
     def test_metric_filters(self, sql: str, filters: list[str]) -> None:
         assert _translated(sql).query.filter == filters
@@ -153,13 +153,13 @@ class TestFacade:
     def test_order_by_aggregate(self) -> None:
         result = _translated("SELECT status, SUM(revenue) FROM orders GROUP BY status ORDER BY SUM(revenue) DESC")
         assert [(o.field, o.raw_expression) for o in result.query.order or []] == [("revenue_sum", None)]
-        assert [m.metric for m in result.query.metrics or []] == ["sum(revenue)"]
+        assert [m.metric for m in result.query.metrics or []] == ["sum(orders.revenue)"]
 
     @pytest.mark.parametrize("configured", [True, False], ids=["configured-join", "dynamic-join"])
     @pytest.mark.parametrize(("metric", "filter_"), [
-        ("row_count", "count(stores.*) > 1"),
-        ("name_count", "count(stores.name) > 1"),
-        ("tax_rate_avg", "avg(stores.tax_rate) > 1"),
+        ("row_count", "count(orders.stores.*) > 1"),
+        ("name_count", "count(orders.stores.name) > 1"),
+        ("tax_rate_avg", "avg(orders.stores.tax_rate) > 1"),
     ])
     def test_joined_metric_filter(self, configured: bool, metric: str, filter_: str) -> None:
         result = _translated(_joined_having(metric), catalog=_stores_catalog(configured=configured))
@@ -169,7 +169,7 @@ class TestFacade:
 class TestBrokenDependentsProbe:
     def test_filter_dependant_probes_with_a_functional_row_count(self) -> None:
         probe = _probe(_Dependent(dataset="orders", kind="filter", name="f"))
-        assert probe == {"population": "orders", "metrics": ["count(*)"]}
+        assert probe == {"population": "orders", "metrics": ["count(orders.*)"]}
 
 
 class TestMemoryTokens:
@@ -194,8 +194,8 @@ class TestMemoryTokens:
     async def test_query_entities(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         query = SlayerQuery.model_validate({
-            "population": "orders", "filter": ["max(price) > 1"],
-            "metrics": ["sum(amount) / count(*)", "count(customers.*)", "sum(customers.regions.population)"],
+            "population": "orders", "filter": ["max(orders.price) > 1"],
+            "metrics": ["sum(orders.amount) / count(orders.*)", "count(customers.*)", "sum(customers.regions.population)"],
         })
         resolved = await extract_entities_from_query(query, storage=storage)
         assert resolved.canonical_forms == [
@@ -219,4 +219,4 @@ async def test_recommendation_paths(make_store: StoreFactory) -> None:  # noqa: 
         engine.close()
     assert rec.population == "orders"
     assert [p.path for p in rec.item_paths] == [
-        "sum(amount)", "percentile(amount, p=0.9)", "sum(customers.regions.population)"]
+        "sum(orders.amount)", "percentile(orders.amount, p=0.9)", "sum(customers.regions.population)"]

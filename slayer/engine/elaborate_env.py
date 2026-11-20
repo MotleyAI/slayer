@@ -268,7 +268,7 @@ def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:
                 f"among the query dimensions).",
                 location=f"metric {dm.public_name!r}",
                 suggestion=f"Wrap it in an aggregation (e.g., 'sum({bare})', 'avg({bare})'), "
-                f"or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+                f"or add it to the query dimensions. For COUNT(*), use 'count(<dataset>.*)'.",
             )
         raise PositionTypingError(
             summary=f"This metric references row-level {names}, not available at the "
@@ -576,13 +576,14 @@ def check_computed_dim_name_collision(
         )
 
 
-def check_stage_flatten_collision(*, flat_name: str, collides: bool) -> None:
+def check_stage_flatten_collision(*, flat_name: str, collides: bool, entries: Tuple[str, ...] = ()) -> None:
     """Two projected fields must not flatten to one downstream name (both the declaration-time and stage-schema firing points)."""
     if collides:
+        named = f" ({' and '.join(repr(e) for e in entries)})" if entries else ""
         raise NameCollisionError(
             summary=f"Stage field name collision on {flat_name!r}: two projected "
-            f"fields flatten to the same downstream name.",
-            suggestion="Give one an explicit metric `name` to disambiguate.",
+            f"fields{named} flatten to the same downstream name.",
+            suggestion="Give one an explicit alias to disambiguate.",
         )
 
 
@@ -781,7 +782,7 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
             raise ComputedDimensionError(
                 summary=f"The transform '{tk.op}' inside the computed dimension "
                 f"must take an aggregate input — a transform acts on "
-                f"aggregates, e.g. {tk.op}(sum(amount, partition_by=city)).",
+                f"aggregates, e.g. {tk.op}(sum(orders.amount, partition_by=orders.city)).",
                 location=f"dimension {name!r}",
             )
         ungrained = [a for a in inner_aggs if a.partition_keys is None]
@@ -810,7 +811,7 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
             raise ComputedDimensionError(
                 summary="The aggregate inside the computed dimension must declare "
                 "the grain it aggregates over with partition_by=, e.g. "
-                "'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. "
+                "'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. "
                 "Without partition_by the group key is a function of the query's "
                 "own dimensions and adds no grouping.",
                 location=f"dimension {name!r}",

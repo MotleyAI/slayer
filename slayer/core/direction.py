@@ -47,7 +47,7 @@ def rank_direction(*, op: str, given: bool, value: Any = None) -> str | None:
             summary=f"Transform '{op}' needs an ordering direction.",
             suggestion=(
                 f"pass direction='asc' (lowest first) or direction='desc' (highest first), "
-                f"e.g. {op}(sum(amount), direction='desc')."
+                f"e.g. {op}(sum(orders.amount), direction='desc')."
             ),
         )
     normalized = normalize_direction(value)

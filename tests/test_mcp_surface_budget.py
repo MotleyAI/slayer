@@ -94,8 +94,9 @@ RETIRED_PHRASES = (
     "accumulate in an inner stage", "Answer with one query whenever", "## One query first", "Typical uses",
     "filter the time in an outer stage", "A row-level condition applies before transforms",
 )
-#: A dotted or ``__``-flattened path, or a ``partition_by=`` key, ending in ``_id``.
-_ID_GROUPING = re.compile(r"\b[A-Za-z]\w*?(?:\.|__)\w*_id\b|partition_by=\[?(?:[\w.]+,\s*)*[\w.]*_id\b")
+#: A dotted or ``__``-flattened path in a ``"dimensions"`` list, or a ``partition_by=`` key, ending in ``_id``.
+_ID_GROUPING = re.compile(
+    r'"dimensions":\s*\[[^\]]*?\b[A-Za-z]\w*?(?:\.|__)\w*_id\b|partition_by=\[?(?:[\w.]+,\s*)*[\w.]*_id\b')
 
 
 _STORE = tempfile.TemporaryDirectory()
@@ -379,7 +380,7 @@ def test_retired_stage_and_one_query_wording_is_gone(phrase: str) -> None:
 
 
 @pytest.mark.parametrize(("topic", "sentence"), [
-    ("help.queries", "(`customers.regions.name` becomes `customers__regions__name`)"),
+    ("help.queries", "`customers.regions.name` is `running.customers__regions__name`"),
     ("help.transforms", "Whether a filter needs a stage around a transform: the query object's `name` field."),
     ("help.time", "A running total since the first row, in two stages:"),
 ])

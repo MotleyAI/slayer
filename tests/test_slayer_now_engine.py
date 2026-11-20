@@ -17,7 +17,7 @@ from tests._time_points_fixtures import month_key, monthly
 D = datetime
 EXPLICIT_NOW = D(2026, 9, 29, 12)
 EXPLICIT_WINDOW = ids_in(D(2026, 6, 1), D(2026, 9, 1))
-COUNT = [{"metric": "count(*)", "alias": "n"}]
+COUNT = [{"metric": "count(ev.*)", "alias": "n"}]
 
 
 class _FalseyClock:
@@ -42,8 +42,8 @@ async def test_pinned_datetime_drives_relative_tokens(monkeypatch: pytest.Monkey
 async def test_date_only_pins_midnight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", "2025-07-15")
     async with now_engine() as engine:
-        today = await ids(engine, "ts = 'today'")
-        last_6_hours = await ids(engine, "ts = 'last 6 hours'")
+        today = await ids(engine, "ev.ts = 'today'")
+        last_6_hours = await ids(engine, "ev.ts = 'last 6 hours'")
     assert today == ids_in(D(2025, 7, 15), D(2025, 7, 16)) == {9, 10}
     assert last_6_hours == ids_in(D(2025, 7, 14, 18), D(2025, 7, 15)) == {7, 8}
 
@@ -57,7 +57,7 @@ async def test_unset_or_blank_keeps_host_clock(monkeypatch: pytest.MonkeyPatch, 
     before = date.today()
     async with now_engine() as engine:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "metrics": COUNT, "filter": ["ts = 'today'"],
+            "population": "ev", "metrics": COUNT, "filter": ["ev.ts = 'today'"],
         }), dry_run=True)
     assert resp.sql is not None
     assert any(
@@ -114,7 +114,7 @@ async def test_variable_is_read_when_the_engine_is_built(monkeypatch: pytest.Mon
 
 async def test_whole_periods_default_upper_bound_uses_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", "2025-07-15T12:30:00")
-    since_may = ["ts >= '2025-05-01'"]
+    since_may = ["ev.ts >= '2025-05-01'"]
     async with now_engine() as engine:
         pinned = await monthly(engine, metrics=COUNT, filters=since_may, whole_periods_only=True)
         explicit_engine = SlayerQueryEngine(storage=engine.storage, clock=lambda: D(2025, 7, 15, 12, 30))

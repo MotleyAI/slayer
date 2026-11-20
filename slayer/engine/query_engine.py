@@ -124,7 +124,7 @@ from slayer.core.recommend import (
     ItemPath,
     PopulationRecommendation,
 )
-from slayer.core.syntax import split_entity_agg_ref
+from slayer.core.syntax import AggCall, Ref, StarSource, parse_expr, split_entity_agg_ref
 from slayer.engine.cache import (
     CacheConfig,
     NormalizedTable,
@@ -135,6 +135,9 @@ from slayer.engine.cache import (
     _CacheEntry,
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
+from slayer.engine.legacy_references import Conversions, anchor_names, convert_refinement, qualified_input
+from slayer.engine.population.anchors import anchor_route, unknown_metric, unqualified_count
+from slayer.core.names import qualified_reference
 from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
 from slayer.ir.planned import (
     PlannedQuery,
@@ -161,7 +164,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle, absorb_inherited, data
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
-from slayer.engine.elaborate_env import check_result_names_case, saved_date_only_notices
+from slayer.engine.elaborate_env import check_result_names_case, check_stage_flatten_collision, saved_date_only_notices
 from slayer.engine.extensions import with_own_extension
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
@@ -282,9 +285,39 @@ class _ResolvedItem(BaseModel):
     attachment: bool = False
 
 
-def _emit_recommend_path(hops: list[str], item: "_ResolvedItem") -> str:
-    """Relationship-qualified path to ``item`` from a root over ``hops`` (root excluded), re-aggregated functionally."""
-    core = item.leaf if not hops else ".".join(hops) + "." + item.leaf
+def _anchored_route(
+    *, root: SlayerDataset, dataset: str, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[Tuple[str, ...]]:
+    """The route a query rooted at ``root`` takes to the anchor ``dataset``; ``None`` when it refuses it."""
+    anchor = datasets_by_name.get(dataset)
+    if anchor is None:
+        return None
+    try:
+        return anchor_route(reader=root, anchor=anchor, datasets_by_name=datasets_by_name).route
+    except SlayerError:
+        return None
+
+
+def _attachment_route(
+    *, root: SlayerDataset, item: "_ResolvedItem", routed: Dict[str, Any], datasets_by_name: Dict[str, SlayerDataset],
+) -> Tuple[str, ...]:
+    """An attachment's route from ``root``: the anchor's route, else the tie-break-best route."""
+    anchored = _anchored_route(root=root, dataset=item.dataset, datasets_by_name=datasets_by_name)
+    return anchored if anchored is not None else routed[item.dataset].tokens
+
+
+def _emit_recommend_path(
+    hops: list[str], item: "_ResolvedItem", *, root: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> str:
+    """``item`` as written when a query rooted at ``root`` reads it along ``hops``, else its explicit route from the
+    root, re-aggregated functionally."""
+    if _anchored_route(root=root, dataset=item.dataset, datasets_by_name=datasets_by_name) == tuple(hops):
+        entity, _ = split_entity_agg_ref(item.input_item)
+        if entity.split(".") != [item.data_source, item.dataset, item.leaf]:
+            return item.input_item
+        core = f"{item.dataset}.{item.leaf}"  # a datasource prefix is no query reference
+        return core if item.suffix is None else functional_agg_text(source=core, suffix=item.suffix)
+    core = ".".join((root.spelling, *hops, item.leaf))
     return core if item.suffix is None else functional_agg_text(source=core, suffix=item.suffix)
 
 
@@ -1177,6 +1210,7 @@ class SlayerQueryEngine:
             with one_document():
                 queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
             out.extend(deprecated_inputs_of(q for q in queries if isinstance(q, SlayerQuery)))
+            queries = await qualified_input(queries, storage=self.storage, data_source=prefer_data_source, deprecations_out=out)
             # Reorder so each stage follows the siblings it references (last stays
             # the entry point); validates names / dups / self-refs / cycles.
             queries = self._topologically_order_queries(queries)
@@ -1186,7 +1220,7 @@ class SlayerQueryEngine:
             if isinstance(query, dict):
                 query = SlayerQuery.model_validate(query)
             out.extend(deprecated_inputs_of([query] if isinstance(query, SlayerQuery) else []))
-            main_query = query
+            [main_query] = await qualified_input([query], storage=self.storage, data_source=prefer_data_source, deprecations_out=out)
             named_queries = {}
 
         # Merge ``variables=`` kwarg into query.variables (runtime wins).
@@ -1222,8 +1256,15 @@ class SlayerQueryEngine:
             # Legacy unpinned stages pin from the unrefined stage, so a refinement never moves the source.
             dataset = await self._pin_populations(dataset=dataset, prefer_data_source=prefer_data_source)
             *earlier, final = dataset.source_queries or []
+            conversions = Conversions()
+            refinement = convert_refinement(
+                run.refinement, saved=final, conversions=conversions,
+                anchors=await anchor_names(self.storage, dataset.source_queries or [], data_source=prefer_data_source,
+                                           refinement=run.refinement),
+            )
+            deprecations_out.extend(conversions.payloads)
             dataset = dataset.model_copy(update={
-                "source_queries": [*earlier, refine_query(saved=final, refinement=run.refinement)],
+                "source_queries": [*earlier, refine_query(saved=final, refinement=refinement)],
             })
         main_query, named_queries = self._stages_of_dataset(dataset=dataset, runtime_kwarg=runtime_kwarg)
         return main_query, named_queries, prefer_data_source, (dataset.name,)
@@ -1321,7 +1362,8 @@ class SlayerQueryEngine:
         shadows = [w for w in records.shadows.values() if (w.dataset, w.aggregation) in reads.aggregations]
         collisions = _read_dataset_collisions(reads=reads, bundle=rendered.bundle)
         return rendered.model_copy(update={
-            "element_reads": reads, "warnings": [*rendered.warnings, *shadows, *collisions],
+            "element_reads": reads,
+            "warnings": [*rendered.warnings, *shadows, *collisions, *records.notices.values()],
         })
 
     async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
@@ -2128,8 +2170,10 @@ class SlayerQueryEngine:
                 inner,
             )
 
-    def _build_type_probe_query(self, dataset: SlayerDataset) -> SlayerQuery:
-        """SlayerQuery type-probing a dataset's fields (prefers ``max``, skips identifiers)."""
+    def _build_type_probe_query(self, dataset: SlayerDataset, *, population: Optional[str] = None) -> SlayerQuery:
+        """SlayerQuery type-probing a dataset's fields (prefers ``max``, skips identifiers), read from ``population``
+        (default: the dataset)."""
+        population = population or dataset.name
         metrics: List[QueryMetric] = []
         for c in dataset.fields:
             if c.hidden or is_identifier(field=c, fields=dataset.fields):
@@ -2141,8 +2185,8 @@ class SlayerQueryEngine:
             if not allowed:
                 continue
             agg = "max" if "max" in allowed else allowed[0]
-            metrics.append(QueryMetric(metric=f"{agg}({c.name})"))
-        return SlayerQuery(population=dataset.name, metrics=metrics)
+            metrics.append(QueryMetric(metric=f"{agg}({qualified_reference(population, c.name)})"))
+        return SlayerQuery(population=population, metrics=metrics)
 
     async def _plan_type_probe(
         self, *, stored: SlayerDataset, dataset: SlayerDataset, datasource: DatasourceConfig,
@@ -2154,7 +2198,7 @@ class SlayerQueryEngine:
             main_query, named_queries = self._stages_of_dataset(dataset=stored, runtime_kwarg={})
             root_name = main_query.name or stored.name
             rendered = await self._plan_and_render(
-                query=probe_query.model_copy(update={"population": root_name}),
+                query=self._build_type_probe_query(dataset=dataset, population=root_name),
                 named_queries={**named_queries, root_name: main_query.model_copy(update={"name": root_name})},
                 runtime_kwarg={}, prefer_data_source=None, type_probe=True,
             )
@@ -2262,8 +2306,7 @@ class SlayerQueryEngine:
             bare = _bare_source_name(slot.key)
             if bare is None:
                 continue
-            public = slot.public_name or slot.declared_name
-            full = f"{source_relation}.{public}"
+            full = slot.public_name or f"{source_relation}.{slot.declared_name}"
             if full in raw_types:
                 result[bare] = raw_types[full]
         # A metric answered by a regroup producer surfaces as a placeholder ROW
@@ -2277,8 +2320,7 @@ class SlayerQueryEngine:
                 bare = _bare_source_name(sub.original_key)
                 if bare is None or bare in result:
                     continue
-                public = ph_slot.public_name or ph_slot.declared_name
-                full = f"{source_relation}.{public}"
+                full = ph_slot.public_name or f"{source_relation}.{ph_slot.declared_name}"
                 if full in raw_types:
                     result[bare] = raw_types[full]
         return result
@@ -2339,30 +2381,20 @@ class SlayerQueryEngine:
     async def _resolve_recommend_item(
         self, *, raw: str, data_source: str | None
     ) -> "tuple[_ResolvedItem, list[str]]":
-        """Resolve + validate one recommend_population item; must be a field or metric."""
+        """Resolve + validate one recommend_population item; must be a qualified field, metric or row count."""
+        await self._refuse_unqualified_item(raw, data_source=data_source)
         entity_ref, suffix = split_entity_agg_ref(raw)
         warnings: list[str] = []
+        if entity_ref.endswith(".*"):
+            return await self._resolve_recommend_row_count(raw=raw, entity_ref=entity_ref, suffix=suffix,
+                                                           data_source=data_source), warnings
         if data_source and "." not in entity_ref:
             ds, dataset_name, leaf = await self._scope_bare_name_to_datasource(
                 raw=raw, name=entity_ref, data_source=data_source,
             )
         else:
-            # Force a dotted item into ``data_source`` unless it already leads
-            # with it, so a dataset colliding with a datasource name still resolves
-            # and a foreign-datasource ref fails as cross-datasource.
-            resolution_input = entity_ref
-            if data_source and entity_ref.split(".")[0] != data_source:
-                resolution_input = f"{data_source}.{entity_ref}"
-            res = await resolve_entity(resolution_input, storage=self.storage)
-            warnings = res.warnings
-            segs = res.canonical_forms[0].split(".")
-            if len(segs) < 3:
-                raise ValueError(
-                    f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
-                    f"not a field or metric. recommend_population needs "
-                    f"'dataset.field' / 'dataset.metric' items."
-                )
-            ds, dataset_name, leaf = segs[0], segs[1], segs[2]
+            (ds, dataset_name, leaf), warnings = await self._resolve_dotted_recommend_item(
+                raw=raw, entity_ref=entity_ref, data_source=data_source)
         owning = await self.storage.get_dataset(dataset_name, data_source=ds)
         if owning is None:
             raise ValueError(
@@ -2389,6 +2421,55 @@ class SlayerQueryEngine:
             leaf=leaf, suffix=suffix, attachment=attachment,
         )
         return item, warnings
+
+    async def _resolve_dotted_recommend_item(
+        self, *, raw: str, entity_ref: str, data_source: str | None,
+    ) -> "tuple[tuple[str, str, str], list[str]]":
+        """``(datasource, dataset, leaf)`` of a dotted item, and the resolution's warnings."""
+        # Force a dotted item into ``data_source`` unless it already leads
+        # with it, so a dataset colliding with a datasource name still resolves
+        # and a foreign-datasource ref fails as cross-datasource.
+        resolution_input = entity_ref
+        if data_source and entity_ref.split(".")[0] != data_source:
+            resolution_input = f"{data_source}.{entity_ref}"
+        res = await resolve_entity(resolution_input, storage=self.storage)
+        segs = res.canonical_forms[0].split(".")
+        if len(segs) < 3:
+            raise ValueError(
+                f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
+                f"not a field or metric. recommend_population needs "
+                f"'dataset.field' / 'dataset.metric' items."
+            )
+        return (segs[0], segs[1], segs[2]), res.warnings
+
+    async def _refuse_unqualified_item(self, raw: str, *, data_source: str | None) -> None:
+        """A bare name or ``count(*)`` item is refused as a query refuses it, suggesting the qualified spellings."""
+        try:
+            node = parse_expr(raw)
+        except ValueError:
+            return
+        source = node.source if isinstance(node, AggCall) else node
+        if isinstance(source, StarSource):
+            raise unqualified_count()
+        if isinstance(source, Ref):
+            datasets: list[SlayerDataset] = []
+            for ds in [d for d in await self.storage.list_datasources() if data_source in (None, d)]:
+                datasets.extend(await _all_datasets_in_datasource(self.storage, ds))
+            raise unknown_metric(source.name, datasets=datasets)
+
+    async def _resolve_recommend_row_count(
+        self, *, raw: str, entity_ref: str, suffix: str | None, data_source: str | None,
+    ) -> "_ResolvedItem":
+        """``count(<dataset>.*)``: an attachment on its dataset."""
+        dataset_ref = entity_ref[:-2]
+        if data_source and dataset_ref.split(".")[0] != data_source:
+            dataset_ref = f"{data_source}.{dataset_ref}"
+        res = await resolve_entity(dataset_ref, storage=self.storage)
+        segs = res.canonical_forms[0].split(".")
+        if len(segs) != 2:
+            raise ValueError(f"'{raw}' is not a row count of one dataset; write count(<dataset>.*).")
+        return _ResolvedItem(input_item=raw, data_source=segs[0], dataset=segs[1], leaf="*", suffix=suffix,
+                             attachment=True)
 
     async def _recommend_resolve_items(
         self, *, items: list[str], data_source: str | None
@@ -2462,7 +2543,9 @@ class SlayerQueryEngine:
         unrelated: dict[str, set[str]] = {}
         for name in all_names:
             routed = shortest_routes(root=datasets_by_name[name], datasets_by_name=datasets_by_name)
-            paths = {r.input_item: routed[r.dataset].tokens for r in attach if r.dataset in routed}
+            paths = {r.input_item: _attachment_route(root=datasets_by_name[name], item=r, routed=routed,
+                                                     datasets_by_name=datasets_by_name)
+                     for r in attach if r.dataset in routed}
             unrelated[name] = {
                 r.input_item for r in attach
                 if det and r.dataset not in routed and unreachable_target(
@@ -2501,6 +2584,12 @@ class SlayerQueryEngine:
         hint_display = hint[1] if hint is not None else None
 
         valid = [n for n in all_names if is_valid(n)]
+        if det and valid:
+            # The population rule: a tie at the fewest determination hops picks no root, as inference fails.
+            fewest = min(det_hops(n) for n in valid)
+            if len([n for n in valid if det_hops(n) == fewest]) > 1 and not (
+                    hint_dataset is not None and valid_under(lenient, hint_dataset)):
+                valid = []
         if valid:
             # Objective: fewest determination hops; attachments never steer, so
             # they are absent from the key (only a mentioned-preference + name
@@ -2524,7 +2613,8 @@ class SlayerQueryEngine:
             item_paths = [
                 ItemPath(
                     input_item=r.input_item,
-                    path=_emit_recommend_path(list(reach[root][r.input_item]), r),
+                    path=_emit_recommend_path(list(reach[root][r.input_item]), r, root=datasets_by_name[root],
+                                              datasets_by_name=datasets_by_name),
                     attachment=r.attachment,
                     unrelated=r.input_item in unrelated[root],
                 )
@@ -3028,6 +3118,9 @@ class SlayerQueryEngine:
         )
         schema = rendered.planned_list[-1].stage_schema
         assert schema is not None
+        if schema.flatten_collision is not None:
+            flat, first, second = schema.flatten_collision
+            check_stage_flatten_collision(flat_name=flat, collides=True, entries=(first, second))
         # ``DatasetField.sql`` carries the length-fitted alias; ``DatasetField.name`` stays canonical.
         fit_map = get_dialect(rendered.dialect).alias_rewrite_map([c.name for c in schema.fields])
         return _QueryBackedExpansion(name=dataset.name, rendered=rendered, stage_schema=schema, fit_map=fit_map)
@@ -3110,6 +3203,8 @@ class SlayerQueryEngine:
         raw = query if isinstance(query, list) else [query]
         with one_document():
             stages = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in raw]
+        if not save:
+            stages = await qualified_input(stages, storage=self.storage, data_source=None, deprecations_out=[])
         dataset = SlayerDataset(
             name=name,
             description=description,
@@ -3197,6 +3292,11 @@ class SlayerQueryEngine:
         ``warnings_out`` when given; without it, narrowed-access warnings are emitted as Python warnings."""
         deprecated_inputs = deprecated_inputs_of([dataset, *(dataset.source_queries or [])])
         dataset, spellings = with_canonical_spellings(dataset)
+        if dataset.source_queries:
+            stages = await qualified_input(
+                list(dataset.source_queries), storage=self.storage, data_source=dataset.data_source, deprecations_out=deprecated_inputs,
+            )
+            dataset = dataset.model_copy(update={"source_queries": stages})
         if warnings_out is not None:
             warnings_out.extend([*deprecated_inputs, *spellings])
         with announced_by_caller():

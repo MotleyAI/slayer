@@ -88,7 +88,7 @@ def orders_q(**kw) -> SlayerQuery:
 
 
 def month_td() -> List[TimeDimension]:
-    return [TimeDimension(field="ordered_at", granularity=TimeGranularity.MONTH)]
+    return [TimeDimension(field="orders.ordered_at", granularity=TimeGranularity.MONTH)]
 
 
 # --------------------------------------------------------------------------- #
@@ -203,18 +203,18 @@ def as_bool(value) -> Optional[bool]:
 
 
 def by_dim(resp, dim: str, name: str = "v", *, dataset: str = "orders") -> dict:
-    out = {r[f"{dataset}.{dim}"]: r[f"{dataset}.{name}"] for r in resp.data}
+    out = {r[f"{dataset}.{dim}"]: r[name] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {dim}"
     return out
 
 
 def by_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "ordered_at" in k)
-    out = {month_key(r[tkey]): r[f"orders.{name}"] for r in resp.data}
+    out = {month_key(r[tkey]): r[name] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one month"
     return out
 
 
 def single(resp, name: str = "v", *, dataset: str = "orders"):
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{dataset}.{name}"]
+    return resp.data[0][name]

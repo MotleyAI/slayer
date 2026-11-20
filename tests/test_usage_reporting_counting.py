@@ -63,7 +63,7 @@ from tests.pg_facade.test_connection import (
     _terminate,
 )
 
-_QUERY = {"population": "orders", "metrics": ["sum(amount)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(orders.amount)"]}
 _PG_QUERY = "SELECT revenue_sum FROM orders"
 _FLIGHT_QUERY = "SELECT revenue_sum FROM jaffle.orders"
 
@@ -120,7 +120,7 @@ def test_parse_error_exits_before_any_usage_reporting(usage_reporting_env) -> No
 
 
 def test_cli_failure_counted_as_error(store: str) -> None:
-    cli(["query", json.dumps({"population": "no_such_model", "metrics": ["count(*)"]}), "--storage", store])
+    cli(["query", json.dumps({"population": "no_such_model", "metrics": ["count(no_such_model.*)"]}), "--storage", store])
     cli(["datasets", "--storage", store, "show", "no_such_model"])
     report = show()
     for key in ("cli:query", "cli:datasets.show"):
@@ -376,7 +376,7 @@ async def test_pg_engine_error_counted(started) -> None:
 # --- MCP sessions -----------------------------------------------------------------------------------
 
 
-_FAILING_QUERY = {"population": "no_such_model", "metrics": ["count(*)"]}
+_FAILING_QUERY = {"population": "no_such_model", "metrics": ["count(no_such_model.*)"]}
 _T0 = datetime.datetime(2026, 5, 4, 12, 0, tzinfo=datetime.timezone.utc)
 
 

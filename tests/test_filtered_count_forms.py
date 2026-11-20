@@ -45,17 +45,17 @@ async def _gen(expression: str) -> str:
 
 
 async def test_filtered_count_uses_case_inside_count() -> None:
-    sql = (await _gen("count(cust)")).upper().replace(" ", "")
+    sql = (await _gen("count(orders.cust)")).upper().replace(" ", "")
     assert "COUNT(CASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND)" in sql
 
 
 async def test_filtered_count_distinct_uses_case_inside_distinct() -> None:
-    sql = (await _gen("count_distinct(cust)")).upper().replace(" ", "")
+    sql = (await _gen("count_distinct(orders.cust)")).upper().replace(" ", "")
     assert "COUNT(DISTINCTCASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND)" in sql
 
 
 async def test_filtered_sum_uses_case_inside_sum() -> None:
-    sql = (await _gen("sum(amt)")).upper().replace(" ", "")
+    sql = (await _gen("sum(orders.amt)")).upper().replace(" ", "")
     assert "SUM(CASEWHENORDERS.REGION='US'THENORDERS.AMOUNTEND)" in sql
 
 
@@ -65,5 +65,5 @@ async def test_filtered_count_distinct_approx_wraps_case_in_exact_fallback() -> 
     # distinct, so the exact COUNT(DISTINCT ...) fallback is emitted. The
     # filter rides the source field's expansion (no _wrap_filter parens), so
     # the fallback emits COUNT(DISTINCT CASE WHEN ... THEN col END).
-    sql = re.sub(r"\s+", "", (await _gen("count_distinct_approx(cust)")).upper())
+    sql = re.sub(r"\s+", "", (await _gen("count_distinct_approx(orders.cust)")).upper())
     assert "COUNT(DISTINCTCASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND)" in sql

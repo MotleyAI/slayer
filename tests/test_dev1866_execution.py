@@ -67,13 +67,13 @@ class TestExplicitTwinParity:
             chain_engine,
             rootless=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
                 "filter": ["orders.status = 'ok'"],
             }),
             explicit=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customers.region"],
-                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
                 "filter": ["orders.status = 'ok'"],
             }),
             population="orders",
@@ -108,11 +108,11 @@ class TestExplicitOverride:
         resp = await chain_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         }))
         assert resp.population == "orders"
         assert resp.population_inferred is False
-        regions = {r["orders.customers.region"] for r in resp.data}
+        regions = {r["customers.region"] for r in resp.data}
         assert regions == {"North", "South"}  # rooted at orders ⇒ no West row
 
     async def test_explicit_bridge_owning_no_queried_field(self, chain_engine) -> None:
@@ -124,7 +124,7 @@ class TestExplicitOverride:
         ))
         assert resp.population == "customers"
         assert resp.population_inferred is False
-        assert {r["customers.regions.name"] for r in resp.data} == {"North", "South", "West"}
+        assert {r["regions.name"] for r in resp.data} == {"North", "South", "West"}
 
 
 class TestNullAttachment:
@@ -135,5 +135,5 @@ class TestNullAttachment:
         }))
         assert resp.population == "customers"
         assert resp.population_inferred is True
-        got = rows_by(resp, key="customers.region", value="customers.rev")
+        got = rows_by(resp, key="customers.region", value="rev")
         assert got == CHAIN_REVENUE_BY_REGION

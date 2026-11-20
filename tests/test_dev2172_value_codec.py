@@ -36,7 +36,7 @@ from tests.flight.test_handlers import _FakeStorage as _FlightStorage
 
 DS = "vals_ds"
 COL = "vals.v"
-QUERY = {"population": "vals", "dimensions": ["v"], "limit": 5}
+QUERY = {"population": "vals", "dimensions": ["vals.v"], "limit": 5}
 UID = uuid.UUID("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
 BIG = Decimal("12345678901234567890.12")
 PLUS_TWO = dt.timezone(dt.timedelta(hours=2))

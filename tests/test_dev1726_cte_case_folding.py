@@ -307,7 +307,7 @@ def _cm_vehicle_query() -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         time_dimensions=[
-            TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
+            TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)
         ],
         metrics=[
             QueryMetric(metric="sum(customers.Rev)", alias="up"),
@@ -329,13 +329,13 @@ def _case_only_result_names_query() -> SlayerQuery:
         population="orders",
         time_dimensions=[
             TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
         metrics=[
-            QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="Foo"),
-            QueryMetric(metric="time_shift(max(revenue), -2, 'month')", alias="foo"),
+            QueryMetric(metric="time_shift(sum(orders.revenue), -1, 'month')", alias="Foo"),
+            QueryMetric(metric="time_shift(max(orders.revenue), -2, 'month')", alias="foo"),
         ],
     )
 
@@ -368,10 +368,7 @@ def _assert_result_keys_survive(sql: str, *, dialect: str) -> None:
         p.alias_or_name
         for p in _outer_select(sql, dialect=dialect).expressions
     }
-    if dialect in ("bigquery", "tsql"):
-        expected = {"orders___up", "orders___down"}
-    else:
-        expected = {"orders.up", "orders.down"}
+    expected = {"up", "down"}
     assert expected <= aliases, (aliases, sql)
 
 
@@ -427,16 +424,16 @@ class TestE2eCaseFoldingAllDialects:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
             metrics=[
                 QueryMetric(
-                    metric="consecutive_periods(sum(revenue) > 0)", alias="Foo",
+                    metric="consecutive_periods(sum(orders.revenue) > 0)", alias="Foo",
                 ),
                 QueryMetric(
-                    metric="consecutive_periods(sum(revenue) > 100)", alias="foo",
+                    metric="consecutive_periods(sum(orders.revenue) > 100)", alias="foo",
                 ),
             ],
         )

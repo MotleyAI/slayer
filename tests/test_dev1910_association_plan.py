@@ -21,7 +21,7 @@ from tests._dev1900_fixtures import dev1900_datasets, orders_q
 
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 HEADLINE = ("weighted_avg(customers.spend, "
-            "weight=sum(amount, partition_by=customers.regions.name))")
+            "weight=sum(orders.amount, partition_by=customers.regions.name))")
 
 
 def _bundle1900():
@@ -52,12 +52,12 @@ def _rerooted_paths(att: RegroupAttachPlan, leaf: str):
 class TestHomeRooting:
     def test_producer_roots_at_the_home(self):
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[CM]), bundle=bundle()))
+            query=assoc_q(dimensions=["orders.status"], metrics=[CM]), bundle=bundle()))
         assert att.producer_root_dataset == "customers"
 
     def test_entity_keys_are_in_root_coordinates(self):
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[CM]), bundle=bundle()))
+            query=assoc_q(dimensions=["orders.status"], metrics=[CM]), bundle=bundle()))
         assert _akernel(att).entity_keys == [FieldKey(path=(), leaf="id")]
 
 
@@ -66,7 +66,7 @@ class TestReachableConjunctIsInlined:
         """The weak-plans conjunct inlines (no semi-join); its text rides the
         attach's restricted-filter list so the informational entry is kept."""
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[CM],
+            query=assoc_q(dimensions=["orders.status"], metrics=[CM],
                           filter=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_datasets(strong_plans=False))))
         assert list(att.producer_plan.semi_join_filters) == []
@@ -78,7 +78,7 @@ class TestTwoHopHome:
         """A metric homed two hops away roots at regions; status reroots through
         the two-hop reverse path ('customers', 'orders')."""
         att = _assoc(plan_query(
-            query=orders_q(dimensions=["status"],
+            query=orders_q(dimensions=["orders.status"],
                            metrics=[QueryMetric(metric="sum(customers.regions.pop)",
                                                   alias="rp")],
                            to_many_handling="associate"),
@@ -92,7 +92,7 @@ class TestSerialization:
         """association_restricted_filter_texts (attach) round-trips through
         model_dump / model_validate."""
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[CM],
+            query=assoc_q(dimensions=["orders.status"], metrics=[CM],
                           filter=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_datasets(strong_plans=False))))
         restored = RegroupAttachPlan.model_validate(att.model_dump())
@@ -106,7 +106,7 @@ class TestNestedAttachedParameterProducer:
         """DEV-1859 headline (decision 6): the customers-rooted body nests the
         amount-sum parameter's own orders-rooted producer, not a host-rooted one."""
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"],
+            query=assoc_q(dimensions=["orders.status"],
                           metrics=[QueryMetric(metric=HEADLINE, alias="w")]),
             bundle=bundle()))
         nested_roots = [n.producer_root_dataset

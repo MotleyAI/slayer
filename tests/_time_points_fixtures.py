@@ -161,8 +161,8 @@ def daily_stage_dataset() -> SlayerDataset:
         name="daily", data_source="test",
         source_queries=[SlayerQuery.model_validate({
             "population": "ev",
-            "time_dimensions": [{"field": "ts", "granularity": "day"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [{"field": "ev.ts", "granularity": "day"}],
+            "metrics": [{"metric": "sum(ev.amount)", "alias": "rev"}],
         })],
     )
 
@@ -221,7 +221,7 @@ def bucket_text(value: Any) -> str:
 async def ids(engine: SlayerQueryEngine, *filters: str, dataset: str = "ev", **extra: Any) -> set[int]:
     """Row ids of ``dataset`` passing ``filters`` (plus any extra query fields)."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": dataset, "dimensions": ["id"], "filter": list(filters), **extra,
+        "population": dataset, "dimensions": [f"{dataset}.id"], "filter": list(filters), **extra,
     }))
     return {int(r[f"{dataset}.id"]) for r in resp.data}
 
@@ -232,8 +232,8 @@ async def ids_with_range(
 ) -> set[int]:
     """Row ids counted under a time dimension on ``column`` carrying ``date_range``."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": dataset, "dimensions": ["id"],
-        "time_dimensions": [{"field": column, "granularity": granularity, "date_range": date_range}],
+        "population": dataset, "dimensions": ["ev.id"],
+        "time_dimensions": [{"field": f"{dataset}.{column}", "granularity": granularity, "date_range": date_range}],
     }))
     return {int(r[f"{dataset}.id"]) for r in resp.data}
 
@@ -243,7 +243,7 @@ async def monthly(
     date_range: Any = None, whole_periods_only: bool = False, column: str = "ts", dataset: str = "ev",
 ) -> dict[str, dict[str, Any]]:
     """Monthly buckets → {metric name: value}."""
-    td: dict[str, Any] = {"field": column, "granularity": "month"}
+    td: dict[str, Any] = {"field": f"{dataset}.{column}", "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range
     resp = await engine.execute(SlayerQuery.model_validate({
@@ -252,6 +252,6 @@ async def monthly(
     }))
     names = [m["alias"] if isinstance(m, dict) else m for m in metrics]
     return {
-        month_key(r[f"{dataset}.{column}"]): {n: r[f"{dataset}.{n}"] for n in names}
+        month_key(r[f"{dataset}.{column}"]): {n: r[n] for n in names}
         for r in resp.data
     }

@@ -51,16 +51,16 @@ async def exec_backend(request: pytest.FixtureRequest) -> AsyncIterator[tuple[st
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 #: A local aggregation-derived (row attach) dimension: channel totals band.
 LOCAL_BAND = {
-    "field": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "field": "CASE WHEN sum(orders.amount, partition_by=orders.channel) > 30 THEN 1 ELSE 0 END",
     "alias": "band",
 }
 #: A bare partitioned aggregate as a dimension.
-LOCAL_BARE = {"field": "sum(amount, partition_by=channel)", "alias": "ct"}
+LOCAL_BARE = {"field": "sum(orders.amount, partition_by=orders.channel)", "alias": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:
@@ -84,74 +84,74 @@ class TestRowAttachWithCrossModelMeasure:
         dialect, engine = exec_backend
         query = q(dimensions=[LOCAL_BAND], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.band")
+        by = rows_by(resp, "band")
         assert set(by) == {(1,), (0,)}
-        assert float(by[(1,)]["orders.m"]) == pytest.approx(
+        assert float(by[(1,)]["m"]) == pytest.approx(
             AMOUNT_BY_CHANNEL["web"],
         )
-        assert float(by[(0,)]["orders.m"]) == pytest.approx(
+        assert float(by[(0,)]["m"]) == pytest.approx(
             AMOUNT_BY_CHANNEL["app"],
         )
         # The band derives from host-local fields: unattributable → broadcast.
         for row in resp.data:
-            assert float(row["orders.cm"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["cm"]) == pytest.approx(SPEND_TOTAL)
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_bare_dim_with_cm_executes(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=[LOCAL_BARE], metrics=[M, CM], to_many_handling="broadcast"))
-        by = rows_by(resp, "orders.ct")
+        by = rows_by(resp, "ct")
         assert set(by) == {(87.0,), (30.0,)}
         for row in resp.data:
-            assert float(row["orders.cm"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["cm"]) == pytest.approx(SPEND_TOTAL)
 
     async def test_adding_cm_keeps_the_band_grain(self, exec_backend):
         _, engine = exec_backend
         solo = await engine.execute(q(dimensions=[LOCAL_BAND], metrics=[M]))
         both = await engine.execute(q(dimensions=[LOCAL_BAND], metrics=[M, CM]))
-        solo_by = rows_by(solo, "orders.band")
-        both_by = rows_by(both, "orders.band")
+        solo_by = rows_by(solo, "band")
+        both_by = rows_by(both, "band")
         assert set(solo_by) == set(both_by)
         for key, row in both_by.items():
-            assert float(row["orders.m"]) == pytest.approx(
-                float(solo_by[key]["orders.m"]),
+            assert float(row["m"]) == pytest.approx(
+                float(solo_by[key]["m"]),
             )
 
     async def test_rank_dim_with_cm_executes(self, exec_backend):
         """Transform-root dimension family × cross-dataset metric."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"field": "rank(sum(amount, partition_by=channel), direction='desc')",
+            dimensions=[{"field": "rank(sum(orders.amount, partition_by=orders.channel), direction='desc')",
                          "alias": "rr"}],
             metrics=[M, CM], to_many_handling="broadcast",
         ))
-        by = {int(k[0]): row for k, row in rows_by(resp, "orders.rr").items()}
+        by = {int(k[0]): row for k, row in rows_by(resp, "rr").items()}
         # Channel totals rank descending: web 87 → 1, app 30 → 2.
         assert set(by) == {1, 2}
-        assert float(by[1]["orders.m"]) == pytest.approx(AMOUNT_BY_CHANNEL["web"])
-        assert float(by[2]["orders.m"]) == pytest.approx(AMOUNT_BY_CHANNEL["app"])
+        assert float(by[1]["m"]) == pytest.approx(AMOUNT_BY_CHANNEL["web"])
+        assert float(by[2]["m"]) == pytest.approx(AMOUNT_BY_CHANNEL["app"])
         for row in resp.data:
-            assert float(row["orders.cm"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["cm"]) == pytest.approx(SPEND_TOTAL)
 
     async def test_mixed_dim_with_cm_executes(self, exec_backend):
         """Union-grain (mixed) dimension family × cross-dataset metric."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "field": ("rank(sum(amount, partition_by=channel) - "
-                               "sum(amount, partition_by=status), direction='desc')"),
+                "field": ("rank(sum(orders.amount, partition_by=orders.channel) - "
+                               "sum(orders.amount, partition_by=orders.status), direction='desc')"),
                 "alias": "mr",
             }],
             metrics=[M, CM], to_many_handling="broadcast",
         ))
-        by = {int(k[0]): row for k, row in rows_by(resp, "orders.mr").items()}
+        by = {int(k[0]): row for k, row in rows_by(resp, "mr").items()}
         # (channel−status) deltas at the union grain, ranked descending:
         # (web,ok)=30→1, (web,new)=27→2, (app,ok)=-27→3, (app,new)=-30→4.
         expected_m = {1: 47.0, 2: 40.0, 3: 10.0, 4: 20.0}
         assert set(by) == set(expected_m)
         for mr, expected in expected_m.items():
-            assert float(by[mr]["orders.m"]) == pytest.approx(expected), mr
-            assert float(by[mr]["orders.cm"]) == pytest.approx(SPEND_TOTAL), mr
+            assert float(by[mr]["m"]) == pytest.approx(expected), mr
+            assert float(by[mr]["cm"]) == pytest.approx(SPEND_TOTAL), mr
 
     def test_cm_rides_the_regroup_primitive(self):
         """Plan structure: the migrated cross-dataset metric is a combined-phase
@@ -174,10 +174,10 @@ class TestCrossModelSourceInComputedDimension:
             metrics=[M],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.sband")
+        by = rows_by(resp, "sband")
         assert set(by) == {("hi",), ("lo",)}
         for band, expected in AMOUNT_BY_BAND.items():
-            assert float(by[(band,)]["orders.m"]) == pytest.approx(expected), band
+            assert float(by[(band,)]["m"]) == pytest.approx(expected), band
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_spend_band_coexists_with_cm_measure(self, exec_backend):
@@ -189,13 +189,13 @@ class TestCrossModelSourceInComputedDimension:
             metrics=[M, CM],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.sband")
+        by = rows_by(resp, "sband")
         assert set(by) == {("hi",), ("lo",)}
         for band in ("hi", "lo"):
-            assert float(by[(band,)]["orders.m"]) == pytest.approx(
+            assert float(by[(band,)]["m"]) == pytest.approx(
                 AMOUNT_BY_BAND[band],
             ), band
-            assert float(by[(band,)]["orders.cm"]) == pytest.approx(
+            assert float(by[(band,)]["cm"]) == pytest.approx(
                 SPEND_BY_BAND[band],
             ), band
         await _dry_scope_closed(engine, query, dialect)
@@ -255,11 +255,11 @@ class TestIntermediateHopDimensions:
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query)
-        assert set(rows_by(resp, "orders.customers.tier")) == {
+        assert set(rows_by(resp, "customers.tier")) == {
             ("gold",), ("silver",), ("bronze",), (None,),
         }
         for row in resp.data:
-            assert float(row["orders.pop"]) == pytest.approx(POP_TOTAL)
+            assert float(row["pop"]) == pytest.approx(POP_TOTAL)
         (w,) = broadcast_warnings(resp)
         assert "pop" in w.metric
         await _dry_scope_closed(engine, query, dialect)

@@ -23,8 +23,8 @@ EXTENSION_METRICS = [{"name": "aov", "expression": "avg(amount)"}]
 class TestTimeDimension:
     async def test_an_aliased_time_dimension_names_its_column(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
-        response = await execute(storage, {"population": "orders", "metrics": ["count(*)"], "time_dimensions": [
-            {"field": "ordered_at", "granularity": "month", "alias": "m"}]})
+        response = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"], "time_dimensions": [
+            {"field": "orders.ordered_at", "granularity": "month", "alias": "m"}]})
         assert response.columns[0].split(".")[-1] == "m"
         assert len(response.data) > 1
 
@@ -66,7 +66,7 @@ class TestOrderItem:
 
     def test_a_column_order_item_converts(self) -> None:
         with recorded() as caught:
-            query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"],
+            query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"],
                                                 "order": [{"column": "status"}]})
         assert [o.field for o in query.order or []] == ["status"]
         assert len([w for w in deprecations(caught) if "column" in payload_of(w).old]) == 1
@@ -74,7 +74,7 @@ class TestOrderItem:
     async def test_an_order_item_sorts_by_dotted_text(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
         response = await execute(storage, {
-            "population": "orders", "dimensions": ["customers.region"], "metrics": ["count(*)"],
+            "population": "orders", "dimensions": ["customers.region"], "metrics": ["count(orders.*)"],
             "order": [{"field": "customers.region", "direction": "desc"}]})
         regions = [r[response.columns[0]] for r in response.data]
         assert regions == sorted(regions, reverse=True)
@@ -92,7 +92,7 @@ class TestExtension:
     async def test_an_extension_metric_is_available(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
         with recorded() as caught:
-            response = await execute(storage, {"population": "orders", "metrics": ["aov"],
+            response = await execute(storage, {"population": "orders", "metrics": ["orders.aov"],
                                                "extensions": [{"dataset": "orders", "metrics": EXTENSION_METRICS}]})
         assert deprecations(caught) == []
         [row] = response.data
@@ -101,9 +101,9 @@ class TestExtension:
     async def test_an_old_extension_key_converts(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
         with recorded():
-            old = await execute(storage, {"population": "orders", "metrics": ["aov"],
+            old = await execute(storage, {"population": "orders", "metrics": ["orders.aov"],
                                           "extensions": [{"source_name": "orders", "metrics": EXTENSION_METRICS}]})
-        new = await execute(storage, {"population": "orders", "metrics": ["aov"],
+        new = await execute(storage, {"population": "orders", "metrics": ["orders.aov"],
                                       "extensions": [{"dataset": "orders", "metrics": EXTENSION_METRICS}]})
         assert old.data == new.data
         [payload] = deprecated_in(old.warnings)

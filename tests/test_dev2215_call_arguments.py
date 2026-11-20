@@ -14,7 +14,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2215_fixtures import BACKENDS, dev2215_engine, m, num, orders_dataset, q, single
 
-TD = [{"field": "created_at", "granularity": "month"}]
+TD = [{"field": "orders.created_at", "granularity": "month"}]
 
 
 @pytest.fixture(params=BACKENDS)
@@ -32,55 +32,55 @@ async def _value(engine: SlayerQueryEngine, expression: str) -> float | None:
 # --------------------------------------------------------------------------- #
 class TestKeywordOrComparison:
     async def test_declared_parameter_is_a_keyword(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "percentile(amount, p = 0.5)") == await _value(engine, "percentile(amount, 0.5)")
+        assert await _value(engine, "percentile(orders.amount, p = 0.5)") == await _value(engine, "percentile(orders.amount, 0.5)")
 
     @pytest.mark.parametrize(("formula", "expected"), [
-        ("sum(status = 'paid')", 4.0),
-        ("avg(status = 'paid')", 4 / 6),
-        ("share(status = 'paid')", 4 / 6),
-        ("count_distinct(status = 'paid')", 2.0),
+        ("sum(orders.status = 'paid')", 4.0),
+        ("avg(orders.status = 'paid')", 4 / 6),
+        ("share(orders.status = 'paid')", 4 / 6),
+        ("count_distinct(orders.status = 'paid')", 2.0),
     ])
     async def test_boolean_aggregate(self, engine: SlayerQueryEngine, formula: str, expected: float) -> None:
         assert await _value(engine, formula) == pytest.approx(expected)
 
     async def test_a_parameter_name_wins(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "weighted_avg(amount, weight = qty)") == pytest.approx(
-            await _value(engine, "weighted_avg(amount, weight=qty)"))
+        assert await _value(engine, "weighted_avg(orders.amount, weight = orders.qty)") == pytest.approx(
+            await _value(engine, "weighted_avg(orders.amount, weight=orders.qty)"))
 
-    @pytest.mark.parametrize("formula", ["sum((weight = 1))", 'sum("weight" = 1)'])
+    @pytest.mark.parametrize("formula", ["sum((orders.weight = 1))", 'sum(orders."weight" = 1)'])
     async def test_parenthesised_or_quoted_left_side_is_a_comparison(self, engine: SlayerQueryEngine,
                                                                       formula: str) -> None:
         assert await _value(engine, formula) == 3.0
 
     async def test_model_aggregation_parameters_in_any_case(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "trimmed(amount, CUTOFF = 25)") == pytest.approx(
-            await _value(engine, "trimmed(amount, cutoff = 25)"))
+        assert await _value(engine, "trimmed(orders.amount, CUTOFF = 25)") == pytest.approx(
+            await _value(engine, "trimmed(orders.amount, cutoff = 25)"))
 
     async def test_classification_before_argument_order_checks(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "weighted_avg(status = 'paid', weight = qty)") == pytest.approx(
-            await _value(engine, "weighted_avg(iif(status = 'paid', 1, 0), weight = qty)"))
+        assert await _value(engine, "weighted_avg(orders.status = 'paid', weight = orders.qty)") == pytest.approx(
+            await _value(engine, "weighted_avg(iif(orders.status = 'paid', 1, 0), weight = orders.qty)"))
 
     async def test_comparison_in_a_later_position(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "corr(amount, qty = 1)") == pytest.approx(
-            await _value(engine, "corr(amount, iif(qty = 1, 1, 0))"))
+        assert await _value(engine, "corr(orders.amount, orders.qty = 1)") == pytest.approx(
+            await _value(engine, "corr(orders.amount, iif(orders.qty = 1, 1, 0))"))
 
     async def test_duplicate_keyword_after_classification(self, engine: SlayerQueryEngine) -> None:
-        query = q(metrics=[m("weighted_avg(amount, weight = qty, WEIGHT = qty)")])
+        query = q(metrics=[m("weighted_avg(orders.amount, weight = orders.qty, WEIGHT = orders.qty)")])
         with pytest.raises(SlayerError, match="(?i)weight"):
             await engine.execute(query)
 
     async def test_positional_after_keyword_after_classification(self, engine: SlayerQueryEngine) -> None:
-        query = q(metrics=[m("weighted_avg(weight = qty, amount)")])
+        query = q(metrics=[m("weighted_avg(weight = orders.qty, orders.amount)")])
         with pytest.raises(SlayerError):
             await engine.execute(query)
 
     async def test_transform_parameters(self, engine: SlayerQueryEngine) -> None:
-        keyword = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(amount), PERIODS = -1)")]))
-        plain = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(amount), -1)")]))
+        keyword = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(orders.amount), PERIODS = -1)")]))
+        plain = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(orders.amount), -1)")]))
         assert keyword.data == plain.data
 
     async def test_comparison_inside_a_scalar_call(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "sum(iif(status = 'paid', amount, 0))") == 130.0
+        assert await _value(engine, "sum(iif(orders.status = 'paid', orders.amount, 0))") == 130.0
 
 
 # --------------------------------------------------------------------------- #
@@ -88,11 +88,11 @@ class TestKeywordOrComparison:
 # --------------------------------------------------------------------------- #
 class TestAggIsReserved:
     @pytest.mark.parametrize("query", [
-        {"metrics": [{"metric": "AGG(amount)", "alias": "v"}]},
-        {"metrics": [{"metric": "agg(amount) + 1", "alias": "v"}]},
-        {"metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["Agg(amount) > 1"]},
-        {"dimensions": [{"field": "agg(amount, partition_by=status)", "alias": "a"}],
-         "metrics": [{"metric": "count(*)", "alias": "n"}]},
+        {"metrics": [{"metric": "AGG(orders.amount)", "alias": "v"}]},
+        {"metrics": [{"metric": "agg(orders.amount) + 1", "alias": "v"}]},
+        {"metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filter": ["Agg(orders.amount) > 1"]},
+        {"dimensions": [{"field": "agg(orders.amount, partition_by=orders.status)", "alias": "a"}],
+         "metrics": [{"metric": "count(orders.*)", "alias": "n"}]},
     ], ids=["measure", "arithmetic", "filter", "dimension"])
     async def test_a_call_is_refused(self, engine: SlayerQueryEngine, query: dict) -> None:
         built = q(**query)
@@ -116,7 +116,7 @@ class TestAggIsReserved:
         async with dev2215_engine("sqlite", datasets=[with_column, with_measure]) as eng:
             await eng.storage.save_dataset(with_column)
             await eng.storage.save_dataset(with_measure)
-            column = await eng.execute(q(metrics=[m("sum(agg)")]))
-            measure = await eng.execute(q(population="totals", metrics=["agg"]))
+            column = await eng.execute(q(metrics=[m("sum(orders.agg)")]))
+            measure = await eng.execute(q(population="totals", metrics=["totals.agg"]))
         assert num(single(column)) == 160.0
         assert num(measure.data[0]["totals.agg"]) == 160.0

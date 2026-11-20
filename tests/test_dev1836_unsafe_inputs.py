@@ -34,7 +34,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 def _assert_clear(ei, *needles: str, remedy: bool = False) -> None:
@@ -54,7 +54,7 @@ class TestUnsafeInputs:
         """customers.seg_label reads segments.label across the unproven hop."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="count(customers.seg_label)",
                                    alias="x")],
         )
@@ -66,7 +66,7 @@ class TestUnsafeInputs:
         """customers.vip_spend's DatasetField.filter references segments.label."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(customers.vip_spend)",
                                    alias="x")],
         )
@@ -80,7 +80,7 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            metrics=[QueryMetric(metric="last(customers.spend, ordered_at)",
+            metrics=[QueryMetric(metric="last(customers.spend, orders.ordered_at)",
                                    alias="x")],
         )
         with pytest.raises(RAISES) as ei:
@@ -96,9 +96,9 @@ class TestUnsafeExplicitPartitionKeys:
         edge: hard error naming the key and the remedy, never a fanning join."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="x",
+                metric="sum(customers.spend, partition_by=orders.status)", alias="x",
             )],
             to_many_handling="broadcast",
         )
@@ -130,9 +130,9 @@ class TestUnsafeExplicitPartitionKeys:
         safe but customers → segments is not."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=customers.segments.label)",
+                metric="sum(orders.amount, partition_by=customers.segments.label)",
                 alias="x",
             )],
         )
@@ -148,7 +148,7 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=[{
-                "field": ("CASE WHEN sum(amount, partition_by="
+                "field": ("CASE WHEN sum(orders.amount, partition_by="
                                "customers.segments.label) > 10 "
                                "THEN 1 ELSE 0 END"),
                 "alias": "b",
@@ -162,9 +162,9 @@ class TestUnsafeExplicitPartitionKeys:
     async def test_errors_apply_in_strict_mode_alike(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            to_many_handling="error", dimensions=["status"],
+            to_many_handling="error", dimensions=["orders.status"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="x",
+                metric="sum(customers.spend, partition_by=orders.status)", alias="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -178,16 +178,16 @@ class TestSafeJoinedPartitionKey:
         key when every hop is provably many-to-one."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier", "status"],
+            dimensions=["customers.tier", "orders.status"],
             metrics=[M, QueryMetric(
-                metric="sum(amount, partition_by=customers.tier)", alias="pt",
+                metric="sum(orders.amount, partition_by=customers.tier)", alias="pt",
             )],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.customers.tier", "orders.status")
+        by = rows_by(resp, "customers.tier", "orders.status")
         assert set(by) == set(AMOUNT_BY_TIER_STATUS)
         for (tier, status), row in by.items():
-            assert float(row["orders.pt"]) == pytest.approx(
+            assert float(row["pt"]) == pytest.approx(
                 AMOUNT_BY_TIER[tier],
             ), (tier, status)
         dry = await engine.execute(query, dry_run=True)

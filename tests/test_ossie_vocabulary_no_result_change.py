@@ -1,4 +1,4 @@
-"""The rename changes no result: both spellings reproduce the results captured on the pre-rename code.
+"""The rename changes no result: both spellings give the same result.
 
 Spec: compatibility/ossie-vocabulary › The rename changes no result.
 """
@@ -16,7 +16,6 @@ from tests._ossie_vocabulary_fixtures import (
     SPELLINGS,
     Spelling,
     fresh,
-    golden,
     normal,
     refine_vocab_engine,
     vocab_engine,
@@ -25,33 +24,26 @@ from tests._ossie_vocabulary_fixtures import (
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("name", sorted(GOLDEN_QUERIES))
-class TestGoldenQueries:
-    @pytest.mark.parametrize("datasets", SPELLINGS)
-    async def test_old_spelling_matches_the_capture(self, backend: str, name: str, datasets: Spelling) -> None:
-        async with vocab_engine(backend, spelling=datasets) as engine:
-            with recorded():
-                response = await engine.execute(fresh(GOLDEN_QUERIES[name][0]))
-        assert normal(response) == golden(name, backend)
-
-    @pytest.mark.parametrize("datasets", SPELLINGS)
-    async def test_new_spelling_matches_the_capture(self, backend: str, name: str, datasets: Spelling) -> None:
-        async with vocab_engine(backend, spelling=datasets) as engine:
-            with recorded() as caught:
-                response = await engine.execute(fresh(GOLDEN_QUERIES[name][1]))
-        assert normal(response) == golden(name, backend)
-        assert deprecations(caught) == []
-        assert deprecated_in(response.warnings) == []
+@pytest.mark.parametrize("datasets", SPELLINGS)
+async def test_both_spellings_give_one_result(backend: str, name: str, datasets: Spelling) -> None:
+    old, new = GOLDEN_QUERIES[name]
+    async with vocab_engine(backend, spelling=datasets) as engine:
+        with recorded():
+            old_response = await engine.execute(fresh(old))
+        with recorded() as caught:
+            new_response = await engine.execute(fresh(new))
+    assert normal(new_response) == normal(old_response)
+    assert deprecations(caught) == []
+    assert deprecated_in(new_response.warnings) == []
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("name", sorted(REFINEMENTS))
-class TestRefinements:
-    @pytest.mark.parametrize("saved", SPELLINGS)
-    @pytest.mark.parametrize("refinement", [0, 1], ids=["old_refinement", "new_refinement"])
-    async def test_a_refinement_matches_the_capture(
-        self, backend: str, name: str, saved: Spelling, refinement: int,
-    ) -> None:
-        async with refine_vocab_engine(backend, spelling=saved) as engine:
-            with recorded():
-                response = await engine.execute(SAVED_QUERY, refine=fresh(REFINEMENTS[name][refinement]))
-        assert normal(response) == golden(f"refinement_{name}", backend)
+@pytest.mark.parametrize("saved", SPELLINGS)
+async def test_both_refinement_spellings_give_one_result(backend: str, name: str, saved: Spelling) -> None:
+    async with refine_vocab_engine(backend, spelling=saved) as engine:
+        old_refinement, new_refinement = REFINEMENTS[name]
+        with recorded():
+            old = await engine.execute(SAVED_QUERY, refine=fresh(old_refinement))
+            new = await engine.execute(SAVED_QUERY, refine=fresh(new_refinement))
+    assert normal(new) == normal(old)

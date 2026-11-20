@@ -775,7 +775,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved metrics, {"name": "aov", "expression": "sum(revenue) / count(*)"} plus optional '
-                'label, description, meta; queries reference them by bare name ("aov").'
+                'label, description, meta; queries reference them by dataset ("orders.aov").'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
@@ -994,7 +994,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved metrics to upsert by name, {"name": "aov", "expression": "sum(revenue) / '
-                'count(*)"} plus optional label, description, meta; queries use them by bare name.'
+                'count(*)"} plus optional label, description, meta; queries use them by dataset (orders.aov).'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
@@ -1736,7 +1736,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Examples:
         save_memory(learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned", linked_entities=["orders.is_returned"])
-        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": ["sum(amount)"], "filter": "status = 'paid'"}, id="kb.paid-revenue")
+        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": ["sum(orders.amount)"], "filter": "orders.status = 'paid'"}, id="kb.paid-revenue")
         """
         try:
             response = await memory_service.save_memory(

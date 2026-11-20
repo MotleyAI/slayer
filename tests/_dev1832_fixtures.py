@@ -158,8 +158,9 @@ def monthly_multi_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def month_td() -> List[TimeDimension]:
-    return [TimeDimension(field="ordered_at",
+def month_td(population: Optional[str] = None) -> List[TimeDimension]:
+    field = "ordered_at" if population is None else f"{population}.ordered_at"
+    return [TimeDimension(field=field,
                           granularity=TimeGranularity.MONTH)]
 
 

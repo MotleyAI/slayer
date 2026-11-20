@@ -20,7 +20,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
 WORKING_PREFIX = "regroup/"
-BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
@@ -31,38 +31,38 @@ def _q(**kw) -> SlayerQuery:
 def _cases() -> dict:
     return {
         "regroup/flagship": _q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
-            metrics=[{"metric": "sum(amount)", "alias": "band_total"}],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "band_total"}],
         ),
         "regroup/cross_model_partition": _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN sum(amount, partition_by=customers.region_id) "
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount, partition_by=customers.region_id) "
                                "> 10000 THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
         "regroup/filter_on_band": _q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
             filter=["band == 1"],
-            metrics=[{"metric": "sum(amount)", "alias": "band_total"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "band_total"}],
         ),
         "guard/missing_partition_by": _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount) > 5000 THEN 1 ELSE 0 END",
                  "alias": "band"},
             ],
-            metrics=[{"metric": "sum(amount)", "alias": "t"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "t"}],
         ),
         "guard/transform_in_dim": _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
+                "orders.region",
+                {"field": "CASE WHEN cumsum(sum(orders.amount)) > 5000 THEN 1 ELSE 0 END",
                  "alias": "x"},
             ],
             time_dimensions=month_td(),
-            metrics=[{"metric": "sum(amount)", "alias": "t"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "t"}],
         ),
         "guard/ddv_false": _q(
             dimensions=[{"field": BAND, "alias": "band"}],

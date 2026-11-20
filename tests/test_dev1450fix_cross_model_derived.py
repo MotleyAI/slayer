@@ -142,7 +142,7 @@ async def test_c1_target_derived_model_filter_expands(engine):
     assert "status" in dry.sql
     assert "'active'" in dry.sql
     by_region = {
-        r["orders.customers.region"]: r["orders.customers.revenue_sum"]
+        r["customers.region"]: r["customers.revenue_sum"]
         for r in resp.data
     }
     # NA: only active customer 1 (100); customer 2 (inactive, 50) excluded —
@@ -164,7 +164,7 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
     assert "revenue > 60" in dry.sql.replace('"', "")
     resp = await engine.execute(q)
     by_region = {
-        r["orders.customers.region"]: r["orders.customers.revenue_sum"]
+        r["customers.region"]: r["customers.revenue_sum"]
         for r in resp.data
     }
     # big_spender = revenue > 60 AND is_active (active): customer 1 (100, NA),
@@ -183,11 +183,11 @@ async def test_derived_column_as_cross_model_agg_source(engine: SlayerQueryEngin
         "metrics": [{"metric": "sum(customers.rev_x2)"}],
     })
     dry = await engine.execute(q, dry_run=True)
-    assert "orders.customers.rev_x2_sum" in dry.columns, dry.columns
+    assert "customers.rev_x2_sum" in dry.columns, dry.columns
     assert "_sum" not in [c.split(".")[-1] for c in dry.columns]
     resp = await engine.execute(q)
     by_region = {
-        r["orders.customers.region"]: r["orders.customers.rev_x2_sum"]
+        r["customers.region"]: r["customers.rev_x2_sum"]
         for r in resp.data
     }
     # is_active filter keeps cust1 (NA, 100*2=200) and cust3 (EU, 70*2=140); the
@@ -206,6 +206,6 @@ async def test_cr11_cross_model_agg_over_derived_column_metadata(engine: SlayerQ
         })
     )
     # revenue carries label "Revenue"; the cross-dataset metric inherits it.
-    meta = resp.attributes.metrics.get("orders.customers.revenue_sum")
+    meta = resp.attributes.metrics.get("customers.revenue_sum")
     assert meta is not None
     assert meta.label == "Revenue"

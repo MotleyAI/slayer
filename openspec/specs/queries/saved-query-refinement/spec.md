@@ -63,13 +63,13 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 
 ### Requirement: Merge rules per field
 Dimensions and measures SHALL be the saved entries followed by the refinement entries not already
-present. A dimension column reference SHALL be identified by its reference with a leading root
-qualifier dropped (`region` ≡ `orders.region`), a computed dimension by its name, a measure by its name
-(an unnamed measure by its formula), a formula being compared by its parsed meaning with
-any leading root qualifier dropped (`sum(amount)` ≡ `sum(orders.amount)`), never by its text, so text
+present. A dimension column reference SHALL be identified by its reference in its converted,
+qualified form (`region` ≡ `orders.region` in a stage naming population `orders`, `queries/references`), a computed dimension by its name, a measure by its name
+(an unnamed measure by its formula), a formula being compared by its parsed meaning in
+its converted, qualified form (`sum(amount)` ≡ `sum(orders.amount)`), never by its text, so text
 inside a string literal or quoted identifier is compared exactly. Two entries with the same identity
 SHALL collapse into one when they are equal in every field. A refinement measure whose formula is a
-bare name, or that name qualified by the root, equal to a saved measure entry's name — named with that
+bare name, or that name qualified by the population, equal to a saved measure entry's name — named with that
 same name, unnamed, or the string shorthand — SHALL restate that saved entry: it collapses into the
 saved entry when every field it explicitly sets (`label`, `datatype`, `description`, `meta`; an explicit
 `null` included) equals the saved entry's value, and conflicts otherwise. Time dimensions SHALL be
@@ -159,7 +159,7 @@ with the ordinary resolution error.
 
 #### Scenario: Refining the final stage
 - **WHEN** the saved query `[{"name": "per_customer", "population": "orders", "dimensions": ["customer_id", "region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["status = 'paid'"]}, {"population": "per_customer", "metrics": [{"metric": "avg(revenue)", "alias": "avg_revenue"}]}]` runs by name
-- **THEN** `per_customer.avg_revenue` is 63.75
+- **THEN** `avg_revenue` is 63.75
 - **WHEN** it runs with refinement `{"dimensions": ["region"]}`
 - **THEN** the rows are (US, 75.0), (EU, 52.5)
 - **WHEN** it runs with refinement `{"filter": ["region = 'EU'"]}`

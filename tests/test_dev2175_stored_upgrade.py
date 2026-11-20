@@ -173,7 +173,7 @@ class TestStoredSourcePaths:
             (metric,) = loaded.metrics
             assert metric.expression == "sum(leads.amount)"
             async with engine_on(storage, db_path) as engine:
-                assert await metric_value(engine, metric="lead_total") == 16
+                assert await metric_value(engine, metric="orders.lead_total") == 16
 
     @STORES
     async def test_no_unique_spelling(self, backend: str) -> None:
@@ -197,7 +197,7 @@ class TestStoredSourcePaths:
         async with store_over(backend=backend, models=[_leads(current), orders], extra=ITEMS + LEADS) as (
                 storage, _, db_path):
             async with engine_on(storage, db_path) as engine:
-                assert await metric_value(engine, metric="own_total") == 35
+                assert await metric_value(engine, metric="orders.own_total") == 35
 
 
 # ── the deprecation marker and the dumped vocabulary ──────────────────────

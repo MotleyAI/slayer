@@ -152,73 +152,73 @@ def _with_saved_metric() -> list[SlayerDataset]:
 
 
 def _stages() -> list[SlayerQuery]:
-    return [SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["id", "num_txt"]}),
-            SlayerQuery.model_validate({"population": "s1", "dimensions": ["id"], "filter": ["num_txt > 100"]})]
+    return [SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["lib.id", "lib.num_txt"]}),
+            SlayerQuery.model_validate({"population": "s1", "dimensions": ["s1.id"], "filter": ["s1.num_txt > 100"]})]
 
 
 FUNCTION_CASES = [
-    _dim("left", "left", "left(s, 2)"),
-    _dim("right", "right", "right(s, 2)"),
-    _dim("starts_with", "starts_with", "starts_with(s, 'a')"),
-    _dim("ends_with", "ends_with", "ends_with(s, 'a')"),
-    _dim("contains", "contains", "contains(s, 'a')"),
-    _dim("lpad", "lpad", "lpad(s, 4, '*')"),
-    _dim("rpad", "rpad", "rpad(s, 4, '*')"),
-    _dim("reverse", "reverse", "reverse(s)"),
-    _dim("repeat", "repeat", "repeat(s, 2)"),
-    _dim("concat_ws", "concat_ws", "concat_ws('-', s, p)"),
-    _dim("chr", "chr", "chr(cp)"),
-    _dim("ascii", "ascii", "ascii(s)"),
-    _dim("trim", "trim", "trim(code)"),
-    _dim("ltrim", "ltrim", "ltrim(code)"),
-    _dim("rtrim", "rtrim", "rtrim(code)"),
-    _dim("strpos", "strpos", "strpos(s, p)"),
-    _dim("instr", "instr", "instr(s, p)"),
-    _dim("replace", "replace", "replace(code, '_', '-')"),
-    _dim("div", "div", "div(i, m)"),
+    _dim("left", "left", "left(lib.s, 2)"),
+    _dim("right", "right", "right(lib.s, 2)"),
+    _dim("starts_with", "starts_with", "starts_with(lib.s, 'a')"),
+    _dim("ends_with", "ends_with", "ends_with(lib.s, 'a')"),
+    _dim("contains", "contains", "contains(lib.s, 'a')"),
+    _dim("lpad", "lpad", "lpad(lib.s, 4, '*')"),
+    _dim("rpad", "rpad", "rpad(lib.s, 4, '*')"),
+    _dim("reverse", "reverse", "reverse(lib.s)"),
+    _dim("repeat", "repeat", "repeat(lib.s, 2)"),
+    _dim("concat_ws", "concat_ws", "concat_ws('-', lib.s, lib.p)"),
+    _dim("chr", "chr", "chr(lib.cp)"),
+    _dim("ascii", "ascii", "ascii(lib.s)"),
+    _dim("trim", "trim", "trim(lib.code)"),
+    _dim("ltrim", "ltrim", "ltrim(lib.code)"),
+    _dim("rtrim", "rtrim", "rtrim(lib.code)"),
+    _dim("strpos", "strpos", "strpos(lib.s, lib.p)"),
+    _dim("instr", "instr", "instr(lib.s, lib.p)"),
+    _dim("replace", "replace", "replace(lib.code, '_', '-')"),
+    _dim("div", "div", "div(lib.i, lib.m)"),
     _dim("pi", "pi", "pi()"),
-    *(_dim(fn, fn, f"{fn}(x)") for fn in ("sin", "cos", "tan", "asin", "acos", "atan", "cbrt")),
-    _dim("atan2", "atan2", "atan2(y, x)"),
-    _dim("greatest", "greatest", "greatest(a, b)"),
-    _dim("least", "least", "least(a, b)"),
-    _dim("split_part", "split_part", "split_part(s, '/', 2)"),
-    _flt("like", "like", r"code LIKE 'a\_%'"),
-    _flt("ilike", "ilike", "word ILIKE 'ad%'"),
-    _dim("json_value", "json_value", "json_value(payload, '$.a.b')"),
-    _flt("regexp_like", "regexp_like", "regexp_like(code, '^a')"),
-    _dim("regexp_extract", "regexp_extract", "regexp_extract(tag, '@(.+)$', 1)"),
-    _dim("regexp_replace", "regexp_replace", "regexp_replace(tag, '[^0-9]', '')"),
-    _dim("try_cast", "try_cast", "TRY_CAST(num_txt AS DOUBLE)", mentions="TRY_CAST"),
+    *(_dim(fn, fn, f"{fn}(lib.x)") for fn in ("sin", "cos", "tan", "asin", "acos", "atan", "cbrt")),
+    _dim("atan2", "atan2", "atan2(lib.y, lib.x)"),
+    _dim("greatest", "greatest", "greatest(lib.a, lib.b)"),
+    _dim("least", "least", "least(lib.a, lib.b)"),
+    _dim("split_part", "split_part", "split_part(lib.s, '/', 2)"),
+    _flt("like", "like", "lib.code LIKE 'a\\_%'"),
+    _flt("ilike", "ilike", "lib.word ILIKE 'ad%'"),
+    _dim("json_value", "json_value", "json_value(lib.payload, '$.a.b')"),
+    _flt("regexp_like", "regexp_like", "regexp_like(lib.code, '^a')"),
+    _dim("regexp_extract", "regexp_extract", "regexp_extract(lib.tag, '@(.+)$', 1)"),
+    _dim("regexp_replace", "regexp_replace", "regexp_replace(lib.tag, '[^0-9]', '')"),
+    _dim("try_cast", "try_cast", "TRY_CAST(lib.num_txt AS DOUBLE)", mentions="TRY_CAST"),
 ]
 SPELLING_CASES = [
-    _flt("spelling|tilde", "regexp_like", "word ~ '^ad'"),
-    _flt("spelling|tilde-star", "regexp_like", "word ~* '^ad'"),
-    _flt("spelling|not-tilde", "regexp_like", "word !~ '^ad'"),
-    _dim("spelling|arrow-text", "json_value", "payload ->> 'ok'"),
-    _dim("spelling|arrow-chain", "json_value", "payload -> 'a' ->> 'b'"),
-    _dim("spelling|json_extract", "json_value", "json_extract(payload, '$.ok')"),
-    _dim("spelling|json_extract_scalar", "json_value", "json_extract_scalar(payload, '$.a.b')"),
-    _dim("spelling|json_extract_path_text", "json_value", "json_extract_path_text(payload, 'a', 'b')"),
-    _dim("spelling|jsonb_extract_path_text", "json_value", "jsonb_extract_path_text(payload, 'a', 'b')"),
-    _dim("spelling|position", "strpos", "POSITION(p IN s)"),
-    _dim("spelling|returning", "json_value", "json_value(payload, '$.qty' RETURNING INT)"),
+    _flt("spelling|tilde", "regexp_like", "lib.word ~ '^ad'"),
+    _flt("spelling|tilde-star", "regexp_like", "lib.word ~* '^ad'"),
+    _flt("spelling|not-tilde", "regexp_like", "lib.word !~ '^ad'"),
+    _dim("spelling|arrow-text", "json_value", "lib.payload ->> 'ok'"),
+    _dim("spelling|arrow-chain", "json_value", "lib.payload -> 'a' ->> 'b'"),
+    _dim("spelling|json_extract", "json_value", "json_extract(lib.payload, '$.ok')"),
+    _dim("spelling|json_extract_scalar", "json_value", "json_extract_scalar(lib.payload, '$.a.b')"),
+    _dim("spelling|json_extract_path_text", "json_value", "json_extract_path_text(lib.payload, 'a', 'b')"),
+    _dim("spelling|jsonb_extract_path_text", "json_value", "jsonb_extract_path_text(lib.payload, 'a', 'b')"),
+    _dim("spelling|position", "strpos", "POSITION(lib.p IN lib.s)"),
+    _dim("spelling|returning", "json_value", "json_value(lib.payload, '$.qty' RETURNING INT)"),
 ]
 COERCION_CASES = [
-    _flt("coerce|comparison", "try_cast", "num_txt > 100", mentions="number"),
-    _flt("coerce|in-list", "try_cast", "num_txt IN (1, 2)", mentions="number"),
-    _dim("coerce|arithmetic", "try_cast", "num_txt * 2", mentions="number"),
-    _flt("coerce|column-comparison", "try_cast", "num_txt = qty", mentions="number"),
-    _flt("coerce|literal-first", "try_cast", "100 < num_txt", mentions="number"),
-    _flt("coerce|between", "try_cast", "num_txt BETWEEN 1 AND 10", mentions="number"),
-    _flt("coerce|is-distinct-from", "try_cast", "num_txt IS DISTINCT FROM 99", mentions="number"),
-    _dim("coerce|greatest", "try_cast", "greatest(num_txt, 5)", mentions="number"),
-    _dim("coerce|least", "try_cast", "least(5, num_txt)", mentions="number"),
+    _flt("coerce|comparison", "try_cast", "lib.num_txt > 100", mentions="number"),
+    _flt("coerce|in-list", "try_cast", "lib.num_txt IN (1, 2)", mentions="number"),
+    _dim("coerce|arithmetic", "try_cast", "lib.num_txt * 2", mentions="number"),
+    _flt("coerce|column-comparison", "try_cast", "lib.num_txt = lib.qty", mentions="number"),
+    _flt("coerce|literal-first", "try_cast", "100 < lib.num_txt", mentions="number"),
+    _flt("coerce|between", "try_cast", "lib.num_txt BETWEEN 1 AND 10", mentions="number"),
+    _flt("coerce|is-distinct-from", "try_cast", "lib.num_txt IS DISTINCT FROM 99", mentions="number"),
+    _dim("coerce|greatest", "try_cast", "greatest(lib.num_txt, 5)", mentions="number"),
+    _dim("coerce|least", "try_cast", "least(5, lib.num_txt)", mentions="number"),
     LibCase(case_id="coerce|measure", name="try_cast", mentions="number",
-            build=lambda: _lib(metrics=[{"metric": "sum(num_txt * 2)", "alias": "t"}])),
+            build=lambda: _lib(metrics=[{"metric": "sum(lib.num_txt * 2)", "alias": "t"}])),
     LibCase(case_id="coerce|saved-measure", name="try_cast", mentions="number",
-            build=lambda: _lib(metrics=["txt_total"]), datasets=_with_saved_metric),
+            build=lambda: _lib(metrics=["lib.txt_total"]), datasets=_with_saved_metric),
     LibCase(case_id="coerce|order-by", name="try_cast", mentions="number",
-            build=lambda: _lib(dimensions=["id"], order=[{"field": "num_txt * 2"}])),
+            build=lambda: _lib(dimensions=["lib.id"], order=[{"field": "lib.num_txt * 2"}])),
     LibCase(case_id="coerce|stage", name="try_cast", mentions="number", build=_stages),
 ]
 CASES = [*FUNCTION_CASES, *SPELLING_CASES, *COERCION_CASES]
@@ -251,15 +251,15 @@ async def test_refused_on_execution_too(ds_type: str) -> None:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name="test", type=ds_type, host="localhost", database="db"))
         await storage.save_dataset(lib_dataset())
-        engine, query, name = SlayerQueryEngine(storage=storage), lib_query("json_value(payload, '$.a')"), database(ds_type)
+        engine, query, name = SlayerQueryEngine(storage=storage), lib_query("json_value(lib.payload, '$.a')"), database(ds_type)
         with pytest.raises(UnsupportedServerFunctionError, match=name):
             await engine.execute(query)
 
 
 @pytest.mark.parametrize("ds_type", TIER2)
 @pytest.mark.parametrize(("expr", "name"), [
-    ("asin(2)", "asin"), ("regexp_like(code, '[')", "regexp_like"),
-    ("json_value(payload, 'a.b')", "json_value"), ("split_part(tag, '-', 0)", "split_part"),
+    ("asin(2)", "asin"), ("regexp_like(lib.code, '[')", "regexp_like"),
+    ("json_value(lib.payload, 'a.b')", "json_value"), ("split_part(lib.tag, '-', 0)", "split_part"),
 ])
 async def test_refusal_outranks_an_invalid_argument(ds_type: str, expr: str, name: str) -> None:
     query = lib_query(expr)
@@ -272,7 +272,7 @@ async def test_refusal_outranks_an_invalid_argument(ds_type: str, expr: str, nam
 
 class TestTier2Like:
     async def test_databricks_like_keeps_the_escape(self) -> None:
-        sql = await emit_lib(lib_query(filter=[r"code LIKE 'a\_%'"]), dialect="databricks")
+        sql = await emit_lib(lib_query(filter=["lib.code LIKE 'a\\_%'"]), dialect="databricks")
         escape = next(sqlglot.parse_one(sql, read="databricks").find_all(exp.Escape))
         assert isinstance(escape.this, exp.Like), sql
         assert (escape.this.expression.name, escape.expression.name) == ("a\\_%", "\\"), sql
@@ -286,32 +286,32 @@ def _strings(sql: str, *, read: str) -> set[str]:
 
 
 class TestPresto:
-    @pytest.mark.parametrize("expr", ["regexp_like(notes, 'paid.*late')", "regexp_like(code, '^ab$')",
-                                      "regexp_like(word, '^paid$', 'i')"])
+    @pytest.mark.parametrize("expr", ["regexp_like(lib.notes, 'paid.*late')", "regexp_like(lib.code, '^ab$')",
+                                      "regexp_like(lib.word, '^paid$', 'i')"])
     async def test_patterns_match_trino(self, expr: str) -> None:
         presto = await emit_lib(lib_query(filter=[expr]), dialect="presto")
         trino = await emit_lib(lib_query(filter=[expr]), dialect="trino")
         assert _strings(presto, read="presto") == _strings(trino, read="trino"), presto
 
     async def test_dot_matches_newline(self) -> None:
-        sql = await emit_lib(lib_query(filter=["regexp_like(notes, 'paid.*late')"]), dialect="presto")
+        sql = await emit_lib(lib_query(filter=["regexp_like(lib.notes, 'paid.*late')"]), dialect="presto")
         assert any("(?s)" in s for s in _strings(sql, read="presto")), sql
 
-    @pytest.mark.parametrize("expr", ["regexp_like(notes, 'paid.*late')", "regexp_extract(notes, 'paid(.*)late', 1)"])
+    @pytest.mark.parametrize("expr", ["regexp_like(lib.notes, 'paid.*late')", "regexp_extract(lib.notes, 'paid(.*)late', 1)"])
     async def test_dot_matches_newline_in_every_regex_function(self, expr: str) -> None:
         sql = await emit_lib(lib_query(expr), dialect="presto")
         assert any(s.startswith("(?s)") for s in _strings(sql, read="presto")), sql
 
     async def test_end_anchor_is_absolute(self) -> None:
-        sql = await emit_lib(lib_query(filter=["regexp_like(code, '^ab$')"]), dialect="presto")
+        sql = await emit_lib(lib_query(filter=["regexp_like(lib.code, '^ab$')"]), dialect="presto")
         assert "(?s)^ab\\z" in _strings(sql, read="presto"), sql
 
     @pytest.mark.parametrize(("expr", "function"), [
-        ("regexp_extract(notes, 'a(b)', 1)", "REGEXP_EXTRACT"),
-        ("json_value(payload, '$.a.b')", "JSON_EXTRACT_SCALAR"),
-        ("regexp_replace(tag, '[^0-9]', '')", "REGEXP_REPLACE"),
-        ("split_part(tag, '-', 2)", "ELEMENT_AT(SPLIT"),
-        ("repeat(tag, 3)", "ARRAY_JOIN(REPEAT"),
+        ("regexp_extract(lib.notes, 'a(b)', 1)", "REGEXP_EXTRACT"),
+        ("json_value(lib.payload, '$.a.b')", "JSON_EXTRACT_SCALAR"),
+        ("regexp_replace(lib.tag, '[^0-9]', '')", "REGEXP_REPLACE"),
+        ("split_part(lib.tag, '-', 2)", "ELEMENT_AT(SPLIT"),
+        ("repeat(lib.tag, 3)", "ARRAY_JOIN(REPEAT"),
     ])
     @pytest.mark.parametrize("ds_type", PRESTO)
     async def test_own_functions(self, ds_type: str, expr: str, function: str) -> None:
@@ -440,7 +440,7 @@ def _contractors(**body: Any) -> SlayerQuery:
 
 
 def _count(name: str = "n") -> dict[str, str]:
-    return {"metric": "count(*)", "alias": name}
+    return {"metric": "count(contractors.*)", "alias": name}
 
 
 class ListCase(BaseModel):
@@ -452,34 +452,34 @@ class ListCase(BaseModel):
 
 LIST_CASES = [
     ListCase(case_id="contains", mentions="contains",
-             build=lambda: _contractors(dimensions=["id"], filter=["contains(skills, 'go')"])),
+             build=lambda: _contractors(dimensions=["contractors.id"], filter=["contains(contractors.skills, 'go')"])),
     ListCase(case_id="contains_any-literal", mentions="contains_any",
-             build=lambda: _contractors(dimensions=["id"], filter=["contains_any(skills, ['go', 'sql'])"])),
+             build=lambda: _contractors(dimensions=["contractors.id"], filter=["contains_any(contractors.skills, ['go', 'sql'])"])),
     ListCase(case_id="contains_all-list-column", mentions="contains_all",
-             build=lambda: _contractors(dimensions=["id"], filter=["contains_all(skills, required)"])),
+             build=lambda: _contractors(dimensions=["contractors.id"], filter=["contains_all(contractors.skills, contractors.required)"])),
     ListCase(case_id="length", mentions="length",
-             build=lambda: _contractors(dimensions=["id", {"field": "length(skills)", "alias": "v"}])),
+             build=lambda: _contractors(dimensions=["contractors.id", {"field": "length(contractors.skills)", "alias": "v"}])),
     ListCase(case_id="array-literal", mentions="length",
-             build=lambda: _contractors(dimensions=["id", {"field": "length(['go', 'sql'])", "alias": "v"}])),
-    ListCase(case_id="element-access", mentions="skills", build=lambda: _contractors(dimensions=["skills.value"])),
+             build=lambda: _contractors(dimensions=["contractors.id", {"field": "length(['go', 'sql'])", "alias": "v"}])),
+    ListCase(case_id="element-access", mentions="skills", build=lambda: _contractors(dimensions=["contractors.skills.value"])),
     ListCase(case_id="list-child", mentions="skills",
-             build=lambda: _contractors(metrics=[{"metric": "count(skills.*)", "alias": "n"}])),
+             build=lambda: _contractors(metrics=[{"metric": "count(contractors.skills.*)", "alias": "n"}])),
     ListCase(case_id="child-filter", mentions="skills",
-             build=lambda: _contractors(metrics=[_count()], filter=["skills.value = 'go'"])),
+             build=lambda: _contractors(metrics=[_count()], filter=["contractors.skills.value = 'go'"])),
     ListCase(case_id="nested-hop", mentions="skills",
-             build=lambda: SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
+             build=lambda: SlayerQuery.model_validate({"population": "assignments", "dimensions": ["assignments.id"],
                                                        "filter": ["contractors.skills.value = 'sql'"]})),
     ListCase(case_id="stage", mentions="contains",
              build=lambda: [
-                 SlayerQuery.model_validate({"name": "s1", "population": "contractors", "dimensions": ["id"],
-                                             "filter": ["contains(skills, 'go')"]}),
-                 SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "count(*)", "alias": "n"}]}),
+                 SlayerQuery.model_validate({"name": "s1", "population": "contractors", "dimensions": ["contractors.id"],
+                                             "filter": ["contains(contractors.skills, 'go')"]}),
+                 SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "count(s1.*)", "alias": "n"}]}),
              ]),
     ListCase(case_id="collect", mentions="collect",
-             build=lambda: _contractors(dimensions=["team"], metrics=[{"metric": "collect(city)", "alias": "c"}])),
+             build=lambda: _contractors(dimensions=["contractors.team"], metrics=[{"metric": "collect(contractors.city)", "alias": "c"}])),
     ListCase(case_id="collect-elements", mentions="collect",
-             build=lambda: _contractors(dimensions=["team"],
-                                        metrics=[{"metric": "collect(skills.value)", "alias": "c"}])),
+             build=lambda: _contractors(dimensions=["contractors.team"],
+                                        metrics=[{"metric": "collect(contractors.skills.value)", "alias": "c"}])),
 ]
 
 

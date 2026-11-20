@@ -10,6 +10,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.names import qualified_reference
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.live_schema.schema_drift import IdempotentIngestResult
 from slayer.database import engine_factory
@@ -52,7 +53,7 @@ async def shop(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncGenerator
 
 async def _qty(storage: YAMLStorage, dataset: str) -> list[Any]:
     async with owned_query_engine(storage=storage) as engine:
-        rows = (await engine.execute({"population": dataset, "dimensions": ["qty"]})).data
+        rows = (await engine.execute({"population": dataset, "dimensions": [qualified_reference(dataset, "qty")]})).data
     return [r[f"{dataset}.qty"] for r in rows]
 
 

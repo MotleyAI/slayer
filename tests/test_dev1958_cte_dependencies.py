@@ -28,17 +28,17 @@ from tests._dev1832_fixtures import (
 from tests._engine_helpers import _extract_cte_body
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
-SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
-REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
-DEGENERATE_SHARE = "sum(amount) / max(sum(amount, partition_by=[region]), partition_by=region)"
+SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.ordered_at])"
+REGION_SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.region])"
+DEGENERATE_SHARE = "sum(monthly.amount) / max(sum(monthly.amount, partition_by=[monthly.region]), partition_by=monthly.region)"
 
 
 def _q(expression: str, *, date_range: bool = False):
-    td = ([TimeDimension(field="ordered_at",
+    td = ([TimeDimension(field="monthly.ordered_at",
                          granularity=TimeGranularity.MONTH,
                          date_range=["2024-02-01", "2024-03-31"])]
-          if date_range else month_td())
-    return monthly_q(dimensions=["region"], time_dimensions=td,
+          if date_range else month_td("monthly"))
+    return monthly_q(dimensions=["monthly.region"], time_dimensions=td,
                      metrics=[QueryMetric(metric=f"time_shift({expression}, -1)", alias="t")])
 
 
@@ -129,7 +129,7 @@ class TestIdentityDeduplicatedTraversal:
     async def test_carried_warning_not_duplicated(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(DEGENERATE_SHARE))
         assert len(degenerate_warnings(resp)) == 1
-        got = {(r["monthly.region"], month_key(r["monthly.ordered_at"])): r["monthly.t"]
+        got = {(r["monthly.region"], month_key(r["monthly.ordered_at"])): r["t"]
                for r in resp.data}
         assert len(got) == len(resp.data) == 6
         expected = {("North", "2024-02"): 10 / 60, ("North", "2024-03"): 20 / 60,

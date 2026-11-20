@@ -35,13 +35,13 @@ def _passes(schema: StageSchema) -> dict[str, Any]:
 
 class TestPassThroughOrigin:
     def test_plain_dimension_passes_its_field(self) -> None:
-        origin = _passes(_schema(dimensions=["customer_id"], metrics=[m("count(*)", "n")]))["customer_id"]
+        origin = _passes(_schema(dimensions=["orders.customer_id"], metrics=[m("count(orders.*)", "n")]))["customer_id"]
         assert origin is not None
         assert origin.path == ()
         assert origin.field == "customer_id"
 
     def test_alias_keeps_the_origin(self) -> None:
-        origin = _passes(_schema(dimensions=[{"field": "customer_id", "alias": "cid"}]))["cid"]
+        origin = _passes(_schema(dimensions=[{"field": "orders.customer_id", "alias": "cid"}]))["cid"]
         assert origin is not None
         assert origin.field == "customer_id"
 
@@ -52,21 +52,21 @@ class TestPassThroughOrigin:
         (hop,) = origin.path
         assert (hop.source_dataset, hop.to) == ("orders", "customers")
 
-    @pytest.mark.parametrize("expr", ["CAST(customer_id AS TEXT)", "customer_id + 0"])
+    @pytest.mark.parametrize("expr", ["CAST(orders.customer_id AS TEXT)", "orders.customer_id + 0"])
     def test_cast_or_computed_is_not_a_pass_through(self, expr: str) -> None:
         assert _passes(_schema(dimensions=[{"field": expr, "alias": "cid"}]))["cid"] is None
 
     def test_time_bucket_is_not_a_pass_through(self) -> None:
-        schema = _schema(time_dimensions=[{"field": "ordered_at", "granularity": "month"}], metrics=[m("count(*)", "n")])
+        schema = _schema(time_dimensions=[{"field": "orders.ordered_at", "granularity": "month"}], metrics=[m("count(orders.*)", "n")])
         assert _passes(schema)["ordered_at"] is None
 
     def test_metric_is_not_a_pass_through(self) -> None:
-        assert _passes(_schema(dimensions=["status"], metrics=[m("max(customer_id)", "c")]))["c"] is None
+        assert _passes(_schema(dimensions=["orders.status"], metrics=[m("max(orders.customer_id)", "c")]))["c"] is None
 
 
 class TestInheritedEdges:
     def test_grouped_key_inherits_a_one_to_one_edge(self) -> None:
-        (edge,) = [e for e in _schema(dimensions=["customer_id"], metrics=[m("count(*)", "n")]).inherited_edges
+        (edge,) = [e for e in _schema(dimensions=["orders.customer_id"], metrics=[m("count(orders.*)", "n")]).inherited_edges
                    if e.to == "customers"]
         assert edge.from_columns == ("customer_id",)
         assert edge.to_columns == ("id",)
@@ -75,23 +75,23 @@ class TestInheritedEdges:
         assert (edge.origin.dataset, edge.origin.relationship, edge.origin.forward) == ("orders", "customers", True)
 
     def test_wider_grain_keeps_the_stage_side_many(self) -> None:
-        schema = _schema(dimensions=["customer_id", "status"], metrics=[m("count(*)", "n")])
+        schema = _schema(dimensions=["orders.customer_id", "orders.status"], metrics=[m("count(orders.*)", "n")])
         (edge,) = [e for e in schema.inherited_edges if e.to == "customers"]
         assert edge.cardinality is RelationshipCardinality.MANY_TO_ONE
 
     def test_undeclared_cardinality_stays_undeclared(self) -> None:
-        (edge,) = [e for e in _schema(dimensions=["ordered_at"]).inherited_edges if e.to == "calendar"]
+        (edge,) = [e for e in _schema(dimensions=["orders.ordered_at"]).inherited_edges if e.to == "calendar"]
         assert edge.cardinality is None
 
     def test_reverse_edge_is_inherited(self) -> None:
-        schema = _schema(population="customers", dimensions=["id"], metrics=[m("count(*)", "n")])
+        schema = _schema(population="customers", dimensions=["customers.id"], metrics=[m("count(customers.*)", "n")])
         targets = {(e.to, e.origin.dataset, e.origin.forward) for e in schema.inherited_edges}
         assert ("orders", "orders", False) in targets
 
     def test_target_key_proxy_inherits_the_hop(self) -> None:
-        schema = _schema(dimensions=["customers.id"], metrics=[m("count(*)", "n")])
+        schema = _schema(dimensions=["customers.id"], metrics=[m("count(orders.*)", "n")])
         (edge,) = [e for e in schema.inherited_edges if e.to == "customers"]
         assert edge.from_columns == ("customers__id",)
 
     def test_no_pass_through_no_edge(self) -> None:
-        assert _schema(dimensions=["status"], metrics=[m("count(*)", "n")]).inherited_edges == ()
+        assert _schema(dimensions=["orders.status"], metrics=[m("count(orders.*)", "n")]).inherited_edges == ()

@@ -1,4 +1,4 @@
-version: 26
+version: 28
 name: supplies
 sql_table: supplies
 source_kind: table
@@ -6,14 +6,14 @@ query_variables: {}
 data_source: jaffle_shop
 fields:
 - name: id
-  sql: id
+  expression: id
   datatype: String
   primary_key: true
   unique: false
   label: Supply ID
   hidden: false
 - name: name
-  sql: name
+  expression: name
   datatype: String
   primary_key: false
   unique: false
@@ -21,7 +21,7 @@ fields:
   label: Supply
   hidden: false
 - name: cost
-  sql: cost
+  expression: cost
   datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
@@ -34,7 +34,7 @@ fields:
     precision: 2
     symbol: $
 - name: perishable
-  sql: perishable
+  expression: perishable
   datatype: String
   primary_key: false
   unique: false
@@ -42,7 +42,7 @@ fields:
   label: Perishable
   hidden: false
 - name: sku
-  sql: sku
+  expression: sku
   datatype: String
   primary_key: true
   unique: false

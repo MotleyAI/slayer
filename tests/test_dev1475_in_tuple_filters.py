@@ -157,7 +157,7 @@ class TestParserGuards:
         )
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"metric": "count(*)"}], "filter": ["status in 'a'"],
+            "population": "orders", "metrics": [{"metric": "count(orders.*)"}], "filter": ["orders.status in 'a'"],
         })
         with pytest.raises(DateOperandTypeError, match="status"):
             engine.execute_sync(query=query, dry_run=True)
@@ -229,7 +229,7 @@ class TestBinder:
     def test_in_filter_binds_to_in_key(self):
 
         model = _make_orders_with_status()
-        parsed = parse_expr("status in ('completed', 'pending')")
+        parsed = parse_expr("orders.status in ('completed', 'pending')")
         bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
         scope = DatasetScope(population=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)
@@ -296,8 +296,8 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status in ('completed', 'pending')"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status in ('completed', 'pending')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
@@ -311,8 +311,8 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status not in ('cancelled', 'expired')"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status not in ('cancelled', 'expired')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
@@ -333,9 +333,9 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "filter": [
-                "status in ('completed', 'pending') and amount > 100",
+                "orders.status in ('completed', 'pending') and orders.amount > 100",
             ],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
@@ -352,7 +352,7 @@ class TestSQLEmission:
         engine, orders, stores = _make_engine_with_orders_and_stores()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["stores.name"],
             "filter": ["stores.name in ('Brooklyn', 'Philadelphia')"],
         })

@@ -104,7 +104,7 @@ class TestMemorySaveSubcommand:
         query_json = json.dumps(
             {
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             }
         )
         _run_memory(
@@ -129,7 +129,7 @@ class TestMemorySaveSubcommand:
             json.dumps(
                 {
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                 }
             )
         )

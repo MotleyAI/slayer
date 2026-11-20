@@ -26,8 +26,8 @@ DEV_SLAYER = Path(sys.executable).parent / "slayer"
 WORKFLOWS = ("publish.yml", "publish-test.yml")
 HEADLINE = {
     "population": "orders",
-    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
-    "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
+    "metrics": ["sum(orders.order_total)", "change_pct(sum(orders.order_total))"],
+    "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"],
 }
 
 _FAKE_SLAYER = '''#!{interpreter}

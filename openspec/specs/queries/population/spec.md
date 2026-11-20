@@ -32,14 +32,15 @@ fewest total routed join hops among viable candidates, where a candidate is viab
 iff every determination item binds from it under the prevailing reference grammar
 along a routed chain whose every oriented hop is provably to-one (declared
 many-to-one/one-to-one, or unique-key covered; unknown cardinality does not count).
-Viability probing SHALL apply the same short-form auto-routing binding applies
-after selection, evaluated per candidate: literal resolution takes precedence (an
-item whose dotted path resolves literally from the candidate is never
-reinterpreted through routing), short-form routing is attempted only where the
-literal single-hop anchor does not resolve, every hop of a selected route MUST be
-provably to-one for determination, and hops are counted along the selected route.
-A determination item spelled as a short form and the same item spelled as its full
-routed path SHALL yield the same inferred population, or fail closed identically.
+Viability probing SHALL apply, per candidate, the same anchor routing binding
+applies after selection (`queries/references` › The anchor is reached by its only
+to-one path): an item anchored at the candidate has an empty path; otherwise the
+candidate's routes to the item's anchor are enumerated with no precedence for a
+relationship incident to the candidate; every hop of a selected route, and of the
+item's explicit route after its anchor, MUST be provably to-one for determination,
+and hops are counted along the full path. An item spelled by its anchor and the same
+item spelled as its full path from a candidate SHALL yield the same inferred
+population, or fail closed identically.
 Determination items SHALL be the query's dimensions and time dimensions (for
 computed dimensions: their row-valued references and `partition_by` references,
 never references inside an aggregation) plus the field references of field-typed
@@ -87,24 +88,24 @@ infers only the factor P from the remaining items.
 #### Scenario: Short-form dimension infers like its full path
 
 - **WHEN** a query without `population` has `dimensions=[regions.name,
-  orders.status]` where `regions.name` is reachable from `orders` only as the
-  routed path `customers.regions.name`
-- **THEN** inference routes the short form per candidate and picks the same
+  orders.status]` where `regions` is reachable from `orders` only through
+  `customers`
+- **THEN** inference routes `regions.name` per candidate and picks the same
   population as the query spelled with `customers.regions.name`
 
 #### Scenario: Literal resolution beats short-form reinterpretation
 
-- **WHEN** a determination item's first segment resolves literally from a
-  candidate (a direct join edge or the candidate's own name)
-- **THEN** that literal resolution is used for the probe; the item is not
-  reinterpreted through a different auto-route
+- **WHEN** a candidate reaches a determination item's anchor both by a direct
+  many-to-one relationship and by another to-one path
+- **THEN** the item is ambiguous from that candidate, which is not viable for it;
+  the direct relationship has no precedence
 
 #### Scenario: Unique but fanning route is not determination
 
-- **WHEN** the only route from a candidate to a short-form target is unique in the
+- **WHEN** the only route from a candidate to an item's anchor is unique in the
   join graph but crosses a to-many hop
 - **THEN** that candidate is not viable, even though binding would route the same
-  short form for other purposes
+  reference for other purposes
 
 #### Scenario: Raw-row mode uses the same rule
 
@@ -124,10 +125,9 @@ infers only the factor P from the remaining items.
 
 - **WHEN** `x`, `y` and `z` are joined many-to-one in a directed cycle `x → y → z → x`
   and a query without `population` has `dimensions=[x.v, y.v, z.v]`
-- **THEN** inference fails closed with no viable candidate, because from every
-  candidate one of the items resolves literally across the adjacent edge in its
-  fanning orientation; the same query with `population="x"` and the dimension
-  `y.z.v` in place of `z.v` executes
+- **THEN** inference fails closed, because `x`, `y` and `z` each determine every
+  item along their to-one paths with the same number of hops; the same query with
+  `population="x"` executes, reading `z.v` through `x → y → z`
 
 ### Requirement: Inference fails closed
 
@@ -251,20 +251,28 @@ The REST query endpoint and the MCP query tool SHALL accept a query without
 ### Requirement: Root recommendation follows the population rule
 
 `recommend_population` SHALL classify each resolved item by entity type: columns
-are determination items (determined, counting routed hops); saved measures and
-aggregation-suffixed items are attachments requiring reachability only and reported
-as such. Selection SHALL use the same rule as population inference so the two
+are determination items (determined, counting routed hops); saved measures,
+aggregation-suffixed items and row counts `count(<dataset>.*)` are attachments
+requiring reachability only and reported as such, a row count being an attachment
+on its anchor. An unqualified `count(*)` SHALL be refused with the typed error of
+`queries/references` › A row count names its dataset, and a bare name with the
+unknown-metric error, each suggesting the qualified spellings. Selection SHALL use
+the same rule as population inference so the two
 surfaces cannot disagree whenever inference succeeds: a column item is determined
 from a candidate exactly when the inference probe finds it viable from that
 candidate. Only when no candidate is viable and an item's probe failed solely because
-a hop or its short-form route is ambiguous — never fanning or unreachable — SHALL
+a hop or its route is ambiguous — never fanning or unreachable — SHALL
 recommendation resolve that item along its tie-break-best fan-out-free route and emit
 that full canonical path, so the recommended root executes once named as
 `population`. When the items include at least one determination item, an attachment
 on a dataset that no join path connects to a candidate SHALL NOT count against that
 candidate; once a root is chosen, each such attachment SHALL be reported with the
-path a query rooted there spells it by (its product hop, `queries/unrelated-datasets`)
-and flagged `unrelated`, and SHALL never steer the choice. Without determination items,
+spelling a query rooted there uses (its anchor, `queries/unrelated-datasets`)
+and flagged `unrelated`, and SHALL never steer the choice.
+Each item's path SHALL be a qualified reference (`queries/references`) that a query naming the
+recommended root as `population` executes with the item's meaning: the item as written when it
+resolves from the root along the chosen path, else its explicit route from the root.
+Without determination items,
 attachments steer selection by join-path reachability alone. Every other item
 SHALL carry `unrelated` false. A feasible `root_hint` (determines all determination
 items under either rule, reaches all attachments, by a join path or as unrelated
@@ -276,7 +284,7 @@ warnings with the remedy to name its edges.
 
 #### Scenario: Saved measure does not steer the recommendation
 
-- **WHEN** items mix columns with a suffix-less saved measure
+- **WHEN** items mix columns with a saved measure written `<dataset>.<metric>`
 - **THEN** the saved measure is reported as an attachment and does not change the
   recommended root
 
@@ -292,7 +300,7 @@ warnings with the remedy to name its edges.
   via `warehouses`) and `recommend_population` is given `orders.status` and
   `regions.population`
 - **THEN** the root is `orders` and the path for `regions.population` is
-  `customers.regions.population`, while
+  `orders.customers.regions.population`, while
   `{"dimensions": ["orders.status", "regions.population"]}` without `population`
   fails with the ambiguous-path error
 
@@ -328,6 +336,18 @@ warnings with the remedy to name its edges.
 - **WHEN** `recommend_population` is given only `count(customers.id)` and
   `count(events.id)`
 - **THEN** no root is recommended, exactly as before this change
+
+#### Scenario: A row count is an attachment on its dataset
+
+- **WHEN** `recommend_population` is given `customers.region` and `count(orders.*)`
+- **THEN** the root is `customers` and `count(orders.*)` is reported as an
+  attachment on `orders` with the path `count(orders.*)`
+
+#### Scenario: An unqualified row count is refused
+
+- **WHEN** `recommend_population` is given `customers.region` and `count(*)`
+- **THEN** it fails with the typed error saying `count(*)` names no dataset and
+  suggesting `count(<dataset>.*)`
 
 ### Requirement: A saved query's inferred populations are pinned at save
 

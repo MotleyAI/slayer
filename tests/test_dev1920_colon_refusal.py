@@ -77,9 +77,9 @@ class TestParser:
         assert isinstance(_refused("amount:sum"), ValueError)
 
     @pytest.mark.parametrize("text", [
-        "note = 'a:sum'",
-        "sum(amount::INT)",
-        "sum(amount) FILTER (WHERE note = 'x:count')",
+        "orders.note = 'a:sum'",
+        "sum(orders.amount::INT)",
+        "sum(orders.amount) FILTER (WHERE orders.note = 'x:count')",
         '"x:sum"',
         "sum(amount) -- x:sum",
     ])
@@ -116,33 +116,33 @@ QUERY_POSITIONS = [
                  "last(balance, updated_at)", id="positional-param"),
     pytest.param({"metrics": ["amount:sum(window='30d')"], "time_dimensions": ["date_trunc('month', created_at)"]},
                  "amount:sum(window='30d')", "sum(amount, window='30d')", id="window"),
-    pytest.param({"metrics": ["count(*)"], "filter": ["amount:sum > 100"]}, "amount:sum", "sum(amount)",
+    pytest.param({"metrics": ["count(orders.*)"], "filter": ["amount:sum > 100"]}, "amount:sum", "sum(amount)",
                  id="filter"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["status"],
                   "order": [{"field": "amount:sum", "direction": "desc"}]}, "amount:sum", "sum(amount)",
                  id="order-string"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["status"],
                   "order": [{"field": "amount:sum", "direction": "desc"}]}, "amount:sum", "sum(amount)",
                  id="order-object"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"], "order": [{"amount:sum": "desc"}]},
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["status"], "order": [{"amount:sum": "desc"}]},
                  "amount:sum", "sum(amount)", id="order-shorthand"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["created_at:month"]}, "created_at:month",
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["created_at:month"]}, "created_at:month",
                  "date_trunc('month', created_at)", id="dimension"),
-    pytest.param({"metrics": ["count(*)"], "time_dimensions": ["created_at:month"]}, "created_at:month",
+    pytest.param({"metrics": ["count(orders.*)"], "time_dimensions": ["created_at:month"]}, "created_at:month",
                  "date_trunc('month', created_at)", id="time-dimension"),
-    pytest.param({"metrics": ["count(*)"], "time_dimensions": [{"field": "created_at:month",
+    pytest.param({"metrics": ["count(orders.*)"], "time_dimensions": [{"field": "created_at:month",
                                                                   "granularity": "month"}]},
                  "created_at:month", "date_trunc('month', created_at)", id="time-dimension-column"),
-    pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
+    pytest.param({"metrics": ["count(orders.*)"], "dimensions": ["status"],
                   "order": [{"field": "customers.created_at:month", "direction": "asc"}]},
                  "customers.created_at:month", "date_trunc('month', customers.created_at)", id="order-granularity"),
-    pytest.param({"metrics": ["count(*)"], "main_time_dimension": "created_at:month"}, "created_at:month",
+    pytest.param({"metrics": ["count(orders.*)"], "main_time_dimension": "created_at:month"}, "created_at:month",
                  "date_trunc('month', created_at)", id="main-time-dimension"),
-    pytest.param({"metrics": ["count(*)"],
+    pytest.param({"metrics": ["count(orders.*)"],
                   "dimensions": [{"alias": "d", "field": "amount:sum(partition_by=region)"}]},
                  "amount:sum(partition_by=region)", "sum(amount, partition_by=region)", id="computed-dimension"),
     pytest.param({"population": {"dataset": "orders", "metrics": [{"name": "m", "expression": "amount:sum"}]},
-                  "metrics": ["m"]}, "amount:sum", "sum(amount)", id="model-extension-measure"),
+                  "metrics": ["orders.m"]}, "amount:sum", "sum(amount)", id="model-extension-measure"),
 ]
 
 
@@ -163,17 +163,17 @@ class TestFreshQueries:
 
     async def test_custom_granularity(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store(granularities=[FISCAL_QUARTER])
-        exc = await _query_failure(storage, {"population": "orders", "metrics": ["count(*)"],
+        exc = await _query_failure(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                              "time_dimensions": ["created_at:fiscal_quarter"]})
         assert_colon_refused(exc, span="created_at:fiscal_quarter", twin="fiscal_quarter(created_at)")
 
     async def test_non_colon_colons_run(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
-        resp = await run(storage, {"population": "orders", "filter": ["note = 'a:sum'"], "metrics": [
-            {"alias": "total", "metric": "sum(amount::INT)"},
-            {"alias": "tagged", "metric": "sum(amount) FILTER (WHERE note = 'x:count')"},
+        resp = await run(storage, {"population": "orders", "filter": ["orders.note = 'a:sum'"], "metrics": [
+            {"alias": "total", "metric": "sum(orders.amount::INT)"},
+            {"alias": "tagged", "metric": "sum(orders.amount) FILTER (WHERE orders.note = 'x:count')"},
         ]})
-        assert rows(resp) == [{"orders.total": 60.0, "orders.tagged": None}]
+        assert rows(resp) == [{"total": 60.0, "tagged": None}]
 
 
 async def _save_failure(storage: StorageBackend, doc: dict) -> BaseException:

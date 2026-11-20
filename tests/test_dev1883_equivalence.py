@@ -19,16 +19,16 @@ async def exec_engine(tmp_path):
 def _functional() -> SlayerQuery:
     return fx.q(
         population="orders",
-        dimensions=["date_trunc('month', created_at)"],
-        metrics=[{"metric": "sum(amount)"}],
+        dimensions=["date_trunc('month', orders.created_at)"],
+        metrics=[{"metric": "sum(orders.amount)"}],
     )
 
 
 def _explicit() -> SlayerQuery:
     return fx.q(
         population="orders",
-        time_dimensions=[{"field": "created_at", "granularity": "month"}],
-        metrics=[{"metric": "sum(amount)"}],
+        time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+        metrics=[{"metric": "sum(orders.amount)"}],
     )
 
 
@@ -51,8 +51,8 @@ class TestEquivalence:
     async def test_string_time_dimensions_entry_sql_identical(self, engine) -> None:
         string_form = fx.q(
             population="orders",
-            time_dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            time_dimensions=["date_trunc('month', orders.created_at)"],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
         functional = await engine.execute(string_form, dry_run=True)
         explicit = await engine.execute(_explicit(), dry_run=True)
@@ -65,32 +65,32 @@ class TestEquivalence:
         TD present, generates identical SQL from the functional form."""
         functional = await engine.execute(fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)", "date_trunc('year', customers.created_at)"],
-            main_time_dimension="created_at",
-            metrics=[{"metric": "cumsum(sum(amount))", "alias": "cs"}],
+            dimensions=["date_trunc('month', orders.created_at)", "date_trunc('year', customers.created_at)"],
+            main_time_dimension="orders.created_at",
+            metrics=[{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
         ), dry_run=True)
         explicit = await engine.execute(fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},
                 {"field": "customers.created_at", "granularity": "year"},
             ],
-            main_time_dimension="created_at",
-            metrics=[{"metric": "cumsum(sum(amount))", "alias": "cs"}],
+            main_time_dimension="orders.created_at",
+            metrics=[{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
         ), dry_run=True)
         assert functional.sql == explicit.sql
 
     async def test_whole_periods_only_identical(self, engine) -> None:
         functional = await engine.execute(fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            dimensions=["date_trunc('month', orders.created_at)"],
+            metrics=[{"metric": "sum(orders.amount)"}],
             whole_periods_only=True,
         ), dry_run=True)
         explicit = await engine.execute(fx.q(
             population="orders",
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
-            metrics=[{"metric": "sum(amount)"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
             whole_periods_only=True,
         ), dry_run=True)
         assert functional.sql == explicit.sql
@@ -99,15 +99,15 @@ class TestEquivalence:
         functional = await exec_engine.execute(fx.q(
             population="orders",
             dimensions=["date_trunc('month', customers.created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         explicit = await exec_engine.execute(fx.q(
             population="orders",
             time_dimensions=[
                 {"field": "customers.created_at", "granularity": "month"}
             ],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         ))
         assert functional.columns == explicit.columns
         assert functional.data == explicit.data
-        assert functional.columns[0] == "orders.customers.created_at"
+        assert functional.columns[0] == "customers.created_at"

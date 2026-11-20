@@ -219,7 +219,7 @@ class TestExecutedEquivalence:
             return {"population": "orders", "dimensions": [{"field": expr, "alias": "dow"}], "metrics": ["count(*)"]}
 
         resp = await assert_equivalent(engine, query("isodow(created_at)"), query(canonical("day_of_week")))
-        assert {r["orders.dow"]: r["orders._count"] for r in resp.data} == {1: 2, 3: 1, 4: 1, 6: 1, 7: 2}
+        assert {r["dow"]: r["orders._count"] for r in resp.data} == {1: 2, 3: 1, 4: 1, 6: 1, 7: 2}
 
     async def test_extract_with_alias_part(self, engine: SlayerQueryEngine) -> None:
         def query(expr: str) -> dict[str, Any]:

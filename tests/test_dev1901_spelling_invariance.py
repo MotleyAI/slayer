@@ -116,16 +116,16 @@ def _joined_tables(sql: str) -> set:
             if isinstance(j.this, exp.Table) and j.this.name not in ctes}
 
 
-@pytest.mark.parametrize("col", ["store_no", "customers.spend", "cust_spend", "customers.regions.pop"])
+@pytest.mark.parametrize("col", ["orders.store_no", "customers.spend", "orders.cust_spend", "customers.regions.pop"])
 async def test_join_registration(col: str) -> None:
-    plain = await _sql(f"wsum(amount, weight={col})")
-    frag = await _sql(f"wsum(amount, weight='{col} * 1')")
+    plain = await _sql(f"wsum(orders.amount, weight={col})")
+    frag = await _sql(f"wsum(orders.amount, weight='{col} * 1')")
     assert _joined_tables(frag) == _joined_tables(plain)
 
 
 async def test_fanning_leaf_refused_in_both_spellings() -> None:
     col = "customers.regions.region_events.value"
-    for formula in (f"wsum(amount, weight={col})", f"wsum(amount, weight='{col} * 1')"):
+    for formula in (f"wsum(orders.amount, weight={col})", f"wsum(orders.amount, weight='{col} * 1')"):
         with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
             await _sql(formula)
         assert "region_events" in str(ei.value)

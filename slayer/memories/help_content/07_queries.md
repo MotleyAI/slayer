@@ -9,7 +9,7 @@ The `query` tool takes one of:
 - a list of query objects (stages), the last one returned;
 - the name of a saved query-backed dataset, with `refine` merging extra dimensions,
   metrics, filters, order or limit into its final stage:
-  `query(query="monthly_revenue", refine={"dimensions": ["region"]})`.
+  `query(query="monthly_revenue", refine={"dimensions": ["orders.status"]})`.
 
 ## Stages
 
@@ -18,12 +18,14 @@ Every stage but the last carries a `name`; later stages name it as `population`
 same name inside its list. Define before you reference: a stage sees only what its
 source defines or an earlier stage returned.
 
-An outer stage sees the inner result's columns. Dotted paths flatten to `__`
-(`customers.regions.name` becomes `customers__regions__name`); metrics keep their names
-(`orders.total` is `total`). Select the columns the outer stage needs, display names
-included, in the inner stage. A stage keeps the relationships of the keys it outputs
-unchanged: grouped by `customer_id`, a later stage reads `customers.region` with no
-relationship declared.
+An outer stage reads the inner result's columns through the stage's name:
+`running.<column>`. A column is the inner key without the inner population, dotted
+paths flattened to `__` (in a stage over `orders`, `customers.regions.name` is
+`running.customers__regions__name` and `orders.status` is `running.status`); an alias is
+its own name. Select the columns the outer stage needs, display names included, in the
+inner stage. A stage keeps the relationships of the keys it outputs unchanged: grouped
+by `orders.customer_id`, a later stage reads `customers.region` with no relationship
+declared.
 
 ## Rows
 
@@ -53,8 +55,8 @@ the tool's `variables` argument, a stage's own `variables`, the outer query's
 `variables` (when a saved query-backed dataset is its `population`), or the saved
 dataset's defaults, in that order of precedence. A placeholder binds a literal value only:
 its text inside quotes (`'{s}'`), a number, numeric string or boolean in a bare slot, a
-list as the whole right-hand side of `IN` (`status in ({statuses})`) or as a list-function
-argument (`contains_all(tags, {wanted})`, the only place an empty list binds). A
+list as the whole right-hand side of `IN` (`items.status in ({statuses})`) or as a list-function
+argument (`contains_all(items.tags, {wanted})`, the only place an empty list binds). A
 placeholder where a name belongs is an error. A `date_range` bound takes the value's text
 unquoted (`"date_range": ["{start}", "{end}"]`).
 

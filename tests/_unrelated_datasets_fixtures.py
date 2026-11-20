@@ -189,13 +189,13 @@ async def wide_engine(backend: str) -> AsyncGenerator[SlayerQueryEngine]:
 
 def wide_metrics() -> list[dict[str, str]]:
     """Two aggregates per unrelated dataset, three cross-dataset expressions, and ``count(*)``."""
-    out = [m("count(*)", "n_customers")]
+    out = [m("count(customers.*)", "n_customers")]
     for name in WIDE_DATASETS:
         out += [m(f"sum({name}.v)", f"{name}_sum"), m(f"count({name}.id)", f"{name}_n")]
     out += [
         m("sum(big.v) + sum(small.v)", "big_plus_small"),
         m("count(big.id) + count(small.id) + count(empty.id)", "all_rows"),
-        m("count(small.id) / count(*)", "small_per_customer"),
+        m("count(small.id) / count(customers.*)", "small_per_customer"),
     ]
     return out
 
@@ -208,8 +208,8 @@ def m(expression: str, name: str) -> dict[str, str]:
     return {"metric": expression, "alias": name}
 
 
-RATIO = m("count(events.id) / count(*)", "events_per_customer")
-GROUPED = [m("count(*)", "n_customers"), m("count(events.id)", "n_events")]
+RATIO = m("count(events.id) / count(customers.*)", "events_per_customer")
+GROUPED = [m("count(customers.*)", "n_customers"), m("count(events.id)", "n_events")]
 
 
 def query(**fields: Any) -> SlayerQuery:
@@ -221,7 +221,7 @@ def ratio_query(**extra: Any) -> SlayerQuery:
 
 
 def grouped_query(**extra: Any) -> SlayerQuery:
-    return query(**{"dimensions": ["city"], "metrics": GROUPED, **extra})
+    return query(**{"dimensions": ["customers.city"], "metrics": GROUPED, **extra})
 
 
 def stages(*raw: dict[str, Any]) -> list[SlayerQuery]:

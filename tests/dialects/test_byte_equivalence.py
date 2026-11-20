@@ -41,8 +41,8 @@ async def _gen(dialect: str, query: SlayerQuery, dataset: SlayerDataset) -> str:
 
 _BASIC_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(revenue)")],
-    dimensions=[QueryDimension(field="status")],
+    metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(orders.revenue)")],
+    dimensions=[QueryDimension(field="orders.status")],
 )
 
 
@@ -147,8 +147,8 @@ async def test_byte_equivalence_basic_query(
 
 _TRUNC_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="sum(revenue)")],
-    time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+    metrics=[QueryMetric(metric="sum(orders.revenue)")],
+    time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
 )
 
 
@@ -242,8 +242,8 @@ async def test_byte_equivalence_date_trunc_month(
 
 _MEDIAN_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="median(revenue)")],
-    dimensions=[QueryDimension(field="status")],
+    metrics=[QueryMetric(metric="median(orders.revenue)")],
+    dimensions=[QueryDimension(field="orders.status")],
 )
 
 
@@ -325,8 +325,8 @@ def test_byte_equivalence_median_tsql_raises(orders_dataset: SlayerDataset) -> N
 
 _PCT_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="percentile(revenue, p=0.95)")],
-    dimensions=[QueryDimension(field="status")],
+    metrics=[QueryMetric(metric="percentile(orders.revenue, p=0.95)")],
+    dimensions=[QueryDimension(field="orders.status")],
 )
 
 
@@ -397,8 +397,8 @@ async def test_byte_equivalence_percentile(
 
 _CORR_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="corr(revenue, other=quantity)")],
-    dimensions=[QueryDimension(field="status")],
+    metrics=[QueryMetric(metric="corr(orders.revenue, other=orders.quantity)")],
+    dimensions=[QueryDimension(field="orders.status")],
 )
 
 
@@ -455,10 +455,10 @@ async def test_byte_equivalence_corr_tsql_decomposition(
 _TIME_SHIFT_QUERY = SlayerQuery(
     population="orders",
     metrics=[
-        QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="rev_prev"),
+        QueryMetric(metric="time_shift(sum(orders.revenue), -1, 'month')", alias="rev_prev"),
     ],
     time_dimensions=[
-        TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
+        TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH),
     ],
 )
 
@@ -505,10 +505,10 @@ async def test_byte_equivalence_time_shift_tsql(orders_dataset: SlayerDataset) -
 _CUMSUM_QUERY = SlayerQuery(
     population="orders",
     metrics=[
-        QueryMetric(metric="cumsum(sum(revenue))", alias="cum_rev"),
+        QueryMetric(metric="cumsum(sum(orders.revenue))", alias="cum_rev"),
     ],
     time_dimensions=[
-        TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
+        TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH),
     ],
 )
 
@@ -562,8 +562,8 @@ def orders_dataset_with_json() -> SlayerDataset:
 
 _JSON_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="count(*)")],
-    dimensions=[QueryDimension(field="json_data")],
+    metrics=[QueryMetric(metric="count(orders.*)")],
+    dimensions=[QueryDimension(field="orders.json_data")],
 )
 
 

@@ -39,12 +39,12 @@ from tests._dev1832_fixtures import (
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_X = "sum(amount, partition_by=[region, ordered_at])"
-_Y = "max(amount, partition_by=[region, ordered_at])"
-REAGG_STANDALONE = f"min({_X}, partition_by=region)"
-HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"
-REAGG_MAX_STANDALONE = f"max({_Y}, partition_by=region)"
-HANDWRITTEN_MAX = f"sum(amount * max({_Y}, partition_by=region))"
+_X = "sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+_Y = "max(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+REAGG_STANDALONE = f"min({_X}, partition_by=monthly.region)"
+HANDWRITTEN_MIN = f"sum(monthly.amount * min({_X}, partition_by=monthly.region))"
+REAGG_MAX_STANDALONE = f"max({_Y}, partition_by=monthly.region)"
+HANDWRITTEN_MAX = f"sum(monthly.amount * max({_Y}, partition_by=monthly.region))"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -111,10 +111,10 @@ class TestForwardReferenceValidator:
 class TestDualPhaseEmissionOrder:
     def _dual_q(self):
         return monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
-            time_dimensions=month_td())
+            time_dimensions=month_td("monthly"))
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_carrier_precedes_reaggregation_on_every_dialect(self, dialect) -> None:
@@ -132,12 +132,12 @@ class TestDualPhaseEmissionOrder:
         # four `_cm_` producers; EACH carrier is declared before its OWN consumer (two
         # distinct re-keyed edges, not one global position).
         sql = await gen(monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
                       QueryMetric(metric=REAGG_MAX_STANDALONE, alias="c"),
                       QueryMetric(metric=HANDWRITTEN_MAX, alias="d")],
-            time_dimensions=month_td()), dialect="duckdb")
+            time_dimensions=month_td("monthly")), dialect="duckdb")
         ctes = _cm_ctes_in_order(sql)
         assert len(ctes) == 4, ctes
 
@@ -154,11 +154,11 @@ class TestDualPhaseEmissionOrder:
         # non-root stage carries the dual-phase re-aggregation.
         _, engine = exec_backend
         query = monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
-                      QueryMetric(metric="cumsum(sum(amount))", alias="c")],
-            time_dimensions=month_td())
+                      QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
+            time_dimensions=month_td("monthly"))
         resp = await engine.execute(query)
         assert resp.data
         dry = await engine.execute(query, dry_run=True)

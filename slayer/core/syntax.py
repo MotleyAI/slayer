@@ -19,6 +19,7 @@ import unicodedata
 from decimal import Decimal
 from functools import lru_cache, partial
 from itertools import count
+from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import pyparsing as pp
@@ -399,6 +400,8 @@ class _State:
         self.calls: Dict[Tuple[int, int], CallSpan] = {}
         self.methods: Dict[Tuple[int, int], LegacySpan] = {}
         self.spans: Optional[List["_ColonSpan"]] = None
+        #: While ``reference_spans`` reads: each reference node by id, with its offsets.
+        self.refs: Optional[Dict[int, Tuple[Any, int, int]]] = None
 
     def reset(self, text: str) -> None:
         self.text, self.farthest, self.calls, self.methods = text, 0, {}, {}
@@ -595,15 +598,33 @@ class _Distinct:
         self.value = value
 
 
+def _spanned(build: Callable[[Any], Any]) -> Callable[[List[Any]], Any]:
+    """A ``pp.Located`` reference's action: ``build`` over its value, its offsets recorded for ``reference_spans``."""
+    def action(toks: List[Any]) -> Any:
+        node = build(toks[1])
+        if _STATE.refs is not None:
+            _STATE.refs[id(node)] = (node, toks[0], toks[2])
+        return node
+    return action
+
+
 _ARG_END = pp.FollowedBy(_sym(r"[,)]", "',' or ')'"))
-_STAR_ARG = _on((pp.Suppress(STAR) + _ARG_END), lambda _toks: StarSource())
-_PATH_STAR_ARG = _on((_PATH_STAR + _ARG_END), lambda toks: _star_path_node(toks[0][0]))
+_STAR_ARG = _on((pp.Located(pp.Suppress(STAR)) + _ARG_END), _spanned(lambda _value: StarSource()))
+_PATH_STAR_ARG = _on((pp.Located(_PATH_STAR) + _ARG_END), _spanned(lambda value: _star_path_node(value[0][0])))
 _SEQ_ITEMS = pp.Group(pp.Optional(pp.DelimitedList(expr, allow_trailing_delim=True)))
 _LIST_VALUE = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: tuple(toks[0]))
 _TUPLE_VALUE = _on((LPAR + pp.Group(expr + pp.OneOrMore(COMMA + expr) + pp.Optional(COMMA)) + RPAR), lambda toks: tuple(toks[0]))
 _DISTINCT_VALUE = _kw("distinct") + _fail(f"{_DISTINCT_ONLY}.")
 _KW_VALUE = _DISTINCT_VALUE | _LIST_VALUE | _TUPLE_VALUE | _STAR_ARG | _PATH_STAR_ARG | expr
-_KWARG = _on((_BARE + EQ + _KW_VALUE), lambda toks: NamedArg(name=toks[0].name, value=toks[1]))
+def _named_arg(toks: List[Any]) -> NamedArg:
+    """A ``name = value`` argument, the name's offsets recorded for ``reference_spans`` (a comparison reads it)."""
+    node = NamedArg(name=toks[1][0].name, value=toks[3])
+    if _STATE.refs is not None:
+        _STATE.refs[id(node)] = (node, toks[0], toks[2])
+    return node
+
+
+_KWARG = _on((pp.Located(_BARE) + EQ + _KW_VALUE), _named_arg)
 _PH_KWARG = (_PLACEHOLDER + EQ).set_parse_action(_reject_placeholder_kwarg)
 _VALUE_ARG = _STAR_ARG | _PATH_STAR_ARG | expr
 _DISTINCT_ARG = _on((pp.Suppress(_kw("distinct")) + _need(_VALUE_ARG, f"{_DISTINCT_ONLY}.")), lambda toks: _Distinct(value=toks[0]))
@@ -732,7 +753,7 @@ def _colon_node(toks: List[Any]) -> AggCall:
 
 
 _on(_COLON_AGG, _colon_node)
-_REF = _on(_PATH.copy(), lambda toks: _path_node(list(toks[0])))
+_REF = _on(pp.Located(_PATH.copy()), _spanned(lambda value: _path_node(list(value[0]))))
 
 # -- CASE ----------------------------------------------------------------------
 
@@ -1211,6 +1232,28 @@ def parse_expr(text: str) -> ParsedExpr:
     if reading.legacy:
         note_legacy_spellings(reading.legacy)
     return reading.parsed
+
+
+@lru_cache(maxsize=8192)
+def reference_spans(text: str) -> Tuple[ParsedExpr, Mapping[int, Tuple[int, int]]]:
+    """``text`` parsed, with the offsets of its reference nodes (``Ref``, ``DottedRef``, ``*``) keyed by node id.
+
+    Raises ``ValueError`` when ``text`` does not parse.
+    """
+    with _PARSE_LOCK:
+        _STATE.reset(text)
+        _STATE.refs = {}
+        try:
+            parsed = cast(ParsedExpr, _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)[0])
+            found = _STATE.refs
+        except _Problem as problem:
+            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
+        except pp.ParseBaseException as e:
+            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+        finally:
+            _STATE.refs = None
+    return parsed, MappingProxyType(
+        {key: (start, start + len(text[start:end].rstrip())) for key, (_node, start, end) in found.items()})
 
 
 def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
@@ -1877,6 +1920,51 @@ def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -
     if isinstance(node, BoolOp):
         return node.model_copy(update={"operands": tuple(_onto_path(o, path=path, memo=memo) for o in node.operands)})
     return node
+
+
+#: A transform argument that binds references; its others are scalars.
+_TRANSFORM_REFERENCE_ARGUMENTS = frozenset({"partition_by"})
+#: A keyword whose value is a word, never a reference.
+_WORD_ARGUMENTS = frozenset({"direction"})
+
+
+def _reference_children(node: Any) -> Iterator[Tuple[Any, Optional[str]]]:
+    """``(child, aggregation)`` of the reference-bearing children of ``node``; ``aggregation`` names a ``*``'s call."""
+    if isinstance(node, (tuple, list)):
+        yield from ((item, None) for item in node)
+    elif isinstance(node, TransformCall):
+        yield from _transform_children(node)
+    elif isinstance(node, NamedArg):
+        if node.name not in _WORD_ARGUMENTS:
+            yield node.value, None
+    elif isinstance(node, AggCall):
+        yield from _aggregation_children(node)
+    elif isinstance(node, _BaseNode):
+        yield from ((getattr(node, f), None) for f in type(node).model_fields if f != "written_args")
+
+
+def _transform_children(node: TransformCall) -> Iterator[Tuple[Any, Optional[str]]]:
+    yield node.input, None
+    named = [a.value for a in node.args if isinstance(a, NamedArg) and a.name in _TRANSFORM_REFERENCE_ARGUMENTS]
+    keywords = [value for name, value in node.kwargs if name in _TRANSFORM_REFERENCE_ARGUMENTS]
+    yield from ((value, None) for value in (*named, *keywords))
+
+
+def _aggregation_children(node: AggCall) -> Iterator[Tuple[Any, Optional[str]]]:
+    yield node.source, node.agg
+    yield node.args, None
+    yield from ((value, None) for name, value in node.kwargs if name not in _WORD_ARGUMENTS)
+    yield node.filter, None
+
+
+def walk_references(node: Any, aggregation: Optional[str] = None) -> Iterator[Tuple[Any, Optional[str]]]:
+    """``(reference, aggregation)`` of every reference (``Ref``, ``DottedRef``, ``*``) in a reference position of
+    ``node``; ``aggregation`` names a ``*``'s aggregation."""
+    if isinstance(node, (Ref, DottedRef, StarSource)):
+        yield node, aggregation
+        return
+    for child, agg in _reference_children(node):
+        yield from walk_references(child, agg)
 
 
 def map_refs(node: Any, fn: Callable[[Ref | DottedRef], Any]) -> Any:

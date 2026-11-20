@@ -287,29 +287,29 @@ def matrix_cases() -> list[DateCase]:
     for part in PARTS:
         for col in ("d1", "t1"):
             cases.append(_case(
-                f"part|{part}|{col}", f"date_part('{part}', {col})",
+                f"part|{part}|{col}", f"date_part('{part}', dt.{col})",
                 lambda r, p=part, c=col: oracle_part(p, r[c]),
             ))
     for unit in UNITS:
         for s, e in (("d1", "d2"), ("t1", "t2"), ("d1", "t2"), ("t1", "d2")):
             cases.append(_case(
-                f"diff|{unit}|{s}-{e}", f"date_diff('{unit}', {s}, {e})",
+                f"diff|{unit}|{s}-{e}", f"date_diff('{unit}', dt.{s}, dt.{e})",
                 lambda r, u=unit, a=s, b=e: oracle_diff(u, r[a], r[b]),
             ))
     for unit in UNITS:
         for col in ("d1", "t1"):
-            for label, count in (("plus1", "1"), ("minus13", "-13"), ("computed", "n")):
+            for label, count in (("plus1", "1"), ("minus13", "-13"), ("computed", "dt.n")):
                 cases.append(_case(
-                    f"add|{unit}|{col}|{label}", f"date_add({col}, {count}, '{unit}')",
+                    f"add|{unit}|{col}|{label}", f"date_add(dt.{col}, {count}, '{unit}')",
                     lambda r, u=unit, c=col, k=count: oracle_add(
-                        r[c], r["n"] if k == "n" else int(k), u),
+                        r[c], r["n"] if k == "dt.n" else int(k), u),
                 ))
     cases += [
-        _case("interval|plus|d1", "d1 + interval(1, 'month')", lambda r: oracle_add(r["d1"], 1, "month")),
-        _case("interval|commuted|d1", "interval(2, 'week') + d1", lambda r: oracle_add(r["d1"], 2, "week")),
-        _case("interval|minus_computed|t1", "t1 - interval(n, 'hour')",
+        _case("interval|plus|d1", "dt.d1 + interval(1, 'month')", lambda r: oracle_add(r["d1"], 1, "month")),
+        _case("interval|commuted|d1", "interval(2, 'week') + dt.d1", lambda r: oracle_add(r["d1"], 2, "week")),
+        _case("interval|minus_computed|t1", "dt.t1 - interval(dt.n, 'hour')",
               lambda r: oracle_add(r["t1"], None if r["n"] is None else -r["n"], "hour")),
-        _case("interval|chain|t1", "t1 + interval(1, 'month') + interval(2, 'hour')",
+        _case("interval|chain|t1", "dt.t1 + interval(1, 'month') + interval(2, 'hour')",
               lambda r: oracle_add(oracle_add(r["t1"], 1, "month"), 2, "hour")),
     ]
     return cases
@@ -318,7 +318,7 @@ def matrix_cases() -> list[DateCase]:
 def matrix_query(case: DateCase) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "dt",
-        "dimensions": ["id", {"field": case.expr, "alias": "v"}],
+        "dimensions": ["dt.id", {"field": case.expr, "alias": "v"}],
     })
 
 
@@ -345,7 +345,7 @@ def assert_value(actual: Any, expected: Any, *, where: str) -> None:
 
 
 def assert_case(data: list[dict[str, Any]], case: DateCase, *, dataset: str = "dt") -> None:
-    got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in data}
+    got = {int(r[f"{dataset}.id"]): r["v"] for r in data}
     assert set(got) == set(case.expected), f"{case.case_id}: row ids {sorted(got)}"
     for rid, expected in case.expected.items():
         assert_value(got[rid], expected, where=f"{case.case_id} id={rid}")
@@ -467,13 +467,13 @@ async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
     """Spec scenarios whose values need a real backend (clock, relationships, literals)."""
     async def by_id(expr: str, model: str = "orders") -> dict[int, Any]:
         resp = await engine.execute(SlayerQuery.model_validate(
-            {"population": model, "dimensions": ["id", {"field": expr, "alias": "v"}]}))
-        return {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+            {"population": model, "dimensions": [f"{model}.id", {"field": expr, "alias": "v"}]}))
+        return {int(r[f"{model}.id"]): r["v"] for r in resp.data}
 
     async def count(filt: str, model: str = "orders") -> int:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": model, "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": [filt]}))
-        return int(resp.data[0][f"{model}.n"])
+            "population": model, "metrics": [{"metric": f"count({model}.*)", "alias": "n"}], "filter": [filt]}))
+        return int(resp.data[0]["n"])
 
     assert await count("created_at >= date_add(current_date(), -30, 'day')", model="recent") == 1
     assert await count("created_at <= now()") == 5

@@ -185,7 +185,7 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
 # sit on the statement and pagination is TOP / OFFSET … FETCH.
 
-_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "orders.created_at", "direction": "desc"}]
 _FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 
@@ -200,8 +200,8 @@ async def _tsql(query) -> str:
 
 def _plain_hidden_order(**kw) -> SlayerQuery:
     """A no-transform query whose hidden ORDER BY slot forces the outer trim wrap."""
-    return q(dimensions=["status"], metrics=["sum(amount)"],
-             order=[{"field": "max(amount)", "direction": "desc"}], **kw)
+    return q(dimensions=["orders.status"], metrics=["sum(orders.amount)"],
+             order=[{"field": "max(orders.amount)", "direction": "desc"}], **kw)
 
 
 async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
@@ -211,7 +211,7 @@ async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
     assert cte_names(top)[:2] == ["base", "step1"], sql
     assert from_name(outer_derived(top)) == cte_names(top)[-1], sql
     assert [e.sql(dialect="tsql") for e in top.expressions] == [
-        "[orders___created_at]", "[orders___running]",
+        "[orders___created_at]", "[running]",
     ]
 
 
@@ -224,7 +224,7 @@ async def test_tsql_outer_wrap_without_ctes_has_no_top_level_with() -> None:
 
 async def test_tsql_outer_wrap_uses_brackets_for_aliases() -> None:
     sql = await _tsql(cumsum_chain(order=_DESC_CREATED))
-    assert "[orders___running]" in sql
+    assert "[running]" in sql
     assert '"orders.' not in sql
     assert "`orders" not in sql
 
@@ -254,7 +254,7 @@ async def test_tsql_chain_with_order_and_offset() -> None:
 
 async def test_tsql_hidden_alias_in_order_by() -> None:
     """ORDER BY may name a carried alias that is not in the public projection."""
-    sql = await _tsql(cumsum_chain(order=[{"field": "max(amount)", "direction": "desc"}]))
+    sql = await _tsql(cumsum_chain(order=[{"field": "max(orders.amount)", "direction": "desc"}]))
     top = parse(sql, "tsql")
     assert [c.name for c in top.args["order"].find_all(exp.Column)] == ["orders___amount_max"]
     assert "orders___amount_max" in outer_derived(top).named_selects
@@ -263,8 +263,8 @@ async def test_tsql_hidden_alias_in_order_by() -> None:
 
 async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
     sql = await _tsql(cumsum_chain(metrics=[
-        {"metric": "cumsum(sum(amount))", "alias": "running"},
-        {"metric": "change(cumsum(sum(amount)))", "alias": "d"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "running"},
+        {"metric": "change(cumsum(sum(orders.amount)))", "alias": "d"},
     ]))
     names = cte_names(assert_single_top_level_with(sql, "tsql"))
     assert names[0] == "base", names
@@ -431,8 +431,8 @@ class TestEngineTsqlDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": [QueryDimension(field="status")],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": [QueryDimension(field="orders.status")],
             })
             resp = await engine.execute(query)
             assert resp.data == [{"orders._count": 42, "orders.status": "paid"}]
@@ -444,8 +444,8 @@ class TestEngineTsqlDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": [QueryDimension(field="status")],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": [QueryDimension(field="orders.status")],
             })
             resp = await engine.execute(query)
             assert resp.data == []
@@ -486,7 +486,7 @@ async def test_tsql_attributes_survive_alias_mangling() -> None:
     """Mangled expected_columns are decoded so dimension labels survive."""
     engine, tmp, _ = await _build_labeled_tsql_engine([{"orders___status": "paid"}])
     try:
-        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])
+        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.status")])
         resp = await engine.execute(query)
         assert "orders.status" in resp.attributes.dimensions, (
             f"T-SQL attributes lost the dimension after mangling: "
@@ -502,7 +502,7 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
     explain_rows = [{"plan": "..."}]
     engine, tmp, _ = await _build_labeled_tsql_engine(explain_rows)
     try:
-        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])
+        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.status")])
         with patch.object(
             TsqlDialect, "decode_result_keys", autospec=True,
             side_effect=lambda self, rows, **kw: rows,
@@ -549,15 +549,15 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     q = SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-03-01", "2024-03-31"],
         )],
         metrics=[
-            QueryMetric(metric="sum(total)"),
-            QueryMetric(metric="change_pct(sum(total))", alias="pct"),
+            QueryMetric(metric="sum(orders.total)"),
+            QueryMetric(metric="change_pct(sum(orders.total))", alias="pct"),
         ],
-        order=[OrderItem(field="created_at", direction="asc")],
+        order=[OrderItem(field="orders.created_at", direction="asc")],
     )
     sql = await _tsql_generate(q, _orders_dataset_tsql())
     # No ANSI-quoted identifiers — they'd bypass Bug 2 mangling and the
@@ -575,14 +575,14 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     # pipeline names the shifted CTE ``shifted__time_shift_inner``; the
     # legacy stack spelled it ``shifted__ts_pct``. Same CTE, same assertion.)
     lookup = "DATEADD(MONTH, -1, base.[orders___created_at])"
-    assert f"{lookup} = shifted__time_shift_inner.[orders___created_at]" in sql, (
+    assert f"{lookup} = shifted__time_shift_inner.[created_at]" in sql, (
         f"Self-join ON clause must use mangled bracketed identifiers:\n{sql}"
     )
     assert f"{lookup} IS NULL" in sql, sql
     # Outer ORDER BY references the mangled alias.
     assert "[orders___created_at]" in sql
     # Computed expression's column references in step2 use mangled brackets.
-    assert "[orders____time_shift_inner]" in sql, (
+    assert "[_time_shift_inner]" in sql, (
         f"Inner computed expression's column refs must be mangled-bracket "
         f"form:\n{sql}"
     )
@@ -592,8 +592,8 @@ async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() 
     """ORDER BY references the SELECT alias at top level, not inside a CASE."""
     q = SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="id"), QueryDimension(field="created_at")],
-        order=[OrderItem(field="id", direction="asc")],
+        dimensions=[QueryDimension(field="orders.id"), QueryDimension(field="orders.created_at")],
+        order=[OrderItem(field="orders.id", direction="asc")],
     )
     sql = await _tsql_generate(q, _orders_dataset_tsql())
     assert "CASE WHEN" not in sql.upper() or "ORDER BY\n  CASE WHEN" not in sql, (

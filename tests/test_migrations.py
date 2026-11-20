@@ -822,7 +822,7 @@ async def _build_engine_with_orders(tmpdir: str):
 async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
         result = await engine.execute(query=q, dry_run=True)
         assert result.data == []
         assert "COUNT(*)" in result.sql
@@ -832,7 +832,7 @@ async def test_engine_dry_run_kwarg_dict_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
-            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
             dry_run=True,
         )
         assert result.data == []
@@ -845,7 +845,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
             query=[
-                {"population": "orders", "metrics": [{"metric": "count(*)"}]},
+                {"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
             ],
             dry_run=True,
         )

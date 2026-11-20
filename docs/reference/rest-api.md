@@ -34,8 +34,8 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "population": "orders",
-    "metrics": ["count(*)"],
-    "dimensions": ["status"],
+    "metrics": ["count(orders.*)"],
+    "dimensions": ["orders.status"],
     "limit": 10
   }'
 ```
@@ -115,8 +115,8 @@ curl -X POST http://localhost:5143/datasets \
     "data_source": "mydb",
     "source_queries": [{
       "population": "orders",
-      "metrics": ["sum(order_total)"],
-      "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
+      "metrics": ["sum(orders.order_total)"],
+      "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}]
     }],
     "query_variables": {"region": "US"}
   }'

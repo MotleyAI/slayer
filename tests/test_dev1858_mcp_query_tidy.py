@@ -85,8 +85,8 @@ async def orders_server(tmp_path):
         name="qb_by_status", data_source="ds",
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })],
     ))
     return create_mcp_server(storage=storage)
@@ -157,8 +157,8 @@ class TestQueryDispatch:
             orders_server,
             query={
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": ["orders.status"],
             },
             format="json",
         )
@@ -173,12 +173,12 @@ class TestQueryDispatch:
                 {
                     "name": "monthly",
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                     "time_dimensions": [
-                        {"field": "created_at", "granularity": "month"},
+                        {"field": "orders.created_at", "granularity": "month"},
                     ],
                 },
-                {"population": "monthly", "metrics": [{"metric": "count(*)"}]},
+                {"population": "monthly", "metrics": [{"metric": "count(monthly.*)"}]},
             ],
             dry_run=True,
         )
@@ -216,9 +216,9 @@ class TestQueryDispatch:
             orders_server,
             query={
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "count(*)"}],
-                "order": [{"field": "count(*)", "direction": "desc"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "order": [{"field": "count(orders.*)", "direction": "desc"}],
                 "limit": 1,
             },
             format="json",
@@ -242,7 +242,7 @@ class TestInQueryControlFields:
             orders_server,
             query={
                 "population": "orders",
-                "dimensions": ["status"],
+                "dimensions": ["orders.status"],
                 "distinct_dimension_values": False,
             },
             format="json",
@@ -266,9 +266,9 @@ async def broadcast_server(tmp_path):
 
 _BROADCAST_QUERY = {
     "population": "orders",
-    "dimensions": ["status"],
+    "dimensions": ["orders.status"],
     "metrics": [
-        {"metric": "sum(amount)", "alias": "m"},
+        {"metric": "sum(orders.amount)", "alias": "m"},
         {"metric": "sum(customers.spend)", "alias": "cm"},
     ],
 }
@@ -310,8 +310,8 @@ class TestExecutionWrappers:
             orders_server,
             query={
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "filter": ["status == '{s}'"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "filter": ["orders.status == '{s}'"],
                 "variables": {"s": "pending"},
             },
             variables={"s": "completed"},
@@ -326,8 +326,8 @@ class TestExecutionWrappers:
             orders_server,
             query={
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "count(*)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "count(orders.*)"}],
             },
             dry_run=True,
         )
@@ -340,7 +340,7 @@ class TestExecutionWrappers:
     async def test_explain_returns_sql_and_plan(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
             explain=True,
         )
         assert "SQL:" in out
@@ -349,7 +349,7 @@ class TestExecutionWrappers:
     async def test_show_sql_prefixes_results(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
             show_sql=True,
         )
         assert out.startswith("SQL:")
@@ -361,7 +361,7 @@ class TestExecutionWrappers:
         with pytest.raises(ToolError) as ei:
             await _call(
                 orders_server,
-                query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
+                query={"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
                 format="xml",
             )
         message = str(ei.value)
@@ -374,8 +374,8 @@ class TestExecutionWrappers:
             orders_server,
             query={
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "count(*)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "count(orders.*)"}],
             },
             format="JSON",
         )
@@ -409,31 +409,31 @@ class TestRunByNameRefine:
         assert "refine" in (tools["query"].description or "")
 
     async def test_refined_run(self, refine_server) -> None:
-        out = await _call(refine_server, query="monthly_revenue", refine={"dimensions": ["region"]}, format="json")
-        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in _rows(out)} == (
+        out = await _call(refine_server, query="monthly_revenue", refine={"dimensions": ["orders.region"]}, format="json")
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["revenue"] for r in _rows(out)} == (
             BY_REGION_MONTH
         )
 
     async def test_refine_with_variables(self, refine_server) -> None:
         out = await _call(
-            refine_server, query="revenue_by_status", refine={"metrics": ["count(*)"]},
+            refine_server, query="revenue_by_status", refine={"metrics": ["count(orders.*)"]},
             variables={"status": "refunded"}, format="json",
         )
-        assert _rows(out) == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+        assert _rows(out) == [{"orders.region": "US", "revenue": 40.0, "orders._count": 1}]
 
     @pytest.mark.parametrize("query", [
-        {"population": "orders", "metrics": ["count(*)"]},
-        [{"name": "a", "population": "orders", "dimensions": ["region"]}, {"population": "a", "dimensions": ["region"]}],
+        {"population": "orders", "metrics": ["count(orders.*)"]},
+        [{"name": "a", "population": "orders", "dimensions": ["orders.region"]}, {"population": "a", "dimensions": ["orders.region"]}],
     ], ids=["object", "list"])
     async def test_refine_with_non_name_errors(self, refine_server, query: Any) -> None:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
-            await _call(refine_server, query=query, refine={"dimensions": ["region"]})
+            await _call(refine_server, query=query, refine={"dimensions": ["orders.region"]})
 
     async def test_empty_refine_with_non_name_errors(self, refine_server) -> None:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
-            await _call(refine_server, query={"population": "orders", "metrics": ["count(*)"]}, refine={})
+            await _call(refine_server, query={"population": "orders", "metrics": ["count(orders.*)"]}, refine={})
 
     async def test_conflict_surfaces_as_error(self, refine_server) -> None:
         with pytest.raises(ToolError, match="revenue"):
             await _call(refine_server, query="monthly_revenue",
-                        refine={"metrics": [{"metric": "count(*)", "alias": "revenue"}]})
+                        refine={"metrics": [{"metric": "count(orders.*)", "alias": "revenue"}]})

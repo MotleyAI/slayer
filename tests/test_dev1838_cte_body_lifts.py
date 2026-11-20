@@ -46,7 +46,7 @@ from tests._dev1838_fixtures import (
 )
 from tests.test_dev1837_guards import ARM_COMBINED_CTE_BODY, ARM_ROW_CTE_BODY
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 #: The generator's re-rooted first/last CTE-body residual (generator.py) —
 #: the third guard the lift removes.
@@ -81,13 +81,13 @@ class TestNestedAttachInsideProducer:
 
     async def test_row_attach_inside_filtered_local_subplan(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=["status", BAND],
-                  metrics=[M, QueryMetric(metric="sum(gold_amount)", alias="g")])
+        query = q(dimensions=["orders.status", BAND],
+                  metrics=[M, QueryMetric(metric="sum(orders.gold_amount)", alias="g")])
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.status", "orders.band")
+        by = rows_by(resp, "orders.status", "band")
         got = {
-            (s, int(b)): (float(r["orders.m"]),
-                          None if r["orders.g"] is None else float(r["orders.g"]))
+            (s, int(b)): (float(r["m"]),
+                          None if r["g"] is None else float(r["g"]))
             for (s, b), r in by.items()
         }
         assert set(got) == set(BAND_GOLD)
@@ -101,11 +101,11 @@ class TestNestedAttachInsideProducer:
 
     async def test_row_attach_inside_host_grain_wrap_subplan(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=["status", BAND], metrics=[M],
+        query = q(dimensions=["orders.status", BAND], metrics=[M],
                   order=[OrderItem(field="customers.tier",
                                    direction="asc")])
         resp = await engine.execute(query)
-        got = [(r["orders.status"], int(r["orders.band"]), float(r["orders.m"]))
+        got = [(r["orders.status"], int(r["band"]), float(r["m"]))
                for r in resp.data]
         assert got == BAND_TIER_ORDER
         _assert_one_flat_with(await _dry_sql(engine, query), dialect)
@@ -117,15 +117,15 @@ class TestNestedAttachInsideProducer:
         producer rides inside the filtered-local sub-plan's grain."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["status", {"field": "last(amount, partition_by=city)",
+            dimensions=["orders.status", {"field": "last(orders.amount, partition_by=orders.city)",
                                    "alias": "cl"}],
-            metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
+            metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.status", "orders.cl")
+        by = rows_by(resp, "orders.status", "cl")
         got = {
-            (s, float(cl)): (None if r["orders.g"] is None
-                             else float(r["orders.g"]))
+            (s, float(cl)): (None if r["g"] is None
+                             else float(r["g"]))
             for (s, cl), r in by.items()
         }
         assert set(got) == set(LASTDIM_GOLD)
@@ -143,14 +143,14 @@ class TestNestedAttachInsideProducer:
         the band row attach already hoists; the lift must not
         regress it."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status", BAND],
+        query = q(dimensions=["orders.status", BAND],
                   metrics=[QueryMetric(metric="last(customers.spend)",
                                          alias="sl")],
                   to_many_handling="broadcast")
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.status", "orders.band")
+        by = rows_by(resp, "orders.status", "band")
         for (s, b), r in by.items():
-            assert float(r["orders.sl"]) == pytest.approx(
+            assert float(r["sl"]) == pytest.approx(
                 SPEND_LAST_BAND[(s, int(b))]
             )
         assert broadcast_warnings(resp)
@@ -162,11 +162,11 @@ class TestNestedAttachInsideProducer:
         """Green pin — a hidden ranked order-only aggregate beside a
         filtered-local metric renders one flat WITH today."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"],
-                  metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
-                  order=[OrderItem.model_validate({"field": "last(amount)", "direction": "desc"})])
+        query = q(dimensions=["orders.status"],
+                  metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                  order=[OrderItem.model_validate({"field": "last(orders.amount)", "direction": "desc"})])
         resp = await engine.execute(query)
-        got = [(r["orders.status"], float(r["orders.g"])) for r in resp.data]
+        got = [(r["orders.status"], float(r["g"])) for r in resp.data]
         assert got == [("new", 20.0), ("ok", 10.0)]
         _assert_one_flat_with(await _dry_sql(engine, query), dialect)
 
@@ -177,8 +177,8 @@ class TestNonFinalStage:
 
     @staticmethod
     def _banded_stages(**stage2_kwargs) -> list:
-        stage1 = q(name="banded", dimensions=["region", BAND],
-                   metrics=[QueryMetric(metric="sum(amount)", alias="bt")])
+        stage1 = q(name="banded", dimensions=["orders.region", BAND],
+                   metrics=[QueryMetric(metric="sum(orders.amount)", alias="bt")])
         stage2 = SlayerQuery(population="banded",
                              extensions=[DatasetExtension(dataset="banded")],
                              **stage2_kwargs)
@@ -189,13 +189,13 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = self._banded_stages(
-            dimensions=["region"], filter=["band == 1"],
-            metrics=[QueryMetric(metric="sum(bt)", alias="total")],
+            dimensions=["banded.region"], filter=["banded.band == 1"],
+            metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         )
         resp = await engine.execute(stages)
         by = rows_by(resp, "banded.region")
         for region, expected in BAND1_BY_REGION.items():
-            assert float(by[(region,)]["banded.total"]) == pytest.approx(expected)
+            assert float(by[(region,)]["total"]) == pytest.approx(expected)
         sql = await _dry_sql(engine, stages)
         _assert_one_flat_with(sql, dialect)
         assert cte_aliases(sql, "_cm_", dialect=dialect), (
@@ -207,18 +207,18 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = [
-            q(name="s1", dimensions=["region"],
-              metrics=[QueryMetric(metric="sum(amount)", alias="m"),
-                        QueryMetric(metric="sum(amount, partition_by=[])",
+            q(name="s1", dimensions=["orders.region"],
+              metrics=[QueryMetric(metric="sum(orders.amount)", alias="m"),
+                        QueryMetric(metric="sum(orders.amount, partition_by=[])",
                                      alias="gt")]),
             SlayerQuery(population="s1", extensions=[DatasetExtension(dataset="s1")],
-                        dimensions=["region"],
-                        metrics=[QueryMetric(metric="sum(m)", alias="ms"),
-                                  QueryMetric(metric="max(gt)", alias="gts")]),
+                        dimensions=["s1.region"],
+                        metrics=[QueryMetric(metric="sum(s1.m)", alias="ms"),
+                                  QueryMetric(metric="max(s1.gt)", alias="gts")]),
         ]
         resp = await engine.execute(stages)
         by = rows_by(resp, "s1.region")
-        assert {k[0]: float(r["s1.gts"]) for k, r in by.items()} == {
+        assert {k[0]: float(r["gts"]) for k, r in by.items()} == {
             "North": 117.0, "South": 117.0, None: 117.0,
         }
         sql = await _dry_sql(engine, stages)
@@ -229,19 +229,19 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = [
-            q(name="s1", dimensions=["region", BAND],
+            q(name="s1", dimensions=["orders.region", BAND],
               time_dimensions=month_td(),
-              metrics=[QueryMetric(metric="sum(amount)", alias="m"),
-                        QueryMetric(metric="sum(amount, window='1y')",
+              metrics=[QueryMetric(metric="sum(orders.amount)", alias="m"),
+                        QueryMetric(metric="sum(orders.amount, window='1y')",
                                      alias="w")]),
             SlayerQuery(population="s1", extensions=[DatasetExtension(dataset="s1")],
-                        dimensions=["region"],
-                        metrics=[QueryMetric(metric="max(w)", alias="wm")]),
+                        dimensions=["s1.region"],
+                        metrics=[QueryMetric(metric="max(s1.w)", alias="wm")]),
         ]
         resp = await engine.execute(stages)
         by = rows_by(resp, "s1.region")
         for region, expected in BAND_WMAX_BY_REGION.items():
-            assert float(by[(region,)]["s1.wm"]) == pytest.approx(expected)
+            assert float(by[(region,)]["wm"]) == pytest.approx(expected)
         sql = await _dry_sql(engine, stages)
         _assert_one_flat_with(sql, dialect)
 
@@ -255,19 +255,19 @@ class TestNestingIsCardinalityNeutral:
         _, engine = exec_backend
 
         def stages(with_band: bool) -> list:
-            dims = ["region", BAND] if with_band else ["region"]
+            dims = ["orders.region", BAND] if with_band else ["orders.region"]
             return [
                 q(name="s1", dimensions=dims,
-                  metrics=[QueryMetric(metric="sum(amount)", alias="bt")]),
+                  metrics=[QueryMetric(metric="sum(orders.amount)", alias="bt")]),
                 SlayerQuery(population="s1", extensions=[DatasetExtension(dataset="s1")],
-                            dimensions=["region"],
-                            metrics=[QueryMetric(metric="sum(bt)", alias="t")]),
+                            dimensions=["s1.region"],
+                            metrics=[QueryMetric(metric="sum(s1.bt)", alias="t")]),
             ]
 
         with_attach = await engine.execute(stages(True))
         without = await engine.execute(stages(False))
         key = lambda resp: {  # noqa: E731
-            r["s1.region"]: float(r["s1.t"]) for r in resp.data
+            r["s1.region"]: float(r["t"]) for r in resp.data
         }
         assert key(with_attach) == key(without)
 

@@ -16,6 +16,7 @@ from slayer.core.enums import DataType, NUMERIC_DATATYPES
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, neighbors
 from slayer.core.models import DatasetField, RelationshipOrigin, SlayerDataset, field_type_text, is_identifier
+from slayer.core.names import qualified_reference
 from slayer.core.query import (
     SlayerQuery,
     extension_variable_refs,
@@ -64,7 +65,8 @@ _INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings", "saved_queries")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
 _NONE_PLACEHOLDER = "_(none)_"
-_COUNT_STAR = "count(*)"
+def _count_star(dataset: SlayerDataset) -> str:
+    return f"count({qualified_reference(dataset.name)}.*)"
 
 
 def _escape_md_cell(value: Any) -> str:
@@ -215,7 +217,7 @@ def _choose_sample_dims(
         # Also excludes opaque fields, which can't be GROUP BY'd.
         if c.datatype not in (DataType.STRING, DataType.BOOLEAN):
             continue
-        dims.append(c.name)
+        dims.append(qualified_reference(dataset.name, c.name))
         dim_names.add(c.name)
         if len(dims) >= 2:
             break
@@ -259,14 +261,14 @@ def _build_sample_query_args(
     metric_types = metric_types or {}
     dims, dim_names = _choose_sample_dims(dataset)
 
-    metrics: list[dict[str, str]] = [{"metric": _COUNT_STAR}]
+    metrics: list[dict[str, str]] = [{"metric": _count_star(dataset)}]
     for c in dataset.fields:
         if c.hidden or is_identifier(field=c, fields=dataset.fields) or c.name in dim_names:
             continue
         agg = _choose_sample_agg(c, metric_types=metric_types)
         if agg is None:
             continue
-        metrics.append({"metric": f"{agg}({c.name})"})
+        metrics.append({"metric": f"{agg}({qualified_reference(dataset.name, c.name)})"})
 
     return {
         "population": dataset.name,
@@ -302,7 +304,7 @@ async def _get_row_count(
     try:
         q = SlayerQuery.model_validate({
             "population": dataset.name,
-            "metrics": [{"metric": _COUNT_STAR}],
+            "metrics": [{"metric": _count_star(dataset)}],
         })
         r = await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception:
@@ -769,7 +771,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 if not _is_unsupported_grouping_error(exc):
                     raise
                 minimal_args = dict(query_args)
-                minimal_args["metrics"] = [{"metric": _COUNT_STAR}]
+                minimal_args["metrics"] = [{"metric": _count_star(dataset)}]
                 minimal_args["dimensions"] = []
                 sample_query = SlayerQuery.model_validate(minimal_args)
                 try:

@@ -106,37 +106,37 @@ async def engine() -> AsyncGenerator[SlayerQueryEngine]:
 # --------------------------------------------------------------------------- #
 class TestElementsAcrossAJoin:
     async def test_elements_per_assignment(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(body("assignments", m(COUNT_ELEMENTS), dimensions=["id"]))
+        resp = await engine.execute(body("assignments", m(COUNT_ELEMENTS), dimensions=["assignments.id"]))
         assert per_assignment(resp) == ELEMENTS
-        assert sorted(resp.columns) == ["assignments.id", "assignments.v"]
+        assert sorted(resp.columns) == ["assignments.id", "v"]
 
     async def test_elements_per_assignment_with_a_parent_dimension(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(body("assignments", m(COUNT_ELEMENTS), dimensions=["id", "contractors.team"]))
+        resp = await engine.execute(body("assignments", m(COUNT_ELEMENTS), dimensions=["assignments.id", "contractors.team"]))
         got = {(int(r[col(resp, "id")]), r[col(resp, "team")]): num(r[col(resp, "v")]) for r in resp.data}
         assert got == {(1, "A"): 3.0, (2, "A"): 3.0, (3, "A"): 1.0, (4, "B"): 0.0, (5, "B"): 1.0, (6, None): 0.0}
 
     async def test_saved_element_metrics(self, engine: SlayerQueryEngine) -> None:
         saved = await engine.execute(body("assignments", m("contractors.n_skills", "n"), m("contractors.n_go", "g"),
-                                          dimensions=["id"]))
+                                          dimensions=["assignments.id"]))
         inline = await engine.execute(body(
             "assignments", m(COUNT_ELEMENTS, "n"),
-            m("count(contractors.skills.*) FILTER (WHERE contractors.skills.value = 'go')", "g"), dimensions=["id"]))
+            m("count(contractors.skills.*) FILTER (WHERE contractors.skills.value = 'go')", "g"), dimensions=["assignments.id"]))
         assert per_assignment(saved, "n") == per_assignment(inline, "n") == ELEMENTS
         assert per_assignment(saved, "g") == per_assignment(inline, "g") == GO
 
     async def test_element_collect_per_assignment(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(body("assignments", m("collect(contractors.skills.value)"), dimensions=["id"]))
+        resp = await engine.execute(body("assignments", m("collect(contractors.skills.value)"), dimensions=["assignments.id"]))
         got = {int(r[col(resp, "id")]): list(r[col(resp, "v")]) for r in resp.data}
         assert got == {1: ["go", "sql"], 2: ["go", "sql"], 3: ["sql"], 4: [], 5: ["go"], 6: []}
 
     async def test_from_the_parents_population(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(body("contractors", m("count(skills.*)"), dimensions=["assignments.id"]))
+        resp = await engine.execute(body("contractors", m("count(contractors.skills.*)"), dimensions=["assignments.id"]))
         got = {None if k is None else int(k): v for k, v in cells(resp, "assignments.id").items()}
         assert got == {1: 3.0, 2: 3.0, 3: 1.0, 4: 0.0, 5: 1.0, None: 0.0}
 
     async def test_keyless_parent(self) -> None:
         async with list_engine(datasets=with_contractors(keyed=False)) as e:
-            resp = await e.execute(body("assignments", m(COUNT_ELEMENTS), dimensions=["id"]))
+            resp = await e.execute(body("assignments", m(COUNT_ELEMENTS), dimensions=["assignments.id"]))
         assert per_assignment(resp) == ELEMENTS
 
 
@@ -149,22 +149,22 @@ class TestIdenticalKeylessParents:
             relationships=[DatasetRelationship(to="twins", from_columns=["name"], to_columns=["name"])])
         extra = (*EXTRA, "CREATE TABLE twin_refs (id INTEGER, name VARCHAR)", "INSERT INTO twin_refs VALUES (1, 'X')")
         async with contractors_engine("duckdb", datasets=[*all_datasets(), refs], extra=extra) as e:
-            resp = await e.execute(body("twin_refs", m("count(twins.skills.*)"), dimensions=["id"]))
+            resp = await e.execute(body("twin_refs", m("count(twins.skills.*)"), dimensions=["twin_refs.id"]))
         assert per_assignment(resp) == {1: 2.0}
 
 
 class TestPositionsDoNotDependOnFilters:
     async def test_parent_model_filter(self) -> None:
         async with list_engine(datasets=with_contractors(filters=["team = 'A'"])) as e:
-            resp = await e.execute(body("assignments", m(COUNT_ELEMENTS), dimensions=["id"]))
+            resp = await e.execute(body("assignments", m(COUNT_ELEMENTS), dimensions=["assignments.id"]))
         assert per_assignment(resp) == {1: 3.0, 2: 3.0, 3: 1.0, 4: 0.0, 5: 0.0, 6: 0.0}
 
     async def test_two_filtered_element_aggregates_in_one_query(self, engine: SlayerQueryEngine) -> None:
         go = m("count(contractors.skills.*) FILTER (WHERE contractors.skills.value = 'go')", "g")
         sql = m("count(contractors.skills.*) FILTER (WHERE contractors.skills.value = 'sql')", "s")
-        both = await engine.execute(body("assignments", go, sql, dimensions=["id"]))
-        alone_go = await engine.execute(body("assignments", go, dimensions=["id"]))
-        alone_sql = await engine.execute(body("assignments", sql, dimensions=["id"]))
+        both = await engine.execute(body("assignments", go, sql, dimensions=["assignments.id"]))
+        alone_go = await engine.execute(body("assignments", go, dimensions=["assignments.id"]))
+        alone_sql = await engine.execute(body("assignments", sql, dimensions=["assignments.id"]))
         assert per_assignment(both, "g") == per_assignment(alone_go, "g") == GO
         assert per_assignment(both, "s") == per_assignment(alone_sql, "s") == SQL
 
@@ -172,7 +172,8 @@ class TestPositionsDoNotDependOnFilters:
 # --------------------------------------------------------------------------- #
 # The position renders on every native-list dialect
 # --------------------------------------------------------------------------- #
-ELEMENTS_PER_ASSIGNMENT = SlayerQuery.model_validate(body("assignments", m(COUNT_ELEMENTS, "n"), dimensions=["id"]))
+ELEMENTS_PER_ASSIGNMENT = SlayerQuery.model_validate(body("assignments", m(COUNT_ELEMENTS, "n"),
+                                                          dimensions=["assignments.id"]))
 #: The position marker each dialect's element expansion carries (ClickHouse: checked structurally).
 POSITION = {"postgres": "WITH ORDINALITY", "trino": "WITH ORDINALITY", "bigquery": "WITH OFFSET",
             "duckdb": r"ROW_NUMBER\(\) OVER \(\)", "snowflake": r"\.INDEX\b"}
@@ -222,9 +223,10 @@ async def test_clickhouse_builds_position_tuples_after_null_compaction(monkeypat
 
 @pytest.mark.parametrize("dialect", ["postgres", "trino", "bigquery", "duckdb", "snowflake"])
 @pytest.mark.parametrize("q", [
-    SlayerQuery.model_validate(body("contractors", m("count(skills.*)", "n"), dimensions=["skills.value"])),
-    SlayerQuery.model_validate({"population": "contractors", "metrics": [m("count(*)", "n")],
-                                "filter": ["skills.value = 'go'"]}),
+    SlayerQuery.model_validate(body("contractors", m("count(contractors.skills.*)", "n"),
+                                    dimensions=["contractors.skills.value"])),
+    SlayerQuery.model_validate({"population": "contractors", "metrics": [m("count(contractors.*)", "n")],
+                                "filter": ["contractors.skills.value = 'go'"]}),
 ], ids=["element-dimension", "element-filter"])
 async def test_no_position_unless_associating(dialect: str, q: SlayerQuery) -> None:
     sql = await emit_contractors(q, dialect=dialect, datasets=all_datasets())
@@ -276,36 +278,37 @@ async def outcome(engine: SlayerQueryEngine, request: dict[str, Any]) -> Outcome
 
 class TestHomeBelowTheRoot:
     async def test_root_column_and_list_element(self, engine: SlayerQueryEngine) -> None:
-        home = await outcome(engine, body("contractors", m("sum(rate * length(skills.value))")))
+        home = await outcome(engine, body("contractors", m("sum(contractors.rate * length(contractors.skills.value))")))
         other = await outcome(engine, body("assignments", m("sum(contractors.rate * length(contractors.skills.value))")))
         assert home == other == {(): 230.0}
 
     async def test_root_column_and_list_element_by_team(self, engine: SlayerQueryEngine) -> None:
-        home = await outcome(engine, body("contractors", m("sum(rate * length(skills.value))"), dimensions=["team"]))
+        home = await outcome(engine, body("contractors", m("sum(contractors.rate * length(contractors.skills.value))"),
+                                          dimensions=["contractors.team"]))
         other = await outcome(engine, body("assignments", m("sum(contractors.rate * length(contractors.skills.value))"),
                                            dimensions=["contractors.team"]))
         assert home == other == {("A",): 130.0, ("B",): 100.0}
 
     async def test_list_element_definition_default(self, engine: SlayerQueryEngine) -> None:
-        home = await outcome(engine, body("contractors", m("w(rate)")))
+        home = await outcome(engine, body("contractors", m("w(contractors.rate)")))
         other = await outcome(engine, body("assignments", m("w(contractors.rate)")))
         assert home == other == {(): 230.0}
 
     async def test_root_column_and_reverse_to_many_column(self, engine: SlayerQueryEngine) -> None:
-        home = await outcome(engine, body("contractors", m("sum(rate * assignments.id)")))
-        other = await outcome(engine, body("assignments", m("sum(contractors.rate * id)")))
+        home = await outcome(engine, body("contractors", m("sum(contractors.rate * assignments.id)")))
+        other = await outcome(engine, body("assignments", m("sum(contractors.rate * assignments.id)")))
         assert home == other == {(): 460.0}
 
     async def test_undetermined_inputs_refused_from_every_population(self, engine: SlayerQueryEngine) -> None:
-        home = await outcome(engine, body("contractors", m("sum(assignments.id * length(skills.value))")))
-        other = await outcome(engine, body("assignments", m("sum(id * length(contractors.skills.value))")))
+        home = await outcome(engine, body("contractors", m("sum(assignments.id * length(contractors.skills.value))")))
+        other = await outcome(engine, body("assignments", m("sum(assignments.id * length(contractors.skills.value))")))
         assert home == other == UnsafeRelationshipInputError
 
     @pytest.mark.parametrize("population", ["contractors", "assignments"])
     async def test_redundant_partition_with_a_home_changing_default(
         self, engine: SlayerQueryEngine, population: str,
     ) -> None:
-        q = "" if population == "contractors" else "contractors."
+        q = "contractors."
         dims = [f"{q}team"]
         plain = await outcome(engine, body(population, m(f"w({q}rate)"), dimensions=dims))
         redundant = await outcome(engine, body(population, m(f"w({q}rate, partition_by={q}team)"), dimensions=dims))
@@ -313,10 +316,12 @@ class TestHomeBelowTheRoot:
 
     async def test_redundant_partition_inside_an_enclosing_aggregate(self, engine: SlayerQueryEngine) -> None:
         # The stripped root's enclosing aggregate is rebuilt too, and keeps its home.
-        inner = "sum(rate * max(rate, partition_by=team){})"
-        plain = await outcome(engine, body("contractors", m(f"sum(rate * {inner.format('')})"), dimensions=["team"]))
+        inner = "sum(contractors.rate * max(contractors.rate, partition_by=contractors.team){})"
+        plain = await outcome(engine, body("contractors", m(f"sum(contractors.rate * {inner.format('')})"),
+                                           dimensions=["contractors.team"]))
         redundant = await outcome(engine, body(
-            "contractors", m(f"sum(rate * {inner.format(', partition_by=team')})"), dimensions=["team"]))
+            "contractors", m(f"sum(contractors.rate * {inner.format(', partition_by=contractors.team')})"),
+            dimensions=["contractors.team"]))
         assert isinstance(plain, dict), plain
         assert redundant == plain
 
@@ -355,7 +360,7 @@ async def test_a_to_one_input_keeps_the_aggregation_on_its_anchor() -> None:
                 DatasetField(name="weight", datatype=DataType.FLOAT)],
     )
     async with seeded_exec_engine(dialect="sqlite", seed=_seed_one_to_one, datasets=[orders, customers]) as (e, _):
-        resp = await e.execute(body("orders", m("scaled(price, scale='customers.weight')")))
+        resp = await e.execute(body("orders", m("scaled(orders.price, scale='customers.weight')")))
     assert [num(r[col(resp, "v")]) for r in resp.data] == [15.0]
 
 
@@ -366,23 +371,25 @@ def _band(q: str, alias: str = "band", threshold: int = 50) -> dict[str, str]:
 
 
 def _band_query(population: str, expression: str, *, two: bool = False) -> SlayerQuery:
-    q = "" if population == "contractors" else "contractors."
+    q = "contractors."
     dims = [f"{q}team", _band(q), *([_band(q, "band2", 90)] if two else [])]
     return SlayerQuery.model_validate(body(population, m(expression), dimensions=dims))  # pyright: ignore[reportArgumentType]
 
 
 async def test_home_survives_a_reaggregation_partition_key() -> None:
     # The target-rooted aggregate rebuilt around the re-aggregation placeholder keeps its home.
-    sql = await emit_contractors(_band_query("contractors", "sum(rate * length(skills.value), partition_by=band)"),
+    sql = await emit_contractors(_band_query("contractors",
+                                             "sum(contractors.rate * length(contractors.skills.value), partition_by=band)"),
                                  dialect="duckdb", datasets=all_datasets())
     assert sql.lstrip().upper().startswith("WITH"), sql
 
 
 #: (from ``contractors``, from ``assignments``) — both homed on the list child or on ``assignments``.
 BAND_SHAPES = {
-    "list-element": ("sum(rate * length(skills.value))", "sum(contractors.rate * length(contractors.skills.value))"),
-    "reverse-to-many": ("sum(rate * assignments.id)", "sum(contractors.rate * id)"),
-    "list-element-partitioned": ("sum(rate * length(skills.value), partition_by=band)",
+    "list-element": ("sum(contractors.rate * length(contractors.skills.value))",
+                     "sum(contractors.rate * length(contractors.skills.value))"),
+    "reverse-to-many": ("sum(contractors.rate * assignments.id)", "sum(contractors.rate * assignments.id)"),
+    "list-element-partitioned": ("sum(contractors.rate * length(contractors.skills.value), partition_by=band)",
                                  "sum(contractors.rate * length(contractors.skills.value), partition_by=band)"),
 }
 
@@ -406,7 +413,7 @@ async def test_a_reaggregation_dimension_is_independent_of_the_root(engine: Slay
 @pytest.mark.xfail(strict=True, raises=ProgrammingError,
                    reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
 @pytest.mark.parametrize(("population", "expression"), [
-    ("contractors", "sum(rate * length(skills.value), partition_by=[band, band2])"),
+    ("contractors", "sum(contractors.rate * length(contractors.skills.value), partition_by=[band, band2])"),
     ("assignments", "sum(contractors.rate * length(contractors.skills.value), partition_by=[band, band2])"),
 ])
 async def test_two_reaggregation_dimensions_in_one_partition(
@@ -416,32 +423,28 @@ async def test_two_reaggregation_dimensions_in_one_partition(
     assert (await engine.execute(_band_query(population, expression, two=True))).data
 
 
-#: kind → (expression and dimensions written from ``contractors``, the outcome from both populations: cells
-#: rooted on ``assignments``, or the refusal's class). No time axis: first / last / windowed refuse.
+_RATE_X_ELEMENTS = "contractors.rate * length(contractors.skills.value)"
+#: kind → (expression and dimensions, the outcome from both populations: cells rooted on ``assignments``, or the
+#: refusal's class). No time axis: first / last / windowed refuse.
 PRODUCER_KINDS: dict[str, tuple[str, list[str], Outcome]] = {
-    "filter": ("sum(rate * length(skills.value)) FILTER (WHERE skills.value = 'go')", [], {(): 140.0}),
-    "ranked": ("rank(sum(rate * length(skills.value)), direction='desc')", ["team"], {("A",): 1.0, ("B",): 2.0}),
-    "first": ("first(rate * length(skills.value))", [], ValueError),
-    "last": ("last(rate * length(skills.value))", [], ValueError),
-    "windowed": ("sum(rate * length(skills.value), window='1y')", [], TimeAxisError),
-    "attached-constituent": ("sum(rate * length(skills.value) * max(rate, partition_by=team))", ["team"],
-                             {("A",): 2600.0, ("B",): 5000.0}),
-    "explicit-partition": ("sum(rate * length(skills.value), partition_by=team)", ["team", "name"],
+    "filter": (f"sum({_RATE_X_ELEMENTS}) FILTER (WHERE contractors.skills.value = 'go')", [], {(): 140.0}),
+    "ranked": (f"rank(sum({_RATE_X_ELEMENTS}), direction='desc')", ["contractors.team"], {("A",): 1.0, ("B",): 2.0}),
+    "first": (f"first({_RATE_X_ELEMENTS})", [], ValueError),
+    "last": (f"last({_RATE_X_ELEMENTS})", [], ValueError),
+    "windowed": (f"sum({_RATE_X_ELEMENTS}, window='1y')", [], TimeAxisError),
+    "attached-constituent": (f"sum({_RATE_X_ELEMENTS} * max(contractors.rate, partition_by=contractors.team))",
+                             ["contractors.team"], {("A",): 2600.0, ("B",): 5000.0}),
+    "explicit-partition": (f"sum({_RATE_X_ELEMENTS}, partition_by=contractors.team)",
+                           ["contractors.team", "contractors.name"],
                            {("A", "Ann"): 130.0, ("A", "Bob"): 130.0, ("B", "Cid"): 100.0, ("B", "Eve"): 100.0}),
 }
-
-
-def _from_assignments(text: str) -> str:
-    """``text`` respelled from ``assignments``: every ``contractors`` reference prefixed with ``contractors.``."""
-    return re.sub(r"\b(rate|skills\.value|team|name)\b", r"contractors.\1", text)
 
 
 @pytest.mark.parametrize("kind", sorted(PRODUCER_KINDS))
 async def test_every_producer_kind_is_independent_of_the_root(engine: SlayerQueryEngine, kind: str) -> None:
     expression, dims, expected = PRODUCER_KINDS[kind]
     home = await outcome(engine, body("contractors", m(expression), dimensions=dims))
-    other = await outcome(engine, body("assignments", m(_from_assignments(expression)),
-                                       dimensions=[_from_assignments(d) for d in dims]))
+    other = await outcome(engine, body("assignments", m(expression), dimensions=dims))
     if isinstance(expected, type):
         assert home == other == expected
         return
@@ -469,21 +472,21 @@ def _home(population: str, expression: str, *, dimensions: Optional[list[str]] =
 
 class TestHomeClassification:
     @pytest.mark.parametrize(("population", "expression", "kind", "path"), [
-        ("contractors", "sum(rate)", "host", ()),
-        ("contractors", "sum(rate * length(skills.value))", "physical_target", ("skills",)),
+        ("contractors", "sum(contractors.rate)", "host", ()),
+        ("contractors", "sum(contractors.rate * length(contractors.skills.value))", "physical_target", ("skills",)),
         ("assignments", "sum(contractors.rate * length(contractors.skills.value))", "physical_target",
          ("contractors", "skills")),
-        ("contractors", "w(rate)", "physical_target", ("skills",)),
+        ("contractors", "w(contractors.rate)", "physical_target", ("skills",)),
         ("assignments", "w(contractors.rate)", "physical_target", ("contractors", "skills")),
-        ("contractors", "sum(rate * assignments.id)", "physical_target", ("assignments",)),
-        ("assignments", "sum(contractors.rate * id)", "host", ()),
-        ("contractors", "sum(assignments.id * length(skills.value))", "unresolved", ()),
+        ("contractors", "sum(contractors.rate * assignments.id)", "physical_target", ("assignments",)),
+        ("assignments", "sum(contractors.rate * assignments.id)", "host", ()),
+        ("contractors", "sum(assignments.id * length(contractors.skills.value))", "unresolved", ()),
     ])
     def test_kind_and_path(self, population: str, expression: str, kind: str, path: tuple[str, ...]) -> None:
         assert _home(population, expression) == AggregateHome(kind=kind, path=path)  # pyright: ignore[reportArgumentType]
 
     def test_second_order_homes_on_its_operand(self) -> None:
-        assert _home("contractors", "max(sum(rate, partition_by=team))").kind == "operand_dataset"
+        assert _home("contractors", "max(sum(contractors.rate, partition_by=contractors.team))").kind == "operand_dataset"
 
     def test_hostless_aggregate_is_unresolved_at_its_anchor(self) -> None:
         agg = AggregateKey(source=FieldKey(path=("skills",), leaf="value"), agg="count")

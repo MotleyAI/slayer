@@ -1,4 +1,4 @@
-version: 26
+version: 28
 name: products
 sql_table: products
 source_kind: table
@@ -6,7 +6,7 @@ query_variables: {}
 data_source: jaffle_shop
 fields:
 - name: sku
-  sql: sku
+  expression: sku
   datatype: String
   primary_key: true
   unique: false
@@ -14,7 +14,7 @@ fields:
   label: SKU
   hidden: false
 - name: name
-  sql: name
+  expression: name
   datatype: String
   primary_key: false
   unique: false
@@ -22,7 +22,7 @@ fields:
   label: Product
   hidden: false
 - name: type
-  sql: type
+  expression: type
   datatype: String
   primary_key: false
   unique: false
@@ -30,7 +30,7 @@ fields:
   label: Category
   hidden: false
 - name: price
-  sql: price
+  expression: price
   datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
@@ -43,7 +43,7 @@ fields:
     precision: 2
     symbol: $
 - name: description
-  sql: description
+  expression: description
   datatype: String
   primary_key: false
   unique: false
@@ -51,7 +51,7 @@ fields:
   label: Description
   hidden: false
 - name: ingredients
-  sql: ingredients
+  expression: ingredients
   datatype: Array
   element_type: String
   db_type: VARCHAR[]

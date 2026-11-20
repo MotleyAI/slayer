@@ -27,7 +27,7 @@ ORDERS_EXT = {"dataset": "orders", "metrics": [{"name": "double_amount", "expres
 ORDERS_EXT_1X = {"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}
 WITH_FILTERS = {"dataset": "customers", "filters": ["credit > 5"]}
 MEASURES_ONLY = {"dataset": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
-ONE_MEASURE = [{"metric": "count(*)"}]
+ONE_MEASURE = [{"metric": "count(orders.*)"}]
 
 
 def _query(**raw: Any) -> SlayerQuery:
@@ -151,7 +151,7 @@ class TestSchema:
 
 class TestRestAndMcp:
     def test_rest_body_types_extensions_and_feeds_the_query(self) -> None:
-        req = QueryRequest.model_validate({"population": "orders", "extensions": [ORDERS_EXT], "metrics": ["count(*)"]})
+        req = QueryRequest.model_validate({"population": "orders", "extensions": [ORDERS_EXT], "metrics": ["count(orders.*)"]})
         assert isinstance((req.extensions or [])[0], DatasetExtension)
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert q.extensions == req.extensions
@@ -181,7 +181,7 @@ class TestRestAndMcp:
 class TestRoundTrip:
     @pytest.mark.parametrize("mode", ["python", "json"])
     def test_dump_then_validate_equals_the_original(self, mode) -> None:
-        q = _query(population="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT], metrics=["count(*)"])
+        q = _query(population="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT], metrics=["count(orders.*)"])
         again = SlayerQuery.model_validate(q.model_dump(mode=mode))
         assert again == q
         assert all(isinstance(e, DatasetExtension) for e in again.extensions or [])

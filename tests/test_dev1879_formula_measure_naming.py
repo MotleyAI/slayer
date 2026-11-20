@@ -44,7 +44,7 @@ def _q(**kw) -> SlayerQuery:
 def _month_td() -> list[TimeDimension]:
     return [
         TimeDimension(
-            field="created_at",
+            field="mart.created_at",
             granularity=TimeGranularity.MONTH,
         )
     ]
@@ -52,7 +52,7 @@ def _month_td() -> list[TimeDimension]:
 
 class TestDerivedKeys:
     async def test_arithmetic_composite(self) -> None:
-        resp = await _dry(_q(metrics=["sum(logo_churn) / sum(logo_bop)"]))
+        resp = await _dry(_q(metrics=["sum(mart.logo_churn) / sum(mart.logo_bop)"]))
         assert "mart.logo_churn_sum_logo_bop_sum" in resp.columns
         for key in resp.columns:
             assert _KEY_RE.fullmatch(key), key
@@ -60,7 +60,7 @@ class TestDerivedKeys:
     async def test_transform(self) -> None:
         resp = await _dry(
             _q(
-                metrics=["time_shift(sum(cmrr_eop), -1, 'year')"],
+                metrics=["time_shift(sum(mart.cmrr_eop), -1, 'year')"],
                 time_dimensions=_month_td(),
             )
         )
@@ -69,13 +69,13 @@ class TestDerivedKeys:
             assert _KEY_RE.fullmatch(key), key
 
     async def test_formatting_insensitive(self) -> None:
-        r1 = await _dry(_q(metrics=["sum(logo_churn) / sum(logo_bop)"]))
-        r2 = await _dry(_q(metrics=["sum(logo_churn)/sum(logo_bop)"]))
+        r1 = await _dry(_q(metrics=["sum(mart.logo_churn) / sum(mart.logo_bop)"]))
+        r2 = await _dry(_q(metrics=["sum(mart.logo_churn)/sum(mart.logo_bop)"]))
         assert list(r1.columns) == list(r2.columns)
 
     async def test_long_formula_hash_folds(self) -> None:
-        spaced = "sum(logo_churn) / sum(logo_bop) / sum(cmrr_eop) / avg(logo_churn)"
-        packed = "sum(logo_churn)/sum(logo_bop)/sum(cmrr_eop)/avg(logo_churn)"
+        spaced = "sum(mart.logo_churn) / sum(mart.logo_bop) / sum(mart.cmrr_eop) / avg(mart.logo_churn)"
+        packed = "sum(mart.logo_churn)/sum(mart.logo_bop)/sum(mart.cmrr_eop)/avg(mart.logo_churn)"
         expected = auto_name_from_expression("logo_churn:sum / logo_bop:sum / cmrr_eop:sum / logo_churn:avg")
         assert re.search(r"_[0-9a-f]{8}_", expected), expected
         r1 = await _dry(_q(metrics=[spaced]))
@@ -84,7 +84,7 @@ class TestDerivedKeys:
         assert list(r1.columns) == list(r2.columns)
 
     async def test_leading_digit_guard(self) -> None:
-        resp = await _dry(_q(metrics=["100 * sum(logo_churn)"]))
+        resp = await _dry(_q(metrics=["100 * sum(mart.logo_churn)"]))
         assert "mart.e_100_logo_churn_sum" in resp.columns
 
 
@@ -100,34 +100,34 @@ class TestUnchangedPaths:
             _q(
                 metrics=[
                     {
-                        "metric": "sum(logo_churn) / sum(logo_bop)",
+                        "metric": "sum(mart.logo_churn) / sum(mart.logo_bop)",
                         "alias": "churn_ratio",
                     }
                 ]
             )
         )
-        _assert_key_and_alias(resp, "mart.churn_ratio")
+        _assert_key_and_alias(resp, "churn_ratio")
         assert "mart.logo_churn_sum_logo_bop_sum" not in resp.columns
 
     async def test_plain_aggregates(self) -> None:
-        resp = await _dry(_q(metrics=["sum(revenue)", "count(*)"]))
+        resp = await _dry(_q(metrics=["sum(mart.revenue)", "count(mart.*)"]))
         _assert_key_and_alias(resp, "mart.revenue_sum")
         _assert_key_and_alias(resp, "mart._count")
 
     async def test_parametric_aggregate(self) -> None:
-        resp = await _dry(_q(metrics=["percentile(price, p=0.9)"]))
+        resp = await _dry(_q(metrics=["percentile(mart.price, p=0.9)"]))
         _assert_key_and_alias(resp, "mart.price_percentile_p_0_9")
 
     async def test_expression_aggregation(self) -> None:
-        resp = await _dry(_q(metrics=["sum(logo_churn - logo_bop)"]))
+        resp = await _dry(_q(metrics=["sum(mart.logo_churn - mart.logo_bop)"]))
         _assert_key_and_alias(resp, "mart.logo_churn_logo_bop_sum")
 
     async def test_cross_model_aggregate(self) -> None:
         resp = await _dry(_q(metrics=["sum(targets.goal)"]))
-        _assert_key_and_alias(resp, "mart.targets.goal_sum")
+        _assert_key_and_alias(resp, "targets.goal_sum")
 
     async def test_saved_measure_reference(self) -> None:
-        resp = await _dry(_q(metrics=["aov"]))
+        resp = await _dry(_q(metrics=["mart.aov"]))
         _assert_key_and_alias(resp, "mart.aov")
 
 
@@ -135,23 +135,23 @@ class TestCollisions:
     async def test_different_formulas_same_key_fail_loudly(self) -> None:
         q = _q(
             metrics=[
-                "sum(logo_churn) / sum(logo_bop)",
-                "sum(logo_churn) * sum(logo_bop)",
+                "sum(mart.logo_churn) / sum(mart.logo_bop)",
+                "sum(mart.logo_churn) * sum(mart.logo_bop)",
             ]
         )
         with pytest.raises(ValueError, match="Rename") as ei:
             await _dry(q)
         msg = str(ei.value)
-        assert "sum(logo_churn) / sum(logo_bop)" in msg
-        assert "sum(logo_churn) * sum(logo_bop)" in msg
+        assert "sum(mart.logo_churn) / sum(mart.logo_bop)" in msg
+        assert "sum(mart.logo_churn) * sum(mart.logo_bop)" in msg
         assert "set 'name'" in msg
 
     async def test_identical_formulas_merge(self) -> None:
         resp = await _dry(
             _q(
                 metrics=[
-                    "sum(logo_churn) / sum(logo_bop)",
-                    "sum(logo_churn) / sum(logo_bop)",
+                    "sum(mart.logo_churn) / sum(mart.logo_bop)",
+                    "sum(mart.logo_churn) / sum(mart.logo_bop)",
                 ]
             )
         )
@@ -160,8 +160,8 @@ class TestCollisions:
     async def test_identical_formulas_conflicting_metadata_fail_loudly(self) -> None:
         q = _q(
             metrics=[
-                {"metric": "sum(logo_churn) / sum(logo_bop)", "datatype": "Float"},
-                {"metric": "sum(logo_churn) / sum(logo_bop)", "datatype": "Integer"},
+                {"metric": "sum(mart.logo_churn) / sum(mart.logo_bop)", "datatype": "Float"},
+                {"metric": "sum(mart.logo_churn) / sum(mart.logo_bop)", "datatype": "Integer"},
             ]
         )
         with pytest.raises(ValueError, match="set 'name'"):
@@ -171,8 +171,8 @@ class TestCollisions:
         resp = await _dry(
             _q(
                 metrics=[
-                    "sum(logo_churn) / sum(logo_bop)",
-                    "sum(logo_churn)/sum(logo_bop)",
+                    "sum(mart.logo_churn) / sum(mart.logo_bop)",
+                    "sum(mart.logo_churn)/sum(mart.logo_bop)",
                 ]
             )
         )
@@ -183,13 +183,13 @@ class TestRawFormulaReferences:
     async def test_order_by_raw_formula(self) -> None:
         resp = await _dry(
             _q(
-                metrics=["sum(logo_churn) / sum(logo_bop)"],
-                dimensions=["region"],
+                metrics=["sum(mart.logo_churn) / sum(mart.logo_bop)"],
+                dimensions=["mart.region"],
                 # Raw expression text as the order key is the surface under test.
                 order=[
                     OrderItem.model_validate(
                         {
-                            "field": "sum(logo_churn) / sum(logo_bop)",
+                            "field": "sum(mart.logo_churn) / sum(mart.logo_bop)",
                             "direction": "desc",
                         }
                     )
@@ -203,9 +203,9 @@ class TestRawFormulaReferences:
     async def test_filter_by_raw_formula(self) -> None:
         resp = await _dry(
             _q(
-                metrics=["sum(logo_churn) / sum(logo_bop)"],
-                dimensions=["region"],
-                filter=["sum(logo_churn) / sum(logo_bop) > 0.1"],
+                metrics=["sum(mart.logo_churn) / sum(mart.logo_bop)"],
+                dimensions=["mart.region"],
+                filter=["sum(mart.logo_churn) / sum(mart.logo_bop) > 0.1"],
             )
         )
         assert "mart.logo_churn_sum_logo_bop_sum" in resp.columns

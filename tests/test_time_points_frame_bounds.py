@@ -6,20 +6,20 @@ import pytest
 
 from tests._time_points_fixtures import BACKENDS, monthly, tp_engine
 
-WINDOW = {"metric": "sum(amount, window='90d')", "alias": "w"}
-PLAIN = {"metric": "sum(amount)", "alias": "s"}
-SHIFT = {"metric": "time_shift(sum(amount), -1)", "alias": "p"}
+WINDOW = {"metric": "sum(ev.amount, window='90d')", "alias": "w"}
+PLAIN = {"metric": "sum(ev.amount)", "alias": "s"}
+SHIFT = {"metric": "time_shift(sum(ev.amount), -1)", "alias": "p"}
 
 # "last 3 months" at the pinned clock is [2026-06-01, 2026-09-01).
 LAST_3_MONTHS = [
-    {"filters": ["ts in 'last 3 months'"]},
-    {"filters": ["ts = 'last 3 months'"]},
-    {"filters": ["ts >= 'last 3 months' and ts <= 'last 3 months'"]},
-    {"filters": ["ts >= '2026-06' and ts < '2026-09'"]},
-    {"filters": ["ts >= '2026-06-01' and ts < '2026-09-01'"]},
-    {"filters": ["ts >= '2026-06-01 00:00:00' and ts < '2026-09-01 00:00:00'"]},
-    {"filters": ["date_trunc('month', ts) >= '2026-06' and date_trunc('month', ts) < '2026-09'"]},
-    {"filters": ["date_trunc('month', ts) in 'last 3 months'"]},
+    {"filters": ["ev.ts in 'last 3 months'"]},
+    {"filters": ["ev.ts = 'last 3 months'"]},
+    {"filters": ["ev.ts >= 'last 3 months' and ev.ts <= 'last 3 months'"]},
+    {"filters": ["ev.ts >= '2026-06' and ev.ts < '2026-09'"]},
+    {"filters": ["ev.ts >= '2026-06-01' and ev.ts < '2026-09-01'"]},
+    {"filters": ["ev.ts >= '2026-06-01 00:00:00' and ev.ts < '2026-09-01 00:00:00'"]},
+    {"filters": ["date_trunc('month', ev.ts) >= '2026-06' and date_trunc('month', ev.ts) < '2026-09'"]},
+    {"filters": ["date_trunc('month', ev.ts) in 'last 3 months'"]},
     {"date_range": "last 3 months"},
     {"date_range": ["last 3 months"]},
     {"date_range": ["2026-06", "2026-08"]},
@@ -42,7 +42,7 @@ class TestTrailingWindow:
         assert set(got) == {"2026-06", "2026-07", "2026-08"}
 
     async def test_earliest_visible_month_reaches_before_its_start(self, engine) -> None:
-        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=["ts in 'last 3 months'"])
+        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=["ev.ts in 'last 3 months'"])
         unbounded = await monthly(engine, metrics=[WINDOW, PLAIN])
         assert got["2026-06"]["w"] > got["2026-06"]["s"]
         assert got["2026-06"] == unbounded["2026-06"]
@@ -50,10 +50,10 @@ class TestTrailingWindow:
 
 class TestTimeShift:
     @pytest.mark.parametrize("spelling", [
-        {"filters": ["date_trunc('month', ts) >= '2025-01'"]},
-        {"filters": ["ts >= '2025'"]},
-        {"filters": ["ts > '2024-12'"]},
-        {"filters": ["ts >= '2025-01-01'"]},
+        {"filters": ["date_trunc('month', ev.ts) >= '2025-01'"]},
+        {"filters": ["ev.ts >= '2025'"]},
+        {"filters": ["ev.ts > '2024-12'"]},
+        {"filters": ["ev.ts >= '2025-01-01'"]},
         {"date_range": ["2025-01", None]},
     ], ids=lambda s: str(s))
     async def test_period_bound_does_not_clip_shift(self, engine, spelling) -> None:
@@ -65,7 +65,7 @@ class TestTimeShift:
 
 class TestEqualityFrameStatus:
     async def test_period_equality_is_a_frame_bound(self, engine) -> None:
-        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=["ts in '2024-06-01'"])
+        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=["ev.ts in '2024-06-01'"])
         unbounded = await monthly(engine, metrics=[WINDOW, PLAIN])
         assert set(got) == {"2024-06"}
         # The bucket's own rows are that day's (ids 3, 4); the window still reads May (id 38).
@@ -73,20 +73,20 @@ class TestEqualityFrameStatus:
         assert got["2024-06"]["w"] == unbounded["2024-06"]["w"]
 
     async def test_date_only_equality_is_a_row_filter(self, engine) -> None:
-        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=["ts = '2024-06-01'"])
+        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=["ev.ts = '2024-06-01'"])
         assert got == {"2024-06": {"w": pytest.approx(3.0), "s": pytest.approx(3.0)}}
 
     async def test_single_string_in_is_a_frame_bound(self, engine) -> None:
-        got = await monthly(engine, metrics=[WINDOW], filters=["ts in '2024-06'"])
+        got = await monthly(engine, metrics=[WINDOW], filters=["ev.ts in '2024-06'"])
         unbounded = await monthly(engine, metrics=[WINDOW])
         assert got == {"2024-06": unbounded["2024-06"]}
 
     async def test_instant_equality_is_a_row_filter(self, engine) -> None:
-        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=["ts = '2024-06-01 00:00:00'"])
+        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=["ev.ts = '2024-06-01 00:00:00'"])
         assert got == {"2024-06": {"w": pytest.approx(3.0), "s": pytest.approx(3.0)}}
 
-    @pytest.mark.parametrize("filt", ["ts != '2025-Q1'", "ts not in '2025-Q1'"])
+    @pytest.mark.parametrize("filt", ["ev.ts != '2025-Q1'", "ev.ts not in '2025-Q1'"])
     async def test_period_inequality_is_a_row_filter(self, engine, filt) -> None:
-        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=[filt, "ts >= '2025-04' and ts < '2025-05'"])
+        got = await monthly(engine, metrics=[WINDOW, PLAIN], filters=[filt, "ev.ts >= '2025-04' and ev.ts < '2025-05'"])
         # April 2025's window would read Q1 rows if the != were a frame bound.
         assert got == {"2025-04": {"w": pytest.approx(17.0), "s": pytest.approx(17.0)}}

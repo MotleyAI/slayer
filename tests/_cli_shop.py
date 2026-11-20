@@ -16,11 +16,11 @@ SHOP_DS = "shop"
 
 README_QUERY = json.dumps({
     "population": "orders",
-    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
-    "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
+    "metrics": ["sum(orders.order_total)", "change_pct(sum(orders.order_total))"],
+    "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"],
 })
 
-TOTAL_QUERY = json.dumps({"population": "orders", "metrics": ["sum(order_total)"]})
+TOTAL_QUERY = json.dumps({"population": "orders", "metrics": ["sum(orders.order_total)"]})
 
 
 def build_shop_storage(base: Path) -> str:

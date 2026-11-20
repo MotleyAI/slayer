@@ -230,7 +230,7 @@ class TestGatesSkipProbe:
         )
         model = SlayerDataset(
             name="qb",
-            source_queries=[SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"]})],
+            source_queries=[SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"]})],
             data_source=_DS,
         )
         await engine.validate_sql_dataset_source(model)  # must not raise

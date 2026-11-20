@@ -12,7 +12,7 @@ Substitution spans SLayer's [two expression layers](../../concepts/references.md
   from the query's `variables` (`'{s}'` for text, a bare number or boolean, a list
   as a whole `IN` list), never a name. Metric expressions, computed
   dimensions, `order` expressions, `date_range` bounds and the population's saved
-  metrics take placeholders too (`"metrics": ["sum(order_total) * {rate} / 100"]`).
+  metrics take placeholders too (`"metrics": ["sum(orders.order_total) * {rate} / 100"]`).
 - **Mode A — raw SQL.** A stored dataset's `sql` and `filters`, and every `DatasetField`'s
   `sql` and `filter`, are raw SQL over the underlying table. A `{var}` here binds
   as a literal of that SQL, so it takes effect **before** aggregation — inside a
@@ -42,7 +42,7 @@ A stored dataset `orders_over_floor` (`sql_table: orders`) with the filter
 ```json
 {
   "population": "orders_over_floor",
-  "metrics": ["count(*)"],
+  "metrics": ["count(orders_over_floor.*)"],
   "variables": {"floor": 50}
 }
 ```
@@ -76,7 +76,7 @@ is queried by name:
 ```json
 {
   "population": "orders_by_store",
-  "metrics": ["count(*)"],
+  "metrics": ["count(orders_by_store.*)"],
   "variables": {"stores": ["Brooklyn", "Philadelphia"]}
 }
 ```

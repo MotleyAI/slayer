@@ -52,15 +52,15 @@ class TestRootExtensionFields:
     async def test_projected_column_records_its_stored_reads(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="amount * 2", alias="premium")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.amount * 2", alias="premium")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
         assert "mydb.orders.premium" not in result.canonical_forms
 
     async def test_aggregated_column_records_its_stored_reads(self, storage: StorageBackend) -> None:
-        q = SlayerQuery(population="orders", metrics=[QueryMetric(metric="avg(amount * 2)")])
+        q = SlayerQuery(population="orders", metrics=[QueryMetric(metric="avg(orders.amount * 2)")])
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
         assert "mydb.orders.premium" not in result.canonical_forms
@@ -69,7 +69,7 @@ class TestRootExtensionFields:
         q = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.amount * 2", alias="premium")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -77,7 +77,7 @@ class TestRootExtensionFields:
 
     async def test_measure_records_reads_through_extension_column(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
-            population="orders", metrics=[QueryMetric(metric="sum(amount * 2)", alias="premium_total")],
+            population="orders", metrics=[QueryMetric(metric="sum(orders.amount * 2)", alias="premium_total")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -89,7 +89,7 @@ class TestJoinedExtensionFields:
         q = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.region_id + 1", alias="premium")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.region_id" in result.canonical_forms
@@ -99,7 +99,7 @@ class TestJoinedExtensionFields:
 def _projecting(path: str, *, extension: DatasetExtension) -> SlayerQuery:
     return SlayerQuery(
         population="orders", extensions=[extension],
-        dimensions=[QueryDimension(field=path)], metrics=[QueryMetric(metric="count(*)")],
+        dimensions=[QueryDimension(field=path)], metrics=[QueryMetric(metric="count(orders.*)")],
     )
 
 
@@ -125,7 +125,7 @@ class TestExtensionJoinPaths:
     async def test_short_form_route_resolves_in_the_query_datasource(self, named_storage: StorageBackend) -> None:
         q = SlayerQuery(
             population="orders", dimensions=[QueryDimension(field="regions.name")],
-            metrics=[QueryMetric(metric="count(*)")], extensions=[_JOINED_JOIN],
+            metrics=[QueryMetric(metric="count(orders.*)")], extensions=[_JOINED_JOIN],
         )
         result = await extract_entities_from_query(q, storage=named_storage)
         assert "mydb.regions.name" in result.canonical_forms
@@ -135,7 +135,7 @@ class TestExtensionJoinPaths:
         q = SlayerQuery(
             population="orders", extensions=[_ROOT_JOIN],
             dimensions=[QueryDimension(field="regions.name", alias="region_label")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.regions.name" in result.canonical_forms
@@ -172,7 +172,7 @@ class TestNamedExtensionJoins:
             population="orders",
             extensions=[DatasetExtension(dataset="orders", relationships=[_NAMED_JOINS[kind]])],
             dimensions=[QueryDimension(field=f"{path.removesuffix('premium')}region_id + 1", alias="premium")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.region_id" in result.canonical_forms
@@ -215,7 +215,7 @@ class TestStoredNamedJoinsWithoutExtensions:
     @pytest.mark.parametrize("path", ["buyer.name", "orders.buyer.name"])
     async def test_named_join_records_stored_target(self, named_storage: StorageBackend, path: str) -> None:
         q = SlayerQuery(
-            population="orders", dimensions=[QueryDimension(field=path)], metrics=[QueryMetric(metric="count(*)")],
+            population="orders", dimensions=[QueryDimension(field=path)], metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=named_storage)
         assert "mydb.customers.name" in result.canonical_forms
@@ -231,7 +231,7 @@ class TestStoredNamedJoinsWithoutExtensions:
     async def test_unrouted_model_resolves_to_priority_winner(self, named_storage: StorageBackend) -> None:
         q = SlayerQuery(
             population="orders", dimensions=[QueryDimension(field="regions.name")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=named_storage)
         assert "otherdb.regions.name" in result.canonical_forms
@@ -249,7 +249,8 @@ class TestRootlessQueries:
         assert "mydb.orders.premium" not in result.canonical_forms
 
     async def test_inferred_population_is_the_engines(self, storage: StorageBackend) -> None:
-        q = SlayerQuery(dimensions=[QueryDimension(field="customers.name")], metrics=[QueryMetric(metric="count(*)")])
+        q = SlayerQuery(dimensions=[QueryDimension(field="customers.name")],
+                        metrics=[QueryMetric(metric="count(customers.*)")])
         result = await extract_entities_from_query(q, storage=storage)
         assert result.canonical_forms == ["mydb.customers", "mydb.customers.name"]
 
@@ -275,8 +276,8 @@ async def cased_storage(tmp_path: Path) -> AsyncIterator[StorageBackend]:
 
 class TestModelNameCase:
     async def test_a_source_model_written_in_another_case(self, cased_storage: StorageBackend) -> None:
-        q = SlayerQuery(population="orders", dimensions=[QueryDimension(field="amount")],
-                        metrics=[QueryMetric(metric="count(*)")])
+        q = SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.amount")],
+                        metrics=[QueryMetric(metric="count(orders.*)")])
         result = await extract_entities_from_query(q, storage=cased_storage)
         assert {"mydb.Orders", "mydb.Orders.amount"} <= set(result.canonical_forms)
 

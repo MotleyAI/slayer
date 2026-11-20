@@ -69,12 +69,12 @@ def _two_cross_dataset_metrics_query() -> SlayerQuery:
 def _windowed_query() -> SlayerQuery:
     return SlayerQuery(
         population="orders_x",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders_x.status")],
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders_x.created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="rev_w")],
+        metrics=[QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="rev_w")],
     )
 
 
@@ -82,13 +82,13 @@ def _mixed_query() -> SlayerQuery:
     """Cross-dataset AND windowed in one query — the mix §5.6 names."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders_x.status")],
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders_x.created_at",
             granularity=TimeGranularity.MONTH,
         )],
         metrics=[
-            QueryMetric(metric="sum(amount, window='90d')", alias="rev_w"),
+            QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="rev_w"),
             QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="ltv"),
         ],
     )

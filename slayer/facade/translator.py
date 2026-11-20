@@ -44,6 +44,7 @@ from slayer.core.query import (
 )
 from slayer.core.syntax import metric_text_at_path
 from slayer.engine.cardinality.inference import declares_solo_unique
+from slayer.engine.legacy_references import population_relative
 from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,
@@ -2302,16 +2303,13 @@ class _ProjectionPlan(BaseModel):
     projection_types: list[DataType | None]
 
 
-def _record_metric(
-    *, plan: _ProjectionPlan, item: _ProjectionItem, table: FacadeTable,
-) -> None:
+def _record_metric(*, plan: _ProjectionPlan, item: _ProjectionItem) -> None:
     assert item.metric is not None
     plan.metrics.append({
         "metric": item.metric.metric_expression,
         "alias": item.projected_name,
     })
-    engine_alias = f"{table.name}.{item.projected_name}"
-    plan.field_name_mapping.append((engine_alias, item.projected_name))
+    plan.field_name_mapping.append((item.projected_name, item.projected_name))
     # CAST(<metric_ref> AS T) overrides the declared metric type.
     plan.projection_types.append(item.cast_target or item.metric.data_type)
 
@@ -2385,7 +2383,7 @@ def _build_projection_plan(
     )
     for item in items:
         if item.metric is not None:
-            _record_metric(plan=plan, item=item, table=table)
+            _record_metric(plan=plan, item=item)
         elif item.time_grain is not None:
             _record_time_grain(plan=plan, item=item, table=table)
         elif item.extraction is not None:
@@ -3033,7 +3031,7 @@ def _translate_slayer_select(
 
     extensions = _extensions_from_join(parent_name=table.name, plan=join_plan) if join_plan is not None else []
 
-    query = SlayerQuery.model_validate({
+    query = population_relative(SlayerQuery.model_validate({
         "population": table.name,
         "extensions": extensions or None,
         "metrics": plan.metrics or None,
@@ -3048,7 +3046,7 @@ def _translate_slayer_select(
             plan.metrics or group or parsed.args.get("having") or parsed.args.get("distinct")
             or where_reads_aggregate
         ),
-    })
+    }))
 
     return QueryResult(
         query=query,

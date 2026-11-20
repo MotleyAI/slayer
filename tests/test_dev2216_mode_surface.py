@@ -20,7 +20,7 @@ LAST = QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="l
 
 
 def _saved(**kw) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(amount)"], **kw})
+    return SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(orders.amount)"], **kw})
 
 
 def _refined(base: SlayerQuery, **refinement) -> SlayerQuery:
@@ -86,7 +86,7 @@ async def engine(request):
 
 class TestFallbackPythonWarning:
     async def test_names_the_reason_and_survives_transport(self, engine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["status"], "metrics": [LAST]})
+        query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.status"], "metrics": [LAST]})
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resp = await engine.execute(query)

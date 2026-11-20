@@ -28,24 +28,24 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_STREAK = "consecutive_periods(sum(amount) > 100)"
+_STREAK = "consecutive_periods(sum(orders.amount) > 100)"
 
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
         "cp/month": orders_query(expression=_STREAK),
-        "cp/grouped": orders_query(expression=_STREAK, dimensions=["customer_id"], filters=[]),
+        "cp/grouped": orders_query(expression=_STREAK, dimensions=["orders.customer_id"], filters=[]),
         "cp/quarter": orders_query(expression=_STREAK, granularity="quarter"),
         "cp/week_sunday": orders_query(expression=_STREAK, granularity="week_sunday"),
         "cp/hour": orders_query(expression=_STREAK, granularity="hour"),
         "cp/date_range": orders_query(
             expression=_STREAK, date_range=["2025-02-01", "2025-06-30"]),
         "cp/over_change": orders_query(
-            expression="consecutive_periods(change(sum(amount)) > 0)"),
-        "cp/over_lag": orders_query(expression="consecutive_periods(lag(sum(amount)) > 100)"),
+            expression="consecutive_periods(change(sum(orders.amount)) > 0)"),
+        "cp/over_lag": orders_query(expression="consecutive_periods(lag(sum(orders.amount)) > 100)"),
         "cp/under_lag": orders_query(expression=f"lag({_STREAK})"),
-        "ts/hour": orders_query(expression="time_shift(sum(amount), -1)", granularity="hour"),
+        "ts/hour": orders_query(expression="time_shift(sum(orders.amount), -1)", granularity="hour"),
     }
 
 

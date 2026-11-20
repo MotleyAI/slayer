@@ -42,56 +42,56 @@ class TestConditionalMeasureOverAggregate:
     async def test_simple_band_over_group_total(self, exec_engine) -> None:
         # EU total 14000 >= 10000 -> 1 ; US total 8000 -> 0.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="rev"),
+                QueryMetric(metric="sum(orders.amount)", alias="rev"),
                 QueryMetric(
-                    metric="CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+                    metric="CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0 END",
                     alias="big",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert float(by[("EU",)]["orders.rev"]) == pytest.approx(REGION_SUM["EU"])
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert int(by[("US",)]["orders.big"]) == 0
+        assert float(by[("EU",)]["rev"]) == pytest.approx(REGION_SUM["EU"])
+        assert int(by[("EU",)]["big"]) == 1
+        assert int(by[("US",)]["big"]) == 0
 
     async def test_nested_conditional_is_an_ordinal(self, exec_engine) -> None:
         # EU 14000 -> 2 ; US 8000 -> 1.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(
                     metric=(
-                        "CASE WHEN sum(amount) >= 14000 THEN 2 "
-                        "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END"
+                        "CASE WHEN sum(orders.amount) >= 14000 THEN 2 "
+                        "WHEN sum(orders.amount) >= 8000 THEN 1 ELSE 0 END"
                     ),
                     alias="tier",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert int(by[("EU",)]["orders.tier"]) == 2
-        assert int(by[("US",)]["orders.tier"]) == 1
+        assert int(by[("EU",)]["tier"]) == 2
+        assert int(by[("US",)]["tier"]) == 1
 
     async def test_iif_spelling_matches_case(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
-                QueryMetric(metric="iif(sum(amount) >= 10000, 1, 0)", alias="big"),
+                QueryMetric(metric="iif(sum(orders.amount) >= 10000, 1, 0)", alias="big"),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert int(by[("US",)]["orders.big"]) == 0
+        assert int(by[("EU",)]["big"]) == 1
+        assert int(by[("US",)]["big"]) == 0
 
 
 class TestConditionalInFilter:
     async def test_case_predicate_removes_a_group(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            filter=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=["orders.region"],
+            filter=["CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0 END == 1"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
         regions = {r["orders.region"] for r in resp.data}
         assert regions == {"EU"}
@@ -101,28 +101,28 @@ class TestNullBranchKeepsValue:
     async def test_null_else_yields_null_not_dropped(self, exec_engine) -> None:
         # US falls to the (missing) ELSE -> NULL, but the US row must remain.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="rev"),
+                QueryMetric(metric="sum(orders.amount)", alias="rev"),
                 QueryMetric(
-                    metric="CASE WHEN sum(amount) >= 10000 THEN 1 END", alias="big",
+                    metric="CASE WHEN sum(orders.amount) >= 10000 THEN 1 END", alias="big",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
         assert set(by) == {("EU",), ("US",)}
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert by[("US",)]["orders.big"] is None
+        assert int(by[("EU",)]["big"]) == 1
+        assert by[("US",)]["big"] is None
 
 
 class TestBranchTypingThroughPlanning:
     async def test_incomparable_branches_raise_naming_both_types(self) -> None:
         # THEN 'big' (TEXT) vs ELSE 0 (INT) — a plan-time error naming both.
         q = _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(
-                    metric="CASE WHEN sum(amount) >= 100 THEN 'big' ELSE 0 END",
+                    metric="CASE WHEN sum(orders.amount) >= 100 THEN 'big' ELSE 0 END",
                     alias="bad",
                 ),
             ],
@@ -136,17 +136,17 @@ class TestBranchTypingThroughPlanning:
     async def test_numeric_widened_branches_execute(self, exec_engine) -> None:
         # INT / DOUBLE branches widen to DOUBLE and execute cleanly.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(
-                    metric="CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0.5 END",
+                    metric="CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0.5 END",
                     alias="w",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert float(by[("EU",)]["orders.w"]) == pytest.approx(1.0)
-        assert float(by[("US",)]["orders.w"]) == pytest.approx(0.5)
+        assert float(by[("EU",)]["w"]) == pytest.approx(1.0)
+        assert float(by[("US",)]["w"]) == pytest.approx(0.5)
 
 
 class TestOrderByCaseComposite:
@@ -154,9 +154,9 @@ class TestOrderByCaseComposite:
         # ORDER BY a CASE composite that is NOT projected — it must get a hidden
         # slot and sort correctly. EU total 17000 > 12000 → 0 (first); US → 1.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
-            order=[{"field": "CASE WHEN sum(amount) > 12000 THEN 0 ELSE 1 END",
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
+            order=[{"field": "CASE WHEN sum(orders.amount) > 12000 THEN 0 ELSE 1 END",
                     "direction": "asc"}],
         ))
         regions = [r["orders.region"] for r in resp.data]
@@ -176,7 +176,7 @@ class TestConditionalOverCrossModelAggregate:
                 ),
             ],
         ))
-        by = {r["orders.customers.tier"]: int(r["orders.b"]) for r in resp.data}
+        by = {r["customers.tier"]: int(r["b"]) for r in resp.data}
         assert by == {"gold": 0, "silver": 1}
 
 
@@ -185,17 +185,17 @@ class TestConditionalNestedInScalarCall:
         # An iif as a scalar-call arg must render (not be mistaken for
         # a literal) and its inner aggregate must be discovered.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
                 QueryMetric(
-                    metric="coalesce(iif(sum(amount) >= 10000, 1, 0), -1)",
+                    metric="coalesce(iif(sum(orders.amount) >= 10000, 1, 0), -1)",
                     alias="c",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert int(by[("EU",)]["orders.c"]) == 1
-        assert int(by[("US",)]["orders.c"]) == 0
+        assert int(by[("EU",)]["c"]) == 1
+        assert int(by[("US",)]["c"]) == 0
 
 
 class TestCaseInModelFormula:
@@ -211,8 +211,8 @@ class TestCaseInModelFormula:
                     "name": "big",
                 }],
             })],
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="big")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="orders.big")],
         ))
         by = rows_by(resp, "orders.region")
         assert int(by[("EU",)]["orders.big"]) == 1
@@ -223,8 +223,8 @@ class TestIifWrongArityAtBind:
     async def test_two_arg_iif_raises_naming_iif(self) -> None:
         # Arity is enforced by the generic scalar path at bind time (3, 3).
         q = _q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="iif(sum(amount) >= 10000, 1)", alias="b")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="iif(sum(orders.amount) >= 10000, 1)", alias="b")],
         )
         with pytest.raises(ValueError, match=r"iif"):
             await gen(q)
@@ -235,13 +235,13 @@ class TestConditionalFilterPullsJoin:
         # A ROW-phase CASE over a JOINED field in a filter must pull the
         # customers join (gold customers 1 & 3 → orders 1, 2, 5, 6 — all EU).
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             filter=["CASE WHEN customers.tier = 'gold' THEN 1 ELSE 0 END == 1"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
         by = rows_by(resp, "orders.region")
         assert set(by) == {("EU",)}
-        assert float(by[("EU",)]["orders.rev"]) == pytest.approx(8000.0)
+        assert float(by[("EU",)]["rev"]) == pytest.approx(8000.0)
 
 
 class TestConditionalOverTransform:
@@ -253,12 +253,12 @@ class TestConditionalOverTransform:
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(
-                    metric="CASE WHEN change(sum(amount)) > 0 THEN 1 ELSE 0 END",
+                    metric="CASE WHEN change(sum(orders.amount)) > 0 THEN 1 ELSE 0 END",
                     alias="up",
                 ),
             ],
         ))
-        by = {month_key(r["orders.ordered_at"]): int(r["orders.up"])
+        by = {month_key(r["orders.ordered_at"]): int(r["up"])
               for r in resp.data}
         assert by == {"2024-01": 0, "2024-02": 1, "2024-03": 0}
 
@@ -270,20 +270,20 @@ class TestChangeOverComputedDimension:
         # band0 monthly sums: Jan 9200, Feb 8000, Mar 1800 → change NULL,
         # -1200, -6200; band1: Feb 6000 → change NULL (no band1 January).
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
+            dimensions=[{"field": "CASE WHEN orders.amount > 5000 THEN 1 ELSE 0 END",
                          "alias": "band"}],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="rev"),
-                QueryMetric(metric="change(sum(amount))", alias="chg"),
+                QueryMetric(metric="sum(orders.amount)", alias="rev"),
+                QueryMetric(metric="change(sum(orders.amount))", alias="chg"),
             ],
         ))
-        by = {(int(r["orders.band"]), month_key(r["orders.ordered_at"])): r
+        by = {(int(r["band"]), month_key(r["orders.ordered_at"])): r
               for r in resp.data}
-        assert by[(0, "2024-01")]["orders.chg"] is None
-        assert float(by[(0, "2024-02")]["orders.chg"]) == pytest.approx(-1200.0)
-        assert float(by[(0, "2024-03")]["orders.chg"]) == pytest.approx(-6200.0)
-        assert by[(1, "2024-02")]["orders.chg"] is None
+        assert by[(0, "2024-01")]["chg"] is None
+        assert float(by[(0, "2024-02")]["chg"]) == pytest.approx(-1200.0)
+        assert float(by[(0, "2024-03")]["chg"]) == pytest.approx(-6200.0)
+        assert by[(1, "2024-02")]["chg"] is None
 
 
 class TestCaseInColumnSql:
@@ -298,8 +298,8 @@ class TestCaseInColumnSql:
                    datatype=DataType.INTEGER),
         ]}))
         resp = await exec_engine.execute(_q(
-            dimensions=["row_band"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=["orders.row_band"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
-        by = {int(r["orders.row_band"]): float(r["orders.rev"]) for r in resp.data}
+        by = {int(r["orders.row_band"]): float(r["rev"]) for r in resp.data}
         assert by == {0: pytest.approx(19000.0), 1: pytest.approx(6000.0)}

@@ -63,7 +63,7 @@ class TestHomeDatasetPerScenario:
 
     def test_host_side_leaf_pulls_home_to_root(self):
         # amount is host-local → home is orders (the root).
-        assert _home_path("sum(amount - customers.discount)") == ()
+        assert _home_path("sum(orders.amount - customers.discount)") == ()
 
     def test_branches_meet_at_common_ancestor(self):
         # customers.spend and stores.rent diverge at the root → home is orders.
@@ -72,7 +72,7 @@ class TestHomeDatasetPerScenario:
     def test_a_parameter_widens_the_home(self):
         # weight=amount (orders-local) pulls the home to the root.
         assert _home_path(
-            "wsum(customers.spend + customers.regions.pop, weight=amount)") == ()
+            "wsum(customers.spend + customers.regions.pop, weight=orders.amount)") == ()
 
     def test_a_definition_default_widens_the_home_the_same_way(self):
         # wsum's default weight (spend) is customers-local → home stays customers,
@@ -95,7 +95,7 @@ class TestHomeDatasetPerScenario:
         # bad_pop crosses the fanning regions→region_events hop, so no dataset
         # determines it; the home resolves to the anchor and the input-safety
         # checker raises downstream (exercised in test_dev1832_cross_model_exec).
-        assert _home_path("sum(amount - customers.regions.bad_pop)") == ()
+        assert _home_path("sum(orders.amount - customers.regions.bad_pop)") == ()
 
 
 class TestHomeIsSpellingInvariant:
@@ -112,7 +112,7 @@ class TestHomeIsSpellingInvariant:
             "sum(customers.spend - customers.regions.pop)") == ("customers",)
 
     @pytest.mark.parametrize("formula,expected", [
-        ("sum(amount - cost)", ()),                       # both host-local
+        ("sum(orders.amount - orders.cost)", ()),                       # both host-local
         ("sum(customers.spend - customers.discount)", ("customers",)),
     ])
     def test_home_path_matrix(self, formula, expected):
@@ -127,18 +127,18 @@ class TestAttachedConstituentGrainWidensTheHome:
 
     def test_explicit_status_partition_pulls_home_to_root(self):
         assert _home_path(
-            "sum(customers.discount * avg(amount, partition_by=status))") == ()
+            "sum(customers.discount * avg(orders.amount, partition_by=orders.status))") == ()
 
     def test_explicit_tier_partition_keeps_home_at_customers(self):
         assert _home_path(
-            "sum(customers.discount * avg(amount, partition_by=customers.tier))"
+            "sum(customers.discount * avg(orders.amount, partition_by=customers.tier))"
         ) == ("customers",)
 
     def test_ungrained_constituent_takes_the_query_dimension(self):
         assert _home_path(
-            "sum(customers.discount * avg(amount))", dimensions=["status"]) == ()
+            "sum(customers.discount * avg(orders.amount))", dimensions=["orders.status"]) == ()
         assert _home_path(
-            "sum(customers.discount * avg(amount))",
+            "sum(customers.discount * avg(orders.amount))",
             dimensions=["customers.tier"]) == ("customers",)
 
 
@@ -154,7 +154,7 @@ class TestParallelNamedEdges:
         models = _parallel_edge_datasets()
         elab = elaborate_query(
             query=SlayerQuery(population="tk", metrics=[
-                QueryMetric(metric="sum(opener.score - closer.score)", alias="m")]),
+                QueryMetric(metric="sum(tk.opener.score - tk.closer.score)", alias="m")]),
             bundle=ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:]))
         aggs = [k for k in elab.terms if isinstance(k, AggregateKey)]
         assert len(aggs) == 1

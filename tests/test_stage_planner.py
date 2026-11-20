@@ -90,7 +90,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestSingleStage:
     def test_simple_aggregation(self):
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         # One slot in projection.
         assert len(planned.projection) == 1
@@ -102,8 +102,8 @@ class TestSingleStage:
     def test_dimension_plus_measure(self):
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         # Two projection slots: status (row) + amount_sum (aggregate).
@@ -112,8 +112,8 @@ class TestSingleStage:
     def test_filter_in_planned_query(self):
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "filter": ["status == 'paid'"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "filter": ["orders.status == 'paid'"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         # One typed mask per filter conjunct.
@@ -135,7 +135,7 @@ class TestUserNameAlias:
             metrics=[
                 {"metric": "sum(customers.revenue)", "alias": "rev_sum"},
             ],
-            dimensions=["status"],
+            dimensions=["orders.status"],
         )
         planned = plan_query(query=q, bundle=_bundle())
         assert planned.stage_schema is not None
@@ -156,13 +156,13 @@ class TestDownstreamStageFlatRefs:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "metrics": [{"metric": "max(amount_sum)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "max(stage1.amount_sum)"}],
+            "dimensions": ["stage1.status"],
         })
         planned_stages = plan_stages(
             queries=[stage1, stage2], bundle=_bundle(),
@@ -181,12 +181,12 @@ class TestDownstreamStageFlatRefs:
             population="orders",
             metrics=[{"metric": "sum(customers.revenue)",
                        "alias": "robot_details__modelseriesval"}],
-            dimensions=["status"],
+            dimensions=["orders.status"],
         )
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "metrics": [{"metric": "robot_details.modelseriesval"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "stage1.robot_details.modelseriesval"}],
+            "dimensions": ["stage1.status"],
         })
         bundle = _bundle()
         with pytest.raises(UnknownReferenceError) as ei:
@@ -207,16 +207,16 @@ class TestTopoSort:
         stage_a = SlayerQuery.model_validate({
             "name": "stage_a",
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         stage_b = SlayerQuery.model_validate({
             "name": "stage_b",
             "population": "stage_a",
-            "metrics": [{"metric": "max(amount_sum)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "max(stage_a.amount_sum)"}],
+            "dimensions": ["stage_a.status"],
         })
-        root = SlayerQuery(population="stage_b", dimensions=["status"])
+        root = SlayerQuery(population="stage_b", dimensions=["stage_b.status"])
         planned = plan_stages(
             queries=[stage_b, stage_a, root], bundle=_bundle(),
         )
@@ -231,18 +231,18 @@ class TestTopoSort:
         s1 = SlayerQuery.model_validate({
             "name": "dup",
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         s2 = SlayerQuery.model_validate({
             "name": "dup",
             "population": "orders",
-            "metrics": [{"metric": "max(amount)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "max(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         root = SlayerQuery(
             population="dup",
-            dimensions=["status"],
+            dimensions=["dup.status"],
         )
         bundle = _bundle()
         with pytest.raises(ValueError, match="[Dd]uplicate stage"):
@@ -253,16 +253,16 @@ class TestTopoSort:
         a = SlayerQuery(
             name="stage_a",
             population="stage_b",
-            dimensions=["status"],
+            dimensions=["stage_b.status"],
         )
         b = SlayerQuery(
             name="stage_b",
             population="stage_a",
-            dimensions=["status"],
+            dimensions=["stage_a.status"],
         )
         root = SlayerQuery(
             population="stage_a",
-            dimensions=["status"],
+            dimensions=["stage_a.status"],
         )
         bundle = _bundle()
         with pytest.raises(ValueError, match="[Cc]ycle"):
@@ -276,10 +276,10 @@ class TestStageSchemaMultiAlias:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev1"},
-                {"metric": "sum(amount)", "alias": "rev2"},
+                {"metric": "sum(orders.amount)", "alias": "rev1"},
+                {"metric": "sum(orders.amount)", "alias": "rev2"},
             ],
-            dimensions=["status"],
+            dimensions=["orders.status"],
         )
         planned = plan_query(query=q, bundle=_bundle())
         col_names = [c.name for c in planned.stage_schema.fields]

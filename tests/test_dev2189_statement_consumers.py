@@ -100,7 +100,7 @@ async def test_policy_hop_tables_count_for_refresh_keys() -> None:
 # --------------------------------------------------------------------------- #
 # Result columns
 # --------------------------------------------------------------------------- #
-JOINED_KEYS = ["orders.customers.name", "orders.customers.regions.name", "orders.amount_sum"]
+JOINED_KEYS = ["customers.name", "customers.regions.name", "orders.amount_sum"]
 
 
 @pytest.mark.parametrize("policy", [None, "join_multi_hop"])
@@ -135,7 +135,7 @@ LONG = "a" * 70
 @pytest.mark.parametrize("policy", [None, "join_multi_hop"])
 async def test_length_fitted_result_names_come_back_canonical(policy: Optional[str]) -> None:
     long_query = SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": LONG}],
+        "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "sum(orders.amount)", "alias": LONG}],
     })
     async with emission_engine("postgres") as (base, _):
         engine = SlayerQueryEngine(storage=base.storage, policy=POLICIES[policy] if policy else None)
@@ -146,7 +146,7 @@ async def test_length_fitted_result_names_come_back_canonical(policy: Optional[s
     assert response.sql is not None
     emitted = parsed_query(response.sql, dialect="postgres").named_selects
     assert all(len(name.encode()) <= 63 for name in emitted)
-    assert response.columns == ["orders.status", f"orders.{LONG}"]
+    assert response.columns == ["orders.status", LONG]
 
 
 async def test_executed_rows_carry_the_canonical_keys_in_projection_order() -> None:
@@ -169,8 +169,8 @@ def _profile(version: tuple[int, int]):
 
 
 #: Unnests ``skills`` and filters through a correlated semi-join in the same SELECT.
-UNNEST_BESIDE_SEMI_JOIN = query(dimensions=["team"], filter=["assignments.id = 1"],
-                                metrics=[metric("count(skills.*)", "n")])
+UNNEST_BESIDE_SEMI_JOIN = query(dimensions=["contractors.team"], filter=["assignments.id = 1"],
+                                metrics=[metric("count(contractors.skills.*)", "n")])
 
 
 async def test_unnest_beside_a_semi_join_is_refused_before_25_8(monkeypatch: pytest.MonkeyPatch) -> None:

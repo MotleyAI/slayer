@@ -285,17 +285,17 @@ async def engine(tmp_path) -> SlayerQueryEngine:
 class TestEndToEndBinding:
     async def test_each_scalar_binds_and_appears_in_sql(self, engine) -> None:
         cases = [
-            ("greatest(amount, disc) > 15", "MAX("),
-            ("least(amount, disc) < 15", "MIN("),
-            ("trunc(amount) >= 20", "TRUNC("),
-            ("mod(id, 2) == 0", "%"),
+            ("greatest(orders.amount, orders.disc) > 15", "MAX("),
+            ("least(orders.amount, orders.disc) < 15", "MIN("),
+            ("trunc(orders.amount) >= 20", "TRUNC("),
+            ("mod(orders.id, 2) == 0", "%"),
         ]
         for predicate, needle in cases:
             resp = await engine.execute(
                 SlayerQuery(
                     population="orders",
-                    dimensions=[QueryDimension(field="status")],
-                    metrics=[QueryMetric(metric="count(*)", alias="n")],
+                    dimensions=[QueryDimension(field="orders.status")],
+                    metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
                     filter=[predicate],
                 ),
                 dry_run=True,
@@ -308,18 +308,18 @@ class TestEndToEndBinding:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
-                filter=["mod(amount + qty, 3) == 0"],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["mod(orders.amount + orders.qty, 3) == 0"],
             )
         )
-        assert resp.data[0]["orders.n"] == 2
+        assert resp.data[0]["n"] == 2
 
     @pytest.mark.parametrize(
         "predicate,func",
         [
-            ("trunc(amount, 2) > 1", "trunc"),
-            ("mod(amount) > 1", "mod"),
-            ("greatest(amount) > 1", "greatest"),
+            ("trunc(orders.amount, 2) > 1", "trunc"),
+            ("mod(orders.amount) > 1", "mod"),
+            ("greatest(orders.amount) > 1", "greatest"),
         ],
     )
     async def test_arity_errors_surface_at_bind_time(
@@ -327,7 +327,7 @@ class TestEndToEndBinding:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
             filter=[predicate],
         )
         with pytest.raises(ValueError, match=func):
@@ -343,16 +343,16 @@ class TestGreatestLeastNullSemanticsSqlite:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="id")],
+                dimensions=[QueryDimension(field="orders.id")],
                 metrics=[QueryMetric(metric=expression, alias="g")],
             )
         )
-        return {int(r["orders.id"]): r["orders.g"] for r in resp.data}
+        return {int(r["orders.id"]): r["g"] for r in resp.data}
 
     async def test_greatest_ignores_null(self, engine) -> None:
-        got = await self._values(engine, "greatest(max(amount), max(disc))")
+        got = await self._values(engine, "greatest(max(orders.amount), max(orders.disc))")
         assert got == {1: 10.0, 2: 20.0, 3: 30.0, 4: None}
 
     async def test_least_ignores_null(self, engine) -> None:
-        got = await self._values(engine, "least(max(amount), max(disc))")
+        got = await self._values(engine, "least(max(orders.amount), max(orders.disc))")
         assert got == {1: 10.0, 2: 5.0, 3: 30.0, 4: None}

@@ -23,11 +23,11 @@ class TestPartitionByRequired:
     async def test_aggregate_without_partition_by_raises_directive(self) -> None:
         q = _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount) > 5000 THEN 1 ELSE 0 END",
                  "alias": "band"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
@@ -44,11 +44,11 @@ class TestAggregateReferencingDimGenerates:
         # grain.)
         q = _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         sql = await gen(q)
         assert "_cm_" in sql
@@ -60,12 +60,12 @@ class TestDeferredShapesRaiseDev1824:
         # transform is a permanent type rule (ValueError, no issue ref).
         q = _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
+                "orders.region",
+                {"field": "CASE WHEN cumsum(sum(orders.amount)) > 5000 THEN 1 ELSE 0 END",
                  "alias": "x"},
             ],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         with pytest.raises(ValueError) as ei:
             await gen(q)
@@ -78,12 +78,12 @@ class TestDeferredShapesRaiseDev1824:
         # (Executed values: test_dev1824_computed_dim_execution.py::TestWindowInDimension.)
         q = _q(
             dimensions=[
-                "region",
-                {"field": "CASE WHEN sum(amount, window='90d', partition_by=city) "
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount, window='90d', partition_by=orders.city) "
                                "> 5000 THEN 1 ELSE 0 END", "alias": "x"},
             ],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -97,11 +97,11 @@ class TestDeferredShapesRaiseDev1824:
         # (Executed values: test_dev1824_computed_dim_execution.py.)
         q = _q(
             dimensions=[
-                "region",
-                {"field": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
+                "orders.region",
+                {"field": f"CASE WHEN {agg}(orders.amount, partition_by=orders.city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "x"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -110,7 +110,7 @@ class TestDistinctDimensionValuesRejection:
     async def test_aggregate_dim_rejected_in_raw_rows_mode(self) -> None:
         q = _q(
             dimensions=[
-                {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             distinct_dimension_values=False,

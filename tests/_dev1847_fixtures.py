@@ -102,13 +102,13 @@ def source_queries_equiv_dataset() -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name="city_region_total", population="sales",
-                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
-                metrics=[QueryMetric(metric="sum(amount)", alias="city_total")],
+                dimensions=[QueryDimension(field="sales.region"), QueryDimension(field="sales.city")],
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="city_total")],
             ),
             SlayerQuery(
                 population="city_region_total",
-                dimensions=[QueryDimension(field="region")],
-                metrics=[QueryMetric(metric="avg(city_total)", alias="acr")],
+                dimensions=[QueryDimension(field="city_region_total.region")],
+                metrics=[QueryMetric(metric="avg(city_region_total.city_total)", alias="acr")],
             ),
         ],
     )
@@ -132,9 +132,9 @@ async def gen(query: SlayerQuery, *, dialect: str = "postgres") -> str:
         dialect=dialect, validate=False)
 
 
-INNER_CR = "sum(amount, partition_by=[city, region])"  # [city, region] grain
-INNER_CITY = "sum(amount, partition_by=city)"          # [city] grain (spans regions)
-INNER_CRP = "sum(amount, partition_by=[city, region, product])"
+INNER_CR = "sum(sales.amount, partition_by=[sales.city, sales.region])"  # [city, region] grain
+INNER_CITY = "sum(sales.amount, partition_by=sales.city)"  # [city] grain (spans regions)
+INNER_CRP = "sum(sales.amount, partition_by=[sales.city, sales.region, sales.product])"
 
 
 def reagg(outer: str, inner: str, *, name: str, **kw) -> QueryMetric:
@@ -202,15 +202,15 @@ SHAPE_B_ACR = {
 }
 SHAPE_B_BAND_THRESHOLD = 45.0
 SPEND_BAND_EXPR = (
-    f"CASE WHEN sum(amount, partition_by=[city, region]) > {SHAPE_B_BAND_THRESHOLD} "
+    f"CASE WHEN sum(sales.amount, partition_by=[sales.city, sales.region]) > {SHAPE_B_BAND_THRESHOLD} "
     f"THEN 'hi' ELSE 'lo' END"
 )
 
 
 # --- Mixed row/attached sources over the (quantity, unit_price) widening.
-INNER_UP_PRODUCT = "avg(unit_price, partition_by=product)"
-INNER_UP_CITY = "avg(unit_price, partition_by=city)"
-MIXED_SUM = f"sum(quantity * {INNER_UP_PRODUCT})"
+INNER_UP_PRODUCT = "avg(sales.unit_price, partition_by=sales.product)"
+INNER_UP_CITY = "avg(sales.unit_price, partition_by=sales.city)"
+MIXED_SUM = f"sum(sales.quantity * {INNER_UP_PRODUCT})"
 #: avg(unit_price) by product over all rows (NULL prices ignored): 45/9, 60/4.
 AVG_UP_BY_PRODUCT = {"P": 5.0, "Q": 15.0}
 #: the headline row-weighted oracle; Void rows carry quantity, so Void = 15.
@@ -254,7 +254,7 @@ MIXED_BAND_THRESHOLD = 60.0
 #: amount:sum grouped by the mixed band (hi = {North, South}).
 AMOUNT_BY_MIXED_BAND = {"hi": 230.0, "lo": 200.0}
 MIXED_BAND_EXPR = (
-    f"CASE WHEN sum(quantity * {INNER_UP_PRODUCT}, partition_by=region) "
+    f"CASE WHEN sum(sales.quantity * {INNER_UP_PRODUCT}, partition_by=sales.region) "
     f"> {MIXED_BAND_THRESHOLD} THEN 'hi' ELSE 'lo' END"
 )
 
