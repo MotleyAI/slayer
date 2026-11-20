@@ -97,7 +97,7 @@ async def _count(engine, **variables):
     """Count order_facts rows with the given FILTER_PARAMS variables."""
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"metric": "count"}],
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": variables,
     })
     return _sole(await engine.execute(q))
@@ -256,7 +256,7 @@ async def test_required_omitted_raises_naming_category(tmp_path):
     engine, _, _, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"metric": "count"}],
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": {"region": ["North"]},  # category (required) omitted
     })
     with pytest.raises(ValueError, match=r"Undefined variable 'category'"):
@@ -267,7 +267,7 @@ async def test_empty_list_raises_not_treated_as_omission(tmp_path):
     engine, _, _, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"metric": "count"}],
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": {"category": _BOTH, "region": []},
     })
     with pytest.raises(ValueError, match=r"cannot be an empty list"):
@@ -281,8 +281,8 @@ async def test_view_total_by_region(tmp_path):
     engine, _, gold, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "orders_overview",
-        "metrics": ["total_amount"],
-        "dimensions": ["region"],
+        "metrics": ["orders_overview.total_amount"],
+        "dimensions": ["orders_overview.region"],
     })
     got = _by_group(await engine.execute(q))
     assert got == {g["region"]: g["amount"] for g in gold["by_region"]}
@@ -292,7 +292,7 @@ async def test_join_total_by_customer_region(tmp_path):
     engine, _, gold, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": ["total_amount"],
+        "metrics": ["orders.total_amount"],
         "dimensions": ["customers.region"],
     })
     got = _by_group(await engine.execute(q))

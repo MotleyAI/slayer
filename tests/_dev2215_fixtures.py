@@ -201,24 +201,24 @@ def m(expression: str, name: str = "v") -> dict[str, str]:
     return {"metric": expression, "alias": name}
 
 
-FIRST_LAST = [m("first(status, updated_at)", "f"), m("last(status, updated_at)", "l")]
+FIRST_LAST = [m("first(events.status, events.updated_at)", "f"), m("last(events.status, events.updated_at)", "l")]
 #: customer_id → (first, last) over the events seed.
 FIRST_LAST_BY_CUSTOMER = {1: ("a", "c"), 2: (None, None), 3: ("p", None)}
 
 
 def events_query() -> SlayerQuery:
-    return q(population="events", dimensions=["customer_id"], metrics=FIRST_LAST)
+    return q(population="events", dimensions=["events.customer_id"], metrics=FIRST_LAST)
 
 
 async def check_events(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(events_query())
-    got = {int(r["events.customer_id"]): (r["events.f"], r["events.l"]) for r in resp.data}
+    got = {int(r["events.customer_id"]): (r["f"], r["l"]) for r in resp.data}
     assert got == FIRST_LAST_BY_CUSTOMER
 
 
 def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{dataset}.{name}"]
+    return resp.data[0][name]
 
 
 def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:
@@ -235,7 +235,9 @@ def day(value: Any) -> Optional[str]:
 
 
 def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str = "orders") -> dict[Any, Any]:
-    out = {r[f"{dataset}.{key}"]: r[f"{dataset}.{value}"] for r in resp.data}
+    """A result key or alias as written, else a field of ``dataset``."""
+    col = key if "." in key or key in resp.columns else f"{dataset}.{key}"
+    out = {r[col]: r[value] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 

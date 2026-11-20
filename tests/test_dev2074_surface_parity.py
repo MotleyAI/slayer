@@ -86,11 +86,8 @@ async def make_engine() -> AsyncIterator[EngineBuilder]:
 
 
 class TestRecommendation:
-    @pytest.mark.parametrize(("item", "path"), [
-        ("regions.rname", "customers.hr.rname"),
-        ("regions.n", "customers.hr.n"),
-    ])
-    async def test_single_named_edge_is_emitted_by_its_name(self, make_engine: EngineBuilder, item: str, path: str) -> None:
+    @pytest.mark.parametrize("item", ["regions.rname", "regions.n"])
+    async def test_single_named_edge_is_emitted_as_written(self, make_engine: EngineBuilder, item: str) -> None:
         engine = await make_engine([
             _m("orders", cols=("customer_id",), joins=[_to("customers", "customer_id")]),
             _m("customers", cols=("region_id",), joins=[_to("regions", "region_id", name="hr")]),
@@ -99,9 +96,9 @@ class TestRecommendation:
         rec = await engine.recommend_population(["orders.id", item])
         assert rec.population == "orders"
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
-        assert paths[item] == path
+        assert paths[item] == item
 
-    async def test_equal_length_routes_prefer_the_to_one_hop(self, make_engine: EngineBuilder) -> None:
+    async def test_equal_length_routes_prefer_the_to_one_hop_is_emitted_as_written(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine([
             _m("a", cols=("b_id", "x"), joins=[_to("b", "b_id", name="to_b")]),
             _m("b", cols=("a_id", "y"), joins=[_to("a", "a_id", name="to_a")],
@@ -110,7 +107,7 @@ class TestRecommendation:
         rec = await engine.recommend_population(["a.x", "b.total"])
         assert rec.population == "a"
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
-        assert paths["b.total"] == "to_b.total"
+        assert paths["b.total"] == "b.total"
 
     async def test_unaddressable_pair_is_named_in_the_warnings(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine(_unnamed_pair())
@@ -268,14 +265,14 @@ async def cycle_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 class TestDirectedCycle:
-    async def test_inference_needs_an_explicit_population(self, cycle_engine) -> None:
+    async def test_inference_ties(self, cycle_engine) -> None:
         query = SlayerQuery.model_validate({"dimensions": ["x.v", "y.v", "z.v"]})
         with pytest.raises(PopulationInferenceError) as ei:
             await cycle_engine.execute(query)
-        assert ei.value.reason == PopulationErrorReason.NO_VIABLE_CANDIDATE
+        assert ei.value.reason == PopulationErrorReason.TIE
 
     async def test_the_named_population_executes(self, cycle_engine) -> None:
-        resp = await cycle_engine.execute(SlayerQuery.model_validate({"population": "x", "dimensions": ["v", "y.v", "y.z.v"]}))
+        resp = await cycle_engine.execute(SlayerQuery.model_validate({"population": "x", "dimensions": ["x.v", "y.v", "y.z.v"]}))
         assert len(resp.data) == 1
         assert sorted(resp.data[0].values()) == ["x1", "y1", "z1"]
 
@@ -284,4 +281,4 @@ class TestDirectedCycle:
         assert rec.reachable is False
         assert rec.population is None
         coverage = {c.dataset_name: set(c.reachable_items) for c in rec.coverage}
-        assert coverage == {"x": {"x.v", "y.v"}, "y": {"y.v", "z.v"}, "z": {"z.v", "x.v"}}
+        assert coverage == {name: {"x.v", "y.v", "z.v"} for name in ("x", "y", "z")}

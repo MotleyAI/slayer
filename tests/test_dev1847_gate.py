@@ -48,7 +48,7 @@ class TestFullyAttachedAccepted:
             parsed = parse_expr(f)
             assert isinstance(parsed, AggCall)
             assert _source_is_reaggregation(parsed.source)
-        row_level = parse_expr("sum(amount > 45)")
+        row_level = parse_expr("sum(sales.amount > 45)")
         assert isinstance(row_level, AggCall)
         assert not _source_is_reaggregation(row_level.source)
 
@@ -65,7 +65,7 @@ class TestFullyAttachedAccepted:
 
     async def test_reaggregation_compiles_to_sql(self):
         """Accepted end-to-end: emits SQL rather than raising the gate."""
-        sql = await gen(sales_q(dimensions=["region"],
+        sql = await gen(sales_q(dimensions=["sales.region"],
                                 metrics=[QueryMetric(metric=f"avg({INNER_CR})",
                                                        alias="acr")]))
         assert "SELECT" in sql.upper()
@@ -77,7 +77,7 @@ class TestRejections:
         row-grain aggregation and parses. A nested transform in a
         source now parses too; only a row-level leaf under it is
         rejected, at plan time — see test_dev1832_transform_source."""
-        parsed = parse_expr("sum(amount * avg(amount, partition_by=city))")
+        parsed = parse_expr("sum(sales.amount * avg(sales.amount, partition_by=sales.city))")
         assert isinstance(parsed, AggCall)
         assert parsed.agg == "sum"
 
@@ -87,9 +87,9 @@ class TestRejections:
         names the parameter, the grain, and the partition_by remedy,
         ref-free."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"wavg({INNER_CR}, weight=id)", alias="w")])
+                metric=f"wavg({INNER_CR}, weight=sales.id)", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -103,7 +103,7 @@ class TestRejections:
         weight default (the ``amount`` field) is undetermined at the operand
         grain; same one-rule error."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
@@ -118,7 +118,7 @@ class TestRejections:
         attached operand is a typed error naming the combination, never a
         NotImplementedError."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"sum({INNER_CR}, window='90d')", alias="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -140,15 +140,15 @@ class TestCrossModelAndFilteredOperandNowAccepted:
         """A dotted joined-dataset leaf inside the expression now compiles."""
         query = SlayerQuery(
             population="corders",
-            dimensions=[QueryDimension(field="customer_id")],
-            metrics=[QueryMetric(metric="sum(amount - customers.region_id)",
+            dimensions=[QueryDimension(field="corders.customer_id")],
+            metrics=[QueryMetric(metric="sum(corders.amount - customers.region_id)",
                                    alias="x")])
         assert "SELECT" in (await gen(query)).upper()
 
     async def test_filtered_column_operand_accepted(self):
         """A filtered field operand desugars to CASE WHEN, not a rejection."""
-        query = sales_q(dimensions=["region"],
-                        metrics=[QueryMetric(metric="sum(q_amount - 1)",
+        query = sales_q(dimensions=["sales.region"],
+                        metrics=[QueryMetric(metric="sum(sales.q_amount - 1)",
                                                alias="x")])
         assert "CASE WHEN" in (await gen(query)).upper()
 
@@ -171,7 +171,7 @@ class TestFirstLastDispatchUnchanged:
 
     def test_last_over_plain_column_is_aggregation(self):
         """The non-aggregated first argument still routes to the aggregation."""
-        key = _bound("last(amount)")
+        key = _bound("last(sales.amount)")
         assert isinstance(key, AggregateKey)
         assert key.agg == "last"
 
@@ -180,7 +180,7 @@ class TestUnknownOuterAggregationRejectedAtBinding:
     async def test_unknown_custom_name_over_aggregate_errors(self):
         """Unknown custom-aggregation candidates are rejected at binding."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"magic_fn({INNER_CR})", alias="x")])
         with pytest.raises((SlayerError, ValueError), match="(?i)unknown function"):
             await gen(query)

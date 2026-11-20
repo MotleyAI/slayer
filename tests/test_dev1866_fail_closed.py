@@ -73,9 +73,11 @@ class TestFailClosed:
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
         err = ei.value
-        assert err.reason is PopulationErrorReason.AMBIGUOUS_PATH
+        assert err.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
         assert "shipment" in str(err)
         assert "depot" in str(err)
+        assert "origin_depot_id" in str(err)
+        assert "dest_depot_id" in str(err)
         _assert_stable_prefix(err)
 
     async def test_ambiguous_datasource_names_both(self, storage) -> None:

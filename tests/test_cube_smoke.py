@@ -101,8 +101,8 @@ async def test_view_cross_model_measure_resolves_to_underlying_column(tmp_path):
     engine, _models = await _save_converted(tmp_path)
     query = SlayerQuery.model_validate({
         "population": "orders_overview",
-        "dimensions": [QueryDimension(field="status")],
-        "metrics": [{"metric": "customers_lifetime_value"}],
+        "dimensions": [QueryDimension(field="orders_overview.status")],
+        "metrics": [{"metric": "orders_overview.customers_lifetime_value"}],
     })
     sql = await _gen_sql(engine, query)  # must not raise "Column not found"
     assert "ltv" in sql.lower()
@@ -113,8 +113,8 @@ async def test_view_status_dimension_generates(tmp_path):
     engine, _models = await _save_converted(tmp_path)
     query = SlayerQuery.model_validate({
         "population": "orders_overview",
-        "dimensions": [QueryDimension(field="status")],
-        "metrics": [{"metric": "total_revenue"}],
+        "dimensions": [QueryDimension(field="orders_overview.status")],
+        "metrics": [{"metric": "orders_overview.total_revenue"}],
     })
     sql = await _gen_sql(engine, query)
     assert "status" in sql.lower()
@@ -126,7 +126,7 @@ async def test_filtered_and_unfiltered_measures_emit_distinct_sql(tmp_path):
     engine, _models = await _save_converted(tmp_path)
     query = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": [{"metric": "total_revenue"}, {"metric": "completed_revenue"}],
+        "metrics": [{"metric": "orders.total_revenue"}, {"metric": "orders.completed_revenue"}],
     })
     sql = await _gen_sql(engine, query)
     assert sql.lower().count("sum(") >= 2

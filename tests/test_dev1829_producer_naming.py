@@ -23,10 +23,10 @@ def _q(**kw) -> SlayerQuery:
 
 
 def _has_output_alias(body: str, leaf: str) -> bool:
-    """Whether ``body`` projects ``orders.<leaf>`` as a column alias, robust to
-    per-dialect quoting (``"orders.x"`` / ``[orders___x]`` / `` `orders___x` ``)."""
+    """Whether ``body`` projects ``<leaf>`` as a column alias, robust to
+    per-dialect quoting (``"x"`` / ``[x]`` / `` `x` ``)."""
     return re.search(
-        rf'AS\s+["\[`]orders[._]{{1,3}}{re.escape(leaf)}["\]`]', body,
+        rf'AS\s+["\[`]{re.escape(leaf)}["\]`]', body,
     ) is not None
 
 
@@ -34,9 +34,9 @@ def _has_output_alias(body: str, leaf: str) -> bool:
 class TestProducerOutputAlias:
     async def test_named_measure_uses_public_alias(self, dialect: str) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=region)", alias="region_rev",
+                metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -46,9 +46,9 @@ class TestProducerOutputAlias:
 
     async def test_composite_leaf_uses_canonical_alias(self, dialect: str) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
-                metric="sum(amount) / sum(amount, partition_by=region)", alias="sh",
+                metric="sum(orders.amount) / sum(orders.amount, partition_by=orders.region)", alias="sh",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -63,9 +63,9 @@ async def test_filtered_measure_predicate_lives_in_producer(dialect: str) -> Non
     # The metric's ``DatasetField.filter`` (CASE WHEN status='ok') renders inside the
     # producer CTE, at the partition grain.
     sql = await gen(_q(
-        dimensions=["region", "city"],
+        dimensions=["orders.region", "orders.city"],
         metrics=[QueryMetric(
-            metric="sum(ok_amount, partition_by=region)", alias="o",
+            metric="sum(orders.ok_amount, partition_by=orders.region)", alias="o",
         )],
     ), dialect=dialect)
     body = cm_cte_bodies(sql)

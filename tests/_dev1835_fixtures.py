@@ -203,11 +203,11 @@ CHANGE_PCT_OVER_LAST = {("North", "2024-02"): 0.5}
 # Union-grain oracles.
 # --------------------------------------------------------------------------- #
 UNION_WM_DIM = (
-    "rank(sum(amount, window='90d', partition_by=region) - "
-    "sum(amount, partition_by=region), direction='desc')"
+    "rank(sum(orders.amount, window='90d', partition_by=orders.region) - "
+    "sum(orders.amount, partition_by=orders.region), direction='desc')"
 )
 UNION_RK_DIM = (
-    "rank(last(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
+    "rank(last(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), direction='desc')"
 )
 UNION_WM_RANK = {
     ("North", "2024-01"): 5, ("North", "2024-02"): 1,
@@ -320,14 +320,14 @@ async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 # shipped_backend fixtures stay inline in each module — pytest fixture imports
 # trip F811 where the fixture name shadows the test-method parameter).
 def _by_region(resp, col: str) -> dict:
-    mapping = {r["orders.region"]: r[f"orders.{col}"] for r in resp.data}
+    mapping = {r["orders.region"]: r[col] for r in resp.data}
     assert len(mapping) == len(resp.data), f"duplicate region rows: {resp.data}"
     return mapping
 
 
 def _by_region_month(resp, col: str) -> dict:
     mapping = {
-        (r["orders.region"], month_key(r["orders.ordered_at"])): r[f"orders.{col}"]
+        (r["orders.region"], month_key(r["orders.ordered_at"])): r[col]
         for r in resp.data
     }
     assert len(mapping) == len(resp.data), f"duplicate (region, month) rows: {resp.data}"

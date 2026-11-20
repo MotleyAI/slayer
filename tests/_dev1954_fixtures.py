@@ -162,7 +162,7 @@ def stale_warnings(resp) -> list:
 
 
 #: Canonical result keys (query rooted at orders).
-RNAME = "orders.customers.hr.rname"
+RNAME = "customers.hr.rname"
 #: SUM(amount) per region name.
 AMOUNT_BY_RNAME = {"North": 100.0, "South": 20.0, None: 47.0}
 #: MAX(pop) per region name.

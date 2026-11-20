@@ -21,9 +21,9 @@ from slayer.mcp.server import create_mcp_server
 from tests._deprecated_input_helpers import recorded
 from tests._ossie_vocabulary_fixtures import BACKENDS, shop_customers, shop_orders, shop_store, vocab_engine
 
-QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"field": "status", "label": "Status"}],
-                         "metrics": [{"metric": "sum(amount)", "alias": "total", "label": "Total"}]}
-METRIC_COLUMN = "orders.total"
+QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"field": "orders.status", "label": "Status"}],
+                         "metrics": [{"metric": "sum(orders.amount)", "alias": "total", "label": "Total"}]}
+METRIC_COLUMN = "total"
 #: The old Python attribute, read by name: it is deprecated on purpose.
 OLD_ATTRIBUTE = "measures"
 
@@ -95,7 +95,7 @@ async def shop_app(tmp_path: Path) -> TestClient:
 
 
 SHOP_QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"field": "customers.region", "label": "Region"}],
-                              "metrics": [{"metric": "sum(amount)", "alias": "total", "label": "Total"}]}
+                              "metrics": [{"metric": "sum(orders.amount)", "alias": "total", "label": "Total"}]}
 
 
 async def test_the_http_client_reads_metrics(tmp_path: Path) -> None:
@@ -103,8 +103,8 @@ async def test_the_http_client_reads_metrics(tmp_path: Path) -> None:
     client = routed_client(app)
     await client.create_dataset(shop_orders())
     response = await client.query(SHOP_QUERY)
-    assert set(response.attributes.metrics) == {"orders.total"}
-    assert "orders.customers.region" in response.attributes.dimensions
+    assert set(response.attributes.metrics) == {"total"}
+    assert "customers.region" in response.attributes.dimensions
 
 
 async def test_the_http_client_reads_metrics_through_an_old_route(tmp_path: Path) -> None:
@@ -114,4 +114,4 @@ async def test_the_http_client_reads_metrics_through_an_old_route(tmp_path: Path
         await client.create_dataset(shop_orders())
     assert await client.get_dataset("orders", data_source="shop") is not None
     response = await client.query(SHOP_QUERY)
-    assert set(response.attributes.metrics) == {"orders.total"}
+    assert set(response.attributes.metrics) == {"total"}

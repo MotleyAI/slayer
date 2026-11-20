@@ -25,15 +25,15 @@ async def test_local_and_cross_model_aggregates_in_one_expression(exec_engine) -
     resp = await exec_engine.execute(q(
         dimensions=["customers.tier"],
         metrics=[
-            QueryMetric(metric="sum(amount)", alias="a"),
+            QueryMetric(metric="sum(orders.amount)", alias="a"),
             QueryMetric(metric="sum(customers.spend)", alias="sp"),
-            QueryMetric(metric="sum(amount) / sum(customers.spend)", alias="r"),
+            QueryMetric(metric="sum(orders.amount) / sum(customers.spend)", alias="r"),
         ],
     ))
     assert resp.data
     for row in resp.data:
-        assert float(row["orders.r"]) == pytest.approx(
-            float(row["orders.a"]) / float(row["orders.sp"])
+        assert float(row["r"]) == pytest.approx(
+            float(row["a"]) / float(row["sp"])
         )
 
 
@@ -43,7 +43,7 @@ async def test_cross_model_source_inside_a_computed_dimension(exec_engine) -> No
         metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
     ))
     assert resp.data
-    assert all(r["orders.band"] in {"hi", "lo"} for r in resp.data)
+    assert all(r["band"] in {"hi", "lo"} for r in resp.data)
 
 
 async def test_computed_dimension_coexists_with_cross_model_measure(exec_engine: SlayerQueryEngine) -> None:
@@ -52,5 +52,5 @@ async def test_computed_dimension_coexists_with_cross_model_measure(exec_engine:
         metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
     ))
     assert resp.data
-    assert "orders.band" in resp.columns
+    assert "band" in resp.columns
     assert any(c.endswith("sp") for c in resp.columns)

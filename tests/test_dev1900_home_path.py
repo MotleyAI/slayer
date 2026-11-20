@@ -38,13 +38,13 @@ class TestDefinitionDefaultJoinsHomeCandidates:
         """Reference: an explicit weight=customers.spend already roots the
         aggregate at the shallower customers home."""
         resp = await engine.execute(orders_q(metrics=[EXPLICIT]))
-        assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
+        assert float(resp.data[0]["w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
     async def test_definition_default_matches_the_explicit(self, engine):
         """Subject: the non-overridden default must join the home candidates the
         same way — identical value to spelling it explicitly."""
         resp = await engine.execute(orders_q(metrics=[DEFAULT]))
-        assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
+        assert float(resp.data[0]["w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
 
 class TestReverseHopDefaultHomesOnCustomers:
@@ -52,8 +52,8 @@ class TestReverseHopDefaultHomesOnCustomers:
         """Rooted at regions, the customers.spend default homes on customers, which determines its region's pop:
         the value equals the same aggregate rooted at customers."""
         from_regions = await engine.execute(SlayerQuery(
-            population="regions", metrics=[QueryMetric(metric="wsum_cust_spend(pop)", alias="w")]))
+            population="regions", metrics=[QueryMetric(metric="wsum_cust_spend(regions.pop)", alias="w")]))
         from_customers = await engine.execute(SlayerQuery(
-            population="customers", metrics=[QueryMetric(metric="sum(regions.pop * spend)", alias="w")]))
-        assert float(from_regions.data[0]["regions.w"]) == pytest.approx(
-            float(from_customers.data[0]["customers.w"]))
+            population="customers", metrics=[QueryMetric(metric="sum(regions.pop * customers.spend)", alias="w")]))
+        assert float(from_regions.data[0]["w"]) == pytest.approx(
+            float(from_customers.data[0]["w"]))

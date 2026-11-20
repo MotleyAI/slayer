@@ -181,6 +181,13 @@ class StoredDatasets(BaseModel):
             return None
         return peer
 
+    def incident_names(self, name: str) -> frozenset[str]:
+        """The names of the edges incident to the stored dataset ``name``, declared on either side."""
+        current = self._dataset(name)
+        if current is None:
+            return frozenset()
+        return frozenset(n for n, _ in self._incident(current=current, extensions=[]) if n)
+
     def _incident(self, *, current: dict, extensions: list[dict]) -> list[tuple[str | None, str]]:
         """``(edge name, model at the other end)`` per stored join incident to ``current``, declared on either side, plus
         an unnamed virtual edge between the spine and every stored model; an exact-inverse twin counts once."""

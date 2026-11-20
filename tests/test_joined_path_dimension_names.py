@@ -24,7 +24,7 @@ from slayer.sql.dialects import get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from tests._dev1739_fixtures import customers_dataset, make_exec_engine
 
-REVENUE = {"metric": "sum(amount)", "alias": "revenue"}
+REVENUE = {"metric": "sum(orders.amount)", "alias": "revenue"}
 REGION_ID = {"alias": "region_id", "field": "customers.region_id"}
 REGION_NAME = {"alias": "region_name", "field": "customers.regions.name"}
 RID = {"alias": "rid", "field": "customers.region_id"}
@@ -57,30 +57,30 @@ def _rows(resp, *keys: str) -> List[tuple]:
 
 SINGLE_NAMED_ONE_HOP = {"population": "orders", "dimensions": [REGION_ID], "metrics": [REVENUE]}
 STAGE_NAMED_ONE_HOP = [
-    _stage(dimensions=[REGION_ID, "customer_id"]),
-    _outer(dimensions=["region_id", "customer_id", "revenue"]),
+    _stage(dimensions=[REGION_ID, "orders.customer_id"]),
+    _outer(dimensions=["cr.region_id", "cr.customer_id", "cr.revenue"]),
 ]
 STAGE_NAMED_TWO_HOP = [
     _stage(dimensions=[REGION_NAME]),
-    _outer(dimensions=["region_name", "revenue"]),
+    _outer(dimensions=["cr.region_name", "cr.revenue"]),
 ]
 STAGE_DOWNSTREAM_AGG = [
-    _stage(dimensions=[RID, "customer_id"]),
-    _outer(dimensions=["rid"], metrics=[{"metric": "sum(revenue)", "alias": "tot"}]),
+    _stage(dimensions=[RID, "orders.customer_id"]),
+    _outer(dimensions=["cr.rid"], metrics=[{"metric": "sum(cr.revenue)", "alias": "tot"}]),
 ]
 SINGLE_UNNAMED_PATH = {"population": "orders", "dimensions": [UNNAMED_PATH], "metrics": [REVENUE]}
 STAGE_UNNAMED_PATH = [
     _stage(dimensions=[UNNAMED_PATH]),
-    _outer(dimensions=["customers__region_id", "revenue"]),
+    _outer(dimensions=["cr.customers__region_id", "cr.revenue"]),
 ]
 SINGLE_PLAIN_AND_NAMED = {
     "population": "orders",
-    "dimensions": ["customers.region_id", "status", RID],
+    "dimensions": ["customers.region_id", "orders.status", RID],
     "metrics": [REVENUE],
 }
 STAGE_PLAIN_AND_NAMED: list[SlayerQuery | dict] = [
-    _stage(dimensions=["customers.region_id", "status", RID]),
-    _outer(dimensions=["customers__region_id", "status", "rid", "revenue"]),
+    _stage(dimensions=["customers.region_id", "orders.status", RID]),
+    _outer(dimensions=["cr.customers__region_id", "cr.status", "cr.rid", "cr.revenue"]),
 ]
 SINGLE_ORDER_BY_NAME = {
     **SINGLE_NAMED_ONE_HOP, "dimensions": [RID],
@@ -89,13 +89,13 @@ SINGLE_ORDER_BY_NAME = {
 SINGLE_FILTER_BY_NAME = {**SINGLE_NAMED_ONE_HOP, "dimensions": [RID], "filter": ["rid = 1"]}
 STAGE_PLAIN_PATH = [
     _stage(dimensions=["customers.region_id"]),
-    _outer(dimensions=["customers__region_id", "revenue"]),
+    _outer(dimensions=["cr.customers__region_id", "cr.revenue"]),
 ]
 STAGE_LOCAL_RENAME = [
-    _stage(dimensions=[{"alias": "cust", "field": "customer_id"}]),
-    _outer(dimensions=["cust", "revenue"]),
+    _stage(dimensions=[{"alias": "cust", "field": "orders.customer_id"}]),
+    _outer(dimensions=["cr.cust", "cr.revenue"]),
 ]
-QUERY_BACKED_OUTER = {"population": "cr", "dimensions": ["region_id", "revenue"]}
+QUERY_BACKED_OUTER = {"population": "cr", "dimensions": ["cr.region_id", "cr.revenue"]}
 
 
 async def _save_query_backed_cr(engine: SlayerQueryEngine) -> None:
@@ -114,22 +114,22 @@ class TestNamedJoinedPathSingleQuery:
         ]
         await exec_engine.save_dataset(customers)
         resp = await exec_engine.execute(SINGLE_NAMED_ONE_HOP)
-        assert resp.columns == ["orders.region_id", "orders.revenue"]
-        assert _rows(resp, "orders.region_id", "orders.revenue") == [(1, 160.0), (2, 50.0)]
+        assert resp.columns == ["region_id", "revenue"]
+        assert _rows(resp, "region_id", "revenue") == [(1, 160.0), (2, 50.0)]
         attribute_keys = set(resp.attributes.dimensions) | set(resp.attributes.metrics)
         assert attribute_keys <= set(resp.columns)
-        assert resp.attributes.dimensions["orders.region_id"].label == "Region"
+        assert resp.attributes.dimensions["region_id"].label == "Region"
 
     async def test_order_by_name(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(SINGLE_ORDER_BY_NAME)
-        assert resp.columns == ["orders.rid", "orders.revenue"]
-        got = [(r["orders.rid"], float(r["orders.revenue"])) for r in resp.data]
+        assert resp.columns == ["rid", "revenue"]
+        got = [(r["rid"], float(r["revenue"])) for r in resp.data]
         assert got == [(2, 50.0), (1, 160.0)]
 
     async def test_filter_by_name(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(SINGLE_FILTER_BY_NAME)
-        assert resp.columns == ["orders.rid", "orders.revenue"]
-        assert _rows(resp, "orders.rid", "orders.revenue") == [(1, 160.0)]
+        assert resp.columns == ["rid", "revenue"]
+        assert _rows(resp, "rid", "revenue") == [(1, 160.0)]
 
     async def test_name_colliding_with_host_column_rejected(self, exec_engine) -> None:
         with pytest.raises(NameCollisionError, match="computed dimension name collides"):
@@ -153,7 +153,7 @@ class TestNamedJoinedPathCrossesStage:
 
     async def test_downstream_aggregates_by_name(self, exec_engine) -> None:
         resp = await exec_engine.execute(STAGE_DOWNSTREAM_AGG)
-        assert _rows(resp, "cr.rid", "cr.tot") == [(1, 160.0), (2, 50.0)]
+        assert _rows(resp, "cr.rid", "tot") == [(1, 160.0), (2, 50.0)]
 
     async def test_query_backed_model(self, exec_engine) -> None:
         await _save_query_backed_cr(exec_engine)
@@ -164,8 +164,8 @@ class TestNamedJoinedPathCrossesStage:
 class TestUnnamedComputedPathEqualsPlain:
     async def test_single_query_keys_by_path(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(SINGLE_UNNAMED_PATH)
-        assert resp.columns == ["orders.customers.region_id", "orders.revenue"]
-        assert _rows(resp, "orders.customers.region_id", "orders.revenue") == [(1, 160.0), (2, 50.0)]
+        assert resp.columns == ["customers.region_id", "revenue"]
+        assert _rows(resp, "customers.region_id", "revenue") == [(1, 160.0), (2, 50.0)]
 
     async def test_stage_reads_flattened_path(self, exec_engine) -> None:
         resp = await exec_engine.execute(STAGE_UNNAMED_PATH)
@@ -176,10 +176,10 @@ class TestPlainAndNamedOverOnePath:
     async def test_single_query_projects_both(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(SINGLE_PLAIN_AND_NAMED)
         assert resp.columns == [
-            "orders.customers.region_id", "orders.status", "orders.rid", "orders.revenue",
+            "customers.region_id", "orders.status", "rid", "revenue",
         ]
         assert resp.data
-        assert all(r["orders.rid"] == r["orders.customers.region_id"] for r in resp.data)
+        assert all(r["rid"] == r["customers.region_id"] for r in resp.data)
 
     async def test_stage_projects_both(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(STAGE_PLAIN_AND_NAMED)
@@ -257,7 +257,7 @@ async def _assert_parity(engine: SlayerQueryEngine, payload: Any) -> None:
 async def test_stage_column_names(exec_engine, dimension, flat, public) -> None:
     rendered = await _plan(exec_engine, [
         _stage(dimensions=[dimension]),
-        _outer(dimensions=[flat, "revenue"]),
+        _outer(dimensions=[f"cr.{flat}", "cr.revenue"]),
     ])
     schema = next(
         p.stage_schema for p in rendered.planned_list
@@ -270,7 +270,7 @@ async def test_stage_column_names(exec_engine, dimension, flat, public) -> None:
 
 def test_flat_rename_wrapper_error_names_the_stage() -> None:
     inner = exp.select(
-        exp.alias_(exp.column("x"), exp.to_identifier("orders.customers.region_id", quoted=True)),
+        exp.alias_(exp.column("x"), exp.to_identifier("customers.region_id", quoted=True)),
     ).from_("orders")
     with pytest.raises(ValueError, match="stage 'cr'") as info:
         build_flat_rename_wrapper(

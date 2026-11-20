@@ -149,21 +149,21 @@ class TestRunQueryRefine:
         return json.loads(result.stdout)
 
     def _assert_by_region(self, rows: list) -> None:
-        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in rows} == (
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["revenue"] for r in rows} == (
             BY_REGION_MONTH
         )
 
     def test_inline_json(self, store: str) -> None:
-        self._assert_by_region(self._rows(store, "--refine", '{"dimensions": ["region"]}'))
+        self._assert_by_region(self._rows(store, "--refine", '{"dimensions": ["orders.region"]}'))
 
     def test_at_file(self, store: str, tmp_path) -> None:
         refine_file = tmp_path / "refine.json"
-        refine_file.write_text('{"dimensions": ["region"]}')
+        refine_file.write_text('{"dimensions": ["orders.region"]}')
         self._assert_by_region(self._rows(store, "--refine", f"@{refine_file}"))
 
     def _args(self, query_input: str, store: str) -> SimpleNamespace:
         return SimpleNamespace(
-            query_json=query_input, refine='{"dimensions": ["region"]}', variables=None,
+            query_json=query_input, refine='{"dimensions": ["orders.region"]}', variables=None,
             variables_json=None, storage=store, dry_run=False, explain=False, format="json",
         )
 

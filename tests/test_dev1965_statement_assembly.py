@@ -44,7 +44,7 @@ from tests._dev1965_fixtures import (
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
 from tests.test_dev1756_identifier_length import _assert_within_limit
 
-_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "orders.created_at", "direction": "desc"}]
 _FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 
@@ -104,13 +104,13 @@ class TestOneTopLevelWith:
         async with exec_engine(dialect) as engine:
             resp = await engine.execute(cumsum_chain(order=_DESC_CREATED, limit=2, offset=1))
         assert [
-            (month_key(r["orders.created_at"]), float(r["orders.running"])) for r in resp.data
+            (month_key(r["orders.created_at"]), float(r["running"])) for r in resp.data
         ] == [("2024-03", 210.0), ("2024-02", 100.0)]
-        assert set(resp.data[0]) == {"orders.created_at", "orders.running"}
+        assert set(resp.data[0]) == {"orders.created_at", "running"}
 
     async def test_tsql_offset_without_order_gets_a_noop_ordering(self) -> None:
         # An inner stage: a final stage with dimensions is default-ordered.
-        stages = [cumsum_chain(name="s1", limit=2, offset=1), q(population="s1", metrics=["sum(running)"])]
+        stages = [cumsum_chain(name="s1", limit=2, offset=1), q(population="s1", metrics=["sum(s1.running)"])]
         sql = await gen(stages, dialect="tsql")
         top = assert_single_top_level_with(sql, "tsql")
         paged = next(s for s in top.find_all(exp.Select) if s.args.get("offset"))
@@ -136,7 +136,7 @@ class TestOuterOrderBy:
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_non_projected_order_field_resolves_against_the_chain(self, dialect: str) -> None:
         sql = await gen(cumsum_chain(
-            order=[{"field": "max(amount)", "direction": "desc"}], limit=3,
+            order=[{"field": "max(orders.amount)", "direction": "desc"}], limit=3,
         ), dialect=dialect)
         top = assert_single_top_level_with(sql, dialect)
         carried = set(outer_derived(top).named_selects)
@@ -151,12 +151,12 @@ class TestOuterOrderBy:
     async def test_non_projected_order_field_stays_out_of_rows(self, dialect: str) -> None:
         async with exec_engine(dialect) as engine:
             resp = await engine.execute(cumsum_chain(
-                order=[{"field": "max(amount)", "direction": "desc"}], limit=3,
+                order=[{"field": "max(orders.amount)", "direction": "desc"}], limit=3,
             ))
         assert [month_key(r["orders.created_at"]) for r in resp.data] == [
             "2024-04", "2024-03", "2024-02",
         ]
-        assert set(resp.data[0]) == {"orders.created_at", "orders.running"}
+        assert set(resp.data[0]) == {"orders.created_at", "running"}
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_order_by_carries_no_chain_qualifier(self, dialect: str) -> None:
@@ -176,7 +176,7 @@ class TestOuterOrderBy:
 class TestPostFilter:
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_post_filter_is_the_where_of_the_final_select(self, dialect: str) -> None:
-        sql = await gen(cumsum_chain(filter=["cumsum(sum(amount)) > 50"]), dialect=dialect)
+        sql = await gen(cumsum_chain(filter=["cumsum(sum(orders.amount)) > 50"]), dialect=dialect)
         assert "_filtered" not in sql, sql
         top = assert_single_top_level_with(sql, dialect)
         final = outer_derived(top)
@@ -193,13 +193,13 @@ class TestPostFilter:
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     async def test_post_filter_keeps_the_transform_inputs(self, dialect: str) -> None:
         async with exec_engine(dialect) as engine:
-            resp = await engine.execute(cumsum_chain(filter=["cumsum(sum(amount)) > 50"]))
-        got = {month_key(r["orders.created_at"]): float(r["orders.running"]) for r in resp.data}
+            resp = await engine.execute(cumsum_chain(filter=["cumsum(sum(orders.amount)) > 50"]))
+        got = {month_key(r["orders.created_at"]): float(r["running"]) for r in resp.data}
         assert got == {m: v for m, v in CUMSUM_BY_MONTH.items() if v > 50}
 
     _COMPOSITE = {
-        "dimensions": [{"field": "lower(status)", "alias": "ls"}],
-        "filter": ["cumsum(sum(amount)) > 50 or lower(status) == 'c'"],
+        "dimensions": [{"field": "lower(orders.status)", "alias": "ls"}],
+        "filter": ["cumsum(sum(orders.amount)) > 50 or lower(orders.status) == 'c'"],
     }
 
     async def test_composite_dimension_filter_reads_a_carried_column(self) -> None:
@@ -215,12 +215,12 @@ class TestPostFilter:
         async with exec_engine(dialect) as engine:
             resp = await engine.execute(cumsum_chain(**self._COMPOSITE))
         assert sorted(
-            (r["orders.ls"], month_key(r["orders.created_at"]), float(r["orders.running"]))
+            (r["ls"], month_key(r["orders.created_at"]), float(r["running"]))
             for r in resp.data
         ) == [("a", "2024-03", 90.0), ("b", "2024-02", 60.0), ("b", "2024-04", 130.0),
               ("c", "2024-03", 60.0)]
 
-    _OR_MIX = ["cumsum(sum(amount)) > 250 or cumsum(sum(amount)) < 50", "cumsum(sum(amount)) < 260"]
+    _OR_MIX = ["cumsum(sum(orders.amount)) > 250 or cumsum(sum(orders.amount)) < 50", "cumsum(sum(orders.amount)) < 260"]
 
     async def test_post_conjuncts_keep_their_grouping(self) -> None:
         sql = await gen(cumsum_chain(filter=self._OR_MIX), dialect="postgres")
@@ -289,7 +289,7 @@ def _qb_datasets(data_source: str) -> list[SlayerDataset]:
 
 
 def _qb_stage() -> SlayerQuery:
-    return q(dimensions=[f"customers.{LONG}"], metrics=["sum(amount)"])
+    return q(dimensions=[f"customers.{LONG}"], metrics=["sum(orders.amount)"])
 
 
 class TestQueryBackedWrap:
@@ -337,8 +337,8 @@ class TestQueryBackedWrap:
             dialect="duckdb", seed=seed, datasets=[*_qb_datasets("test"), qb],
         ) as (engine, _db):
             resp = await engine.execute(SlayerQuery.model_validate({
-                "population": "qb", "dimensions": [f"customers__{LONG}"],
-                "metrics": ["sum(amount_sum)"],
+                "population": "qb", "dimensions": [f"qb.customers__{LONG}"],
+                "metrics": ["sum(qb.amount_sum)"],
             }))
         assert {
             r[f"qb.customers__{LONG}"]: float(r["qb.amount_sum_sum"]) for r in resp.data
@@ -354,7 +354,7 @@ class TestQueryBackedWrap:
 
 
 def _stat_seams(expression: str) -> dict:
-    month = [{"field": "created_at", "granularity": "month"}]
+    month = [{"field": "orders.created_at", "granularity": "month"}]
     measure = [{"metric": expression, "alias": "w"}]
     return {
         "producer_hoist": SlayerQuery.model_validate({
@@ -362,10 +362,10 @@ def _stat_seams(expression: str) -> dict:
         }),
         "non_root_stage": [
             {"name": "s1", "population": "orders", "time_dimensions": month, "metrics": measure},
-            {"population": "s1", "metrics": [{"metric": "max(w)", "alias": "mx"}]},
+            {"population": "s1", "metrics": [{"metric": "max(s1.w)", "alias": "mx"}]},
         ],
         "root_stage": [
-            {"name": "s1", "population": "orders", "dimensions": ["id"]},
+            {"name": "s1", "population": "orders", "dimensions": ["orders.id"]},
             {"population": "orders", "time_dimensions": month, "metrics": measure},
         ],
     }
@@ -373,8 +373,8 @@ def _stat_seams(expression: str) -> dict:
 
 @pytest.mark.parametrize("seam", ["producer_hoist", "non_root_stage", "root_stage"])
 @pytest.mark.parametrize("formula", [
-    "covar_samp(amount, other=qty, window='90d')",
-    "corr(amount, other=qty, window='90d')",
+    "covar_samp(orders.amount, other=orders.qty, window='90d')",
+    "corr(orders.amount, other=orders.qty, window='90d')",
 ])
 async def test_mysql_windowed_sample_statistic_uses_var_samp(formula: str, seam: str) -> None:
     models = F15.dev1915_datasets()

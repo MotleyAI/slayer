@@ -19,26 +19,26 @@ These functions test what an array-valued field contains: `contains(list, x)` (a
 ```json
 {
   "population": "products",
-  "dimensions": ["name", {"field": "length(ingredients)", "alias": "ingredient_count"}],
-  "filter": ["contains_all(ingredients, ['bread', 'cheese'])"]
+  "dimensions": ["products.name", {"field": "length(products.ingredients)", "alias": "ingredient_count"}],
+  "filter": ["contains_all(products.ingredients, ['bread', 'cheese'])"]
 }
 ```
 
-Absence is `NOT contains(ingredients, 'bread')`, and you can use variables in the comparisons: `contains_any(item_skus, {wanted})` with `"variables": {"wanted": ["JAF-004", "JAF-005"]}`.
+Absence is `NOT contains(products.ingredients, 'bread')`, and you can use variables in the comparisons: `contains_any(orders.item_skus, {wanted})` with `"variables": {"wanted": ["JAF-004", "JAF-005"]}`.
 
-A whole list can also be grouped by, compared with another list and counted distinctly: each list is read as the set of its distinct elements (so `length(item_skus)` counts distinct SKUs, while `count(item_skus.*)` counts every unit). Comparing a list with a scalar, or `sum(item_skus)`, is refused with an error naming the alternative, and `contains` on a text field is a substring test.
+A whole list can also be grouped by, compared with another list and counted distinctly: each list is read as the set of its distinct elements (so `length(orders.item_skus)` counts distinct SKUs, while `count(orders.item_skus.*)` counts every unit). Comparing a list with a scalar, or `sum(orders.item_skus)`, is refused with an error naming the alternative, and `contains` on a text field is a substring test.
 
 ## Elements as rows
 
-`ingredients.value` is a virtual field with one row per element, and `count(ingredients.*)` counts them. `count(orders.*)` grouped by an element counts the parents holding it:
+`products.ingredients.value` is a virtual field with one row per element, and `count(products.ingredients.*)` counts them. `count(orders.*)` grouped by an element counts the parents holding it:
 
 ```json
 {
   "population": "orders",
-  "dimensions": ["item_skus.value"],
+  "dimensions": ["orders.item_skus.value"],
   "metrics": [
     {"metric": "count(orders.*)", "alias": "orders_with_sku"},
-    {"metric": "count(item_skus.*)", "alias": "units"}
+    {"metric": "count(orders.item_skus.*)", "alias": "units"}
   ]
 }
 ```
@@ -49,9 +49,9 @@ A whole list can also be grouped by, compared with another list and counted dist
 
 ```json
 [
-  {"name": "baskets", "population": "orders", "dimensions": ["customer_id"],
-   "metrics": [{"metric": "collect(item_skus.value)", "alias": "skus"}]},
-  {"population": "baskets", "metrics": ["count(*)"], "filter": ["contains(skus, 'JAF-005')"]}
+  {"name": "baskets", "population": "orders", "dimensions": ["orders.customer_id"],
+   "metrics": [{"metric": "collect(orders.item_skus.value)", "alias": "skus"}]},
+  {"population": "baskets", "metrics": ["count(baskets.*)"], "filter": ["contains(baskets.skus, 'JAF-005')"]}
 ]
 ```
 
@@ -60,8 +60,8 @@ The `collect` function also works on regular fields, for example to list the pro
 ```json
 {
   "population": "products",
-  "dimensions": ["type"],
-  "metrics": [{"metric": "collect(name)", "alias": "product_names"}]
+  "dimensions": ["products.type"],
+  "metrics": [{"metric": "collect(products.name)", "alias": "product_names"}]
 }
 ```
 
@@ -70,12 +70,12 @@ It also collects a field of a joined dataset, one list per parent row. Here are 
 ```json
 {
   "population": "customers",
-  "dimensions": ["name"],
+  "dimensions": ["customers.name"],
   "metrics": [
     {"metric": "count(orders.*)", "alias": "order_count"},
     {"metric": "collect(orders.status)", "alias": "statuses"}
   ],
-  "order": [{"field": "order_count", "direction": "asc"}, {"field": "name"}],
+  "order": [{"field": "order_count", "direction": "asc"}, {"field": "customers.name"}],
   "limit": 5
 }
 ```

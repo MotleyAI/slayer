@@ -374,7 +374,7 @@ async def test_memory_id_in_entities_surfaces_query_bearing_in_example_queries(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         ),
     )
     resp = await service.search(
@@ -441,7 +441,7 @@ async def test_query_arg_entities_also_surface_in_entities_bucket(
 ) -> None:
     q = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(amount)")],
+        metrics=[QueryMetric(metric="sum(orders.amount)")],
     )
     resp = await service.search(
         query=q,
@@ -704,7 +704,7 @@ async def test_stale_query_warning_for_named_memory_id_default_cap(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         ),
     )
     # Make `amount` stale — the attached query no longer resolves.
@@ -734,7 +734,7 @@ async def test_stale_query_warning_for_named_memory_id_under_tight_cap(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         ),
     )
     await _make_amount_stale(storage)

@@ -1,4 +1,4 @@
-version: 26
+version: 28
 name: customers
 sql_table: customers
 source_kind: table
@@ -6,14 +6,14 @@ query_variables: {}
 data_source: jaffle_shop
 fields:
 - name: id
-  sql: id
+  expression: id
   datatype: String
   primary_key: true
   unique: false
   label: Customer ID
   hidden: false
 - name: name
-  sql: name
+  expression: name
   datatype: String
   primary_key: false
   unique: false

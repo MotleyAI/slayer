@@ -50,7 +50,7 @@ class _VirtualDatasetEngine(Protocol):
     async def execute(self, query: list[SlayerQuery], *, dry_run: bool = False) -> SlayerResponse: ...
 
 DS = "sandbox"
-DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
+DEEP = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer"
 
 LONG_NAME = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
 LONG_EMAIL = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
@@ -197,19 +197,19 @@ def _repro_query(*, with_order: bool = False) -> SlayerQuery:
     """The exact query from the original identifier-length report."""
     kwargs = {}
     if with_order:
-        kwargs["order"] = [OrderItem.model_validate({"field": "avg(totalAmount)", "direction": "desc"})]
+        kwargs["order"] = [OrderItem.model_validate({"field": "avg(SandboxInvoiceV2.totalAmount)", "direction": "desc"})]
         kwargs["limit"] = 10
     return SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
             QueryDimension(field=f"{DEEP}.name"),
             QueryDimension(field=f"{DEEP}.email"),
-            QueryDimension(field="status"),
-        ], "metrics": [{"metric": "sum(totalAmount)"}, {"metric": "count(*)"}], **kwargs})
+            QueryDimension(field="SandboxInvoiceV2.status"),
+        ], "metrics": [{"metric": "sum(SandboxInvoiceV2.totalAmount)"}, {"metric": "count(SandboxInvoiceV2.*)"}], **kwargs})
 
 
 SHORT_QUERY = SlayerQuery.model_validate({
     "population": "SandboxInvoiceV2",
-    "dimensions": [QueryDimension(field="status")],
-    "metrics": [{"metric": "sum(totalAmount)"}],
+    "dimensions": [QueryDimension(field="SandboxInvoiceV2.status")],
+    "metrics": [{"metric": "sum(SandboxInvoiceV2.totalAmount)"}],
 })
 
 
@@ -613,7 +613,7 @@ def _deep_cross_dataset_query(*, two_metrics: bool = False) -> SlayerQuery:
         measures.append(QueryMetric(metric=f"avg({DEEP}.lifetimeValue)"))
     return SlayerQuery(
         population="SandboxInvoiceV2",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="SandboxInvoiceV2.status")],
         metrics=measures,
     )
 
@@ -721,10 +721,10 @@ class TestCteNames:
         prepared = await engine._prepare_pipeline(
             query=SlayerQuery.model_validate({
                 "population": "ShiftOrders",
-                "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+                "time_dimensions": [{"field": "ShiftOrders.created_at", "granularity": "month"}],
                 "metrics": [
-                    {"metric": "sum(revenue)"},
-                    {"metric": "time_shift(sum(revenue), -1)", "alias": long_transform_name},
+                    {"metric": "sum(ShiftOrders.revenue)"},
+                    {"metric": "time_shift(sum(ShiftOrders.revenue), -1)", "alias": long_transform_name},
                 ],
             }),
             named_queries={}, runtime_kwarg={},
@@ -875,7 +875,7 @@ class TestVirtualModelShorts:
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
                 QueryDimension(field=f"{DEEP}.email"),
                 QueryDimension(field=f"{DEEP}.Email"),
-            ], "metrics": [{"metric": "count(*)"}]})
+            ], "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}]})
         with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
         assert not isinstance(exc.value, IdentifierCollisionError), exc.value
@@ -889,7 +889,7 @@ class TestVirtualModelShorts:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=flat)],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}],
         })
         with pytest.raises(IdentifierCollisionError) as exc:
             await engine._query_as_model(inner_query=query)
@@ -904,10 +904,10 @@ class TestVirtualModelShorts:
         assert long_a[:63] == long_b[:63]
         query = SlayerQuery(
             population="SandboxInvoiceV2",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="SandboxInvoiceV2.status")],
             metrics=[
-                {"metric": "sum(totalAmount)", "alias": long_a},
-                {"metric": "avg(totalAmount)", "alias": long_b},
+                {"metric": "sum(SandboxInvoiceV2.totalAmount)", "alias": long_a},
+                {"metric": "avg(SandboxInvoiceV2.totalAmount)", "alias": long_b},
             ],
         )
         vm = await engine._query_as_dataset(inner_query=query)
@@ -932,7 +932,7 @@ class TestVirtualModelShorts:
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": [QueryDimension(field=short)],
-            "metrics": [{"metric": "sum(totalAmount_sum)"}],
+            "metrics": [{"metric": "sum(stage1.totalAmount_sum)"}],
         })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         assert resp.sql is not None
@@ -1026,14 +1026,14 @@ class TestSweep:
                 population="SandboxInvoiceV2",
                 dimensions=[QueryDimension(field=f"{DEEP}.email")],
                 metrics=[
-                    {"metric": "sum(totalAmount)"},
-                    {"metric": "sum(totalAmount) / count(*)", "alias": "avg_ticket"},
+                    {"metric": "sum(SandboxInvoiceV2.totalAmount)"},
+                    {"metric": "sum(SandboxInvoiceV2.totalAmount) / count(SandboxInvoiceV2.*)", "alias": "avg_ticket"},
                 ],
             ),
             SlayerQuery.model_validate({
                 "population": "SandboxInvoiceV2",
                 "dimensions": [QueryDimension(field=f"{DEEP}.name")],
-                "metrics": [{"metric": "count(*)"}],
+                "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}],
                 "filter": [f"{DEEP}.email IS NOT NULL"],
             }),
         ]

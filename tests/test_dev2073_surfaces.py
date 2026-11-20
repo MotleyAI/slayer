@@ -122,7 +122,7 @@ class TestTranslatorMatchesTheDeclaredEdge:
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
         assert isinstance(result, QueryResult)
         assert result.query.population == "customers"
-        assert _dimension_names(result) == ["orders.status"]
+        assert _dimension_names(result) == ["customers.orders.status"]
 
     def test_parallel_join_uses_the_edge_name(self) -> None:
         catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_dataset()]})
@@ -135,7 +135,7 @@ class TestTranslatorMatchesTheDeclaredEdge:
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
         assert isinstance(result, QueryResult)
         assert result.query.population == "orders"
-        assert _dimension_names(result) == ["shipping_address.city"]
+        assert _dimension_names(result) == ["orders.shipping_address.city"]
 
 
 class TestIngestReportListsNamedEdges:

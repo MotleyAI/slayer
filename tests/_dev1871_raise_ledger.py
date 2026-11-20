@@ -358,7 +358,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Choose a different name.",
          category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_computed_dimension", exc="ComputedDimensionError",
-         message="The transform '…' inside the computed dimension must take an aggregate input — a transform acts on aggregates, e.g. …(sum(amount, partition_by=city))."
+         message="The transform '…' inside the computed dimension must take an aggregate input — a transform acts on aggregates, e.g. …(sum(orders.amount, partition_by=orders.city))."
          + AT + "dimension …",
          category="checker", family="regroup-roots", user=True, owner="checker"),
     _row(module=_EE, function="check_computed_dimension", exc="ComputedDimensionError",
@@ -371,12 +371,12 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Remove the flag (the default aggregates) or drop the aggregate from the dimension.",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_computed_dimension", exc="ComputedDimensionError",
-         message="The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+         message="The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
          + AT + "dimension …",
          category="checker", family="regroup-roots", user=True, owner="checker"),
     _row(module=_EE, function="check_stage_flatten_collision", exc="NameCollisionError",
-         message="Stage field name collision on …: two projected fields flatten to the same downstream name."
-         + SUGGEST + "Give one an explicit metric `name` to disambiguate.",
+         message="Stage field name collision on …: two projected fields… flatten to the same downstream name."
+         + SUGGEST + "Give one an explicit alias to disambiguate.",
          category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_metric_dedupe_collision", exc="NameCollisionError",
          message="Metrics … and … both derive the result key … but compute different values."
@@ -407,6 +407,8 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="bind", family="time-axis", user=True, owner="bind"),
     _row(module=_BI, function="_bind_inner_restriction", exc="AmbiguousRelationshipPathError", message="",
          category="bind", family="joins", user=True, owner="bind"),
+    _row(module=_BI, function="_bind_inner_restriction", exc="UnresolvableDimensionRelationshipError", message="",
+         category="bind", family="joins", user=True, owner="bind"),
     _row(module=_BI, function="_bind_inner_restriction", exc="QueryExtensionError",
          message="The … restricts the population, but no relationship path reaches … from it.",
          category="bind", family="joins", user=True, owner="bind"),
@@ -422,7 +424,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_metrics_at_query_grain", exc="PositionTypingError",
          message="'…' needs an aggregation inside an expression. This metric references row-level …, not available at the query grain (not among the query dimensions).\n  at metric …"
-         + SUGGEST + "Wrap it in an aggregation (e.g., 'sum(…)', 'avg(…)'), or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+         + SUGGEST + "Wrap it in an aggregation (e.g., 'sum(…)', 'avg(…)'), or add it to the query dimensions. For COUNT(*), use 'count(<dataset>.*)'.",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_metrics_at_query_grain", exc="PositionTypingError",
          message="This metric references row-level …, not available at the query grain (not among the query dimensions).\n  at metric …"

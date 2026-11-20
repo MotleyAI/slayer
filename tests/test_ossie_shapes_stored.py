@@ -14,13 +14,12 @@ import pytest
 
 from slayer.core.models import SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
-from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._deprecated_input_helpers import deprecations, recorded
 from tests._ossie_vocabulary_fixtures import shop_store, stored_document
 from tests._stored_upgrade_fixtures import DS
 
-PRE_DATASET = CURRENT_VERSIONS["SlayerModel"] - 2  # before the Ossie-shapes step; the field-expression step follows
-PRE_QUERY = CURRENT_VERSIONS["SlayerQuery"] - 1
+PRE_DATASET = 25
+PRE_QUERY = 15
 
 
 def pre_dataset(*columns: dict[str, Any], **extra: Any) -> dict[str, Any]:

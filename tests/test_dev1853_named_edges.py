@@ -42,14 +42,14 @@ async def named_engine() -> AsyncIterator[SlayerQueryEngine]:
 class TestNamedHopResolvesAnAmbiguousPair:
     async def test_billing_dimension_and_result_key(self, named_engine) -> None:
         resp = await named_engine.execute(SlayerQuery(
-            population="orders", dimensions=["billing_customer.name"]))
+            population="orders", dimensions=["orders.billing_customer.name"]))
         assert "orders.billing_customer.name" in resp.data[0]
         assert rows_set(resp, "orders.billing_customer.name") == \
             PARALLEL_BILLING_NAMES
 
     async def test_shipping_edge_is_distinct(self, named_engine) -> None:
         resp = await named_engine.execute(SlayerQuery(
-            population="orders", dimensions=["shipping_customer.name"]))
+            population="orders", dimensions=["orders.shipping_customer.name"]))
         assert rows_set(resp, "orders.shipping_customer.name") == \
             PARALLEL_SHIPPING_NAMES
 
@@ -60,10 +60,10 @@ class TestNamesAreDirectionAgnostic:
     ) -> None:
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
-            "dimensions": ["name"],
-            "metrics": [{"metric": "sum(billing_customer.amount)", "alias": "b"}],
+            "dimensions": ["customers.name"],
+            "metrics": [{"metric": "sum(customers.billing_customer.amount)", "alias": "b"}],
         }))
-        got = {r["customers.name"]: r["customers.b"] for r in resp.data}
+        got = {r["customers.name"]: r["b"] for r in resp.data}
         assert got == PARALLEL_BILLING_AMOUNTS
 
 
@@ -72,17 +72,17 @@ class TestNamedTerminalMetadata:
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(
-                field="billing_customer.signup_at",
+                field="orders.billing_customer.signup_at",
                 granularity=TimeGranularity.MONTH)],
-            "metrics": [{"metric": "sum(amount)", "alias": "t"}],
-            "order": [{"field": "billing_customer.signup_at",
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
+            "order": [{"field": "orders.billing_customer.signup_at",
                     "direction": "asc"}],
         }))
         key = "orders.billing_customer.signup_at"
         assert key in resp.data[0]
         months = [str(r[key])[:7] for r in resp.data]
         assert months == sorted(PARALLEL_BILLING_MONTH_AMOUNTS)
-        got = {m: r["orders.t"] for m, r in zip(months, resp.data)}
+        got = {m: r["t"] for m, r in zip(months, resp.data)}
         assert got == PARALLEL_BILLING_MONTH_AMOUNTS
         # Response metadata resolves the terminal field from the resolved
         # edge — the label lives on customers.signup_at.
@@ -94,10 +94,10 @@ class TestNamedTerminalMetadata:
         self, named_engine,
     ) -> None:
         resp = await named_engine.execute(SlayerQuery(
-            population="orders", dimensions=["billing_customer.tier"],
-            metrics=[{"metric": "sum(billing_customer.spend)",
+            population="orders", dimensions=["orders.billing_customer.tier"],
+            metrics=[{"metric": "sum(orders.billing_customer.spend)",
                        "alias": "cs"}]))
-        got = {r["orders.billing_customer.tier"]: r["orders.cs"]
+        got = {r["orders.billing_customer.tier"]: r["cs"]
                for r in resp.data}
         assert got == PARALLEL_REROOT_BY_TIER
         assert not broadcast_warnings(resp)
@@ -108,25 +108,25 @@ class TestNamedEdgeInRankedProducer:
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
             metrics=[{"metric":
-                       "last(billing_customer.spend, billing_customer.signup_at)",
+                       "last(orders.billing_customer.spend, orders.billing_customer.signup_at)",
                        "alias": "l"}]))
         assert len(resp.data) == 1
-        assert resp.data[0]["orders.l"] == \
+        assert resp.data[0]["l"] == \
             pytest.approx(PARALLEL_LAST_SPEND_BY_SIGNUP)
 
 
 class TestNamedEdgeInModeA:
     async def test_model_sql_column_over_a_named_edge(self, named_engine) -> None:
         resp = await named_engine.execute(SlayerQuery(
-            population="orders", dimensions=["bill_tier"]))
+            population="orders", dimensions=["orders.bill_tier"]))
         assert rows_set(resp, "orders.bill_tier") == PARALLEL_BILL_TIERS
 
 
 class TestNamedEdgeInFilters:
     async def test_filter_through_the_billing_edge(self, named_engine) -> None:
         resp = await named_engine.execute(SlayerQuery(
-            population="orders", dimensions=["status"],
-            filter=["billing_customer.tier = 'gold'"]))
+            population="orders", dimensions=["orders.status"],
+            filter=["orders.billing_customer.tier = 'gold'"]))
         # Orders billed to Alice (gold): o1 ok, o2 new.
         assert rows_set(resp, "orders.status") == {("ok",), ("new",)}
 
@@ -159,10 +159,10 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
-            metrics=[{"metric": "sum(billing_customer.gold_spend)",
+            metrics=[{"metric": "sum(orders.billing_customer.gold_spend)",
                        "alias": "g"}]))
         # Gold customers only (Alice 100 + Cara 60), not the full 310.
-        assert resp.data[0]["orders.g"] == 160.0
+        assert resp.data[0]["g"] == 160.0
 
     async def test_disallowed_aggregation_rejected_over_the_named_edge(
         self, named_engine,
@@ -170,7 +170,7 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "avg(billing_customer.spend)", "alias": "a"}],
+            "metrics": [{"metric": "avg(orders.billing_customer.spend)", "alias": "a"}],
         })
         with pytest.raises(AggregationNotAllowedError):
             await named_engine.execute(query)
@@ -181,17 +181,17 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "billing_customer.total_b", "alias": "r"}]})
+            "metrics": [{"metric": "orders.billing_customer.total_b", "alias": "r"}]})
         # A second ``orders`` occurrence over every order (10 + 20 + 30), as from ``customers``.
         resp = await named_engine.execute(query)
-        assert resp.data[0]["orders.r"] == 60.0
+        assert resp.data[0]["r"] == 60.0
 
     async def test_derived_dimension_over_the_named_edge(
         self, named_engine,
     ) -> None:
         await self._augment_customers(named_engine)
         resp = await named_engine.execute(SlayerQuery(
-            population="orders", dimensions=["billing_customer.tier_uc"]))
+            population="orders", dimensions=["orders.billing_customer.tier_uc"]))
         assert rows_set(resp, "orders.billing_customer.tier_uc") == \
             {("GOLD",), ("SILVER",)}
 
@@ -202,11 +202,11 @@ class TestNamedEdgeValidationConsumers:
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(
-                field="billing_customer.signup_day",
+                field="orders.billing_customer.signup_day",
                 granularity=TimeGranularity.MONTH)],
-            "metrics": [{"metric": "sum(amount)", "alias": "t"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
         }))
-        months = {str(r["orders.billing_customer.signup_day"])[:7]: r["orders.t"]
+        months = {str(r["orders.billing_customer.signup_day"])[:7]: r["t"]
                   for r in resp.data}
         assert months == PARALLEL_BILLING_MONTH_AMOUNTS
 
@@ -216,10 +216,10 @@ class TestNamedEdgeValidationConsumers:
         """The hidden host-grain MIN/MAX order wrap walks the named edge."""
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)", "alias": "t"}],
-            "order": [{"field": "billing_customer.name", "direction": "desc"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
+            "order": [{"field": "orders.billing_customer.name", "direction": "desc"}],
         }))
         # Desc by each group's max billing name: ok (Bob) before new (Alice).
         assert [r["orders.status"] for r in resp.data] == ["ok", "new"]
-        assert [r["orders.t"] for r in resp.data] == [40.0, 20.0]
+        assert [r["t"] for r in resp.data] == [40.0, 20.0]

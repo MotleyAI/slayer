@@ -281,7 +281,7 @@ class TestIngestEndpoint:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"population": "nonexistent", "metrics": [{"metric": "count(*)"}]})
+        resp = client.post("/query", json={"population": "nonexistent", "metrics": [{"metric": "count(nonexistent.*)"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
@@ -291,7 +291,7 @@ class TestQuery:
             data_source="missing_ds",
             fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
         )))
-        resp = client.post("/query", json={"population": "orders", "metrics": [{"metric": "sum(revenue)"}]})
+        resp = client.post("/query", json={"population": "orders", "metrics": [{"metric": "sum(orders.revenue)"}]})
         assert resp.status_code == 400
 
     def test_query_schema_drift_returns_422(
@@ -306,7 +306,7 @@ class TestQuery:
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
         resp = client.post("/query", json={
-            "population": "orders", "metrics": [{"metric": "count(*)"}],
+            "population": "orders", "metrics": [{"metric": "count(orders.*)"}],
         })
         assert resp.status_code == 422
         assert resp.json()["detail"]["error"] == "schema_drift"
@@ -314,25 +314,25 @@ class TestQuery:
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """The `metrics` key must be declared on QueryRequest so FastAPI keeps it."""
         req = QueryRequest.model_validate(
-            {"population": "orders", "metrics": [{"metric": "count(*)"}]}
+            {"population": "orders", "metrics": [{"metric": "count(orders.*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None
         assert len(slayer_query.metrics) == 1
-        assert slayer_query.metrics[0].metric == "count(*)"
+        assert slayer_query.metrics[0].metric == "count(orders.*)"
 
     def test_request_accepts_bare_string_measures_and_dimensions(self) -> None:
         """Bare strings in ``metrics`` / ``dimensions`` (matching ``SlayerQuery``'s
         coercion and the docs / example READMEs) must pass FastAPI validation
         and lift to ``{"metric": ...}`` / ``{"field": ...}`` downstream."""
         req = QueryRequest.model_validate(
-            {"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}
+            {"population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.status"]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None
-        assert slayer_query.metrics[0].metric == "count(*)"
+        assert slayer_query.metrics[0].metric == "count(orders.*)"
         assert slayer_query.dimensions is not None
-        assert slayer_query.dimensions[0].field == "status"
+        assert slayer_query.dimensions[0].field == "orders.status"
 
     def test_request_legacy_fields_payload_migrates(self) -> None:
         """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
@@ -370,7 +370,7 @@ class TestQueryBackedModelsAPI:
             "data_source": "ds",
             "source_queries": [{
                 "population": "upstream",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(upstream.amount)"}],
                 "dry_run": True,
             }],
             "query_variables": {},
@@ -402,7 +402,7 @@ class TestQueryBackedModelsAPI:
             "data_source": "ds",
             "source_queries": [{
                 "population": "upstream",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(upstream.amount)"}],
             }],
             "fields": [{"name": "x", "datatype": "string"}],
         })
@@ -469,17 +469,17 @@ class TestRunByNameRefine:
         return storage
 
     def test_refine_with_name(self, client: TestClient, seeded: YAMLStorage) -> None:
-        resp = client.post("/query", json={"name": "monthly_revenue", "refine": {"dimensions": ["region"]}})
+        resp = client.post("/query", json={"name": "monthly_revenue", "refine": {"dimensions": ["orders.region"]}})
         assert resp.status_code == 200, resp.text
         data = resp.json()["data"]
-        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in data} == BY_REGION_MONTH
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["revenue"] for r in data} == BY_REGION_MONTH
 
     def test_refine_with_variables(self, client: TestClient, seeded: YAMLStorage) -> None:
         resp = client.post("/query", json={
-            "name": "revenue_by_status", "refine": {"metrics": ["count(*)"]}, "variables": {"status": "refunded"},
+            "name": "revenue_by_status", "refine": {"metrics": ["count(orders.*)"]}, "variables": {"status": "refunded"},
         })
         assert resp.status_code == 200, resp.text
-        assert resp.json()["data"] == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+        assert resp.json()["data"] == [{"orders.region": "US", "revenue": 40.0, "orders._count": 1}]
 
     def test_empty_refine_is_plain_run(self, client: TestClient, seeded: YAMLStorage) -> None:
         plain = client.post("/query", json={"name": "monthly_revenue", "dry_run": True})
@@ -488,16 +488,16 @@ class TestRunByNameRefine:
         assert refined.json()["sql"] == plain.json()["sql"]
 
     def test_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
-        resp = client.post("/query", json={"population": "orders", "refine": {"dimensions": ["region"]}})
+        resp = client.post("/query", json={"population": "orders", "refine": {"dimensions": ["orders.region"]}})
         assert resp.status_code == 400
         assert "'refine' requires 'name'" in resp.text
 
     def test_null_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
-        resp = client.post("/query", json={"population": "orders", "metrics": ["count(*)"], "refine": None})
+        resp = client.post("/query", json={"population": "orders", "metrics": ["count(orders.*)"], "refine": None})
         assert resp.status_code == 400
         assert "'refine' requires 'name'" in resp.text
 
-    @pytest.mark.parametrize("flat", [{"dimensions": ["region"]}, {"limit": None}, {"population": None}])
+    @pytest.mark.parametrize("flat", [{"dimensions": ["orders.region"]}, {"limit": None}, {"population": None}])
     def test_flat_fields_next_to_name(self, client: TestClient, seeded: YAMLStorage, flat: dict) -> None:
         resp = client.post("/query", json={"name": "monthly_revenue", **flat})
         assert resp.status_code == 400
@@ -505,7 +505,7 @@ class TestRunByNameRefine:
 
     def test_conflict_is_400(self, client: TestClient, seeded: YAMLStorage) -> None:
         resp = client.post("/query", json={
-            "name": "monthly_revenue", "refine": {"metrics": [{"metric": "count(*)", "alias": "revenue"}]},
+            "name": "monthly_revenue", "refine": {"metrics": [{"metric": "count(orders.*)", "alias": "revenue"}]},
         })
         assert resp.status_code == 400
         assert "revenue" in resp.text
@@ -560,12 +560,12 @@ class TestQueryListBody:
                 {
                     "name": "by_customer",
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
-                    "dimensions": ["customer_id"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
+                    "dimensions": ["orders.customer_id"],
                 },
                 {
                     "population": "by_customer",
-                    "metrics": [{"metric": "avg(amount_sum)"}],
+                    "metrics": [{"metric": "avg(by_customer.amount_sum)"}],
                 },
             ],
             "dry_run": True,
@@ -585,17 +585,17 @@ class TestQueryListBody:
                 {
                     "name": "a",
                     "population": "b",
-                    "metrics": [{"metric": "avg(amount_sum)"}],
+                    "metrics": [{"metric": "avg(b.amount_sum)"}],
                 },
                 {
                     "name": "b",
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
-                    "dimensions": ["customer_id"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
+                    "dimensions": ["orders.customer_id"],
                 },
                 {
                     "population": "a",
-                    "metrics": [{"metric": "max(amount_sum_avg)"}],
+                    "metrics": [{"metric": "max(a.amount_sum_avg)"}],
                 },
             ],
             "dry_run": True,
@@ -613,9 +613,9 @@ class TestQueryListBody:
         self._setup_orders(client)
         resp = client.post("/query", json={
             "queries": [
-                {"name": "a", "population": "b", "metrics": [{"metric": "sum(amount)"}]},
-                {"name": "b", "population": "a", "metrics": [{"metric": "sum(amount)"}]},
-                {"population": "orders", "metrics": [{"metric": "sum(amount)"}]},
+                {"name": "a", "population": "b", "metrics": [{"metric": "sum(b.amount)"}]},
+                {"name": "b", "population": "a", "metrics": [{"metric": "sum(a.amount)"}]},
+                {"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]},
             ],
             "dry_run": True,
         })
@@ -746,7 +746,7 @@ class TestOpenAPI400Documentation:
             "data_source": "ds",
             "source_queries": [{
                 "population": "upstream",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(upstream.amount)"}],
             }],
         })
         assert setup_resp.status_code == 200, setup_resp.text

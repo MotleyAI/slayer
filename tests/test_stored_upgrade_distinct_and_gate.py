@@ -47,10 +47,10 @@ def _query(*, version: int, **fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 27
-        assert CURRENT_VERSIONS["SlayerQuery"] == 16
+        assert CURRENT_VERSIONS["SlayerModel"] == 28
+        assert CURRENT_VERSIONS["SlayerQuery"] == 17
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 12
+        assert CURRENT_VERSIONS["Memory"] == 13
 
 
 #: (stored v17 text, the text it loads as).
@@ -127,7 +127,7 @@ class TestDistinctResults:
         model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == ['sum("distinct")']
-        resp = await run(storage, {"population": "orders", "metrics": ["total"]})
+        resp = await run(storage, {"population": "orders", "metrics": ["orders.total"]})
         assert measure_total(resp, measure="total") == DISTINCT_TOTAL
 
     @pytest.mark.parametrize("backend", BACKENDS)

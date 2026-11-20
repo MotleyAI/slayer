@@ -44,8 +44,8 @@ PRE_REPAIR = 24
 #: Orders per customer name in the shop seed.
 ORDERS_BY_NAME = {"Ann": 2, "Bob": 2, "Cid": 2}
 NAME_QUERY = {"population": "orders", "dimensions": ["customers.name"],
-              "metrics": [{"metric": "count(*)", "alias": "n"}]}
-REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(amount)"]}
+              "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
+REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(orders.amount)"]}
 
 
 # --------------------------------------------------------------------------- #
@@ -275,7 +275,7 @@ class TestStoredUpgrade:
         assert model is not None
         assert (model.filters, [j.to for j in model.relationships]) == (
             ["customers.addr.region = 'North'"], ["Customers"])
-        resp = await run(storage, {"population": "orders", "metrics": ["sum(amount)"]})
+        resp = await run(storage, {"population": "orders", "metrics": ["sum(orders.amount)"]})
         assert [float(v) for r in resp.data for v in r.values()] == [AMOUNT_BY_REGION["North"]]
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -343,6 +343,6 @@ async def test_a_stored_join_to_the_spine_is_dropped_on_load(tmp_path, shop_ds, 
     resp = await run(storage, SPINE_QUERY)
     plain = await _store(tmp_path, backend=backend, ds=shop_ds, base="plain", docs=[_ev_doc(joins=[])])
     expected = await run(plain, SPINE_QUERY)
-    assert {str(r["time_spine.timestamp"])[:7]: float(r["time_spine.s"]) for r in resp.data} == {
+    assert {str(r["time_spine.timestamp"])[:7]: float(r["s"]) for r in resp.data} == {
         "2024-01": 210.0, "2024-02": 210.0, "2024-03": 210.0}
     assert sorted(map(str, resp.data)) == sorted(map(str, expected.data))

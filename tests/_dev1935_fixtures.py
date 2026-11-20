@@ -36,11 +36,11 @@ from tests._dev1900_fixtures import (
 # Filter predicates (spelled once).
 # --------------------------------------------------------------------------- #
 #: A root-local ref (tier) mixed with a cross-path ref (orders.status) under OR.
-OR_MIX_LOCAL = "tier = 'bronze' or orders.status = 'ok'"
+OR_MIX_LOCAL = "customers.tier = 'bronze' or orders.status = 'ok'"
 #: Same shape, but the local leg keeps a gold customer with no orders (c7) alive.
-GOLD_OR_OK = "tier = 'gold' or orders.status = 'ok'"
+GOLD_OR_OK = "customers.tier = 'gold' or orders.status = 'ok'"
 #: Negation over a local-and-crosspath conjunction — existential reading.
-NOT_GOLD_AND_OK = "not (tier = 'gold' and orders.status = 'ok')"
+NOT_GOLD_AND_OK = "not (customers.tier = 'gold' and orders.status = 'ok')"
 #: A null-test on a related field reads as absence (no orders).
 NO_ORDERS = "orders.id is null"
 #: Two independent fanning branches under OR (orders, regions.region_events).
@@ -52,11 +52,11 @@ MATERIALISED_OR = "orders.status = 'ok' or regions.name = 'South'"
 #: A materialised fanning branch (orders.id dimension) OR an unmaterialised one.
 REDUCED_PUSH_OR = "orders.status = 'ok' or regions.region_events.value >= 50"
 #: Two spellings of the customers->orders edge sharing one related row.
-TWO_SPELLINGS = ["purchases.status = 'ok'", "orders.channel = 'app'"]
+TWO_SPELLINGS = ["customers.purchases.status = 'ok'", "orders.channel = 'app'"]
 #: Producer-side (orders-rooted) mixed OR that stays dropped-and-warned today.
-OR_MIX_PRODUCER = "customers.tier = 'bronze' OR channel = 'app'"
+OR_MIX_PRODUCER = "customers.tier = 'bronze' OR orders.channel = 'app'"
 #: Association-arm mixed OR (orders-rooted, associate mode).
-ASSOC_OR = "customers.tier = 'gold' OR channel = 'app'"
+ASSOC_OR = "customers.tier = 'gold' OR orders.channel = 'app'"
 #: Association-arm mixed OR whose second leg crosses an unproven plans hop.
 ASSOC_OR_ABSENT = "customers.tier = 'gold' OR customers.plans.level = 'basic'"
 

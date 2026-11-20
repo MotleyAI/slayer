@@ -1,4 +1,4 @@
-version: 26
+version: 28
 name: items
 sql_table: items
 source_kind: table
@@ -6,14 +6,14 @@ query_variables: {}
 data_source: jaffle_shop
 fields:
 - name: id
-  sql: id
+  expression: id
   datatype: String
   primary_key: true
   unique: false
   label: Item ID
   hidden: false
 - name: order_id
-  sql: order_id
+  expression: order_id
   datatype: String
   primary_key: false
   unique: false
@@ -21,7 +21,7 @@ fields:
   label: Order
   hidden: false
 - name: sku
-  sql: sku
+  expression: sku
   datatype: String
   primary_key: false
   unique: false

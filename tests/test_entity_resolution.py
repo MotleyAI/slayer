@@ -545,7 +545,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders" in result.canonical_forms
@@ -555,8 +555,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -567,7 +567,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.name")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.name" in result.canonical_forms
@@ -581,7 +581,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -593,11 +593,11 @@ class TestExtractEntitiesFromQuery:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="ordered_at",
+                    field="orders.ordered_at",
                     granularity=TimeGranularity.DAY,
                 )
             ],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.ordered_at" in result.canonical_forms
@@ -607,8 +607,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["status = 'paid'", "amount > 100"],
-            metrics=[QueryMetric(metric="count(*)")],
+            filter=["orders.status = 'paid'", "orders.amount > 100"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -619,8 +619,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["status = '{status_val}'"],
-            metrics=[QueryMetric(metric="count(*)")],
+            filter=["orders.status = '{status_val}'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             variables={"status_val": "paid"},
         )
         result = await extract_entities_from_query(q, storage=storage)
@@ -633,9 +633,9 @@ class TestExtractEntitiesFromQuery:
     async def test_dedup(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="amount")],
-            filter=["amount > 100"],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.amount")],
+            filter=["orders.amount > 100"],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert (
@@ -647,7 +647,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         # Pin the exact list — a regression that adds an extra entity
@@ -660,8 +660,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["nonexistent_col > 100"],
-            metrics=[QueryMetric(metric="count(*)")],
+            filter=["orders.nonexistent_col > 100"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         with pytest.raises(EntityResolutionError):
             await extract_entities_from_query(q, storage=storage)

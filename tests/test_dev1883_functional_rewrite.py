@@ -14,19 +14,19 @@ class TestDimensionsRewrite:
     def test_every_granularity_rewrites(self, gran: str) -> None:
         q = fx.q(
             population="orders",
-            dimensions=[f"date_trunc('{gran}', created_at)"],
-            metrics=[{"metric": "count(*)"}],
+            dimensions=[f"date_trunc('{gran}', orders.created_at)"],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         assert not q.dimensions, q.dimensions
         assert q.time_dimensions == [
-            fx.td(field="created_at", granularity=gran)
+            fx.td(field="orders.created_at", granularity=gran)
         ]
 
     def test_case_insensitive_callee(self) -> None:
         q = fx.q(
             population="orders",
-            dimensions=["DATE_TRUNC('MONTH', created_at)"],
-            metrics=[{"metric": "count(*)"}],
+            dimensions=["DATE_TRUNC('MONTH', orders.created_at)"],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         assert q.time_dimensions is not None
         assert q.time_dimensions[0].granularity == TimeGranularity.MONTH
@@ -35,7 +35,7 @@ class TestDimensionsRewrite:
         q = fx.q(
             population="orders",
             dimensions=["DATE_TRUNC('MONTH', customers.created_at)"],
-            metrics=[{"metric": "count(*)"}],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         assert q.time_dimensions == [
             fx.td(field="customers.created_at", granularity="month")
@@ -44,50 +44,50 @@ class TestDimensionsRewrite:
     def test_plain_entries_survive_in_place(self) -> None:
         q = fx.q(
             population="orders",
-            dimensions=["status", "date_trunc('month', created_at)"],
-            metrics=[{"metric": "count(*)"}],
+            dimensions=["orders.status", "date_trunc('month', orders.created_at)"],
+            metrics=[{"metric": "count(orders.*)"}],
         )
-        assert q.dimensions == [QueryDimension(field="status")]
+        assert q.dimensions == [QueryDimension(field="orders.status")]
         assert q.time_dimensions == [
-            fx.td(field="created_at", granularity="month")
+            fx.td(field="orders.created_at", granularity="month")
         ]
 
     def test_rewritten_append_after_explicit_in_appearance_order(self) -> None:
         q = fx.q(
             population="orders",
-            time_dimensions=[{"field": "updated_at", "granularity": "day"}],
-            dimensions=["date_trunc('month', created_at)", "date_trunc('week', shipped_at)"],
-            metrics=[{"metric": "count(*)"}],
+            time_dimensions=[{"field": "orders.updated_at", "granularity": "day"}],
+            dimensions=["date_trunc('month', orders.created_at)", "date_trunc('week', orders.shipped_at)"],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         assert q.time_dimensions == [
-            fx.td(field="updated_at", granularity="day"),
-            fx.td(field="created_at", granularity="month"),
-            fx.td(field="shipped_at", granularity="week"),
+            fx.td(field="orders.updated_at", granularity="day"),
+            fx.td(field="orders.created_at", granularity="month"),
+            fx.td(field="orders.shipped_at", granularity="week"),
         ]
 
     def test_canonical_serialization_moves_entry(self) -> None:
         q = fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "count(*)"}],
+            dimensions=["date_trunc('month', orders.created_at)"],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         dump = q.model_dump()
         assert not dump.get("dimensions")
         assert [
             (td["field"], td["granularity"])
             for td in dump["time_dimensions"]
-        ] == [("created_at", "month")]
+        ] == [("orders.created_at", "month")]
 
     def test_dump_identical_to_explicit_form(self) -> None:
         functional = fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "count(*)"}],
+            dimensions=["date_trunc('month', orders.created_at)"],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         explicit = fx.q(
             population="orders",
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
-            metrics=[{"metric": "count(*)"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         assert functional.model_dump() == explicit.model_dump()
 
@@ -109,25 +109,25 @@ class TestTimeDimensionsStringEntries:
     def test_functional_string_entry_coerces(self) -> None:
         q = fx.q(
             population="orders",
-            time_dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "count(*)"}],
+            time_dimensions=["date_trunc('month', orders.created_at)"],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         assert q.time_dimensions == [
-            fx.td(field="created_at", granularity="month")
+            fx.td(field="orders.created_at", granularity="month")
         ]
 
     def test_string_and_dict_entries_mix(self) -> None:
         q = fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "updated_at", "granularity": "day"},
-                "date_trunc('month', created_at)",
+                {"field": "orders.updated_at", "granularity": "day"},
+                "date_trunc('month', orders.created_at)",
             ],
-            metrics=[{"metric": "count(*)"}],
+            metrics=[{"metric": "count(orders.*)"}],
         )
         assert q.time_dimensions == [
-            fx.td(field="updated_at", granularity="day"),
-            fx.td(field="created_at", granularity="month"),
+            fx.td(field="orders.updated_at", granularity="day"),
+            fx.td(field="orders.created_at", granularity="month"),
         ]
 
     @pytest.mark.parametrize("bad", [5, 0, "", {}, "foo"])
@@ -137,17 +137,17 @@ class TestTimeDimensionsStringEntries:
         with pytest.raises(pydantic.ValidationError):
             fx.q(
                 population="orders",
-                dimensions=["date_trunc('month', created_at)"],
+                dimensions=["date_trunc('month', orders.created_at)"],
                 time_dimensions=bad,
-                metrics=[{"metric": "count(*)"}],
+                metrics=[{"metric": "count(orders.*)"}],
             )
 
     def test_bare_column_string_rejected_with_remedy(self) -> None:
         with pytest.raises(pydantic.ValidationError) as ei:
             fx.q(
                 population="orders",
-                time_dimensions=["created_at"],
-                metrics=[{"metric": "count(*)"}],
+                time_dimensions=["orders.created_at"],
+                metrics=[{"metric": "count(orders.*)"}],
             )
         msg = str(ei.value)
         assert "created_at" in msg

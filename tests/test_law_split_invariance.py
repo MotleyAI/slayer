@@ -52,7 +52,7 @@ async def test_removing_any_measure_preserves_groups_and_shared_cells(law_case):
             for kept in shape.measure_keys:
                 if kept == drop:
                     continue
-                col = f"orders.m_{kept}"
+                col = f"m_{kept}"
                 law_assert(
                     values_equal(a=row[col], b=full_rows[key][col]),
                     law="split-invariance",

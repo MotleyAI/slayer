@@ -104,7 +104,7 @@ async def engine(tmp_path, monkeypatch: pytest.MonkeyPatch) -> SlayerQueryEngine
     return SlayerQueryEngine(storage=storage)
 
 
-_QUERY = SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")])  # pyright: ignore[reportArgumentType]
+_QUERY = SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(orders.*)")])  # pyright: ignore[reportArgumentType]
 
 
 async def test_data_query_response_carries_skip(engine: SlayerQueryEngine) -> None:

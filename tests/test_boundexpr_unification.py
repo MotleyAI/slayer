@@ -74,7 +74,7 @@ class TestTypeUnification:
 
 class TestValueSlotExpressionPopulated:
     def test_measure_slot_carries_expression(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         assert len(planned.aggregate_slots) == 1
         slot = planned.aggregate_slots[0]
@@ -86,8 +86,8 @@ class TestValueSlotExpressionPopulated:
     def test_dimension_slot_carries_expression(self) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         row_slot = next(
@@ -102,8 +102,8 @@ class TestValueSlotExpressionPopulated:
         # the generator can render them without re-binding.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "filter": ["amount > 0"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "filter": ["orders.amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         # The 'amount' FieldKey is now a hidden slot dep.
@@ -140,8 +140,8 @@ class TestMaskExpressionPopulated:
         # key IS the binder-produced predicate (not just date_range filters).
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "filter": ["amount > 0"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "filter": ["orders.amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         assert len(planned.masks) == 1
@@ -153,8 +153,8 @@ class TestMaskExpressionPopulated:
         # so structural equality implies equivalence.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "filter": ["amount > 0"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "filter": ["orders.amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         key = _sole_mask_key(planned)
@@ -168,8 +168,8 @@ class TestMaskExpressionPopulated:
         # expression too.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "filter": ["sum(amount) > 100"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "filter": ["sum(orders.amount) > 100"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         key = _sole_mask_key(planned)

@@ -29,13 +29,13 @@ def stamp(value: Any) -> Any:
 
 
 async def dimension(engine: SlayerQueryEngine, expr: str) -> dict[int, Any]:
-    resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "v"}]))
+    resp = await engine.execute(q(dimensions=["orders.id", {"field": expr, "alias": "v"}]))
     return {int(k): stamp(v) for k, v in by_key(resp, "id").items()}
 
 
 @pytest.mark.parametrize("expr", [
-    "CAST(order_date AS TIMESTAMP)", "order_date::TIMESTAMP", "CAST(order_date AS DATETIME)",
-    "CAST(order_date AS TIMESTAMP_NTZ)", "CAST(order_date AS TIMESTAMP WITHOUT TIME ZONE)",
+    "CAST(orders.order_date AS TIMESTAMP)", "orders.order_date::TIMESTAMP", "CAST(orders.order_date AS DATETIME)",
+    "CAST(orders.order_date AS TIMESTAMP_NTZ)", "CAST(orders.order_date AS TIMESTAMP WITHOUT TIME ZONE)",
 ])
 async def test_timestamp_cast_of_a_date_column(sqlite_engine: SlayerQueryEngine, expr: str) -> None:
     assert (await dimension(sqlite_engine, expr))[3] == "2024-12-30 00:00:00"
@@ -50,22 +50,22 @@ async def test_timestamp_spellings_agree(sqlite_engine: SlayerQueryEngine, expr:
 
 
 async def test_non_temporal_input_is_null(sqlite_engine: SlayerQueryEngine) -> None:
-    got = await dimension(sqlite_engine, "CAST(note AS TIMESTAMP)")
+    got = await dimension(sqlite_engine, "CAST(orders.note AS TIMESTAMP)")
     assert got[1] is None
     assert got[5] is None
 
 
 async def test_timestamp_cast_in_a_filter(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(dimensions=["id"], filter=["created_at <= CAST('2024-04-10' AS TIMESTAMP)"]))
+    resp = await engine.execute(q(dimensions=["orders.id"], filter=["orders.created_at <= CAST('2024-04-10' AS TIMESTAMP)"]))
     assert ids(resp) == {1}
 
 
 @pytest.mark.parametrize(("expr", "type_name"), [
-    ("CAST(created_at AS TIME)", "time"), ("created_at::TIME", "time"), ("TRY_CAST(created_at AS TIME)", "time"),
-    ("CAST(created_at AS TIMESTAMP(3))", "timestamp"), ("TRY_CAST(created_at AS TIMESTAMP(3))", "timestamp"),
-    ("created_at::TIMESTAMP(3)", "timestamp"), ("created_at::TIMESTAMP WITH TIME ZONE", "timestamp"),
-    ("CAST(created_at AS TIMESTAMP WITH TIME ZONE)", "timestamp"),
-    ("TRY_CAST(created_at AS TIMESTAMP WITH TIME ZONE)", "timestamp"),
+    ("CAST(orders.created_at AS TIME)", "time"), ("orders.created_at::TIME", "time"), ("TRY_CAST(orders.created_at AS TIME)", "time"),
+    ("CAST(orders.created_at AS TIMESTAMP(3))", "timestamp"), ("TRY_CAST(orders.created_at AS TIMESTAMP(3))", "timestamp"),
+    ("orders.created_at::TIMESTAMP(3)", "timestamp"), ("orders.created_at::TIMESTAMP WITH TIME ZONE", "timestamp"),
+    ("CAST(orders.created_at AS TIMESTAMP WITH TIME ZONE)", "timestamp"),
+    ("TRY_CAST(orders.created_at AS TIMESTAMP WITH TIME ZONE)", "timestamp"),
 ])
 async def test_inexpressible_types_are_refused(sqlite_engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch,
                                                expr: str, type_name: str) -> None:

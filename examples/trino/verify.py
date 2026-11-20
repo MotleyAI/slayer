@@ -11,7 +11,6 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from verify_common import (  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/verify_common.py
-    COUNT_METRIC,
     ORDERS,
     ORDERS_COUNT,
     QUERY_PATH,
@@ -22,6 +21,7 @@ from verify_common import (  # ALLOW(import-not-top): sys.path bootstrap for the
     check_corr_covar,
     check_rollup,
     check_stddev_var,
+    count_metric,
     run_common_checks,
     summary,
 )
@@ -30,7 +30,7 @@ from verify_common import (  # ALLOW(import-not-top): sys.path bootstrap for the
 def check_cardinality_invariant():
     print("\nCardinality invariant (sum-of-grouped == total):")
     rows = api("POST", QUERY_PATH, {
-        "population": "orders", "metrics": [COUNT_METRIC], "dimensions": ["status"],
+        "population": "orders", "metrics": [count_metric("orders")], "dimensions": ["orders.status"],
     })["data"]
     summed = sum(r[ORDERS_COUNT] for r in rows)
     check(f"sum(orders by status) == total ({summed} == {TOTAL_ORDERS})", summed == TOTAL_ORDERS)
@@ -41,7 +41,7 @@ def check_approx_median_percentile():
     print("\nMedian / percentile (approximate):")
     row = api("POST", QUERY_PATH, {
         "population": "orders",
-        "metrics": ["median(quantity)", "percentile(quantity, p=0.25)", "percentile(quantity, p=0.75)"],
+        "metrics": ["median(orders.quantity)", "percentile(orders.quantity, p=0.25)", "percentile(orders.quantity, p=0.75)"],
     })["data"][0]
     seeded = {o[3] for o in ORDERS}
     median = row["orders.quantity_median"]

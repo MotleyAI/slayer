@@ -16,6 +16,16 @@ def quoted_name(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def spelled_name(name: str) -> str:
+    """``name`` as a Mode-B reference segment: bare when it is a plain name, else double-quoted."""
+    return name if NAME_PATTERN.match(name) else quoted_name(name)
+
+
+def qualified_reference(*segments: str) -> str:
+    """The dotted reference of ``segments`` (a dataset first), each spelled as a segment."""
+    return ".".join(spelled_name(s) for s in segments)
+
+
 def match_name(*, name: str, declared: Iterable[str], quoted: bool) -> Optional[str]:
     """The declared spelling ``name`` reaches: an exact match, else (unquoted) the unique case-insensitive one;
     several case-insensitive matches raise ``AmbiguousReferenceError``."""

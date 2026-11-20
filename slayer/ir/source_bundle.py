@@ -49,6 +49,11 @@ class InnerRestriction(BaseModel):
     # How messages name the declaration.
     label: str
 
+    @property
+    def parts(self) -> Tuple[str, str, str]:
+        """The filter's reference, anchored at the declaring dataset."""
+        return (self.dataset, self.token, self.key)
+
 
 class ResolvedSourceBundle(BaseModel):
     """Eagerly resolved inputs to one query execution (P11)."""
@@ -349,5 +354,5 @@ def stage_bundle_with_siblings(
 
 
 def resolve_scope(*, bundle: "ResolvedSourceBundle") -> DatasetScope:
-    """The scope a query binds against: the bundle's population, a sibling stage's dataset included."""
-    return DatasetScope(population=bundle.population)
+    """The anchored scope a query binds against: the bundle's population, a sibling stage's dataset included."""
+    return DatasetScope(population=bundle.population, anchored=True)

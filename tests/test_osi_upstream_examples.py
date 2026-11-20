@@ -91,7 +91,7 @@ async def test_renamed_fields_example(tmp_path: Path) -> None:
     models = by_name(result)
     assert {name: visible(model) for name, model in models.items()} == _declared_fields("renamed_fields.yaml")
     assert not result.unconverted_metrics
-    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["gross_revenue"]})
+    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["orders.gross_revenue"]})
     assert float(rows[0]["orders.gross_revenue"]) == pytest.approx(21.75)
 
 

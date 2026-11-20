@@ -93,7 +93,7 @@ class TestDefinitionDefaultExecution:
     async def _value(engine, expression: str) -> float:
         resp = await engine.execute(
             orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
-        return float(resp.data[0]["orders.w"])
+        return float(resp.data[0]["w"])
 
     async def test_root_local_direct_default_matches_explicit(self, engine):
         explicit = await self._value(
@@ -113,7 +113,7 @@ class TestDefinitionDefaultExecution:
         # Independent oracle (a plain cross-dataset expression sum, works today):
         # spend broadcast onto each order + the order's own amount.
         oracle = await self._value(
-            engine=engine, expression="sum(customers.spend * (customers.spend + amount))")
+            engine=engine, expression="sum(customers.spend * (customers.spend + orders.amount))")
         assert oracle == pytest.approx(WSUM_MIXED_VALUE)
         default = await self._value(engine=engine, expression="wsum_mixed(customers.spend)")
         assert default == pytest.approx(oracle)
@@ -136,10 +136,10 @@ class TestDefinitionDefaultExecution:
         # month, not resolve owner-only to a bogus reverse-hop key.
         async def cells(formula):
             resp = await engine.execute(orders_q(
-                time_dimensions=month_td(),
+                time_dimensions=month_td("orders"),
                 metrics=[QueryMetric(metric=formula, alias="w")]))
-            return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"):
-                    r["orders.w"] for r in resp.data}
+            return {tuple(v for k, v in sorted(r.items()) if k != "w"):
+                    r["w"] for r in resp.data}
         explicit = await cells(
             "wsum_host(customers.spend, window='90d', weight=orders.amount)")
         default = await cells("wsum_host(customers.spend, window='90d')")

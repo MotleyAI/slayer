@@ -64,8 +64,8 @@ principles every layer obeys.
      under 2.1, defaults resolved as references from the owning model with
      **cancellation**: a qualifier naming a dataset already on its path reads that
      row (`a.b.a ≡ a`) rather than re-joining, any other unreachable qualifier
-     anchored at the query root. Only definition defaults cancel — a revisiting
-     query path is refused (its root qualifier is no revisit, Principle 1), a revisiting
+     read as a query reference (Principle 1). Only definition defaults cancel — a revisiting
+     query path is refused (its anchor is no revisit, Principle 1), a revisiting
      `DatasetField.sql` likewise.
      It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
@@ -81,7 +81,7 @@ principles every layer obeys.
      the source leaves' paths — where the source lives: the aggregation's definition
      (a custom aggregation and its parameter defaults) is resolved there, a qualifier
      naming a dataset on the anchor's path cancelling back to it, any other qualifier
-     the anchor cannot reach forward anchored at the query root instead. The home,
+     the anchor cannot reach forward read as a query reference (Principle 1) instead. The home,
      when it exists, is among the inputs' paths and their longest common prefix;
      the anchor is tried first, then the other candidates deepest-first.
    - **2.7 Spelling-invariance.** The home depends only on the inputs' paths and
@@ -108,7 +108,7 @@ principles every layer obeys.
    alone (bidirectional traversal).
    - **3.1 Unrelated datasets.** A dataset no join path reaches from a query's
      population meets it as the product `P × D`, every row with every row,
-     reached only by naming `D` as a query path's first hop, never by route
+     reached only by naming `D` as a reference's anchor (Principle 1), never by route
      search. Only aggregates and filters (Axiom 14) read across `×`; any other
      row-level read is a type error, so `×` never multiplies the population.
      [enforced: test:tests/test_unrelated_datasets.py]
@@ -320,14 +320,25 @@ All code, old and new, MUST obey these.
 1. **Dotted-canonical references**: dots denote join paths in queries and model
    SQL; the legacy `__` split-alias input form is a hard error; `__` survives
    only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
-   A resolved path is **canonical**: each hop spelled by its edge name, else its
-   target model — a query stage by its name in its own query list, which precedes
-   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); a leading
-   **root qualifier** — the root's own name, read before any hop — drops out (`r.x ≡ x` from
-   root `r`), except inside a row definition (P3); keys, join aliases and result names carry only canonical paths.
+   A query reference is **anchored** at its first segment, a dataset — a query
+   stage by its name in its own query list, which precedes a same-named model;
+   the rest is an explicit route. Each dataset reading the reference — the
+   population; an aggregate's home, for its grain and filters
+   [target: DEV-2212] — reaches the anchor over declared relationships, an
+   inherited one counting only beside a declared one between the same two
+   datasets: by its only to-one path, else its only route, else the reference is
+   refused as ambiguous. Only when declared relationships give no route are
+   inherited ones added, a single inherited relationship joining the reader to
+   the anchor taken first; with no route at all the anchor is unrelated
+   (Axiom 3.1). A bare name is a metric. A resolved path is
+   **canonical**: each hop spelled by its edge name, else its target model
+   (`customers.regions ≡ customers.hr` for an edge named `hr`); keys carry the
+   anchor and its canonical route, never the population (an alias keys as
+   itself), and join aliases carry the canonical path from the reading dataset.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
-   [enforced: test:tests/test_dev2187_root_qualifier.py]
+   [enforced: test:tests/test_dev2277_qualified_references.py]
+   [enforced: test:tests/test_dev2277_routing.py]
 2. **Two expression layers**: Mode A, the datasource's own SQL (a definition's entry for that dialect, `filter`, dataset `filters`), vs Mode B, a SQL-compatible grammar (a definition's portable `sql`, query fields) — one canonical function library, extended never forked. [review]
    - **2.1** Every Mode B construct means the same on every dialect.
      [enforced: test:tests/test_dev2120_library_matrix.py]
@@ -336,6 +347,7 @@ All code, old and new, MUST obey these.
      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
    - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
 3. **Logical names, physical once**: inside a **row definition** — a field's `expression` or `filter`, a dataset's `filters` — a bare name is a source column and a path from the dataset (`d.f`) a field; inside a metric's `expression` a bare name is a field; in both, `source.x` is a source column unless a field is named `source`. Every other reference — query fields, relationship keys, unique-key sets — names a field. A source column's spelling is applied once, where a reference becomes SQL or meets the live schema, and is never the key two references are matched on. [enforced: test:tests/test_dev1902_join_key_spelling.py] [enforced: test:tests/test_dev2175_definition_names.py]
+4. **Ossie superset**: every input valid under the Ossie core specification is valid here and means what Ossie says it means. An extension may give meaning to input that Ossie leaves undefined or declares invalid, and never changes the result of an Ossie-valid input. [target: DEV-2372]
 
 ## 5. Notes
 

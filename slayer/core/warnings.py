@@ -595,6 +595,21 @@ class DateOnlyMidnightWarning(SlayerWarning):
         return self.message
 
 
+class ChangedReferenceWarning(SlayerWarning):
+    """A dataset-first ``reference`` now reaches its anchor by ``path``, where it once read the population's direct
+    relationship, which ``spelling`` still names."""
+
+    kind: Literal["changed_reference"] = "changed_reference"
+    reference: str
+    path: str
+    spelling: str
+    message: str
+    removal: str = "3.0"
+
+    def human_message(self) -> str:
+        return self.message
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -620,6 +635,7 @@ AnySlayerWarning = Annotated[
         SpineRelationshipDroppedWarning,
         UnknownStoredKeyWarning,
         DateOnlyMidnightWarning,
+        ChangedReferenceWarning,
     ],
     Field(discriminator="kind"),
 ]

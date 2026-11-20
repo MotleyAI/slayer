@@ -32,7 +32,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"field": "ordered_at", "granularity": "month"}]
+_MONTH = [{"field": "orders.ordered_at", "granularity": "month"}]
 
 
 def _q(**kw) -> SlayerQuery:
@@ -47,40 +47,40 @@ def _cases() -> dict:
         # (a) local time_shift beside a cross-dataset sibling.
         "a/local_ts_cm_sibling": _q(to_many_handling="broadcast", metrics=[
             {"metric": "sum(customers.spend)", "alias": "cm"},
-            {"metric": "time_shift(sum(amount), -1)", "alias": "prev"},
+            {"metric": "time_shift(sum(orders.amount), -1)", "alias": "prev"},
         ]),
         # (b) host-rooted crossing-fragment inner — the named repro.
         "b/host_rooted_wscaled": _q(metrics=[
-            {"metric": "time_shift(wscaled_sum(amount), -1)", "alias": "prev"},
+            {"metric": "time_shift(wscaled_sum(orders.amount), -1)", "alias": "prev"},
         ]),
         "b/host_rooted_wscaled_user_kwarg": _q(metrics=[
-            {"metric": "time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
+            {"metric": "time_shift(wscaled_sum(orders.amount, w='customers.regions.weight'), -1)",
              "alias": "prev"},
         ]),
         "b/wscaled_with_local_sibling": _q(metrics=[
-            {"metric": "sum(amount)", "alias": "s"},
-            {"metric": "time_shift(wscaled_sum(amount), -1)", "alias": "prev"},
+            {"metric": "sum(orders.amount)", "alias": "s"},
+            {"metric": "time_shift(wscaled_sum(orders.amount), -1)", "alias": "prev"},
         ]),
         # (b) crossing a 1:N relationship — the shifted CTE must pull the fan-out join.
         "b/liscaled_one_to_many": _q(metrics=[
-            {"metric": "sum(amount)", "alias": "s"},
-            {"metric": "time_shift(liscaled_sum(amount), -1)", "alias": "prev"},
+            {"metric": "sum(orders.amount)", "alias": "s"},
+            {"metric": "time_shift(liscaled_sum(orders.amount), -1)", "alias": "prev"},
         ]),
         # consecutive_periods — lifted entirely (no target-grain failure mode).
         "cp/local_with_cm_sibling": _q(to_many_handling="broadcast", metrics=[
             {"metric": "sum(customers.spend)", "alias": "cm"},
-            {"metric": "consecutive_periods(sum(amount) > 0)", "alias": "streak"},
+            {"metric": "consecutive_periods(sum(orders.amount) > 0)", "alias": "streak"},
         ]),
         "cp/over_target_grain": _q(to_many_handling="broadcast", metrics=[
             {"metric": "consecutive_periods(sum(customers.spend) > 0)", "alias": "streak"},
         ]),
         # change / change_pct desugar to time_shift.
         "change/of_wscaled": _q(metrics=[
-            {"metric": "change(wscaled_sum(amount))", "alias": "delta"},
+            {"metric": "change(wscaled_sum(orders.amount))", "alias": "delta"},
         ]),
         "change_pct/of_local_with_cm_sibling": _q(to_many_handling="broadcast", metrics=[
             {"metric": "sum(customers.spend)", "alias": "cm"},
-            {"metric": "change_pct(sum(amount))", "alias": "delta"},
+            {"metric": "change_pct(sum(orders.amount))", "alias": "delta"},
         ]),
         # (c) target-grain inner — stays guarded (records the narrowed raise).
         "c/target_grain_guarded": _q(to_many_handling="broadcast", metrics=[
@@ -94,12 +94,12 @@ def _cases() -> dict:
         # shifted-CTE re-aggregation beside the cross-dataset sibling.
         "composite/lifted": _q(to_many_handling="broadcast", metrics=[
             {"metric": "sum(customers.spend)", "alias": "cm"},
-            {"metric": "time_shift(sum(amount) + sum(amount), -1)", "alias": "prev"},
+            {"metric": "time_shift(sum(orders.amount) + sum(orders.amount), -1)", "alias": "prev"},
         ]),
         # first/last crossing time arg — records whatever the seam does.
         "first_last/crossing_time_arg": _q(to_many_handling="broadcast", metrics=[
             {"metric": "sum(customers.spend)", "alias": "cm"},
-            {"metric": "time_shift(last(amount, customers.signup_at), -1)", "alias": "prev"},
+            {"metric": "time_shift(last(orders.amount, customers.signup_at), -1)", "alias": "prev"},
         ]),
     }
 

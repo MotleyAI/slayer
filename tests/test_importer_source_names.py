@@ -510,8 +510,8 @@ async def test_mixed_case_column_reads_the_folded_physical_column(pg: Live, tmp_
     assert _typed(models["payments"], "amount") is DataType.INTEGER
     assert await _grouped(pg, tmp_path, models, "payments", "amount") == [7]
     (row,) = await _rows(pg, tmp_path / "measure", models.values(), {
-        "population": "payments", "metrics": [{"metric": "total", "alias": "v"}]})
-    assert row["payments.v"] == 7
+        "population": "payments", "metrics": [{"metric": "payments.total", "alias": "v"}]})
+    assert row["v"] == 7
 
 
 async def test_names_local_to_a_source_query(pg: Live, tmp_path: Path) -> None:

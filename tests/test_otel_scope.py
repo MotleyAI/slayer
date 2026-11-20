@@ -25,7 +25,7 @@ from tests._saved_query_refinement_fixtures import build_refine_storage
 from tests._usage_reporting_helpers import build_storage, cli
 from tests.pg_facade.test_connection import _query, _run, _startup, _terminate
 
-_QUERY = {"population": "orders", "metrics": ["count(*)"]}
+_QUERY = {"population": "orders", "metrics": ["count(orders.*)"]}
 _FACADE_SQL = "SELECT region, amount_sum FROM orders"
 
 

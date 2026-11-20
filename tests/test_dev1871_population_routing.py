@@ -73,23 +73,18 @@ class TestShortFormParity:
         assert choice.dataset_name == "orders"
 
 
-class TestLiteralPrecedence:
-    """Spec: Literal resolution beats short-form reinterpretation."""
+class TestToOnePathPrecedence:
+    """Spec: an anchor is reached by its only to-one path."""
 
-    async def test_direct_edge_is_never_reinterpreted_through_a_route(
-        self, storage
-    ) -> None:
-        """stores' direct unknown-cardinality edge to plants is used literally;
-        the to-one route via hub must not be substituted for it."""
+    async def test_anchor_takes_its_only_to_one_path(self, storage) -> None:
+        """stores' direct unknown-cardinality edge to plants does not compete with the to-one route via hub."""
         models = lit_datasets_by_name()
         assert short_form_route_or_none(
             root=models["stores"], target_dataset="plants", datasets_by_name=models,
         ) == ["hub", "plants"]
 
-        query = SlayerQuery(dimensions=["stores.kind", "plants.name"])
-        with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(query=query, storage=storage)
-        assert ei.value.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
+        choice = await infer_population(query=SlayerQuery(dimensions=["stores.kind", "plants.name"]), storage=storage)
+        assert choice.dataset_name == "stores"
 
     async def test_full_routed_path_resolves_the_same_query(self, storage) -> None:
         choice = await infer_population(

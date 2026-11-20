@@ -19,22 +19,38 @@ from slayer.core.errors import (
     CircularRelationshipPathError,
     PopulationErrorReason,
     PopulationInferenceError,
+    SlayerError,
+    UnresolvableDimensionRelationshipError,
 )
+from slayer.core.names import match_name
 from slayer.core.relationship_search import HopFilter, UnaddressablePair, blocking_pairs, shortest_route, unaddressable_pairs
 from slayer.core.relationship_walker import canonical_path, provably_to_one, terminal_dataset, walk
 from slayer.core.models import SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.query import SlayerQuery, declared_aliases
 from slayer.core.time_spine import TIME_SPINE_DATASET, reads_spine, names_spine
-from slayer.engine.population.dimension_routing import resolve_route, safe_route_reachable
+from slayer.engine.population.anchors import (
+    anchor_route,
+    edge_first_refusal,
+    explicit_spellings,
+    find_anchor,
+    unknown_dataset,
+    unknown_metric,
+    unqualified_count,
+)
+from slayer.engine.population.dimension_routing import safe_route_reachable
 from slayer.core.syntax import (
     AggCall,
     DottedRef,
     Ref,
+    StarSource,
     call_keywords,
+    canonical_metric_text,
     drop_root_qualifier,
+    map_refs,
     parse_template,
     root_relative,
     walk_parsed_refs,
+    walk_references,
 )
 from slayer.storage.document_loading import all_or_raise
 from slayer.storage.base import StorageBackend
@@ -209,6 +225,8 @@ def determination_items(
     seen: set[str] = set()
 
     def _add(ref: str) -> None:
+        if ref and "." not in ref and query.population_name is None:
+            return  # an alias, or refused before inference
         if ref and ref not in seen:
             seen.add(ref)
             items.append(ref)
@@ -247,50 +265,39 @@ def _walk_to_one(
     return (datasets_by_name[chain[-1].to] if chain else start, _OK, canonical_path(chain))
 
 
-def _short_form_probe(
-    *, start: SlayerDataset, target: str, datasets_by_name: dict[str, SlayerDataset]
-) -> tuple[SlayerDataset | None, str, tuple[str, ...]]:
-    """Routed fallback for a single-token anchor with no literal edge."""
-    route, status = resolve_route(
-        root=start, target_dataset=target, datasets_by_name=datasets_by_name
-    )
-    if status == "ambiguous":
-        # Two safe routes are genuinely ambiguous; many routes with none
-        # safe leave nothing for determination — unreachable, not ambiguous.
-        reachable = safe_route_reachable(
-            root=start, target_dataset=target, datasets_by_name=datasets_by_name
-        )
-        return (None, _AMBIGUOUS if reachable else _UNREACHABLE, ())
-    if route is None:
-        return (None, _UNREACHABLE, ())
-    return _walk_to_one(start=start, tokens=route, datasets_by_name=datasets_by_name)
+def _anchored_tokens(*, start: SlayerDataset, parts: list[str], datasets_by_name: dict[str, SlayerDataset]) -> tuple[list[str] | None, str]:
+    """``item``'s path from ``start``: the route binding takes to its anchor, then its explicit route."""
+    anchor = find_anchor(parts[0], quoted=False, reader=start, datasets_by_name=datasets_by_name)
+    if anchor is None:
+        return None, _UNREACHABLE
+    try:
+        reached = anchor_route(reader=start, anchor=anchor, datasets_by_name=datasets_by_name, rest=parts[1:])
+    except UnresolvableDimensionRelationshipError:
+        safe = safe_route_reachable(root=start, target_dataset=anchor.name, datasets_by_name=datasets_by_name)
+        return None, _AMBIGUOUS if safe else _UNREACHABLE
+    if reached.unrelated:
+        return None, _UNREACHABLE
+    return [*reached.route, *parts[1:-1]], _OK
 
 
 def probe_item(*, root: str, item: str, datasets_by_name: dict[str, SlayerDataset]) -> tuple[str, tuple[str, ...]]:
-    """Route ``item``'s dotted path from ``root``; ``(verdict, canonical path)`` — hops are its length.
+    """Route ``item`` (``anchor[.route].leaf``) from ``root`` as binding does; ``(verdict, canonical path)`` — hops are
+    its length.
 
-    Literal resolution first: the spelled path is walked hop by hop, and a path
-    that resolves literally is never reinterpreted through routing. A single-token
-    anchor with no literal edge falls back to short-form routing — the same route
-    enumeration binding applies — viable only when every hop of the selected route
-    is provably to-one, with hops counted along it. Verdict is ``_OK`` when the
-    walk succeeds and the leaf is a field on the terminal dataset, ``_AMBIGUOUS``
-    when a hop spans parallel edges (or the routed probe finds two safe routes),
-    else ``_UNREACHABLE``. A leading self-prefix (``root.``) is stripped first.
+    The anchor is reached by its only to-one path, else its only route (the shared anchor resolver); the item is
+    determined when every hop of that path and its explicit route is provably to-one and the leaf is a field on the
+    terminal dataset. Verdict is ``_OK`` then, ``_AMBIGUOUS`` when two to-one paths reach the anchor or a hop spans
+    parallel edges, else ``_UNREACHABLE``.
     """
     parts = item.split(".")
     leaf = parts[-1]
-    path = parts[:-1]
-    if path and path[0] == root:
-        path = path[1:]
     start = datasets_by_name.get(root)
-    if start is None:
+    if start is None or len(parts) < 2:
         return (_UNREACHABLE, ())
-    terminal, verdict, hops = _walk_to_one(start=start, tokens=path, datasets_by_name=datasets_by_name)
-    if verdict == _NO_EDGE and len(path) == 1:
-        terminal, verdict, hops = _short_form_probe(
-            start=start, target=path[0], datasets_by_name=datasets_by_name
-        )
+    tokens, verdict = _anchored_tokens(start=start, parts=parts, datasets_by_name=datasets_by_name)
+    if tokens is None:
+        return (verdict, ())
+    terminal, verdict, hops = _walk_to_one(start=start, tokens=tokens, datasets_by_name=datasets_by_name)
     if terminal is None:
         return (_UNREACHABLE if verdict == _NO_EDGE else verdict, ())
     if terminal.get_field(leaf) is None:
@@ -319,11 +326,17 @@ def ambiguity_resolved_path(*, root: str, item: str, datasets_by_name: dict[str,
 
 def item_blockers(*, root: str, item: str, datasets_by_name: dict[str, SlayerDataset]) -> list[UnaddressablePair]:
     """The unaddressable pairs that keep ``item``'s path from resolving from ``root``."""
-    path = item.split(".")[:-1]
-    if path and path[0] == root:
-        path = path[1:]
     start = datasets_by_name.get(root)
-    if start is None or not path:
+    parts = item.split(".")
+    if start is None:
+        return []
+    path, _verdict = _anchored_tokens(start=start, parts=parts, datasets_by_name=datasets_by_name)
+    if path is None:
+        anchor = find_anchor(parts[0], quoted=False, reader=start, datasets_by_name=datasets_by_name)
+        if anchor is None or anchor.name == start.name:
+            return []
+        return blocking_pairs(root=start, target=anchor.name, datasets_by_name=datasets_by_name)
+    if not path:
         return []
     try:
         if walk(root=start, path=path, datasets_by_name=datasets_by_name) is not None or len(path) > 1:
@@ -426,8 +439,9 @@ def _anchor_names(
         )
     refs.extend(_restriction_refs(query))
     root = query.population_name
-    # A root-relative bare reference is the root's own field.
-    return {ref.split(".")[0] if root is None or "." in ref else root for ref in refs if ref}
+    # A bare name in a root-less query is an alias (or refused): it anchors nothing.
+    heads = {ref.split(".")[0] for ref in refs if "." in ref}
+    return heads | ({root} if root is not None and any(r and "." not in r for r in refs) else set())
 
 
 async def _classification_scopes(
@@ -480,22 +494,16 @@ def _resolve_datasource(
 # --------------------------------------------------------------------------- #
 def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
     """``query``'s P factor: its spine time dimensions and spine filters removed (metrics too)."""
-    root = query.population_name
     return query.model_copy(update={
-        "dimensions": [
-            d for d in query.dimensions or []
-            if not reads_spine(d.field, root=root)
-        ] or None,
-        "time_dimensions": [
-            td for td in query.time_dimensions or [] if not reads_spine(td.field, root=root)
-        ] or None,
-        "filter": [f for f in query.filter_conditions if not _spine_only_filter(f, root=root)] or None,
+        "dimensions": [d for d in query.dimensions or [] if not reads_spine(d.field)] or None,
+        "time_dimensions": [td for td in query.time_dimensions or [] if not reads_spine(td.field)] or None,
+        "filter": [f for f in query.filter_conditions if not _spine_only_filter(f)] or None,
         "metrics": None,
     })
 
 
-def _spine_only_filter(filter_str: str, *, root: str | None) -> bool:
-    refs, ok = _all_filter_refs(filter_str, root=root)
+def _spine_only_filter(filter_str: str) -> bool:
+    refs, ok = _all_filter_refs(filter_str, root=None)
     return ok and bool(refs) and all(names_spine(r) for r in refs)
 
 
@@ -567,6 +575,124 @@ async def spine_datasource(
     return _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=None, anchors=anchors)
 
 
+def _spelled_paths(verdict: CandidateVerdict, *, datasets_by_name: dict[str, SlayerDataset]) -> str:
+    """The explicit spellings of ``verdict``'s ambiguous item from its candidate, as a clause."""
+    item = verdict.ambiguous_item
+    reader = datasets_by_name.get(verdict.dataset_name)
+    if item is None or reader is None:
+        return ""
+    parts = item.split(".")
+    anchor = find_anchor(parts[0], quoted=False, reader=reader, datasets_by_name=datasets_by_name)
+    if anchor is None:
+        return ""
+    spellings = explicit_spellings(reader=reader, anchor=anchor, datasets_by_name=datasets_by_name, rest=parts[1:])
+    return f"; spell the path: {', '.join(repr(p) for p in spellings)}" if spellings else ""
+
+
+# --------------------------------------------------------------------------- #
+# Anchors and refusals (queries/references).
+# --------------------------------------------------------------------------- #
+def _entry_trees(query: SlayerQuery, *, metrics: bool) -> list[Any]:
+    """The parse trees of the query's dimensions, time dimensions and filters (and metrics), unparseable ones skipped."""
+    texts = [d.field for d in query.dimensions or []] + [td.field for td in query.time_dimensions or []]
+    texts += list(query.filter_conditions)
+    if metrics:
+        texts += [m.metric for m in query.metrics or []]
+    out: list[Any] = []
+    for text in texts:
+        try:
+            out.append(parse_template(text))
+        except Exception:  # noqa: BLE001 — an unparseable text is reported where it binds
+            continue
+    return out
+
+
+async def _visible_datasets(*, storage: StorageBackend, data_source: str | None) -> dict[str, SlayerDataset]:
+    """Every dataset the caller sees (in ``data_source`` when pinned), for a refusal's suggestions."""
+    names = [ds for ds in await storage.list_datasources() if data_source in (None, ds)]
+    out: dict[str, SlayerDataset] = {}
+    for ds in names:
+        loaded, _unloaded = await storage.load_datasets(data_source=ds)
+        out.update({m.name: m for m in loaded if m.name not in out})
+    return out
+
+
+async def _anchor_spellings(
+    query: SlayerQuery, *, storage: StorageBackend, data_source: str | None, siblings: set[str],
+) -> SlayerQuery:
+    """``query`` with each first segment spelled as the dataset it anchors at; a bare name, ``count(*)`` or a first
+    segment naming no dataset is refused as binding refuses it."""
+    aliases = declared_aliases(query)
+    identities = await storage._list_all_dataset_identities()
+    names = sorted({n for ds, n in identities if data_source in (None, ds)} | siblings | {TIME_SPINE_DATASET})
+    anchors = {n: SlayerDataset.model_construct(name=n) for n in names}
+    respell: dict[str, str] = {}
+    for tree in _entry_trees(query, metrics=True):
+        for node, _agg in walk_references(tree):
+            if isinstance(node, StarSource):
+                raise unqualified_count(await _would_infer(query, storage=storage, data_source=data_source,
+                                                           siblings=siblings))
+            name = await _anchor_name(node, aliases=aliases, anchors=anchors, storage=storage,
+                                      data_source=data_source)
+            if name is not None and name != node.parts[0]:
+                respell[node.parts[0]] = name
+    return _respelled_heads(query, respell) if respell else query
+
+
+async def _anchor_name(
+    node: Ref | DottedRef, *, aliases: list[str], anchors: dict[str, SlayerDataset], storage: StorageBackend,
+    data_source: str | None,
+) -> str | None:
+    """The dataset a dotted ``node`` anchors at (``None`` for an alias); a bare non-alias or unknown anchor refused."""
+    if isinstance(node, Ref):
+        if match_name(name=node.name, declared=aliases, quoted=node.quoted) is None:
+            raise unknown_metric(node.name, datasets=(
+                await _visible_datasets(storage=storage, data_source=data_source)).values())
+        return None
+    hit = find_anchor(node.parts[0], quoted=node.quoted_at(0), reader=None, datasets_by_name=anchors)
+    if hit is None:
+        visible = await _visible_datasets(storage=storage, data_source=data_source)
+        raise edge_first_refusal(node.parts, datasets_by_name=visible) or unknown_dataset(node.parts)
+    return hit.name
+
+
+def _respelled_heads(query: SlayerQuery, respell: dict[str, str]) -> SlayerQuery:
+    """``query`` with each first segment of ``respell`` written as its dataset's name."""
+    def heads(text: str) -> str:
+        try:
+            tree = parse_template(text)
+        except Exception:  # noqa: BLE001
+            return text
+        changed = map_refs(tree, lambda r: r.model_copy(update={"parts": (respell[r.parts[0]], *r.parts[1:])})
+                           if isinstance(r, DottedRef) and r.parts[0] in respell else r)
+        return text if changed is tree else canonical_metric_text(changed)
+    return query.model_copy(update={
+        "dimensions": [d.model_copy(update={"field": heads(d.field)}) for d in query.dimensions or []] or None,
+        "time_dimensions": [td.model_copy(update={"field": heads(td.field)})
+                            for td in query.time_dimensions or []] or None,
+        "filter": [heads(f) for f in query.filter_conditions] or None,
+    })
+
+
+async def _would_infer(
+    query: SlayerQuery, *, storage: StorageBackend, data_source: str | None, siblings: set[str],
+) -> str | None:
+    """The population inference picks for ``query``'s dimensions and filters, if it picks one."""
+    def starless(text: str) -> bool:
+        try:
+            return not any(isinstance(n, StarSource) for n, _ in walk_references(parse_template(text)))
+        except Exception:  # noqa: BLE001
+            return False
+    rest = query.model_copy(update={"metrics": None, "filter": [f for f in query.filter_conditions if starless(f)] or None})
+    if not (rest.dimensions or rest.time_dimensions or rest.filter):
+        return None
+    try:
+        return (await infer_population(query=rest, storage=storage, data_source=data_source,
+                                       sibling_stage_names=siblings)).dataset_name
+    except SlayerError:
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # Entry point.
 # --------------------------------------------------------------------------- #
@@ -579,6 +705,7 @@ async def infer_population(
 ) -> PopulationChoice:
     """Infer a rootless query's population, or raise :class:`PopulationInferenceError`."""
     siblings = sibling_stage_names or set()
+    query = await _anchor_spellings(query, storage=storage, data_source=data_source, siblings=siblings)
 
     # Nothing to infer from (e.g. a metrics-only query) — a dedicated error,
     # checked before datasource resolution so it never masquerades as NO_DATASOURCE.
@@ -648,7 +775,8 @@ async def infer_population(
             candidates=[v.dataset_name for v in blocked],
             detail="; ".join([
                 f"from candidate {first.dataset_name!r}, the relationship path to "
-                f"{first.ambiguous_item!r} is ambiguous", *pairs,
+                f"{first.ambiguous_item!r} is ambiguous{_spelled_paths(first, datasets_by_name=datasets_by_name)}",
+                *pairs,
             ]),
         )
     raise PopulationInferenceError(

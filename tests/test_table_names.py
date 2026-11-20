@@ -15,6 +15,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.names import qualified_reference
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import (
     IntrospectedColumn, _fields_to_dataset, _sql_table_identity, ingest_datasource_idempotent, list_ingestable_objects,
@@ -128,7 +129,7 @@ def test_rendered_name_reads_back_as_its_parts(parts: Sequence[str], dialect: st
 async def _query(storage: YAMLStorage, dataset: str) -> list[dict[str, object]]:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return (await engine.execute({"population": dataset, "dimensions": ["qty"]})).data
+        return (await engine.execute({"population": dataset, "dimensions": [qualified_reference(dataset, "qty")]})).data
     finally:
         engine.close()
 
@@ -330,11 +331,11 @@ def _key_columns(sql: str, *, dialect: str) -> set[tuple[str, bool]]:
 
 
 @pytest.mark.parametrize(("cardinality", "query"), [
-    (RelationshipCardinality.ONE_TO_ONE, {"population": "customers", "dimensions": ["name", "orders.status"]}),
-    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
+    (RelationshipCardinality.ONE_TO_ONE, {"population": "customers", "dimensions": ["customers.name", "orders.status"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["customers.name"],
                                    "filter": ["orders.status = 'x'"]}),
-    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
-                                   "filter": ["name = 'a' OR orders.status = 'x'"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["customers.name"],
+                                   "filter": ["customers.name = 'a' OR orders.status = 'x'"]}),
 ])
 @pytest.mark.parametrize("dialect", ["snowflake", "postgres"])
 async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality, query: dict[str, Any], dialect: str) -> None:

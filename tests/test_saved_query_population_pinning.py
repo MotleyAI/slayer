@@ -21,11 +21,12 @@ REVENUE = {"metric": "sum(orders.amount)", "alias": "revenue"}
 # Rootless: infers ``customers``; with an ``orders.status`` filter it would infer ``orders``.
 BY_CUSTOMER: Dict[str, Any] = {"dimensions": ["customers.name"], "metrics": [REVENUE]}
 OK_FILTER = {"filter": ["orders.status = 'ok'"]}
-N = {"metric": "count(*)", "alias": "n"}
+N = {"metric": "count(orders.*)", "alias": "n"}
 # The final stage infers dataset ``orders``, which a sibling stage is named.
 COLLIDING: List[Any] = [
-    {"name": "orders", "population": "customers", "dimensions": ["name"], "metrics": [N]},
-    {"dimensions": ["customers.name", "products.title"], "metrics": [N]},
+    {"name": "orders", "population": "customers", "dimensions": ["customers.name"],
+     "metrics": [{"metric": "count(customers.*)", "alias": "n"}]},
+    {"dimensions": ["customers.name", "products.title"], "metrics": [{"metric": "count(products.*)", "alias": "n"}]},
 ]
 
 
@@ -123,8 +124,8 @@ class TestPinnedOnSave:
         await sqlite_engine.create_dataset_from_query(query=[
             {"name": "per_customer", **BY_CUSTOMER},
             {"name": "ext", "population": "orders", "extensions": [extension],
-             "metrics": [{"metric": "double_amount", "alias": "d"}]},
-            {"population": "per_customer", "metrics": [{"metric": "sum(revenue)", "alias": "total"}]},
+             "metrics": [{"metric": "orders.double_amount", "alias": "d"}]},
+            {"population": "per_customer", "metrics": [{"metric": "sum(per_customer.revenue)", "alias": "total"}]},
         ], name="staged")
         stages = {s.name: s for s in await stored_stages(sqlite_engine, "staged")}
         assert stages["per_customer"].population == "customers"
@@ -140,7 +141,7 @@ class TestRefinementKeepsPopulation:
         refined = await engine.execute("by_customer", refine=OK_FILTER)
         hand_written = await engine.execute({"population": "customers", **BY_CUSTOMER, **OK_FILTER})
         assert refined.population == "customers"
-        assert refined.columns == hand_written.columns == ["customers.name", "customers.revenue"]
+        assert refined.columns == hand_written.columns == ["customers.name", "revenue"]
         assert rows(refined) == rows(hand_written)
 
 

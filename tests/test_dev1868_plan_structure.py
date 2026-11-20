@@ -39,7 +39,7 @@ def _bundle46() -> ResolvedSourceBundle:
 def _q46(**kw) -> SlayerQuery:
     kw.setdefault("population", "sales")
     kw.setdefault("time_dimensions",
-                  [{"field": "ordered_at", "granularity": "month"}])
+                  [{"field": "sales.ordered_at", "granularity": "month"}])
     return SlayerQuery(**kw)
 
 
@@ -100,9 +100,9 @@ class TestCompositesBecomeCombinedSlots:
     AGGREGATE slot with target-rooted producers — none reaches the seam."""
 
     @pytest.mark.parametrize("formula, n_producers", [
-        ("sum(amount) / sum(customers.spend)", 1),
+        ("sum(orders.amount) / sum(customers.spend)", 1),
         ("sum(customers.spend) * 2", 1),
-        ("round(sum(customers.spend) / sum(amount), 2)", 1),
+        ("round(sum(customers.spend) / sum(orders.amount), 2)", 1),
         ("sum(customers.spend) - max(customers.spend)", 2),
     ])
     def test_composite_plans_with_producers(
@@ -126,7 +126,7 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_mixed_composite_rejected_by_plan_query(self) -> None:
         query = _q46(
-            metrics=[QueryMetric(metric="time_shift(sum(revenue) * weight, -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue) * sales.weight, -1)",
                                    alias="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:
@@ -138,7 +138,7 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_row_predicate_rejected_by_plan_query(self) -> None:
         query = _q46(
-            metrics=[QueryMetric(metric="time_shift(store in ('A', 'B'), -1)",
+            metrics=[QueryMetric(metric="time_shift(sales.store in ('A', 'B'), -1)",
                                    alias="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:

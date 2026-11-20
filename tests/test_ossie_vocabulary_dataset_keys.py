@@ -82,7 +82,7 @@ class TestSavedDocument:
         await storage.save_dataset(SlayerDataset.model_validate(shop_customers()))
         await storage.save_dataset(SlayerDataset.model_validate(shop_orders()))
         response = await run(storage, {"population": "orders", "dimensions": ["customers.region"],
-                                       "metrics": ["sum(amount)"]})
+                                       "metrics": ["sum(orders.amount)"]})
         assert by_dimension(response, dim_suffix="region") == AMOUNT_BY_REGION
 
 

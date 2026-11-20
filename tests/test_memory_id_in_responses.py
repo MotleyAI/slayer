@@ -58,7 +58,7 @@ class TestStringIds:
     ) -> None:
         attached = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         await storage.save_memory(
             learning="example revenue query",

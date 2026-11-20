@@ -38,7 +38,7 @@ class TestLiftedShapesRender:
         own inner is local and re-aggregates host-rooted."""
         sql = await gen(_q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
-            QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+            QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
         ]))
         assert "shifted_" in sql, sql
         assert "_cm_" in sql, sql  # the sibling still isolates into its own CTE
@@ -48,7 +48,7 @@ class TestLiftedShapesRender:
         named repro. Renders scope-closed; the shift reads the producer that pulls
         the fragment's join (pinned in the fragment-join module)."""
         sql = await gen(_q(metrics=[
-            QueryMetric(metric="time_shift(wscaled_sum(amount), -1)", alias="prev"),
+            QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
         ]))
         assert_scope_closed(sql, dialect="duckdb")
         assert "customers__regions" in shifted_cte_body(sql), sql
@@ -56,7 +56,7 @@ class TestLiftedShapesRender:
     async def test_consecutive_periods_with_cross_model_sibling(self) -> None:
         sql = await gen(_q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
-            QueryMetric(metric="consecutive_periods(sum(amount) > 0)", alias="streak"),
+            QueryMetric(metric="consecutive_periods(sum(orders.amount) > 0)", alias="streak"),
         ]))
         assert "cp_" in sql, sql
 
@@ -74,14 +74,14 @@ class TestLiftedShapesRender:
     async def test_change_desugars_and_renders(self) -> None:
         sql = await gen(_q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
-            QueryMetric(metric="change(sum(amount))", alias="delta"),
+            QueryMetric(metric="change(sum(orders.amount))", alias="delta"),
         ]))
         assert "shifted_" in sql, sql
 
     async def test_change_pct_desugars_and_renders(self) -> None:
         sql = await gen(_q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
-            QueryMetric(metric="change_pct(sum(amount))", alias="delta"),
+            QueryMetric(metric="change_pct(sum(orders.amount))", alias="delta"),
         ]))
         assert "shifted_" in sql, sql
 
@@ -128,7 +128,7 @@ class TestTargetGrainCrossModelRenders:
             SQLGenerator, "_emit_time_shift_ctes_for_planned", _spy,
         ):
             await gen(_q(metrics=[
-                QueryMetric(metric="time_shift(wscaled_sum(amount), -1)", alias="prev"),
+                QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
             ]))
         assert len(calls) == 1, calls
 
@@ -155,7 +155,7 @@ class TestCompositeInputTimeShiftRenders:
         q = _q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
             QueryMetric(
-                metric="time_shift(sum(amount) + sum(amount), -1)", alias="prev",
+                metric="time_shift(sum(orders.amount) + sum(orders.amount), -1)", alias="prev",
             ),
         ])
         sql = await gen(q)

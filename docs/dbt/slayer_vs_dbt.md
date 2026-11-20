@@ -19,9 +19,9 @@ Some dbt constructs that look missing at first glance are in fact expressible in
 
 dbt supports measures like account balances where `SUM` across time is wrong — you need `MAX` or `MIN` over the time dimension, then `SUM` across other dimensions. The `non_additive_dimension` with `window_choice` and `window_groupings` handles this.
 
-In SLayer this is one expression, `sum(last(balance, snapshot_date, partition_by=[account_id, customer_id, snapshot_date]))` grouped by `customer_id` and a month `snapshot_date` time dimension (the time field in `partition_by` stands for its bucket), or equivalently a two-stage query:
+In SLayer this is one expression, `sum(last(account_snapshots.balance, account_snapshots.snapshot_date, partition_by=[account_snapshots.account_id, account_snapshots.customer_id, account_snapshots.snapshot_date]))` grouped by `account_snapshots.customer_id` and a month `account_snapshots.snapshot_date` time dimension (the time field in `partition_by` stands for its bucket), or equivalently a two-stage query:
 
-- **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time field: `last(balance, snapshot_date)` for `window_choice: max`, `first(balance, snapshot_date)` for `window_choice: min`.
+- **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time field: `last(account_snapshots.balance, account_snapshots.snapshot_date)` for `window_choice: max`, `first(account_snapshots.balance, account_snapshots.snapshot_date)` for `window_choice: min`.
 - **Stage 2** — feed stage 1 into the next query via a [query list](../concepts/queries.md#query-lists); because [any SLayer query automatically becomes a dataset](../concepts/datasets.md#creating-datasets-from-queries), the outer query can aggregate additively (`sum`, `avg`, …) across the remaining dimensions.
 
 Example — account balances rolled up to customer-level monthly totals:
@@ -31,15 +31,15 @@ Example — account balances rolled up to customer-level monthly totals:
   {
     "name": "latest_balance_per_account",
     "population": "account_snapshots",
-    "metrics": ["last(balance, snapshot_date)"],
-    "dimensions": ["account_id", "customer_id"],
-    "time_dimensions": [{"field": "snapshot_date", "granularity": "month"}]
+    "metrics": ["last(account_snapshots.balance, account_snapshots.snapshot_date)"],
+    "dimensions": ["account_snapshots.account_id", "account_snapshots.customer_id"],
+    "time_dimensions": [{"field": "account_snapshots.snapshot_date", "granularity": "month"}]
   },
   {
     "population": "latest_balance_per_account",
-    "metrics": ["sum(balance_last_snapshot_date)"],
-    "dimensions": ["customer_id"],
-    "time_dimensions": [{"field": "snapshot_date", "granularity": "month"}]
+    "metrics": ["sum(latest_balance_per_account.balance_last_snapshot_date)"],
+    "dimensions": ["latest_balance_per_account.customer_id"],
+    "time_dimensions": [{"field": "latest_balance_per_account.snapshot_date", "granularity": "month"}]
   }
 ]
 ```
@@ -58,7 +58,7 @@ These constructs are **failed cleanly** by the importer — routed to the [conve
 
 ### Rolling-Window Cumulative (not imported)
 
-SLayer expresses trailing windows at query time with [`window=`](../concepts/expressions.md#windowed-aggregations) (e.g. `sum(revenue, window='30d')`), but the importer does not yet convert dbt's windowed cumulative metrics and fails them cleanly.
+SLayer expresses trailing windows at query time with [`window=`](../concepts/expressions.md#windowed-aggregations) (e.g. `sum(orders.revenue, window='30d')`), but the importer does not yet convert dbt's windowed cumulative metrics and fails them cleanly.
 
 ### No `grain_to_date` Cumulative Reset
 
@@ -80,7 +80,7 @@ Entity-based sequential event tracking (e.g., "users who visited then purchased 
 
 dbt: Want `revenue` summed AND averaged? Define two separate metrics. 20 columns x 3 aggregations = 60 metric definitions.
 
-SLayer: One field `revenue`. Query `sum(revenue)`, `avg(revenue)`, `min(revenue)` as needed. Zero duplication.
+SLayer: One field `revenue`. Query `sum(orders.revenue)`, `avg(orders.revenue)`, `min(orders.revenue)` as needed. Zero duplication.
 
 ### Composable Expression Syntax
 
@@ -93,16 +93,16 @@ dbt requires separate metric type definitions for each analytical pattern:
 SLayer handles all of these inline in a single query:
 ```json
 "metrics": [
-  "sum(revenue)",
-  {"metric": "sum(revenue) / count(*)", "alias": "aov"},
-  {"metric": "cumsum(sum(revenue))", "alias": "running"},
-  {"metric": "change_pct(sum(revenue))", "alias": "growth"}
+  "sum(orders.revenue)",
+  {"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"},
+  {"metric": "cumsum(sum(orders.revenue))", "alias": "running"},
+  {"metric": "change_pct(sum(orders.revenue))", "alias": "growth"}
 ]
 ```
 
 ### No Jinja Templating
 
-dbt filters require `{{ Dimension('entity__name') }}` syntax with entity resolution. SLayer filters are plain SQL-like strings: `"status = 'active'"`. More readable, no template engine needed.
+dbt filters require `{{ Dimension('entity__name') }}` syntax with entity resolution. SLayer filters are plain SQL-like strings: `"orders.status = 'active'"`. More readable, no template engine needed.
 
 ### Explicit Relationships (Predictable)
 

@@ -39,7 +39,7 @@ def test_old_entry_classes_still_build_entries() -> None:
     with recorded() as caught:
         column_ref, computed = old_class("ColumnRef"), old_class("ComputedDimension")
         dims = [column_ref(name="region", model="customers"), computed(expression="upper(status)", name="s")]
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"], "dimensions": dims})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"], "dimensions": dims})
     assert query.model_dump(mode="json")["dimensions"] == ["customers.region", {"field": "upper(status)", "alias": "s"}]
     named = [str(w.message) for w in future(caught)]
     assert len([m for m in named if "ColumnRef" in m]) == 1

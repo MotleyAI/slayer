@@ -68,7 +68,7 @@ async def narrowed_payloads(save) -> list[str]:
 
 class TestSaveWarning:
     async def test_public_reader_of_tagged_model_warns_and_saves(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
-        payloads = await narrowed_payloads(engine.save_dataset(query_backed("pay_report", source="hr", expression="sum(salary)")))
+        payloads = await narrowed_payloads(engine.save_dataset(query_backed("pay_report", source="hr", expression="sum(hr.salary)")))
         assert len(payloads) == 1
         assert mentions(payloads[0], "hr")
         await must_get(store.storage, "pay_report")
@@ -79,35 +79,35 @@ class TestSaveWarning:
         assert any(mentions(p, "hr") for p in payloads)
 
     async def test_covering_tags_do_not_warn(self, engine: SlayerQueryEngine) -> None:
-        model = query_backed("hr_private", source="hr", expression="sum(salary)", access_tags=["hr"])
+        model = query_backed("hr_private", source="hr", expression="sum(hr.salary)", access_tags=["hr"])
         assert await narrowed_payloads(engine.save_dataset(model)) == []
 
     async def test_tags_beyond_the_read_model_warn(self, engine: SlayerQueryEngine) -> None:
-        model = query_backed("hr_wide", source="hr", expression="sum(salary)", access_tags=["hr", "fin"])
+        model = query_backed("hr_wide", source="hr", expression="sum(hr.salary)", access_tags=["hr", "fin"])
         payloads = await narrowed_payloads(engine.save_dataset(model))
         assert len(payloads) == 1
         assert mentions(payloads[0], "hr")
 
     async def test_transitive_reader_warns(self, engine: SlayerQueryEngine) -> None:
-        payloads = await narrowed_payloads(engine.save_dataset(query_backed("rollup2", source="hr_summary", expression="sum(total)")))
+        payloads = await narrowed_payloads(engine.save_dataset(query_backed("rollup2", source="hr_summary", expression="sum(hr_summary.total)")))
         assert len(payloads) == 1
         assert mentions(payloads[0], "hr")
 
     async def test_reader_of_untagged_model_does_not_warn(self, engine: SlayerQueryEngine) -> None:
-        assert await narrowed_payloads(engine.save_dataset(query_backed("pub_count", source="pub", expression="count(*)"))) == []
+        assert await narrowed_payloads(engine.save_dataset(query_backed("pub_count", source="pub", expression="count(pub.*)"))) == []
 
     async def test_mcp_create_surfaces_the_warning(self, store: AccessStore) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             text = await mcp_text(store.storage, "create_dataset", name="pay_report",
-                                  query={"population": "hr", "metrics": [{"metric": "sum(salary)", "alias": "v"}]})
+                                  query={"population": "hr", "metrics": [{"metric": "sum(hr.salary)", "alias": "v"}]})
         assert "narrowed" in text.lower()
         assert mentions(text, "hr")
 
 
 async def test_sync_create_from_query_forwards_tags_and_warnings(store: AccessStore, engine: SlayerQueryEngine) -> None:
     notes: list = []
-    query = {"population": "hr", "metrics": [{"metric": "sum(salary)", "alias": "v"}]}
+    query = {"population": "hr", "metrics": [{"metric": "sum(hr.salary)", "alias": "v"}]}
     engine.create_dataset_from_query_sync(query=query, name="hr_sync", access_tags=["ops"], warnings_out=notes)
     assert (await must_get(store.storage, "hr_sync")).access_tags == ["ops"]
     assert any(mentions(n.model_dump_json(), "hr") for n in notes)
@@ -115,8 +115,8 @@ async def test_sync_create_from_query_forwards_tags_and_warnings(store: AccessSt
 
 class TestRetagWarning:
     async def test_retagging_warns_per_newly_narrowed_reader(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
-        await engine.save_dataset(query_backed("pub_count", source="pub", expression="count(*)"))
-        await engine.save_dataset(query_backed("pub_sum", source="pub", expression="count(*)"))
+        await engine.save_dataset(query_backed("pub_count", source="pub", expression="count(pub.*)"))
+        await engine.save_dataset(query_backed("pub_sum", source="pub", expression="count(pub.*)"))
         pub = await must_get(store.storage, "pub")
         payloads = await narrowed_payloads(engine.save_dataset(pub.model_copy(update={"access_tags": ["ops"]})))
         assert len(payloads) == 2
@@ -129,21 +129,21 @@ class TestRetagWarning:
         assert payloads == []
 
     async def test_moving_and_retagging_warns_its_readers(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
-        await engine.save_dataset(query_backed("pc", source="pub", expression="count(*)"))
-        reader = SlayerQuery.model_validate({"population": "pc", "metrics": [{"metric": "sum(v)", "alias": "total"}]})
+        await engine.save_dataset(query_backed("pc", source="pub", expression="count(pub.*)"))
+        reader = SlayerQuery.model_validate({"population": "pc", "metrics": [{"metric": "sum(pc.v)", "alias": "total"}]})
         await engine.save_dataset(SlayerDataset(name="pc_reader", source_queries=[reader]))
         pub = await must_get(store.storage, "pub")
         ds = await store.storage.get_datasource(DS)
         assert ds is not None
         await store.storage.save_datasource(ds.model_copy(update={"name": OTHER_DS}))
         await store.storage.save_dataset(pub.model_copy(update={"name": "pub2", "data_source": OTHER_DS}), _validate=False)
-        moved = query_backed("pc", source="pub2", expression="count(*)", access_tags=["ops"])
+        moved = query_backed("pc", source="pub2", expression="count(pub2.*)", access_tags=["ops"])
         payloads = await narrowed_payloads(engine.save_dataset(moved))
         assert await store.storage.get_dataset("pc", data_source=OTHER_DS) is not None
         assert any(mentions(p, "pc_reader") for p in payloads)
 
     async def test_retagging_warns_readers_in_other_datasources(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
-        await reader_in_other_datasource(store, name="far_count", source="pub", expression="count(*)")
+        await reader_in_other_datasource(store, name="far_count", source="pub", expression="count(pub.*)")
         pub = await must_get(store.storage, "pub")
         payloads = await narrowed_payloads(engine.save_dataset(pub.model_copy(update={"access_tags": ["ops"]})))
         assert any(mentions(p, "far_count") for p in payloads)
@@ -167,7 +167,7 @@ class TestValidateModels:
     async def test_all_datasources_load_the_store_once(
         self, store: AccessStore, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        await reader_in_other_datasource(store, name="far_pay", source="hr", expression="sum(salary)")
+        await reader_in_other_datasource(store, name="far_pay", source="hr", expression="sum(hr.salary)")
         unfiltered: list[None] = []
         load = engine.storage.load_datasets
 
@@ -183,7 +183,7 @@ class TestValidateModels:
         assert len(unfiltered) == 1
 
     async def test_reader_in_another_datasource_is_listed(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
-        await reader_in_other_datasource(store, name="far_pay", source="hr", expression="sum(salary)")
+        await reader_in_other_datasource(store, name="far_pay", source="hr", expression="sum(hr.salary)")
         entries = await engine.validate_datasets(data_source=OTHER_DS)
         findings = [d for d in (json.dumps(e.model_dump(mode="json")) for e in entries) if "narrowed" in d]
         assert any(mentions(f, "far_pay") and mentions(f, "hr") for f in findings)

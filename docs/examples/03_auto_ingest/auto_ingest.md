@@ -37,9 +37,9 @@ The metric generation rules:
 
 | Column type | Metrics generated |
 |------------|-------------------|
-| Any table | `count(*)` always available (no explicit metric needed) |
-| Numeric, non-ID | One metric per column (e.g., `{name: "amount", sql: "amount"}`). Aggregate at query time: `sum(amount)`, `avg(amount)`, etc. |
-| Non-numeric, non-ID | One metric per column. Use `count_distinct(name)` at query time. |
+| Any table | `count(<dataset>.*)` always available (no explicit metric needed) |
+| Numeric, non-ID | One metric per column (e.g., `{name: "amount", sql: "amount"}`). Aggregate at query time: `sum(orders.amount)`, `avg(orders.amount)`, etc. |
+| Non-numeric, non-ID | One metric per column. Use `count_distinct(customers.name)` at query time. |
 | ID / FK columns | No metrics (skipped) |
 
 A column is considered an ID if its name is `id` or ends with `_id`, `_key`, `_pk`, or `_fk`.
@@ -51,14 +51,14 @@ Once ingested, datasets are queried like any other. Joined dimensions use dot sy
 ```json
 {
   "population": "items",
-  "metrics": ["count(*)"],
+  "metrics": ["count(items.*)"],
   "dimensions": ["orders.customers.name"],
-  "order": [{"field": "_count", "direction": "desc"}],
+  "order": [{"field": "items._count", "direction": "desc"}],
   "limit": 5
 }
 ```
 
-Result keys include the full path from the population: `items.orders.customers.name`, `items._count`.
+Result keys are the references as written: `orders.customers.name`, `items._count`.
 
 ---
 

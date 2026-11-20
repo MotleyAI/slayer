@@ -91,15 +91,15 @@ class TestDemoModels:
         engine = SlayerQueryEngine(storage=doc_demo_storage)
         try:
             per_element = engine.execute_sync({
-                "population": "orders", "dimensions": ["item_skus.value"],
-                "metrics": [{"metric": "count(item_skus.*)", "alias": "units"}],
+                "population": "orders", "dimensions": ["orders.item_skus.value"],
+                "metrics": [{"metric": "count(orders.item_skus.*)", "alias": "units"}],
             }).data
             per_item = engine.execute_sync({
-                "population": "items", "dimensions": ["sku"],
-                "metrics": [{"metric": "count(*)", "alias": "units"}],
+                "population": "items", "dimensions": ["items.sku"],
+                "metrics": [{"metric": "count(items.*)", "alias": "units"}],
             }).data
         finally:
             engine.close()
         assert per_element
-        assert {r["orders.item_skus.value"]: r["orders.units"] for r in per_element} == {
-            r["items.sku"]: r["items.units"] for r in per_item}
+        assert {r["orders.item_skus.value"]: r["units"] for r in per_element} == {
+            r["items.sku"]: r["units"] for r in per_item}

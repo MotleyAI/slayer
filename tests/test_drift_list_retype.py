@@ -96,7 +96,7 @@ class TestQueryTime:
     async def test_a_refused_query_carries_the_finding(self) -> None:
         async with _env(_players(DatasetField(name="scores", datatype=DataType.FLOAT))) as (engine, _):
             with pytest.raises(SchemaDriftError) as info:
-                await engine.execute({"population": "players", "metrics": [{"metric": "sum(scores)", "alias": "s"}]})
+                await engine.execute({"population": "players", "metrics": [{"metric": "sum(players.scores)", "alias": "s"}]})
         err = info.value
         assert not any(_deletes_scores(e.model_dump(mode="json")) for e in err.to_delete), err.to_delete
         assert "scores" in str(err), str(err)
@@ -105,7 +105,7 @@ class TestQueryTime:
     async def test_an_unread_stale_column_leaves_the_error(self) -> None:
         async with _env(_players(DatasetField(name="scores", datatype=DataType.FLOAT))) as (engine, _):
             with pytest.raises(SQLAlchemyError) as info:
-                await engine.execute({"population": "players", "metrics": [{"metric": "sum(bad)"}]})
+                await engine.execute({"population": "players", "metrics": [{"metric": "sum(players.bad)"}]})
         assert not isinstance(info.value, SchemaDriftError), info.value
 
 

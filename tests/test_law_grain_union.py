@@ -90,7 +90,7 @@ async def test_population_and_operand_broadcast_constancy(law_case):
         cells: dict[tuple, set] = {}
         for key, row in full_rows.items():
             cell = _grain_projection(key, shape=shape, grain=grain)
-            cells.setdefault(cell, set()).add(canon(row[f"orders.m_{meas}"]))
+            cells.setdefault(cell, set()).add(canon(row[f"m_{meas}"]))
         for cell, values in cells.items():
             law_assert(
                 len(values) == 1,
@@ -113,10 +113,10 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
     """part(region) ⊕ part(city) queried at (region, city, month): x is typed
     by the union grain (region, city) and constant within each of its cells."""
     resp = await exec_engine.execute(q(
-        dimensions=["region", "city"],
+        dimensions=["orders.region", "orders.city"],
         time_dimensions=month_td(),
         metrics=[QueryMetric(
-            metric="sum(amount, partition_by=region) + sum(amount, partition_by=city)",
+            metric="sum(orders.amount, partition_by=orders.region) + sum(orders.amount, partition_by=orders.city)",
             alias="x",
         )],
     ))
@@ -128,7 +128,7 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
     cells: dict[tuple, set] = {}
     for row in resp.data:
         cell = (row["orders.region"], row["orders.city"])
-        cells.setdefault(cell, set()).add(canon(row["orders.x"]))
+        cells.setdefault(cell, set()).add(canon(row["x"]))
     for cell, values in cells.items():
         assert len(values) == 1, (
             f"LAW grain union violated — mixed-grain expression not constant "

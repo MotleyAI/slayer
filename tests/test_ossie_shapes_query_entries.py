@@ -62,9 +62,9 @@ def unknown_key_error(exc: BaseException) -> UnknownKeyError:
 class TestEntryClasses:
     def test_metric_entries_are_query_metrics(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders",
-                                            "metrics": ["count(*)", {"metric": "sum(amount)", "alias": "total"}]})
+                                            "metrics": ["count(orders.*)", {"metric": "sum(orders.amount)", "alias": "total"}]})
         assert all(isinstance(m, QueryMetric) for m in query.metrics or [])
-        assert [(m.metric, m.alias) for m in query.metrics or []] == [("count(*)", None), ("sum(amount)", "total")]
+        assert [(m.metric, m.alias) for m in query.metrics or []] == [("count(orders.*)", None), ("sum(orders.amount)", "total")]
 
     def test_a_metric_entry_takes_its_optional_keys(self) -> None:
         entry = {"metric": "sum(amount)", "alias": "total", "label": "Total", "description": "All of it",
@@ -74,12 +74,12 @@ class TestEntryClasses:
 
     def test_dimension_entries_are_query_dimensions(self) -> None:
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": ["count(*)"],
-            "dimensions": ["status", {"field": "customers.name"}, {"field": "upper(status)", "alias": "s", "label": "S"}],
+            "population": "orders", "metrics": ["count(orders.*)"],
+            "dimensions": ["orders.status", {"field": "customers.name"}, {"field": "upper(orders.status)", "alias": "s", "label": "S"}],
         })
         assert all(isinstance(d, QueryDimension) for d in query.dimensions or [])
         assert [(d.field, d.alias, d.label) for d in query.dimensions or []] == [
-            ("status", None, None), ("customers.name", None, None), ("upper(status)", "s", "S")]
+            ("orders.status", None, None), ("customers.name", None, None), ("upper(orders.status)", "s", "S")]
 
     def test_a_dimension_reference_reads_its_path(self) -> None:
         [dim] = SlayerQuery.model_validate({"population": "orders",
@@ -88,20 +88,20 @@ class TestEntryClasses:
         assert dim.ref.full_name == "customers.region"
 
     def test_an_expression_dimension_has_no_reference(self) -> None:
-        [dim] = SlayerQuery.model_validate({"population": "orders", "dimensions": ["upper(status)"]}).dimensions or []
+        [dim] = SlayerQuery.model_validate({"population": "orders", "dimensions": ["upper(orders.status)"]}).dimensions or []
         assert dim.ref is None
 
     def test_a_dimension_name_is_derived_and_not_serialized(self) -> None:
         dims = SlayerQuery.model_validate({"population": "orders", "dimensions": [
-            {"field": "status", "alias": "s"}, "customers.region", "upper(status)"]}).dimensions or []
-        assert [d.name for d in dims] == ["s", "region", computed_dimension_name("upper(status)")]
+            {"field": "orders.status", "alias": "s"}, "customers.region", "upper(orders.status)"]}).dimensions or []
+        assert [d.name for d in dims] == ["s", "region", computed_dimension_name("upper(orders.status)")]
         assert all("name" not in d.model_dump() for d in dims)
 
     def test_a_bare_reference_dumps_as_text(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "dimensions": [
-            {"field": "customers.region"}, {"field": "status", "alias": "s"}, "upper(status)"]})
+            {"field": "customers.region"}, {"field": "orders.status", "alias": "s"}, "upper(orders.status)"]})
         assert query.model_dump(mode="json")["dimensions"] == [
-            "customers.region", {"field": "status", "alias": "s"}, "upper(status)"]
+            "customers.region", {"field": "orders.status", "alias": "s"}, "upper(orders.status)"]
 
     def test_a_query_metric_dumps_metric_and_alias(self) -> None:
         dumped = QueryMetric.model_validate({"metric": "sum(amount)", "alias": "total"}).model_dump(exclude_none=True)
@@ -115,12 +115,12 @@ class TestEntryClasses:
 class TestUnknownEntryKeys:
     def test_an_unknown_metric_entry_key_is_refused(self) -> None:
         with pytest.raises(ValidationError) as info:
-            SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)", "nmae": "total"}]})
+            SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)", "nmae": "total"}]})
         assert unknown_key_error(info.value).key == "nmae"
 
     def test_an_unknown_dimension_entry_key_is_refused(self) -> None:
         with pytest.raises(ValidationError) as info:
-            SlayerQuery.model_validate({"population": "orders", "dimensions": [{"field": "status", "alais": "s"}]})
+            SlayerQuery.model_validate({"population": "orders", "dimensions": [{"field": "orders.status", "alais": "s"}]})
         assert unknown_key_error(info.value).key == "alais"
 
 
@@ -174,10 +174,10 @@ class TestOneXEntries:
     def test_a_metric_object_converts(self) -> None:
         with recorded() as caught:
             query = SlayerQuery.model_validate(
-                {"population": "orders", "metrics": [DatasetMetric(expression="sum(amount)", name="total")]})
+                {"population": "orders", "metrics": [DatasetMetric(expression="sum(orders.amount)", name="total")]})
         [metric] = query.metrics or []
         assert isinstance(metric, QueryMetric)
-        assert (metric.metric, metric.alias) == ("sum(amount)", "total")
+        assert (metric.metric, metric.alias) == ("sum(orders.amount)", "total")
         assert deprecations(caught)
 
     def test_a_converted_query_dumps_in_ossie_form(self) -> None:
@@ -193,16 +193,16 @@ class TestOneXEntries:
 class TestDump:
     STAGES: list[dict[str, Any]] = [
         {"name": "per_customer", "population": "orders",
-         "dimensions": ["customer_id", {"field": "buyer.name", "alias": "buyer_name"}],
-         "time_dimensions": [{"field": "ordered_at", "granularity": "month", "alias": "m"}],
-         "metrics": [{"metric": "sum(amount)", "alias": "total"}, "aov"],
-         "filter": "amount > 5", "order": [{"field": "total", "direction": "desc"}],
+         "dimensions": ["orders.customer_id", {"field": "buyer.name", "alias": "buyer_name"}],
+         "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month", "alias": "m"}],
+         "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}, "aov"],
+         "filter": "orders.amount > 5", "order": [{"field": "total", "direction": "desc"}],
          "extensions": [{"dataset": "orders",
                          "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
                          "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"],
                                             "name": "buyer"}]}]},
-        {"population": "per_customer", "metrics": [{"metric": "avg(total)", "alias": "avg_total"}],
-         "filter": ["total > 0"], "order": [{"field": "avg_total"}]},
+        {"population": "per_customer", "metrics": [{"metric": "avg(per_customer.total)", "alias": "avg_total"}],
+         "filter": ["per_customer.total > 0"], "order": [{"field": "avg_total"}]},
     ]
 
     def test_every_stage_dumps_in_ossie_form(self) -> None:
@@ -213,9 +213,9 @@ class TestDump:
         for stage in (first, second):
             assert not NON_OSSIE_QUERY_KEYS & stage_keys(stage), stage
             assert {"population", "metrics", "filter"} <= stage.keys()
-        assert first["metrics"] == [{"metric": "sum(amount)", "alias": "total"}, "aov"]
-        assert first["dimensions"] == ["customer_id", {"field": "buyer.name", "alias": "buyer_name"}]
-        assert first["time_dimensions"][0]["field"] == "ordered_at"
+        assert first["metrics"] == [{"metric": "sum(orders.amount)", "alias": "total"}, "aov"]
+        assert first["dimensions"] == ["orders.customer_id", {"field": "buyer.name", "alias": "buyer_name"}]
+        assert first["time_dimensions"][0]["field"] == "orders.ordered_at"
         assert first["time_dimensions"][0]["alias"] == "m"
         assert first["order"] == [{"field": "total", "direction": "desc"}]
         [ext] = first["extensions"]
@@ -237,9 +237,9 @@ class TestExecution:
         with recorded() as caught:
             ossie = await execute(storage, {
                 "population": "orders",
-                "dimensions": ["customers.region", {"field": "status", "alias": "s"}],
-                "metrics": ["revenue", {"metric": "count(*)", "alias": "n"}],
-                "filter": "status = 'ok'",
+                "dimensions": ["customers.region", {"field": "orders.status", "alias": "s"}],
+                "metrics": ["orders.revenue", {"metric": "count(orders.*)", "alias": "n"}],
+                "filter": "orders.status = 'ok'",
             })
         assert deprecations(caught) == []
         assert deprecated_in(ossie.warnings) == []
@@ -255,28 +255,29 @@ class TestExecution:
 
     async def test_an_alias_names_a_references_column(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
-        aliased = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+        aliased = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                           "dimensions": [{"field": "customers.region", "alias": "r"}]})
-        plain = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+        plain = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                         "dimensions": ["customers.region"]})
         assert aliased.columns[0].split(".")[-1] == "r"
         assert sorted_rows(aliased) == sorted_rows(plain)
 
-    async def test_an_alias_equal_to_the_default_name_changes_nothing(self, tmp_path: Path) -> None:
+    async def test_an_alias_keys_bare_and_changes_no_values(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
-        aliased = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
-                                          "dimensions": [{"field": "status", "alias": "status"}]})
-        plain = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
-                                        "dimensions": ["status"]})
-        assert list(aliased.columns) == list(plain.columns)
+        aliased = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
+                                          "dimensions": [{"field": "orders.status", "alias": "status"}]})
+        plain = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
+                                        "dimensions": ["orders.status"]})
+        assert list(aliased.columns) == ["status", "orders._count"]
+        assert list(plain.columns) == ["orders.status", "orders._count"]
         assert sorted_rows(aliased) == sorted_rows(plain)
 
     async def test_an_old_field_reference_converts(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
         with recorded():
-            old = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+            old = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                           "dimensions": [{"name": "region", "model": "customers"}]})
-        new = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+        new = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                       "dimensions": [{"field": "customers.region"}]})
         assert list(old.columns) == list(new.columns)
         assert sorted_rows(old) == sorted_rows(new)

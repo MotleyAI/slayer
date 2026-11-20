@@ -65,10 +65,10 @@ def _assert_flat_and_unique(
 #: Two ranked producers (partition sets {region} and {city}) — identical
 #: internal CTE shapes that must hoist under distinct names.
 TWO_PRODUCERS = dict(
-    dimensions=["region", "city"],
+    dimensions=["orders.region", "orders.city"],
     metrics=[
-        QueryMetric(metric="last(amount, partition_by=region)", alias="a"),
-        QueryMetric(metric="last(amount, partition_by=city)", alias="b"),
+        QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="a"),
+        QueryMetric(metric="last(orders.amount, partition_by=orders.city)", alias="b"),
     ],
 )
 
@@ -89,8 +89,8 @@ class TestSiblingProducers:
         }
         assert len(by) == 5
         for (region, city), r in by.items():
-            assert float(r["orders.a"]) == pytest.approx(REGION_LAST[region])
-            assert float(r["orders.b"]) == pytest.approx(city_last[city])
+            assert float(r["a"]) == pytest.approx(REGION_LAST[region])
+            assert float(r["b"]) == pytest.approx(city_last[city])
 
 
 class TestThreeLevelNesting:
@@ -98,20 +98,20 @@ class TestThreeLevelNesting:
     #: transform-bearing dimension producer, a windowed producer, and a ranked
     #: producer in one query.
     CBAND = (
-        "CASE WHEN cumsum(sum(amount, partition_by=[region, ordered_at])) > 50 "
+        "CASE WHEN cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) > 50 "
         "THEN 1 ELSE 0 END"
     )
 
     def _query(self):
         return q(
-            dimensions=["region", {"field": self.CBAND, "alias": "cband"}],
+            dimensions=["orders.region", {"field": self.CBAND, "alias": "cband"}],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
                 QueryMetric(
-                    metric="sum(amount, window='90d', partition_by=region)", alias="w",
+                    metric="sum(orders.amount, window='90d', partition_by=orders.region)", alias="w",
                 ),
-                QueryMetric(metric="last(amount, partition_by=region)", alias="l"),
+                QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="l"),
             ],
         )
 
@@ -127,7 +127,7 @@ class TestThreeLevelNesting:
         resp = await exec_engine.execute(self._query())
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"])):
-                (int(r["orders.cband"]), float(r["orders.s"]))
+                (int(r["cband"]), float(r["s"]))
             for r in resp.data
         }
         assert got == {
@@ -168,13 +168,13 @@ class TestTruncatingDialect:
         model = _long_names_dataset()
         query = SlayerQuery(
             population=model.name,
-            dimensions=["grp"],
+            dimensions=["t.grp"],
             metrics=[
                 QueryMetric(
-                    metric=f"last({LONG_PREFIX}_alpha, partition_by=grp)", alias="a",
+                    metric=f"last(t.{LONG_PREFIX}_alpha, partition_by=t.grp)", alias="a",
                 ),
                 QueryMetric(
-                    metric=f"last({LONG_PREFIX}_beta, partition_by=[])", alias="b",
+                    metric=f"last(t.{LONG_PREFIX}_beta, partition_by=[])", alias="b",
                 ),
             ],
         )

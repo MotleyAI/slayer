@@ -142,7 +142,7 @@ class TestExecution:
     async def test_chain_in_every_supply_order(self, exec_engine, order) -> None:
         by_name = {"x": stage_x(), "c": stage_c(), "b": stage_b()}
         resp = await exec_engine.execute([*(by_name[n] for n in order), root_over_b()])
-        assert rows_by(resp.data, key="b.c__tr", value="b.total") == AMOUNT_BY_TIER
+        assert rows_by(resp.data, key="b.c__tr", value="total") == AMOUNT_BY_TIER
 
     def test_inline_model_joining_a_sibling_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="(?i)inline"):
@@ -150,30 +150,30 @@ class TestExecution:
 
     async def test_one_stage_reads_three_siblings(self, exec_engine) -> None:
         resp = await exec_engine.execute(three_reads_list())
-        assert rows_by(resp.data, key="p.x__tier", value="p.total") == CUSTOMER_AMOUNT_BY_TIER
+        assert rows_by(resp.data, key="p.x__tier", value="total") == CUSTOMER_AMOUNT_BY_TIER
 
     async def test_semi_join_over_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(semi_join_list())
-        assert rows_by(resp.data, key="b.status", value="b.total") == BIG_SPENDER_AMOUNT_BY_STATUS
+        assert rows_by(resp.data, key="b.status", value="total") == BIG_SPENDER_AMOUNT_BY_STATUS
 
     async def test_producer_rooted_at_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(producer_at_sibling_list())
-        assert rows_by(resp.data, key="s.tr", value="s.total") == SPEND_BY_TIER
+        assert rows_by(resp.data, key="s.tr", value="total") == SPEND_BY_TIER
 
     async def test_shared_producer_across_stages(self, exec_engine) -> None:
         resp = await exec_engine.execute(shared_producer_list())
-        assert rows_by(resp.data, key="s2.status", value="s2.total") == AMOUNT_BY_STATUS
+        assert rows_by(resp.data, key="s2.status", value="total") == AMOUNT_BY_STATUS
 
     async def test_stored_join_resolves_to_the_model_not_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(stored_join_collision_list())
-        assert rows_by(resp.data, key="b.customers__tier", value="b.total") == AMOUNT_BY_TIER
+        assert rows_by(resp.data, key="b.customers__tier", value="total") == AMOUNT_BY_TIER
 
     def test_nested_source_queries_rejected(self) -> None:
         outer = {"name": "outer", "source_queries": [
-            {"population": "x", "dimensions": ["tier"], "metrics": [{"metric": "sum(total_spend)", "alias": "s"}]}]}
+            {"population": "x", "dimensions": ["x.tier"], "metrics": [{"metric": "sum(x.total_spend)", "alias": "s"}]}]}
         with pytest.raises(ValueError, match=r"(?is)inline.*named stages?|named stages?.*inline"):
             SlayerQuery.model_validate({
-                "name": "n", "population": outer, "dimensions": ["tier"],
+                "name": "n", "population": outer, "dimensions": ["customers.tier"],
                 "metrics": [{"metric": "sum(s)", "alias": "s3"}]})
 
 
@@ -214,9 +214,9 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _q(name, source, **kw) -> SlayerQuery:
-    kw.setdefault("dimensions", ["status"] if source == "orders" else [])
-    kw.setdefault("metrics", [{"metric": "sum(amount)", "alias": "amt"}]
-                  if source == "orders" else [{"metric": "sum(amt)", "alias": "total"}])
+    kw.setdefault("dimensions", ["orders.status"] if source == "orders" else [])
+    kw.setdefault("metrics", [{"metric": "sum(orders.amount)", "alias": "amt"}]
+                  if source == "orders" else [{"metric": f"sum({source}.amt)", "alias": "total"}])
     return SlayerQuery(name=name, population=source, **kw)
 
 

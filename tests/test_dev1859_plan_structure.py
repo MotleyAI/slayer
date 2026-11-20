@@ -31,13 +31,13 @@ from tests._dev1847_fixtures import (
 )
 
 TWO_CONSTITUENTS = (
-    f"sum(quantity * ({INNER_UP_PRODUCT} + {INNER_UP_CITY}))"
+    f"sum(sales.quantity * ({INNER_UP_PRODUCT} + {INNER_UP_CITY}))"
 )
-_REGION_SUM = "sum(amount, partition_by=region)"
+_REGION_SUM = "sum(sales.amount, partition_by=sales.region)"
 #: mixed source + attached parameter — both inputs must row-attach.
-MIXED_PARAM = f"weighted_avg(quantity * {INNER_UP_PRODUCT}, weight={_REGION_SUM})"
+MIXED_PARAM = f"weighted_avg(sales.quantity * {INNER_UP_PRODUCT}, weight={_REGION_SUM})"
 #: the SAME attached aggregate as source constituent AND parameter — one producer.
-DEDUP_SHARED = f"weighted_avg(quantity * {_REGION_SUM}, weight={_REGION_SUM})"
+DEDUP_SHARED = f"weighted_avg(sales.quantity * {_REGION_SUM}, weight={_REGION_SUM})"
 
 
 def _bundle() -> ResolvedSourceBundle:
@@ -48,7 +48,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 def _plan(expression: str):
     return plan_query(
-        query=sales_q(dimensions=["region"],
+        query=sales_q(dimensions=["sales.region"],
                       metrics=[QueryMetric(metric=expression, alias="m")]),
         bundle=_bundle())
 
@@ -124,7 +124,7 @@ class TestEmittedGroupByStaysPure:
     @pytest.mark.parametrize("formula", [MIXED_SUM, TWO_CONSTITUENTS])
     async def test_no_group_by_references_the_row_leaf(self, formula):
         sql = await gen(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=formula, alias="m")]))
         ast = sqlglot.parse_one(sql, read="postgres")
         groups = list(ast.find_all(exp.Group))
@@ -168,9 +168,9 @@ class TestDedupOneProducer:
 
     def test_shared_between_two_measures(self):
         planned = plan_query(
-            query=sales_q(dimensions=["region"], metrics=[
-                QueryMetric(metric=f"sum(quantity * {_REGION_SUM})", alias="a"),
-                QueryMetric(metric=f"sum(unit_price * {_REGION_SUM})", alias="b")]),
+            query=sales_q(dimensions=["sales.region"], metrics=[
+                QueryMetric(metric=f"sum(sales.quantity * {_REGION_SUM})", alias="a"),
+                QueryMetric(metric=f"sum(sales.unit_price * {_REGION_SUM})", alias="b")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 
@@ -185,7 +185,7 @@ class TestBandedDimensionOpacity:
         planned = plan_query(
             query=sales_q(
                 dimensions=[{"field": MIXED_BAND_EXPR, "alias": "mixed_band"}],
-                metrics=[QueryMetric(metric="sum(amount)", alias="tot")]),
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 
@@ -201,7 +201,7 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
         band = {"field": MIXED_BAND_EXPR, "alias": "mixed_band"}
         return plan_query(
             query=sales_q(dimensions=[band], metrics=[QueryMetric(
-                metric=f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=mixed_band)",
+                metric=f"sum(sales.quantity * {INNER_UP_PRODUCT}, partition_by=mixed_band)",
                 alias="m")]),
             bundle=_bundle())
 
@@ -218,8 +218,8 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
 class TestFirstOverMixedSource:
     async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         q = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"first(quantity * {INNER_UP_PRODUCT}, id)",
+                metric=f"first(sales.quantity * {INNER_UP_PRODUCT}, sales.id)",
                 alias="f")])
         assert "ROW_NUMBER" in (await gen(q)).upper()

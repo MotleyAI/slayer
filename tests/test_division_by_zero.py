@@ -35,10 +35,10 @@ def _empty_population_ratios() -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "metrics": [
-            {"metric": "sum(amount) / count(*)", "alias": "avg_amount"},
-            {"metric": "count(id) / count(*)", "alias": "share"},
+            {"metric": "sum(orders.amount) / count(orders.*)", "alias": "avg_amount"},
+            {"metric": "count(orders.id) / count(orders.*)", "alias": "share"},
         ],
-        "filter": ["status = 'none'"],
+        "filter": ["orders.status = 'none'"],
     })
 
 
@@ -48,7 +48,7 @@ async def test_a_ratio_over_an_empty_population_is_null(backend: str) -> None:
         dialect=backend, seed=lambda p: seed_backend(backend, p, [ORDERS]), datasets=[_orders()],
     ) as (engine, _db):
         resp = await engine.execute(_empty_population_ratios())
-    assert [(r["orders.avg_amount"], r["orders.share"]) for r in resp.data] == [(None, None)]
+    assert [(r["avg_amount"], r["share"]) for r in resp.data] == [(None, None)]
 
 
 @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
@@ -65,6 +65,6 @@ async def test_every_dialect_guards_the_divisor(dialect: str) -> None:
 
 
 async def test_a_nonzero_literal_divisor_is_not_guarded() -> None:
-    query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount) / 2", "alias": "half"}]})
+    query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount) / 2", "alias": "half"}]})
     sql = await _engine_generate(query=query, dataset=_orders(), dialect="postgres")
     assert "NULLIF" not in sql.upper(), sql

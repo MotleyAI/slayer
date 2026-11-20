@@ -169,47 +169,47 @@ def _q(**kw) -> SlayerQuery:
 # The matrix. Keys are stable ids — renaming one is a golden change.
 # --------------------------------------------------------------------------- #
 def _cases() -> dict:
-    dim_status = [{"field": "status", "alias": "status"}]
+    dim_status = ["orders.status"]
     return {
         # --- host scope, plain Mode-A surfaces ---
         "host/model_filter": _q(
             dimensions=dim_status,
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "host/column_sql_derived": _q(
-            dimensions=[{"field": "doubled", "alias": "doubled"}],
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
+            dimensions=["orders.doubled"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "host/column_filter_crossing": _q(
             dimensions=dim_status,
-            metrics=[{"metric": "sum(eu_amount)", "alias": "m"}],
+            metrics=[{"metric": "sum(orders.eu_amount)", "alias": "m"}],
         ),
         "host/const_expanding_ref": _q(
             dimensions=dim_status,
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
-            filter=["flag_const == 1"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
+            filter=["orders.flag_const == 1"],
         ),
         "host/quoted_dotted_identifier": _q(
-            dimensions=[{"field": "quoted_cross", "alias": "quoted_cross"}],
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
+            dimensions=["orders.quoted_cross"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "host/statement_keyword_column": _q(
-            dimensions=[{"field": "select", "alias": "select"}],
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
+            dimensions=["orders.select"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "host/same_named_column_and_model": _q(
             dimensions=dim_status,
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
-            filter=["status == 'x'"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
+            filter=["orders.status == 'x'"],
         ),
         # --- derived expansion ---
         "expand/derived_of_derived": _q(
-            dimensions=[{"field": "deep_pop", "alias": "deep_pop"}],
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
+            dimensions=["orders.deep_pop"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "expand/multi_model_derived": _q(
-            dimensions=[{"field": "multi_model", "alias": "multi_model"}],
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
+            dimensions=["orders.multi_model"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         # --- cross-dataset _cm_ scope ---
         "cm/joined_measure": _q(
@@ -224,23 +224,23 @@ def _cases() -> dict:
         ),
         "cm/outer_where_wrapper": _q(
             dimensions=dim_status,
-            metrics=[{"metric": "sum(eu_amount)", "alias": "eu"}],
-            filter=["sum(eu_amount) > 100"],
+            metrics=[{"metric": "sum(orders.eu_amount)", "alias": "eu"}],
+            filter=["sum(orders.eu_amount) > 100"],
         ),
         # --- windowed _src scope ---
         "windowed/src_scope": _q(
             time_dimensions=[{
-                "field": "created_at", "granularity": "month",
+                "field": "orders.created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            metrics=[{"metric": "sum(eu_amount)", "alias": "m"}],
+            metrics=[{"metric": "sum(orders.eu_amount)", "alias": "m"}],
         ),
         "windowed/date_range_filter": _q(
             time_dimensions=[{
-                "field": "created_at", "granularity": "month",
+                "field": "orders.created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
     }
 

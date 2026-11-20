@@ -39,9 +39,9 @@ from tests._dev1838_fixtures import (
     q,
 )
 
-LOCAL_AGG = "sum(amount, partition_by=city)"
+LOCAL_AGG = "sum(orders.amount, partition_by=orders.city)"
 CM_AGG = "sum(customers.spend, partition_by=customers.tier)"
-LOCAL_BAND = "CASE WHEN sum(amount, partition_by=city) > 25 THEN 'hi' ELSE 'lo' END"
+LOCAL_BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 25 THEN 'hi' ELSE 'lo' END"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -77,13 +77,13 @@ _COMBINED_CONSUMER_CASES = [
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [QueryMetric(metric="sum(amount)", alias="m")],
+        [QueryMetric(metric="sum(orders.amount)", alias="m")],
         [{"field": LOCAL_AGG, "direction": "asc"}], None, "city",
         id="raw_order_target-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [QueryMetric(metric="sum(amount)", alias="m")],
+        [QueryMetric(metric="sum(orders.amount)", alias="m")],
         [{"field": CM_AGG, "direction": "asc"}], None, "customers.tier",
         id="raw_order_target-cross_model",
     ),
@@ -120,11 +120,11 @@ _COMBINED_CONSUMER_CASES = [
     # Already-clean today (no computed dimension): the aggregate is consumed only
     # as a metric, or only in a filter — a combined position, so it stays rejected.
     pytest.param(
-        ["status"], [QueryMetric(metric=CM_AGG, alias="rt")],
+        ["orders.status"], [QueryMetric(metric=CM_AGG, alias="rt")],
         None, None, "customers.tier", id="measure_only-cross_model",
     ),
     pytest.param(
-        ["status"], [QueryMetric(metric="sum(amount)", alias="m")],
+        ["orders.status"], [QueryMetric(metric="sum(orders.amount)", alias="m")],
         None, [f"{CM_AGG} > 100"], "customers.tier", id="filter_only-cross_model",
     ),
 ]
@@ -184,10 +184,10 @@ async def test_keyless_banded_only_executes(exec_backend) -> None:
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
     )
     resp = await engine.execute(query)
-    got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
+    got = {r["sband"]: r["m"] for r in resp.data}
     assert got == {"hi": pytest.approx(40.0), "lo": pytest.approx(77.0)}
     dry = await engine.execute(query, dry_run=True)
     assert _cm_count(dry.sql, dialect) == 1, cte_aliases(
@@ -208,11 +208,11 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         filter=[f"{CM_AGG} > 100"],
     )
     resp = await engine.execute(query)
-    got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
+    got = {r["sband"]: r["m"] for r in resp.data}
     assert got == {"hi": pytest.approx(40.0)}
     dry = await engine.execute(query, dry_run=True)
     assert _cm_count(dry.sql, dialect) == 1, cte_aliases(
@@ -229,7 +229,7 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     )
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         filter=[f"{CM_AGG} > 100"],
     )
     scope = resolve_scope(bundle=bundle)
@@ -250,11 +250,11 @@ async def test_keyless_order_by_dimension_name_cross_model_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
-        order=[{"field": "sband", "direction": "asc"}],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
+        order=[{"field": "orders.sband", "direction": "asc"}],
     )
     resp = await engine.execute(query)
-    rows = [(r["orders.sband"], r["orders.m"]) for r in resp.data]
+    rows = [(r["sband"], r["m"]) for r in resp.data]
     assert rows == [("hi", pytest.approx(40.0)), ("lo", pytest.approx(77.0))]
     dry = await engine.execute(query, dry_run=True)
     assert _cm_count(dry.sql, dialect) == 1, cte_aliases(
@@ -269,10 +269,10 @@ async def test_keyless_filter_over_own_local_aggregate_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         filter=[f"{LOCAL_AGG} > 25"],
     ))
-    got = {r["orders.cband"]: r["orders.m"] for r in resp.data}
+    got = {r["cband"]: r["m"] for r in resp.data}
     assert got == {"hi": pytest.approx(107.0)}
 
 
@@ -282,8 +282,8 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
-        order=[{"field": "cband", "direction": "asc"}],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
+        order=[{"field": "orders.cband", "direction": "asc"}],
     ))
-    rows = [(r["orders.cband"], r["orders.m"]) for r in resp.data]
+    rows = [(r["cband"], r["m"]) for r in resp.data]
     assert rows == [("hi", pytest.approx(107.0)), ("lo", pytest.approx(10.0))]

@@ -17,7 +17,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from tests._dev2102_fixtures import DIALECTS, DS, customers, ext, join, orders, q, rows, shop, with_datasets
 
-_N = {"metric": "count(*)", "alias": "n"}
+_N = {"metric": "count(orders.*)", "alias": "n"}
 _S = {"name": "s", "population": "orders", "dimensions": ["customers.name"], "metrics": [_N]}
 _ISSUE_PAIRS = [["id", "n"]]
 _REGION_PAIRS = [["region_id", "id"]]
@@ -26,7 +26,7 @@ _REGION_PAIRS = [["region_id", "id"]]
 def _joined(root: str, ref: str, *, stage: dict | None = None, pairs: list[list[str]] | None = None,
             leading: str = "id") -> list[SlayerQuery | dict]:
     """Stage ``s``, then a query rooted at ``root`` that joins ``s`` and selects ``ref``."""
-    return [q(**(stage or _S)), q(population=root, dimensions=[leading, ref],
+    return [q(**(stage or _S)), q(population=root, dimensions=[f"{root}.{leading}", ref],
                                   extensions=[ext(root, relationships=[join("s", pairs or _ISSUE_PAIRS)])])]
 
 
@@ -45,7 +45,7 @@ def _hint(err: Exception) -> str:
 # --------------------------------------------------------------------------- #
 # The flat spelling executes.
 # --------------------------------------------------------------------------- #
-_KEYED = {**_S, "dimensions": ["customer_id", "customers.name"]}
+_KEYED = {**_S, "dimensions": ["orders.customer_id", "customers.name"]}
 _BY_REGION = {**_S, "dimensions": ["customers.region_id", "customers.name"]}
 _BY_CUSTOMER = [(11, "Ann"), (12, "Bob"), (13, "Eve"), (14, "Bob")]
 _CUSTOMER_PAIRS = [["id", "customer_id"]]
@@ -54,18 +54,18 @@ _CUSTOMER_PAIRS = [["id", "customer_id"]]
 @pytest.mark.parametrize("dialect", DIALECTS)
 @pytest.mark.parametrize(("payload", "keys", "expected"), [
     pytest.param(_joined("addresses", "s.customers__name", stage=_KEYED, pairs=[["customer_id", "customer_id"]]),
-                 ("addresses.id", "addresses.s.customers__name"), _BY_CUSTOMER, id="stored-addresses"),
+                 ("addresses.id", "s.customers__name"), _BY_CUSTOMER, id="stored-addresses"),
     pytest.param(_joined("regions", "s.customers__name", stage=_BY_REGION, pairs=[["id", "customers__region_id"]]),
-                 ("regions.id", "regions.s.customers__name"), [(1, "Ann"), (2, "Bob"), (3, "Eve")],
+                 ("regions.id", "s.customers__name"), [(1, "Ann"), (2, "Bob"), (3, "Eve")],
                  id="stored-regions"),
     pytest.param(_joined("customers", "s.customers__name", stage=_KEYED, pairs=_CUSTOMER_PAIRS),
-                 ("customers.id", "customers.s.customers__name"),
+                 ("customers.id", "s.customers__name"),
                  [(1, "Ann"), (2, "Bob"), (3, "Cid"), (4, "Dee"), (5, "Eve")], id="stored-customers"),
-    pytest.param([q(name="s", population="orders", dimensions=["customer_id"]),
-                  q(population="addresses", dimensions=["id", "s.customers.name"], extensions=[
+    pytest.param([q(name="s", population="orders", dimensions=["orders.customer_id"]),
+                  q(population="addresses", dimensions=["addresses.id", "s.customers.name"], extensions=[
                       ext("addresses", relationships=[join("s", [["customer_id", "customer_id"]])]),
                       ext("s", relationships=[join("customers", [["customer_id", "id"]])])])],
-                 ("addresses.id", "addresses.s.customers.name"), _BY_CUSTOMER, id="genuine-join-through-a-stage"),
+                 ("addresses.id", "s.customers.name"), _BY_CUSTOMER, id="genuine-join-through-a-stage"),
 ])
 async def test_a_joined_stage_column_executes(dialect: str, payload: list[SlayerQuery | dict], keys: tuple[str, str],
                                               expected: list[tuple]) -> None:
@@ -103,7 +103,7 @@ def _authored(name: str, flat: str, *joins: DatasetRelationship) -> SlayerDatase
 
 
 def _root_joining(target: str, ref: str) -> SlayerQuery:
-    return q(population="addresses", dimensions=["id", ref],
+    return q(population="addresses", dimensions=["addresses.id", ref],
              extensions=[ext("addresses", relationships=[join(target, [["customer_id", "id"]])])])
 
 
@@ -177,8 +177,8 @@ async def test_a_routing_short_form_is_not_pre_empted_by_a_flat_column() -> None
         *orders().fields, DatasetField(name="regions__name", sql="status", datatype=DataType.STRING)]})
     models = with_datasets(flat, customers(DatasetRelationship(to="regions", from_columns=[p[0] for p in _REGION_PAIRS], to_columns=[p[1] for p in _REGION_PAIRS])))
     async with shop("sqlite", models) as engine:
-        resp = await engine.execute(q(population="orders", dimensions=["id", "regions.name"]))
-    assert rows(resp, "orders.id", "orders.customers.regions.name") == [
+        resp = await engine.execute(q(population="orders", dimensions=["orders.id", "regions.name"]))
+    assert rows(resp, "orders.id", "regions.name") == [
         (1, "North"), (2, "North"), (3, "South"), (4, None), (5, None), (6, "East"), (7, None)]
 
 
@@ -213,14 +213,14 @@ async def test_an_unknown_field_of_a_joined_stage_names_the_stage() -> None:
 
 
 async def test_an_unknown_field_of_a_stage_source_names_the_stage() -> None:
-    err = await _refused([q(**_S), q(population="s", dimensions=["nope"])])
+    err = await _refused([q(**_S), q(population="s", dimensions=["s.nope"])])
     assert "'s'" in str(err)
     assert "__slayer_" not in str(err)
 
 
 @pytest.mark.parametrize("payload", [
     _joined("addresses", "s.customers.nope"),
-    [q(**_S), q(population="addresses", dimensions=["id"], metrics=[{"metric": "count(s.customers.*)", "alias": "c"}],
+    [q(**_S), q(population="addresses", dimensions=["addresses.id"], metrics=[{"metric": "count(s.customers.*)", "alias": "c"}],
                 extensions=[ext("addresses", relationships=[join("s", _ISSUE_PAIRS)])])],
 ], ids=["column", "star"])
 async def test_a_broken_chain_through_a_joined_stage_names_its_columns(payload: list[SlayerQuery | dict]) -> None:

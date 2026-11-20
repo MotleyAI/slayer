@@ -26,15 +26,15 @@ class TestAssociationKernel:
         """An unattributable slice under associate synthesizes an association
         producer, not the default plain/broadcast one."""
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[CM]),
+            query=assoc_q(dimensions=["orders.status"], metrics=[CM]),
             bundle=bundle())
         assert len(_association_attaches(planned)) == 1
 
     def test_explicit_partition_by_builds_association_kernel(self) -> None:
         """An unattributable explicit partition key attributes under associate."""
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="cm")]),
+            query=assoc_q(dimensions=["orders.status"], metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=orders.status)", alias="cm")]),
             bundle=bundle())
         assert len(_association_attaches(planned)) == 1
 
@@ -43,7 +43,7 @@ class TestAssociationKernel:
         association joins (no semi-join); its text rides the attach so the
         informational entry is kept."""
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[CM],
+            query=assoc_q(dimensions=["orders.status"], metrics=[CM],
                           filter=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_datasets(strong_plans=False)))
         (att,) = _association_attaches(planned)
@@ -57,7 +57,7 @@ class TestModeThreadsIntoNestedProducer:
         an unattributable computed-dimension aggregate resolves via the kernel."""
         band = {
             "field": (
-                "CASE WHEN sum(customers.spend, partition_by=status) > 400 "
+                "CASE WHEN sum(customers.spend, partition_by=orders.status) > 400 "
                 "THEN 'hi' ELSE 'lo' END"),
             "alias": "band",
         }

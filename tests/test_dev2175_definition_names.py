@@ -228,7 +228,7 @@ class TestRowDefinitionNames:
         doc = orders_doc(fld("amount", "amount * 2"), fld("top", top))
         async with engine_with(dialect="duckdb", docs=[doc]) as (engine, _, _):
             assert await by_id(engine, field="top") == [20, 20, 20]
-            dry = await engine.execute({"population": "orders", "dimensions": ["top"]}, dry_run=True)
+            dry = await engine.execute({"population": "orders", "dimensions": ["orders.top"]}, dry_run=True)
             assert "main.orders.amount" in (dry.sql or "")
 
     @BACKEND
@@ -276,8 +276,8 @@ class TestPhysicalReader:
                             relationships=[to_customers(from_columns=["customer_ref"])])
         async with engine_with(dialect=dialect, docs=[customers_doc(), orders], validate=False) as (engine, _, _):
             out = await rows(engine, {"population": "orders", "dimensions": ["customers.name"],
-                                      "metrics": [{"metric": "count(*)", "alias": "n"}]})
-            assert {r["orders.customers.name"]: r["orders.n"] for r in out} == {"Ann": 2, "Bo": 1}
+                                      "metrics": [{"metric": "count(orders.*)", "alias": "n"}]})
+            assert {r["customers.name"]: r["n"] for r in out} == {"Ann": 2, "Bo": 1}
             drift = json.dumps([e.model_dump(mode="json") for e in await engine.validate_datasets(data_source="shop")])
             assert "ghost_col" in drift
             assert "customer_ref" not in drift
@@ -312,8 +312,8 @@ class TestMetricExpression:
             {"name": "paid_rows", "expression": "count(*) FILTER (WHERE source.status = 'paid')"},
             {"name": "paid_state", "expression": "count(*) FILTER (WHERE status = 'paid')"}])
         async with engine_with(dialect=dialect, docs=[doc]) as (engine, _, _):
-            assert await metric_value(engine, metric="paid_rows") == 2
-            assert await metric_value(engine, metric="paid_state") == 1
+            assert await metric_value(engine, metric="orders.paid_rows") == 2
+            assert await metric_value(engine, metric="orders.paid_state") == 1
 
     async def test_a_metrics_own_dialect_entry_is_refused(self) -> None:
         p = {"sql": "sum(amount)", "dialects": [entry("DUCKDB", "sum(amount)")]}
@@ -327,7 +327,7 @@ class TestMetricExpression:
         p = {"sql": "sum(amount)", "dialects": [entry("SNOWFLAKE", "SUM(amount)")]}
         doc = orders_doc(fld("amount", datatype="Integer"), metrics=[{"name": "p", "expression": p}])
         async with engine_with(dialect="duckdb", docs=[doc]) as (engine, storage, _):
-            assert await metric_value(engine, metric="p") == 35
+            assert await metric_value(engine, metric="orders.p") == 35
             stored = await storage.get_dataset("orders")
         assert stored is not None
         (metric,) = stored.model_dump(mode="json", exclude_none=True)["metrics"]

@@ -23,7 +23,7 @@ from tests._ossie_vocabulary_fixtures import shop_orders, vocab_engine
 
 ORDERS = shop_orders()
 REL = {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}
-QUERY: dict[str, Any] = {"population": "orders", "metrics": ["count(*)"]}
+QUERY: dict[str, Any] = {"population": "orders", "metrics": ["count(orders.*)"]}
 
 
 def plus(doc: dict[str, Any], **extra: Any) -> dict[str, Any]:

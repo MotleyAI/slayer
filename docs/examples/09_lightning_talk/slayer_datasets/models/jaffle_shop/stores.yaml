@@ -1,4 +1,4 @@
-version: 26
+version: 28
 name: stores
 sql_table: stores
 source_kind: table
@@ -6,14 +6,14 @@ query_variables: {}
 data_source: jaffle_shop
 fields:
 - name: id
-  sql: id
+  expression: id
   datatype: String
   primary_key: true
   unique: false
   label: Store ID
   hidden: false
 - name: name
-  sql: name
+  expression: name
   datatype: String
   primary_key: false
   unique: false
@@ -21,7 +21,7 @@ fields:
   label: Store
   hidden: false
 - name: opened_at
-  sql: opened_at
+  expression: opened_at
   datatype: Date
   primary_key: false
   unique: false
@@ -29,7 +29,7 @@ fields:
   label: Opened
   hidden: false
 - name: tax_rate
-  sql: tax_rate
+  expression: tax_rate
   datatype: Float
   primary_key: false
   unique: false
@@ -40,7 +40,7 @@ fields:
     type: percent
     precision: 1
 - name: region_id
-  sql: region_id
+  expression: region_id
   datatype: String
   primary_key: false
   unique: false

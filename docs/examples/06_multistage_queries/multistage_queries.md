@@ -30,19 +30,19 @@ For the first example above, all you need to do is use the (revenue by store and
   {
     "name": "monthly_store_revenue",
     "population": "orders",
-    "metrics": ["sum(order_total)"],
+    "metrics": ["sum(orders.order_total)"],
     "dimensions": ["stores.name"],
-    "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
+    "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}]
   },
   {
     "population": "monthly_store_revenue",
-    "metrics": ["avg(order_total_sum)"],
-    "dimensions": ["stores__name"]
+    "metrics": ["avg(monthly_store_revenue.order_total_sum)"],
+    "dimensions": ["monthly_store_revenue.stores__name"]
   }
 ]
 ```
 
-The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `population`, groups by `stores__name` (the inner query's flat output column for `stores.name`) and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` metric with `avg` at query time.
+The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `population`, groups by `monthly_store_revenue.stores__name` (the inner query's flat output column for `stores.name`) and requests `avg(monthly_store_revenue.order_total_sum)` — aggregating the inner query's `order_total_sum` metric with `avg` at query time.
 
 If you'd rather not type `order_total_sum` everywhere, give the inner metric an explicit `name` and reference that. The user-supplied `name` overrides the canonical `col_agg` naming for both simple aggregations and arithmetic/transform expressions, and downstream stages reference it directly:
 
@@ -51,21 +51,21 @@ If you'd rather not type `order_total_sum` everywhere, give the inner metric an 
   {
     "name": "monthly_store_revenue",
     "population": "orders",
-    "metrics": [{"metric": "sum(order_total)", "alias": "rev"}],
+    "metrics": [{"metric": "sum(orders.order_total)", "alias": "rev"}],
     "dimensions": ["stores.name"],
-    "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
+    "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}]
   },
   {
     "population": "monthly_store_revenue",
-    "metrics": ["avg(rev)"],
-    "dimensions": ["stores__name"]
+    "metrics": ["avg(monthly_store_revenue.rev)"],
+    "dimensions": ["monthly_store_revenue.stores__name"]
   }
 ]
 ```
 
-The outer stage can also re-bucket the inner stage's `ordered_at` column to a coarser granularity — add `"time_dimensions": [{"field": "ordered_at", "granularity": "year"}]` there to roll the monthly rows up to a yearly axis.
+The outer stage can also re-bucket the inner stage's `ordered_at` column to a coarser granularity — add `"time_dimensions": [{"field": "monthly_store_revenue.ordered_at", "granularity": "year"}]` there to roll the monthly rows up to a yearly axis.
 
-The inner stage emits a column called `rev`; the outer stage averages `avg(rev)`. Renaming an inner-stage metric (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
+The inner stage emits a column called `rev`; the outer stage averages `avg(monthly_store_revenue.rev)`. Renaming an inner-stage metric (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
@@ -76,8 +76,8 @@ As we want to use a result of a child query as a dimension, we use a [dynamic re
   {
     "name": "customer_activity",
     "population": "orders",
-    "metrics": ["count(*)"],
-    "dimensions": ["customer_id"]
+    "metrics": ["count(orders.*)"],
+    "dimensions": ["orders.customer_id"]
   },
   {
     "population": "orders",
@@ -85,7 +85,7 @@ As we want to use a result of a child query as a dimension, we use a [dynamic re
       "dataset": "orders",
       "relationships": [{"to": "customer_activity", "from_columns": ["customer_id"], "to_columns": ["customer_id"]}]
     }],
-    "metrics": ["count(*)", "sum(order_total)"],
+    "metrics": ["count(orders.*)", "sum(orders.order_total)"],
     "dimensions": [{"field": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "alias": "activity_bucket"}]
   }
 ]
@@ -102,8 +102,8 @@ Stages in a query list are not restricted to a linear pipeline. Any stage may us
   {
     "name": "kpis",
     "population": "orders",
-    "dimensions": ["customer_id"],
-    "metrics": ["sum(order_total)"]
+    "dimensions": ["orders.customer_id"],
+    "metrics": ["sum(orders.order_total)"]
   },
   {
     "name": "tagged",
@@ -112,11 +112,11 @@ Stages in a query list are not restricted to a linear pipeline. Any stage may us
       "dataset": "customers",
       "relationships": [{"to": "kpis", "from_columns": ["id"], "to_columns": ["customer_id"]}]
     }],
-    "dimensions": ["name", "kpis.order_total_sum"]
+    "dimensions": ["customers.name", "kpis.order_total_sum"]
   },
   {
     "population": "tagged",
-    "metrics": ["max(kpis__order_total_sum)"]
+    "metrics": ["max(tagged.kpis__order_total_sum)"]
   }
 ]
 ```

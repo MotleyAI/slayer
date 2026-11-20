@@ -198,10 +198,10 @@ class TestOrdinaryResultKeys:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric="sum(amount)"),
-                    QueryMetric(metric="count(*)"),
+                    QueryMetric(metric="sum(orders.amount)"),
+                    QueryMetric(metric="count(orders.*)"),
                 ],
             ),
             ["orders.status", "orders.amount_sum", "orders._count"],
@@ -214,10 +214,10 @@ class TestOrdinaryResultKeys:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(amount)", alias="revenue")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.amount)", alias="revenue")],
             ),
-            ["orders.status", "orders.revenue"],
+            ["orders.status", "revenue"],
         )
 
     async def test_time_dimension_key_has_no_granularity_suffix(
@@ -231,11 +231,11 @@ class TestOrdinaryResultKeys:
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             ),
             ["orders.created_at", "orders._count"],
         )
@@ -253,9 +253,9 @@ class TestJoinedDimensionResultKeys:
             SlayerQuery(
                 population="orders",
                 dimensions=[QueryDimension(field="customers.region_id")],
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             ),
-            ["orders.customers.region_id", "orders._count"],
+            ["customers.region_id", "orders._count"],
         )
 
     async def test_multi_hop_joined_dimension(self, engine) -> None:
@@ -265,9 +265,9 @@ class TestJoinedDimensionResultKeys:
             SlayerQuery(
                 population="orders",
                 dimensions=[QueryDimension(field="customers.regions.name")],
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             ),
-            ["orders.customers.regions.name", "orders._count"],
+            ["customers.regions.name", "orders._count"],
         )
 
     async def test_joined_derived_dimension(self, engine) -> None:
@@ -278,9 +278,9 @@ class TestJoinedDimensionResultKeys:
             SlayerQuery(
                 population="orders",
                 dimensions=[QueryDimension(field="customers.rev_x2")],
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             ),
-            ["orders.customers.rev_x2", "orders._count"],
+            ["customers.rev_x2", "orders._count"],
         )
 
 
@@ -298,10 +298,10 @@ class TestCrossModelResultKeys:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[QueryMetric(metric="sum(customers.revenue)")],
             ),
-            ["orders.status", "orders.customers.revenue_sum"],
+            ["orders.status", "customers.revenue_sum"],
         )
 
     async def test_cross_model_star_count_keeps_path(self, engine) -> None:
@@ -311,10 +311,10 @@ class TestCrossModelResultKeys:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[QueryMetric(metric="count(customers.*)")],
             ),
-            ["orders.status", "orders.customers._count"],
+            ["orders.status", "customers._count"],
         )
 
     async def test_local_and_cross_model_measures_together(self, engine) -> None:
@@ -326,16 +326,16 @@ class TestCrossModelResultKeys:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric="sum(amount)"),
+                    QueryMetric(metric="sum(orders.amount)"),
                     QueryMetric(metric="sum(customers.revenue)"),
                 ],
             ),
             [
                 "orders.status",
                 "orders.amount_sum",
-                "orders.customers.revenue_sum",
+                "customers.revenue_sum",
             ],
         )
 
@@ -356,11 +356,11 @@ class TestWindowedResultKeys:
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                metrics=[QueryMetric(metric="sum(amount, window='90d')")],
+                metrics=[QueryMetric(metric="sum(orders.amount, window='90d')")],
             ),
             ["orders.created_at", "orders.amount_sum_window_90d"],
         )
@@ -376,13 +376,13 @@ class TestWindowedResultKeys:
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount, window='90d')"),
-                    QueryMetric(metric="sum(amount, window='30d')"),
+                    QueryMetric(metric="sum(orders.amount, window='90d')"),
+                    QueryMetric(metric="sum(orders.amount, window='30d')"),
                 ],
             ),
             [
@@ -408,11 +408,11 @@ class TestHiddenAndOrderOnlySlots:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="count(*)")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
                 order=[
                     OrderItem(
-                        field="created_at", direction="desc",
+                        field="orders.created_at", direction="desc",
                     ),
                 ],
             ),
@@ -432,11 +432,11 @@ class TestHiddenAndOrderOnlySlots:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="count(*)")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
                 order=[
                     OrderItem(
-                        field="created_at", direction="desc",
+                        field="orders.created_at", direction="desc",
                     ),
                 ],
             )
@@ -457,8 +457,8 @@ class TestParametricResultKeys:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="percentile(amount, p=0.9)")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="percentile(orders.amount, p=0.9)")],
             ),
             ["orders.status", "orders.amount_percentile_p_0_9"],
         )
@@ -470,10 +470,10 @@ class TestParametricResultKeys:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric="percentile(amount, p=0.5)"),
-                    QueryMetric(metric="percentile(amount, p=0.9)"),
+                    QueryMetric(metric="percentile(orders.amount, p=0.5)"),
+                    QueryMetric(metric="percentile(orders.amount, p=0.9)"),
                 ],
             ),
             [
@@ -499,7 +499,7 @@ class TestParametricResultKeys:
             engine,
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="percentile(customers.revenue, p=0.5)"),
                     QueryMetric(metric="percentile(customers.revenue, p=0.9)"),
@@ -507,8 +507,8 @@ class TestParametricResultKeys:
             ),
             [
                 "orders.status",
-                "orders.customers.revenue_percentile_p_0_5",
-                "orders.customers.revenue_percentile_p_0_9",
+                "customers.revenue_percentile_p_0_5",
+                "customers.revenue_percentile_p_0_9",
             ],
         )
 
@@ -547,8 +547,8 @@ class TestIdentifierSeparation:
             SlayerQuery(
                 population="orders",
                 dimensions=[QueryDimension(field="customers.regions.name")],
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             )
         )
-        assert "orders.customers.regions.name" in resp.columns
+        assert "customers.regions.name" in resp.columns
         assert "orders.customers__regions__name" not in resp.columns

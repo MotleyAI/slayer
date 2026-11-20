@@ -203,20 +203,20 @@ class TestResultKeyFromAlias:
 
         assert result_key_from_alias(
             source_relation="orders", alias="revenue_sum",
-        ) == "orders.revenue_sum"
+        ) == "revenue_sum"
 
     def test_hop_embedded_alias(self) -> None:
 
         assert result_key_from_alias(
             source_relation="orders", alias="customers.revenue_sum",
-        ) == "orders.customers.revenue_sum"
+        ) == "customers.revenue_sum"
 
     def test_parametric_kwarg_suffix_preserved(self) -> None:
 
         assert result_key_from_alias(
             source_relation="orders",
             alias="customers.regions.population_percentile_p_0_5",
-        ) == "orders.customers.regions.population_percentile_p_0_5"
+        ) == "customers.regions.population_percentile_p_0_5"
 
 
 class TestFlatName:
@@ -376,14 +376,12 @@ class TestQuotingRelocatedToNaming:
 
     def test_quote_mixed_case_identifiers_importable(self) -> None:
 
-
         tree = sqlglot.parse_one("accounts.StateFlag = 'x'")
         out = tree.transform(quote_mixed_case_identifiers).sql(dialect="postgres")
         assert '"StateFlag"' in out
         assert '"accounts"' not in out  # lowercase qualifier untouched
 
     def test_maybe_quote_ident_importable(self) -> None:
-
 
         ident = sqlglot.to_identifier("MixedCase")
         maybe_quote_ident(ident)

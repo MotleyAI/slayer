@@ -29,34 +29,34 @@ def _q(**kw) -> SlayerQuery:
 def _cases() -> dict:
     return {
         "measure/simple": _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
-                {"metric": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+                {"metric": "CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0 END",
                  "alias": "big"},
             ],
         ),
         "measure/nested": _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
-                {"metric": "CASE WHEN sum(amount) >= 14000 THEN 2 "
-                            "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END",
+                {"metric": "CASE WHEN sum(orders.amount) >= 14000 THEN 2 "
+                            "WHEN sum(orders.amount) >= 8000 THEN 1 ELSE 0 END",
                  "alias": "tier"},
             ],
         ),
         "measure/iif": _q(
-            dimensions=["region"],
-            metrics=[{"metric": "iif(sum(amount) >= 10000, 1, 0)", "alias": "big"}],
+            dimensions=["orders.region"],
+            metrics=[{"metric": "iif(sum(orders.amount) >= 10000, 1, 0)", "alias": "big"}],
         ),
         "measure/missing_else_null": _q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
-                {"metric": "CASE WHEN sum(amount) >= 10000 THEN 1 END", "alias": "big"},
+                {"metric": "CASE WHEN sum(orders.amount) >= 10000 THEN 1 END", "alias": "big"},
             ],
         ),
         "filter/case_predicate": _q(
-            dimensions=["region"],
-            filter=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
-            metrics=[{"metric": "sum(amount)", "alias": "rev"}],
+            dimensions=["orders.region"],
+            filter=["CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0 END == 1"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "rev"}],
         ),
     }
 

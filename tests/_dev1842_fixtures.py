@@ -101,7 +101,7 @@ def q(**kw):
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "ordered_at"):
+def month_td(column: str = "orders.ordered_at"):
     return [TimeDimension(
         field=column, granularity=TimeGranularity.MONTH,
     )]
@@ -158,8 +158,8 @@ EQUIV_PAIRS = {
                         "sum(customers.spend, partition_by=[])"),
     "host_wraps_dotted": ("cumsum(customers.aov)",
                           "cumsum(sum(customers.spend) / count(customers.*))"),
-    "host_mixes_dotted": ("sum(amount) / customers.aov",
-                          "sum(amount) / (sum(customers.spend) / count(customers.*))"),
+    "host_mixes_dotted": ("sum(orders.amount) / customers.aov",
+                          "sum(orders.amount) / (sum(customers.spend) / count(customers.*))"),
 }
 
 #: The transform pair needs a host time dimension; kept separate so callers can

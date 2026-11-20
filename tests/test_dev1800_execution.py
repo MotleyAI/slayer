@@ -98,32 +98,32 @@ class TestTransformPlusHiddenAggregate:
         ]))
         assert set(got) == set(comps)
         for m, cr in comps.items():
-            t, o = cr["orders.t"], cr["orders.o"]
+            t, o = cr["t"], cr["o"]
             expected = None if t is None else t + o
-            _approx_or_none(got[m]["orders.c"], expected)
+            _approx_or_none(got[m]["c"], expected)
 
     async def test_change_plus_local_sum(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="sum(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="sum(orders.amount)")
 
     async def test_change_plus_star_count(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="count(*)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="count(orders.*)")
 
     async def test_change_plus_amount_max(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="max(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"change({CM})", operand="max(orders.amount)")
 
     async def test_time_shift_plus_sum(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"time_shift({CM}, -1)", operand="sum(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"time_shift({CM}, -1)", operand="sum(orders.amount)")
 
     async def test_cumsum_plus_sum(self, dev1750_engine) -> None:
-        await self._assert_sum_invariant(dev1750_engine, transform=f"cumsum({CM})", operand="sum(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform=f"cumsum({CM})", operand="sum(orders.amount)")
 
     async def test_change_of_wscaled_plus_sum(self, dev1750_engine) -> None:
         """The inner crosses a relationship fragment (``wscaled_sum(amount)``)."""
-        await self._assert_sum_invariant(dev1750_engine, transform="change(wscaled_sum(amount))", operand="sum(amount)")
+        await self._assert_sum_invariant(dev1750_engine, transform="change(wscaled_sum(orders.amount))", operand="sum(orders.amount)")
 
     async def test_transform_plus_transform(self, dev1750_engine) -> None:
         """Both operands are transforms (renders today; pinned by invariance)."""
-        await self._assert_sum_invariant(dev1750_engine, transform="change(sum(amount))", operand=f"change({CM})")
+        await self._assert_sum_invariant(dev1750_engine, transform="change(sum(orders.amount))", operand=f"change({CM})")
 
     async def test_transform_plus_literal(self, dev1750_engine) -> None:
         comps = _by_month(await _orders(dev1750_engine, metrics=[
@@ -134,8 +134,8 @@ class TestTransformPlusHiddenAggregate:
         ]))
         assert set(got) == set(comps)
         for m, cr in comps.items():
-            t = cr["orders.t"]
-            _approx_or_none(got[m]["orders.c"], None if t is None else t + 100)
+            t = cr["t"]
+            _approx_or_none(got[m]["c"], None if t is None else t + 100)
 
     async def test_composite_with_a_dimension(self, dev1750_engine) -> None:
         """The same failing class with a ``status`` dimension present (incl. the
@@ -146,17 +146,17 @@ class TestTransformPlusHiddenAggregate:
                 for r in resp.data
             }
 
-        comps = by_status_month(await _orders(dev1750_engine, dimensions=["status"], metrics=[
+        comps = by_status_month(await _orders(dev1750_engine, dimensions=["orders.status"], metrics=[
             QueryMetric(metric=f"change({CM})", alias="t"),
-            QueryMetric(metric="sum(amount)", alias="o"),
+            QueryMetric(metric="sum(orders.amount)", alias="o"),
         ]))
-        got = by_status_month(await _orders(dev1750_engine, dimensions=["status"], metrics=[
-            QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c"),
+        got = by_status_month(await _orders(dev1750_engine, dimensions=["orders.status"], metrics=[
+            QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c"),
         ]))
         assert set(got) == set(comps)
         for k, cr in comps.items():
-            t, o = cr["orders.t"], cr["orders.o"]
-            _approx_or_none(got[k]["orders.c"], None if t is None else t + o)
+            t, o = cr["t"], cr["o"]
+            _approx_or_none(got[k]["c"], None if t is None else t + o)
 
 
 class TestConditionalOverTransform:
@@ -167,7 +167,7 @@ class TestConditionalOverTransform:
     async def test_iif_picks_by_sign_of_change(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"iif(change({CM}) > 0, {CM}, sum(amount))", alias="v")],
+            metrics=[QueryMetric(metric=f"iif(change({CM}) > 0, {CM}, sum(orders.amount))", alias="v")],
         )))
         # change=[None,50,-120]; picks cm where change>0 else amount:sum.
         expected = {
@@ -177,7 +177,7 @@ class TestConditionalOverTransform:
         }
         assert set(got) == set(expected)
         for m, want in expected.items():
-            _approx_or_none(got[m]["orders.v"], want)
+            _approx_or_none(got[m]["v"], want)
 
 
 # --------------------------------------------------------------------------- #
@@ -191,7 +191,7 @@ class TestAttributableComposite:
     async def test_change_spend_plus_amount(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c")],
+            metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c")],
         )))
         expected = {
             m: (None if CHANGE_SPEND_BY_SIGNUP[m] is None
@@ -200,24 +200,24 @@ class TestAttributableComposite:
         }  # [None, 150, -113]
         assert set(got) == set(expected)
         for m, want in expected.items():
-            _approx_or_none(got[m]["orders.c"], want)
+            _approx_or_none(got[m]["c"], want)
 
     async def test_selecting_operand_on_its_own_changes_nothing(self, attr_engine) -> None:
         """Scenario: also selecting ``sum(amount)`` leaves the composite, the row
         count and every other column identical (semantics Law 7)."""
         alone = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c")],
+            metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c")],
         )))
         both = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c"),
-                      QueryMetric(metric="sum(amount)", alias="a")],
+            metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c"),
+                      QueryMetric(metric="sum(orders.amount)", alias="a")],
         )))
         assert set(both) == set(alone)
         for m in alone:
-            _approx_or_none(both[m]["orders.c"], alone[m]["orders.c"])
-            _approx_or_none(both[m]["orders.a"], AMOUNT_BY_SIGNUP[m])
+            _approx_or_none(both[m]["c"], alone[m]["c"])
+            _approx_or_none(both[m]["a"], AMOUNT_BY_SIGNUP[m])
 
 
 class TestInnerVaryingAlongTimeAxis:
@@ -233,9 +233,9 @@ class TestInnerVaryingAlongTimeAxis:
                       QueryMetric(metric="change_pct(sum(orders.amount))", alias="cp")],
         )))
         for m in AMOUNT_BY_SIGNUP:
-            _approx_or_none(got[m]["customers.a"], AMOUNT_BY_SIGNUP[m])
-            _approx_or_none(got[m]["customers.ch"], CHANGE_AMOUNT_BY_SIGNUP[m])
-            _approx_or_none(got[m]["customers.cp"], CHANGE_PCT_AMOUNT_BY_SIGNUP[m])
+            _approx_or_none(got[m]["a"], AMOUNT_BY_SIGNUP[m])
+            _approx_or_none(got[m]["ch"], CHANGE_AMOUNT_BY_SIGNUP[m])
+            _approx_or_none(got[m]["cp"], CHANGE_PCT_AMOUNT_BY_SIGNUP[m])
 
     async def test_change_of_customer_spend_rooted_at_orders(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
@@ -244,18 +244,18 @@ class TestInnerVaryingAlongTimeAxis:
                       QueryMetric(metric=f"change({CM})", alias="ch")],
         )))
         for m in SPEND_BY_SIGNUP:
-            _approx_or_none(got[m]["orders.s"], SPEND_BY_SIGNUP[m])
-            _approx_or_none(got[m]["orders.ch"], CHANGE_SPEND_BY_SIGNUP[m])
+            _approx_or_none(got[m]["s"], SPEND_BY_SIGNUP[m])
+            _approx_or_none(got[m]["ch"], CHANGE_SPEND_BY_SIGNUP[m])
 
     async def test_mixed_grain_change_pct_of_ratio(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric=f"{CM} / sum(amount)", alias="r"),
-                      QueryMetric(metric=f"change_pct({CM} / sum(amount))", alias="cp")],
+            metrics=[QueryMetric(metric=f"{CM} / sum(orders.amount)", alias="r"),
+                      QueryMetric(metric=f"change_pct({CM} / sum(orders.amount))", alias="cp")],
         )))
         for m in RATIO_BY_SIGNUP:
-            _approx_or_none(got[m]["orders.r"], RATIO_BY_SIGNUP[m])
-            _approx_or_none(got[m]["orders.cp"], CHANGE_PCT_RATIO_BY_SIGNUP[m])
+            _approx_or_none(got[m]["r"], RATIO_BY_SIGNUP[m])
+            _approx_or_none(got[m]["cp"], CHANGE_PCT_RATIO_BY_SIGNUP[m])
 
 
 # --------------------------------------------------------------------------- #
@@ -264,17 +264,17 @@ class TestInnerVaryingAlongTimeAxis:
 class TestNamedShapes:
     async def test_change_of_wscaled(self, dev1750_engine) -> None:
         got = _by_month(await _orders(dev1750_engine, metrics=[
-            QueryMetric(metric="change(wscaled_sum(amount))", alias="d"),
+            QueryMetric(metric="change(wscaled_sum(orders.amount))", alias="d"),
         ]))
         for m, want in {"2024-01": None, "2024-02": 13.0, "2024-03": -2.0}.items():
-            _approx_or_none(got[m]["orders.d"], want)
+            _approx_or_none(got[m]["d"], want)
 
     async def test_change_pct_of_wscaled(self, dev1750_engine) -> None:
         got = _by_month(await _orders(dev1750_engine, metrics=[
-            QueryMetric(metric="change_pct(wscaled_sum(amount))", alias="d"),
+            QueryMetric(metric="change_pct(wscaled_sum(orders.amount))", alias="d"),
         ]))
         for m, want in {"2024-01": None, "2024-02": 13.0 / 35.0, "2024-03": -2.0 / 48.0}.items():
-            _approx_or_none(got[m]["orders.d"], want)
+            _approx_or_none(got[m]["d"], want)
 
     async def test_change_of_broadcast_spend_is_zero_after_first_period(self, dev1750_engine) -> None:
         """The broadcast cross-dataset inner (spend constant across ordered_at)
@@ -283,9 +283,9 @@ class TestNamedShapes:
             got = _by_month(await _orders(dev1750_engine, metrics=[
                 QueryMetric(metric=formula, alias="d"),
             ], to_many_handling="broadcast"))
-            _approx_or_none(got["2024-01"]["orders.d"], None)
-            _approx_or_none(got["2024-02"]["orders.d"], 0.0)
-            _approx_or_none(got["2024-03"]["orders.d"], 0.0)
+            _approx_or_none(got["2024-01"]["d"], None)
+            _approx_or_none(got["2024-02"]["d"], 0.0)
+            _approx_or_none(got["2024-03"]["d"], 0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -296,18 +296,18 @@ class TestCompositeInFilterAndOrder:
     async def test_filter_only_masks_by_composite(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="a")],
-            filter=[f"change({CM}) + sum(amount) > 0"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
+            filter=[f"change({CM}) + sum(orders.amount) > 0"],
         )))
         # composite = [None, 150, -113] → only 2024-02 survives.
         assert set(got) == {"2024-02"}
-        _approx_or_none(got["2024-02"]["orders.a"], AMOUNT_BY_SIGNUP["2024-02"])
+        _approx_or_none(got["2024-02"]["a"], AMOUNT_BY_SIGNUP["2024-02"])
 
     async def test_order_only_sorts_by_composite(self, attr_engine) -> None:
         resp = await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="a")],
-            order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}],  # pyright: ignore[reportArgumentType] — expression order targets enter via the shorthand coercion
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
+            order=[{"field": f"change({CM}) + sum(orders.amount)", "direction": "desc"}],  # pyright: ignore[reportArgumentType] — expression order targets enter via the shorthand coercion
         ))
         signup_col = next(k for k in resp.data[0] if k.endswith("signup_at"))
         months = [month_key(r[signup_col]) for r in resp.data]
@@ -321,11 +321,11 @@ class TestTermAloneExecutionParity:
     composite projected (staging is a function of the term alone). The projected
     variant is the dev1859 stall shape and raises before the change."""
 
-    _FILTER = "last(change(sum(amount))) < 0"
+    _FILTER = "last(change(sum(orders.amount))) < 0"
 
     @staticmethod
     def _month_orders_td():
-        return [TimeDimension(field="ordered_at",
+        return [TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.MONTH)]
 
     async def test_surviving_rows_identical_with_and_without_projection(self, attr_engine) -> None:
@@ -334,15 +334,15 @@ class TestTermAloneExecutionParity:
                     for r in resp.data}
 
         without = keyed(await attr_engine.execute(SlayerQuery(
-            population="orders", dimensions=[QueryDimension(field="customer_id")],
+            population="orders", dimensions=[QueryDimension(field="orders.customer_id")],
             time_dimensions=self._month_orders_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="a")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
             filter=[self._FILTER])))
         with_proj = keyed(await attr_engine.execute(SlayerQuery(
-            population="orders", dimensions=[QueryDimension(field="customer_id")],
+            population="orders", dimensions=[QueryDimension(field="orders.customer_id")],
             time_dimensions=self._month_orders_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="a"),
-                      QueryMetric(metric="change(sum(amount))", alias="ch")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="a"),
+                      QueryMetric(metric="change(sum(orders.amount))", alias="ch")],
             filter=[self._FILTER])))
         # per customer over order months: c1 last change −5, c2 −20 (both kept
         # whole); c3 has one month, change NULL → dropped.
@@ -351,12 +351,12 @@ class TestTermAloneExecutionParity:
         assert set(without) == set(expected_amounts)
         assert set(with_proj) == set(without)
         for k, want in expected_amounts.items():
-            _approx_or_none(without[k]["orders.a"], want)
-            _approx_or_none(with_proj[k]["orders.a"], want)
+            _approx_or_none(without[k]["a"], want)
+            _approx_or_none(with_proj[k]["a"], want)
         expected_change = {(1, "2024-01"): None, (1, "2024-02"): -5.0,
                            (2, "2024-02"): None, (2, "2024-03"): -20.0}
         for k, want in expected_change.items():
-            _approx_or_none(with_proj[k]["orders.ch"], want)
+            _approx_or_none(with_proj[k]["ch"], want)
 
 
 class TestMaskPlacementExecuted:
@@ -368,18 +368,18 @@ class TestMaskPlacementExecuted:
         # amount > 10 drops order o5 (7.0, the Mar cohort's only order).
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="a")],
-            filter=["amount > 10"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
+            filter=["orders.amount > 10"],
         )))
         assert set(got) == {"2024-01", "2024-02"}
-        _approx_or_none(got["2024-01"]["orders.a"], 35.0)
-        _approx_or_none(got["2024-02"]["orders.a"], 100.0)
+        _approx_or_none(got["2024-01"]["a"], 35.0)
+        _approx_or_none(got["2024-02"]["a"], 100.0)
 
     async def test_measure_mask_filters_after_aggregation(self, attr_engine) -> None:
         got = by_signup(await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="a")],
-            filter=["sum(amount) > 50"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
+            filter=["sum(orders.amount) > 50"],
         )))
         assert set(got) == {"2024-02"}
-        _approx_or_none(got["2024-02"]["orders.a"], 100.0)
+        _approx_or_none(got["2024-02"]["a"], 100.0)

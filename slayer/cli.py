@@ -491,7 +491,7 @@ common workflows:
   slayer serve
 
   # 2. Query from the command line
-  slayer query '{"population": "orders", "metrics": ["count(*)"]}'
+  slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}'
 
   # 3. Start the MCP server for AI agents
   slayer mcp
@@ -593,13 +593,13 @@ examples:
         epilog="""\
 examples:
   # Inline JSON
-  slayer query '{"population": "orders", "metrics": ["count(*)"]}'
+  slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}'
 
   # From a file
   slayer query @query.json
 
   # Preview SQL without executing
-  slayer query '{"population": "orders", "metrics": ["count(*)"]}' --dry-run
+  slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}' --dry-run
 
   # Show execution plan
   slayer query @query.json --explain
@@ -608,7 +608,7 @@ examples:
   slayer query @query.json --format json
 
   # Run a saved query by name, refined with an extra dimension
-  slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
+  slayer query monthly_revenue --refine '{"dimensions": ["orders.status"]}'
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2482,7 +2482,11 @@ async def _restore_query_backed(engine: SlayerQueryEngine, result: OsiConversion
         for dataset in ready or list(pending.values()):
             del pending[dataset.name]
             try:
-                await engine.save_dataset(dataset)
+                stages = await engine.storage.qualified_stored_queries(
+                    list(dataset.source_queries or []), versions=result.stage_versions.get(dataset.name, []),
+                    data_source=dataset.data_source, document=dataset.name,
+                )
+                await engine.save_dataset(dataset.model_copy(update={"source_queries": stages}))
             except Exception as exc:  # noqa: BLE001 — per-dataset isolation; reported
                 result.warnings.append(ConversionWarning(
                     dataset_name=dataset.name, category="extension", severity="info",

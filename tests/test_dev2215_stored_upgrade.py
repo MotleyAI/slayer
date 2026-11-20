@@ -178,11 +178,11 @@ class TestBucketCalls:
         model = await storage.get_dataset("monthly_rev", data_source=DS)
         assert model is not None
         text = dumped(model)
-        assert "date_trunc('year', ordered_at) >= '2024'" in text
+        assert "date_trunc('year', orders.ordered_at) >= '2024'" in text
         assert not _BUCKET_CALL.search(text), text
-        resp = await run(storage, {"population": "monthly_rev", "dimensions": ["ordered_at"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "r"}]})
-        assert by_month(resp, key="monthly_rev.ordered_at", value="monthly_rev.r") == MONTHLY_2024_ON
+        resp = await run(storage, {"population": "monthly_rev", "dimensions": ["monthly_rev.ordered_at"],
+                                   "metrics": [{"metric": "sum(monthly_rev.rev)", "alias": "r"}]})
+        assert by_month(resp, key="monthly_rev.ordered_at", value="r") == MONTHLY_2024_ON
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_custom_granularity_in_a_memory(self, tmp_path: Path, shop_ds: DatasourceConfig,
@@ -195,10 +195,10 @@ class TestBucketCalls:
         for mem in loads:
             assert mem.query is not None
             assert [(str(t.field), str(getattr(t.granularity, "value", t.granularity)))
-                    for t in mem.query.time_dimensions or []] == [("ordered_at", "fiscal_year")]
+                    for t in mem.query.time_dimensions or []] == [("orders.ordered_at", "fiscal_year")]
         assert loads[1].query is not None
         resp = await run(storage, loads[1].query)
-        assert {str(r["orders.ordered_at"])[:10]: float(r["orders.s"]) for r in resp.data} == FISCAL
+        assert {str(r["orders.ordered_at"])[:10]: float(r["s"]) for r in resp.data} == FISCAL
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_custom_granularity_in_a_saved_measure(self, tmp_path: Path, shop_ds: DatasourceConfig,
@@ -258,7 +258,7 @@ class TestBucketCalls:
             mem = await storage.get_memory(memory_id)
             assert mem.query is not None
             resp = await run(storage, mem.query)
-            assert {str(r["orders.ordered_at"])[:10]: float(r["orders.s"]) for r in resp.data} == FISCAL
+            assert {str(r["orders.ordered_at"])[:10]: float(r["s"]) for r in resp.data} == FISCAL
 
     def test_memory_query_is_rewritten(self) -> None:
         query = {"version": PRE["SlayerQuery"], "source_model": "orders", "filters": ["month(ordered_at) = '2024-01'"]}
@@ -292,7 +292,7 @@ class TestDeprecatedSpellings:
         storage = await store(tmp_path, shop_ds, backend=backend, models=[orders_doc(measures=[{
             "name": "ok", "formula": "sum(iif(status == 'ok' and customer_id is not None, amount, None))"}])])
         with recorded_warnings() as caught:
-            resp = await run(storage, {"population": "orders", "metrics": ["ok"]})
+            resp = await run(storage, {"population": "orders", "metrics": ["orders.ok"]})
         assert float(resp.data[0]["orders.ok"]) == 80.0
         assert future_warnings(caught) == []
 
@@ -314,10 +314,10 @@ class TestAggRename:
         assert model is not None
         assert query_backed is not None
         assert [a.name for a in model.aggregations] == ["agg_aggregation"]
-        assert "agg_aggregation(amount)" in dumped(query_backed)
+        assert "agg_aggregation(orders.amount)" in dumped(query_backed)
         assert any("agg_aggregation" in t and "orders" in t for t in texts), texts
-        resp = await run(storage, {"population": "doubled", "metrics": [{"metric": "sum(d)", "alias": "t"}]})
-        assert float(resp.data[0]["doubled.t"]) == 420.0
+        resp = await run(storage, {"population": "doubled", "metrics": [{"metric": "sum(doubled.d)", "alias": "t"}]})
+        assert float(resp.data[0]["t"]) == 420.0
 
     def test_any_case(self) -> None:
         model = SlayerDataset.model_validate(orders_doc(aggregations=[{"name": "AGG", "formula": "SUM({value})"}],
@@ -339,4 +339,4 @@ class TestAggRename:
         assert [m.expression for m in model.metrics] == ["agg(amount)"]
         assert any("agg" in t and "orders" in t for t in texts), texts
         with pytest.raises(SlayerError, match="(?i)AGG.*reserved"):
-            await run(storage, {"population": "orders", "metrics": ["agg(amount)"]})
+            await run(storage, {"population": "orders", "metrics": ["agg(orders.amount)"]})

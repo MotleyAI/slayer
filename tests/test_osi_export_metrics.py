@@ -53,7 +53,7 @@ async def test_measure_over_another_model_is_a_component_on_that_model(env) -> N
     assert any(same_sql(_sql(m), "SUM(discount)") for m in cust_metrics)
     assert metric(dataset(result.document, "orders"), "customer_discount") is None
     imported, _ = await reimport(env, result.document)
-    data = await rows(imported, {"population": "orders", "metrics": ["customer_discount"]})
+    data = await rows(imported, {"population": "orders", "metrics": ["orders.customer_discount"]})
     assert data[0]["orders.customer_discount"] == pytest.approx(3.5)
 
 

@@ -32,8 +32,7 @@ from tests._upgrade_corpus import MEMORY_PREFIX, Corpus, load_all, offline, onli
 from tests._upgrade_corpus import run as run_recorded
 
 PRE = {"SlayerModel": 25, "SlayerQuery": 15, "Memory": 11, "Embedding": 1}
-#: The versions they load at: SlayerModel takes the field-expression step too.
-LATEST = {**{k: v + 1 for k, v in PRE.items()}, "SlayerModel": PRE["SlayerModel"] + 2}
+CURRENT = {"SlayerModel": 28, "SlayerQuery": 17, "Memory": 13, "Embedding": 2}
 CORPORA = {
     "v0_10_2": Corpus.load(release="v0_10_2", datasources=("shop", "cube", "lite"),
                            data_files=("data.duckdb", "data.sqlite")),
@@ -82,17 +81,18 @@ def assert_new_dataset_keys(dumped: dict[str, Any]) -> None:
         assert_new_query_keys(query)
 
 
-def assert_migrated_query(query: SlayerQuery | None) -> None:
+def assert_migrated_query(query: SlayerQuery | None, *, q: str = "") -> None:
+    """``q`` is the qualifier a load through a store adds (``"orders."``)."""
     assert query is not None
     assert query.population == "orders"
-    assert [(m.metric, m.alias) for m in query.metrics or []] == [("sum(amount)", "rev")]
+    assert [(m.metric, m.alias) for m in query.metrics or []] == [(f"sum({q}amount)", "rev")]
     region, computed = query.dimensions or []
     assert isinstance(region, QueryDimension)
     assert isinstance(computed, QueryDimension)
     assert (region.field, region.alias) == ("customers.region", None)
-    assert (computed.field, computed.alias) == ("upper(status)", "s")
-    assert [td.field for td in query.time_dimensions or []] == ["ordered_at"]
-    assert query.filter == ["amount > 1"]
+    assert (computed.field, computed.alias) == (f"upper({q}status)", "s")
+    assert [td.field for td in query.time_dimensions or []] == [f"{q}ordered_at"]
+    assert query.filter == [f"{q}amount > 1"]
     assert [o.field for o in query.order or []] == ["rev"]
     assert_new_query_keys(query.model_dump(mode="json"))
 
@@ -123,21 +123,21 @@ def assert_migrated_orders(dataset: SlayerDataset | None) -> None:
 class TestVersionSteps:
     @pytest.mark.parametrize("entity", sorted(PRE))
     def test_current_versions(self, entity: str) -> None:
-        assert CURRENT_VERSIONS[entity] == LATEST[entity]
+        assert CURRENT_VERSIONS[entity] == CURRENT[entity]
 
     def test_a_dataset_steps_silently(self) -> None:
         with recorded() as caught:
             dataset = SlayerDataset.model_validate(stored_orders())
         assert future(caught) == []
         assert_migrated_orders(dataset)
-        assert dataset.version == LATEST["SlayerModel"]
+        assert dataset.version == CURRENT_VERSIONS["SlayerModel"]
 
     def test_a_query_steps_silently(self) -> None:
         with recorded() as caught:
             query = SlayerQuery.model_validate(stored_query(version=PRE["SlayerQuery"]))
         assert future(caught) == []
         assert_migrated_query(query)
-        assert query.version == LATEST["SlayerQuery"]
+        assert query.version == CURRENT_VERSIONS["SlayerQuery"]
 
     def test_a_stored_extension_steps_silently(self) -> None:
         with recorded() as caught:
@@ -169,7 +169,7 @@ class TestVersionSteps:
             memory = Memory.model_validate(memory_v2(memory_id="1", query=query, version=PRE["Memory"]))
         assert future(caught) == []
         assert_migrated_query(memory.query)
-        assert memory.version == LATEST["Memory"]
+        assert memory.version == CURRENT_VERSIONS["Memory"]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -192,7 +192,7 @@ class TestStores:
         await storage.get_dataset("by_region", data_source=DS)
         for name in ("orders", "by_region"):
             doc = stored_document(backend=backend, base=str(tmp_path), name=name)
-            assert doc["version"] == LATEST["SlayerModel"]
+            assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
             assert_new_dataset_keys(doc)
         assert "fields" in stored_document(backend=backend, base=str(tmp_path), name="orders")
 
@@ -209,7 +209,7 @@ class TestStores:
         assert future(caught) == []
         assert dataset is not None
         [query] = dataset.source_queries or []
-        assert_migrated_query(query)
+        assert_migrated_query(query, q="orders.")
 
     @pytest.mark.parametrize("query_version", [None, PRE["SlayerQuery"]])
     async def test_a_memory_query_loads_silently(self, backend: str, tmp_path: Path, query_version: int | None) -> None:
@@ -226,8 +226,8 @@ class TestStores:
         assert future(caught) == []
         assert memory is not None
         assert memory.query is not None
-        assert memory.query.filter == ["amount > 1"]
-        assert [(m.metric, m.alias) for m in memory.query.metrics or []] == [("sum(amount)", "rev")]
+        assert memory.query.filter == ["orders.amount > 1"]
+        assert [(m.metric, m.alias) for m in memory.query.metrics or []] == [("sum(orders.amount)", "rev")]
         assert_new_query_keys(memory.query.model_dump(mode="json"))
 
 

@@ -96,7 +96,7 @@ PUSHED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [{"field": "status", "alias": "status"}],
+        "dimensions": [{"field": "orders.status", "alias": "status"}],
         "metrics": [{"metric": "sum(customers.revenue)"}],
         "filter": [PUSHED_FILTER, *(extra_filters or [])],
     })
@@ -146,7 +146,7 @@ def _two_plan_query() -> SlayerQuery:
     entry per (location, metric, text), never one per consumer."""
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status", alias="status")],
+        dimensions=[QueryDimension(field="orders.status", alias="status")],
         metrics=[
             {"metric": "sum(customers.revenue)"},
             {"metric": "sum(shippers.cost)"},
@@ -218,8 +218,8 @@ class TestExecuteEntryPoint:
             engine = await _engine(d)
             clean = SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "status", "alias": "status"}],
-                "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
             })
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -269,13 +269,13 @@ class TestEmissionIsBoundaryNotRender:
         inner = SlayerQuery.model_validate({
             "name": "s1",
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
         outer = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
@@ -294,15 +294,15 @@ class TestEmissionIsBoundaryNotRender:
         entry's location must name the stage that pushed the filter, not
         whichever stage sits at the same input index."""
         # Input order [a, b, root]; topo order [b, a, root] — a reads from b.
-        stage_a = SlayerQuery.model_validate({"name": "a", "population": "b", "metrics": [{"metric": "count(*)"}]})
+        stage_a = SlayerQuery.model_validate({"name": "a", "population": "b", "metrics": [{"metric": "count(b.*)"}]})
         stage_b = SlayerQuery.model_validate({
             "name": "b",
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
-        root = SlayerQuery.model_validate({"population": "a", "metrics": [{"metric": "count(*)"}]})
+        root = SlayerQuery.model_validate({"population": "a", "metrics": [{"metric": "count(a.*)"}]})
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(
@@ -394,9 +394,9 @@ class TestInternalFailuresRaise:
             engine = await _engine(d)
             bad = SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "status", "alias": "status"}],
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
                 "metrics": [{"metric": "sum(customers.revenue)"}],
-                "filter": ["no_such_column == 'X'"],
+                "filter": ["orders.no_such_column == 'X'"],
             })
             with pytest.raises(SlayerError):
                 await engine.execute(bad, dry_run=True)
@@ -456,7 +456,7 @@ class TestMcpEntryPoint:
             result = await server.call_tool("query", {
                 "query": {
                     "population": "orders",
-                    "dimensions": ["status"],
+                    "dimensions": ["orders.status"],
                     "metrics": [{"metric": "sum(customers.revenue)"}],
                     "filter": [PUSHED_FILTER],
                 },

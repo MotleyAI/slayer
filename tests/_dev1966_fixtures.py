@@ -6,6 +6,7 @@ physical table ``acct``) → ``cust_rev`` (query-backed). No orphan order, so ev
 
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 from typing import Any, Dict, List, Optional, Union
@@ -131,23 +132,23 @@ def _qb(name: str, *stages: SlayerQuery, **kw: Any) -> SlayerDataset:
 
 def rev_by_status_dataset() -> SlayerDataset:
     return _qb("rev_by_status", query(
-        population="orders", dimensions=["status"], metrics=[m("sum(amount)", "rev")]))
+        population="orders", dimensions=["orders.status"], metrics=[m("sum(orders.amount)", "rev")]))
 
 
 def status_share_dataset() -> SlayerDataset:
     """Query-backed over the query-backed ``rev_by_status``."""
     return _qb("status_share", query(
-        population="rev_by_status", dimensions=["status"], metrics=[m("sum(rev)", "rr")]))
+        population="rev_by_status", dimensions=["rev_by_status.status"], metrics=[m("sum(rev_by_status.rev)", "rr")]))
 
 
 def cust_rev_dataset() -> SlayerDataset:
     """Multi-stage with a private stage ``x``; grain ``{customer_id}``."""
     return _qb(
         "cust_rev",
-        query(name="x", population="orders", dimensions=["customer_id", "status"],
-              metrics=[m("sum(amount)", "amt")]),
-        query(population="x", dimensions=["customer_id"],
-              metrics=[m("sum(amt)", "rev"), m("max(amt)", "top")]),
+        query(name="x", population="orders", dimensions=["orders.customer_id", "orders.status"],
+              metrics=[m("sum(orders.amount)", "amt")]),
+        query(population="x", dimensions=["x.customer_id"],
+              metrics=[m("sum(x.amt)", "rev"), m("max(x.amt)", "top")]),
     )
 
 
@@ -155,9 +156,9 @@ def ok_rev_dataset() -> SlayerDataset:
     """Multi-stage, also with a private stage ``x``."""
     return _qb(
         "ok_rev",
-        query(name="x", population="orders", dimensions=["customer_id", "status"],
-              metrics=[m("sum(amount)", "amt")], filter=["status = 'ok'"]),
-        query(population="x", dimensions=["customer_id"], metrics=[m("sum(amt)", "ok_rev")]),
+        query(name="x", population="orders", dimensions=["orders.customer_id", "orders.status"],
+              metrics=[m("sum(orders.amount)", "amt")], filter=["orders.status = 'ok'"]),
+        query(population="x", dimensions=["x.customer_id"], metrics=[m("sum(x.amt)", "ok_rev")]),
     )
 
 
@@ -165,27 +166,27 @@ def qb_shadow_dataset() -> SlayerDataset:
     """Private stage named ``customers``; the final stage reaches dataset ``customers`` via a stored relationship."""
     return _qb(
         "qb_shadow",
-        query(name="customers", population="orders", dimensions=["status"],
-              metrics=[m("sum(amount)", "a")]),
-        query(population="orders", dimensions=["customers.tier"],
-              metrics=[m("sum(amount)", "amt")]),
+        query(name="customers", population="orders", dimensions=["orders.status"],
+              metrics=[m("sum(orders.amount)", "a")]),
+        query(population="orders", dimensions=["orders.customers.tier"],
+              metrics=[m("sum(orders.amount)", "amt")]),
     )
 
 
 def monthly_dataset() -> SlayerDataset:
     return _qb("monthly", query(
-        population="orders", dimensions=["status"],
-        time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
-        metrics=[m("sum(amount)", "rev")]))
+        population="orders", dimensions=["orders.status"],
+        time_dimensions=[{"field": "orders.ordered_at", "granularity": "month"}],
+        metrics=[m("sum(orders.amount)", "rev")]))
 
 
 def bcast_qb_dataset() -> SlayerDataset:
     """Private stage ``bstage`` broadcasts ``sum(customers.spend)`` across ``status``."""
     return _qb(
         "bcast_qb",
-        query(name="bstage", population="orders", dimensions=["status"], to_many_handling="broadcast",
-              metrics=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")]),
-        query(population="bstage", dimensions=["status"], metrics=[m("sum(amt)", "amt2")]),
+        query(name="bstage", population="orders", dimensions=["orders.status"], to_many_handling="broadcast",
+              metrics=[m("sum(orders.amount)", "amt"), m("sum(customers.spend)", "cs")]),
+        query(population="bstage", dimensions=["bstage.status"], metrics=[m("sum(bstage.amt)", "amt2")]),
     )
 
 
@@ -197,10 +198,10 @@ def jt_qb_dataset() -> SlayerDataset:
               population="customers",
               extensions=[{"dataset": "customers",
                            "relationships": [{"to": "b", "from_columns": ["id"], "to_columns": ["customer_id"]}]}],
-              dimensions=["tier"], metrics=[m("sum(b.rev)", "ab")]),
-        query(name="b", population="orders", dimensions=["customer_id"],
-              metrics=[m("sum(amount)", "rev")]),
-        query(population="a", dimensions=["tier"], metrics=[m("max(ab)", "v")]),
+              dimensions=["customers.tier"], metrics=[m("sum(b.rev)", "ab")]),
+        query(name="b", population="orders", dimensions=["orders.customer_id"],
+              metrics=[m("sum(orders.amount)", "rev")]),
+        query(population="a", dimensions=["a.tier"], metrics=[m("max(a.ab)", "v")]),
     )
 
 
@@ -331,12 +332,23 @@ def explicit_splice(
         return spec.model_copy(update={"dataset": rename.get(spec.dataset, spec.dataset),
                                        "relationships": joins})
 
+    def anchor(text: str) -> str:
+        for old, new in rename.items():
+            text = re.sub(rf"(?<![\w.\"]){re.escape(old)}\.", f"{new}.", text)
+        return text
+
     out = []
     for i, stage in enumerate(stages):
         name = dataset.name if i == len(stages) - 1 else respell(stage.name)
         extensions = [respell(e) for e in stage.extensions] if stage.extensions else stage.extensions
-        out.append(stage.model_copy(update={"name": name, "population": respell(stage.population),
-                                            "extensions": extensions}))
+        update: Dict[str, Any] = {"name": name, "population": respell(stage.population), "extensions": extensions}
+        if rename and stage.dimensions:
+            update["dimensions"] = [d.model_copy(update={"field": anchor(d.field)}) for d in stage.dimensions]
+        if rename and stage.metrics:
+            update["metrics"] = [mt.model_copy(update={"metric": anchor(mt.metric)}) for mt in stage.metrics]
+        if rename and isinstance(stage.filter, list):
+            update["filter"] = [anchor(f) for f in stage.filter]
+        out.append(stage.model_copy(update=update))
     return out
 
 

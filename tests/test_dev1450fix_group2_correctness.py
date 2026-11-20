@@ -163,7 +163,7 @@ async def test_is_null_filter_renders_end_to_end(engine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "filter": ["customers.region IS NOT NULL"],
         })
     )
@@ -199,7 +199,7 @@ def test_aggregation_eligibility_allowed_aggregations_whitelist():
     )
     bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
     scope = DatasetScope(population=orders)
-    bind_expr(parsed=parse_expr("sum(amount)"), scope=scope, bundle=bundle)
+    bind_expr(parsed=parse_expr("sum(orders.amount)"), scope=scope, bundle=bundle)
     bind_expr(parsed=parse_expr("max(amount)"), scope=scope, bundle=bundle)
     parsed = parse_expr("avg(amount)")
     with pytest.raises(AggregationNotAllowedError, match="allowed_aggregations"):
@@ -330,9 +330,9 @@ async def test_order_by_joined_column_not_in_dimensions(engine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
             "order": [OrderItem(field="customers.region", direction="asc")],
         })
     )
-    regions = [r["orders.customers.region"] for r in resp.data]
+    regions = [r["customers.region"] for r in resp.data]
     assert regions == ["EU", "NA"]
