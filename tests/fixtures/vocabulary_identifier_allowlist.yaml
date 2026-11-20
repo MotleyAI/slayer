@@ -1,6 +1,5 @@
 # Old-word identifiers defined in slayer/ (tests/test_vocabulary_identifier_guard.py).
-# carve_outs keep their word for the stated reason. stragglers still name a SLayer concept with an old
-# word: they may only shrink, capped by x-vocabulary-stragglers in architecture/index.yaml.
+# Each carve-out keeps its old word for the stated reason.
 carve_outs:
   - {name: columns, file: slayer/api/server.py, reason: "physical database or result-set column"}
   - {name: create_model, file: slayer/client/slayer_client.py, reason: "deprecated twin until 3.0"}
@@ -511,41 +510,3 @@ carve_outs:
   - {name: raw_measures, file: slayer/storage/v2_migration.py, reason: "stored-document upgrade path"}
   - {name: models_dir, file: slayer/storage/v4_migration.py, reason: "storage layout (the models/ directory)"}
   - {name: models_dir, file: slayer/storage/yaml_storage.py, reason: "storage layout (the models/ directory)"}
-stragglers:
-  - {name: SEGMENT_AS_COLUMN, file: slayer/cube/report.py}
-  - {name: _filtered_columns, file: slayer/dbt/converter.py}
-  - {name: model_failed, file: slayer/engine/profiling.py}
-  - {name: model_key, file: slayer/engine/profiling.py}
-  - {name: measure, file: slayer/engine/query_engine.py}
-  - {name: formula, file: slayer/facade/catalog.py}
-  - {name: joined_model, file: slayer/facade/catalog.py}
-  - {name: joins, file: slayer/facade/catalog.py}
-  - {name: model, file: slayer/facade/catalog.py}
-  - {name: models, file: slayer/facade/catalog.py}
-  - {name: columns, file: slayer/facade/translator.py}
-  - {name: formula, file: slayer/facade/translator.py}
-  - {name: metrics_by_formula, file: slayer/facade/translator.py}
-  - {name: model_ref, file: slayer/facade/translator.py}
-  - {name: temporal_columns, file: slayer/facade/translator.py}
-  - {name: models, file: slayer/flight/handlers.py}
-  - {name: models_by_ds, file: slayer/flight/handlers.py}
-  - {name: columns, file: slayer/live_schema/broken_dependents.py}
-  - {name: column, file: slayer/live_schema/ingestion.py}
-  - {name: column_name, file: slayer/live_schema/ingestion.py}
-  - {name: columns, file: slayer/live_schema/ingestion.py}
-  - {name: retyped_sql_columns, file: slayer/live_schema/ingestion.py}
-  - {name: _first_dropped_sql_column_ref, file: slayer/live_schema/schema_drift.py}
-  - {name: columns, file: slayer/live_schema/type_refinement.py}
-  - {name: _walk_join_alias, file: slayer/osi/converter.py}
-  - {name: _raise_if_broken_join_walk, file: slayer/sql/field_expansion.py}
-  - {name: _gen_column_types, file: slayer/sql/generator.py}
-  - {name: _resolve_where_filter_joins_via_scope, file: slayer/sql/generator.py}
-  - {name: _value_key_join_paths, file: slayer/sql/generator.py}
-  - {name: _walk_join_path_dataset, file: slayer/sql/generator.py}
-  - {name: axis_column, file: slayer/sql/generator.py}
-  - {name: column, file: slayer/sql/generator.py}
-  - {name: column_type, file: slayer/sql/generator.py}
-  - {name: needed_join_paths, file: slayer/sql/generator.py}
-  - {name: column_type, file: slayer/sql/render/value_expr.py}
-  - {name: _register_join_paths, file: slayer/sql/scope.py}
-  - {name: join_paths, file: slayer/sql/scope.py}

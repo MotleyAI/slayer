@@ -1,14 +1,14 @@
 ## 1. Prerequisites
 
-- [ ] 1.1 At the start of `pr-tests`: merge the current DEV-2277 head (local branch `egor/dev-2277-qualified-references-every-name-is-dataset`, or `origin/main` once DEV-2277 has landed) into this branch (merge commit, never rebase; quoted ref in the message). Verify: `git log` shows the merge and `poetry run pytest tests/test_vocabulary_identifier_guard.py` is green before any change (design Decision 11).
-- [ ] 1.2 Load `la:living-architecture` and `la:deterministic-refactor`. Verify: both skills loaded in the session.
+- [x] 1.1 At the start of `pr-tests`: merge the current DEV-2277 head (local branch `egor/dev-2277-qualified-references-every-name-is-dataset`, or `origin/main` once DEV-2277 has landed) into this branch (merge commit, never rebase; quoted ref in the message). Verify: `git log` shows the merge and `poetry run pytest tests/test_vocabulary_identifier_guard.py` is green before any change (design Decision 11).
+- [x] 1.2 Load `la:living-architecture` and `la:deterministic-refactor`. Verify: both skills loaded in the session.
 
 ## 2. Tests first (pr-tests)
 
-- [ ] 2.1 `tests/_vocabulary_guard.py`: delete `Straggler`, `VocabularyAllowlist.stragglers` and `guard_problems`' `ceiling` parameter (design Decision 10). Verify: `ruff` clean.
-- [ ] 2.2 `tests/test_vocabulary_identifier_guard.py` (alignment approved with the plan): delete `_ceiling`, `test_straggler_ceiling_is_declared`, `test_stale_straggler_is_red`, `test_straggler_count_is_capped_by_the_ceiling`; reduce `test_carve_out_and_straggler_are_green` to carve-outs; add the `removed-stragglers-key` case `{"stragglers": []}` to `test_malformed_allowlist_is_rejected` and a positive test that `{}` parses (Decision 17). Verify: the synthetic-source guard tests pass.
-- [ ] 2.3 `tests/fixtures/vocabulary_identifier_allowlist.yaml`: remove the `stragglers:` key and update the header comment; `architecture/index.yaml`: delete `x-vocabulary-stragglers: {baseline: 37}` and its trailing blank line (approved with the plan). Verify: `test_every_old_word_identifier_in_slayer_is_allowlisted` fails listing exactly the 37 former stragglers as unlisted.
-- [ ] 2.4 `tests/test_cube_report.py`: assert that `CubeIssueCategory.SEGMENT_AS_FIELD` serialises as `"segment_as_field"` in the report JSON (Decision 5). Verify: fails for the right reason (no such member).
+- [x] 2.1 `tests/_vocabulary_guard.py`: delete `Straggler`, `VocabularyAllowlist.stragglers` and `guard_problems`' `ceiling` parameter (design Decision 10). Verify: `ruff` clean.
+- [x] 2.2 `tests/test_vocabulary_identifier_guard.py` (alignment approved with the plan): delete `_ceiling`, `test_straggler_ceiling_is_declared`, `test_stale_straggler_is_red`, `test_straggler_count_is_capped_by_the_ceiling`; reduce `test_carve_out_and_straggler_are_green` to carve-outs; add the `removed-stragglers-key` case `{"stragglers": []}` to `test_malformed_allowlist_is_rejected` and a positive test that `{}` parses (Decision 17). Verify: the synthetic-source guard tests pass.
+- [x] 2.3 `tests/fixtures/vocabulary_identifier_allowlist.yaml`: remove the `stragglers:` key and update the header comment; `architecture/index.yaml`: delete `x-vocabulary-stragglers: {baseline: 37}` and its trailing blank line (approved with the plan). Verify: `test_every_old_word_identifier_in_slayer_is_allowlisted` fails listing exactly the 37 former stragglers as unlisted.
+- [x] 2.4 `tests/test_cube_report.py`: assert that `CubeIssueCategory.SEGMENT_AS_FIELD` serialises as `"segment_as_field"` in the report JSON (Decision 5). Verify: fails for the right reason (no such member).
 
 ## 3. `slayer/` stragglers (pr-implement)
 

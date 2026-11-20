@@ -2,6 +2,9 @@
 
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeCube, CubeDimension, CubeProject, CubeView, CubeViewCubeRef
 from slayer.cube.report import (
@@ -75,6 +78,20 @@ def test_result_json_round_trips():
     assert restored.report.hidden_count == 1
     # `raw` fragment is preserved.
     assert restored.report.issues[0].raw == "name: main"
+
+
+def test_segment_category_serialises_as_segment_as_field():
+    report = CubeConversionReport(issues=[CubeConversionIssue(
+        category=CubeIssueCategory.SEGMENT_AS_FIELD, severity="info", message="x")])
+    parsed = json.loads(CubeConversionResult(report=report).model_dump_json())
+    assert parsed["report"]["issues"][0]["category"] == "segment_as_field"
+
+
+def test_old_segment_category_value_is_rejected():
+    blob = json.dumps({"report": {"issues": [
+        {"category": "segment_as_column", "severity": "info", "message": "x"}]}})
+    with pytest.raises(ValidationError):
+        CubeConversionResult.model_validate_json(blob)
 
 
 def test_converter_derives_report_counts():
