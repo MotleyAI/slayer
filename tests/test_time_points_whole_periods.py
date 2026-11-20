@@ -140,11 +140,11 @@ class TestStageTimeDimension:
 
 class TestDateOperand:
     async def test_date_column_snaps(self, engine) -> None:
-        got = await monthly(engine, metrics=[PLAIN], column="d", date_range=["2025-01-15", None], whole_periods_only=True)
+        got = await monthly(engine, metrics=[PLAIN], field="d", date_range=["2025-01-15", None], whole_periods_only=True)
         assert min(got) == "2025-01"
         assert max(got) == "2026-08"
         assert got["2025-01"]["s"] == pytest.approx(_month_sum(2025, 1))
 
     async def test_future_date_lower_bound_is_empty(self, engine) -> None:
-        got = await monthly(engine, metrics=[PLAIN], column="d", date_range=["2027-01-01", None], whole_periods_only=True)
+        got = await monthly(engine, metrics=[PLAIN], field="d", date_range=["2027-01-01", None], whole_periods_only=True)
         assert got == {}

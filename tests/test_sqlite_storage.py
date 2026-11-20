@@ -20,7 +20,7 @@ def storage() -> SQLiteStorage:
 @pytest.fixture
 def sample_dataset() -> SlayerDataset:
     return SlayerDataset(
-        name="test_model",
+        name="test_dataset",
         sql_table="public.test_table",
         data_source="test_ds",
         fields=[
@@ -47,28 +47,28 @@ def sample_datasource() -> DatasourceConfig:
 class TestSQLiteModelStorage:
     async def test_save_and_get(self, storage: SQLiteStorage, sample_dataset: SlayerDataset) -> None:
         await storage.save_dataset(sample_dataset)
-        loaded = await storage.get_dataset("test_model")
+        loaded = await storage.get_dataset("test_dataset")
         assert loaded is not None
-        assert loaded.name == "test_model"
+        assert loaded.name == "test_dataset"
         assert loaded.sql_table == "public.test_table"
         assert len(loaded.fields) == 3
 
     async def test_list_models(self, storage: SQLiteStorage, sample_dataset: SlayerDataset) -> None:
         assert await storage.list_datasets() == []
         await storage.save_dataset(sample_dataset)
-        assert await storage.list_datasets() == ["test_model"]
+        assert await storage.list_datasets() == ["test_dataset"]
 
     async def test_delete_model(self, storage: SQLiteStorage, sample_dataset: SlayerDataset) -> None:
         await storage.save_dataset(sample_dataset)
-        assert await storage.delete_dataset("test_model") is True
-        assert await storage.get_dataset("test_model") is None
+        assert await storage.delete_dataset("test_dataset") is True
+        assert await storage.get_dataset("test_dataset") is None
         assert await storage.delete_dataset("nonexistent") is False
 
     async def test_update_model(self, storage: SQLiteStorage, sample_dataset: SlayerDataset) -> None:
         await storage.save_dataset(sample_dataset)
         sample_dataset.description = "Updated"
         await storage.save_dataset(sample_dataset)
-        loaded = await storage.get_dataset("test_model")
+        loaded = await storage.get_dataset("test_dataset")
         assert loaded.description == "Updated"
 
 

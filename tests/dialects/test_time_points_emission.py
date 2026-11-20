@@ -21,10 +21,10 @@ STRFTIME = "STRFTIME('%Y-%m-%d %H:%M:%f', "
 
 
 async def _sql(
-    dialect: str, *, filters: list[str], date_range=None, granularity: str = "month", column: str = "ts",
+    dialect: str, *, filters: list[str], date_range=None, granularity: str = "month", field: str = "ts",
     metrics: list | None = None,
 ) -> str:
-    td: dict = {"field": f"ev.{column}", "granularity": granularity}
+    td: dict = {"field": f"ev.{field}", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     query = {
@@ -67,7 +67,7 @@ async def test_typed_dialects_compare_against_build_temporal_literal(dialect) ->
 
 @pytest.mark.parametrize("dialect", TYPED)
 async def test_date_operand_gets_a_date_literal(dialect) -> None:
-    sql = _flat(await _sql(dialect, column="d", granularity="day", date_range="2025-Q1", filters=[]))
+    sql = _flat(await _sql(dialect, field="d", granularity="day", date_range="2025-Q1", filters=[]))
     assert _flat(_literal(dialect, date(2025, 1, 1))) in sql, sql
     assert _flat(_literal(dialect, date(2025, 4, 1))) in sql, sql
 

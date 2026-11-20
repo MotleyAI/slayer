@@ -12,10 +12,10 @@ import pytest
 from slayer.core.syntax import parse_expr
 
 BASELINE_US: dict[str, float] = json.loads((Path(__file__).parent / "dev2101_old_parser_baseline.json").read_text())
-FORMULAS = list(BASELINE_US)
+EXPRESSIONS = list(BASELINE_US)
 
 
-@pytest.mark.parametrize("formula", FORMULAS, ids=[f"f{i}" for i in range(len(FORMULAS))])
+@pytest.mark.parametrize("formula", EXPRESSIONS, ids=[f"f{i}" for i in range(len(EXPRESSIONS))])
 def test_parse(benchmark, formula: str) -> None:
     uncached = getattr(parse_expr, "__wrapped__", parse_expr)
     benchmark(uncached, formula)

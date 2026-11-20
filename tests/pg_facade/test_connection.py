@@ -54,24 +54,24 @@ class _FakeWriter:
 
 class _FakeStorage:
     def __init__(self, datasets_by_ds, *, schema_by_ds=None, priority=None) -> None:
-        self._models_by_ds = datasets_by_ds
+        self._datasets_by_ds = datasets_by_ds
         self._schema_by_ds = schema_by_ds or {}
         self._priority = priority or []
 
     async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
-        return list(self._models_by_ds)
+        return list(self._datasets_by_ds)
 
     async def list_datasets(self, *, data_source: str) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
-        return [m.name for m in self._models_by_ds.get(data_source, [])]
+        return [m.name for m in self._datasets_by_ds.get(data_source, [])]
 
     async def get_dataset(self, *, name: str, data_source: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
-        for m in self._models_by_ds.get(data_source, []):
+        for m in self._datasets_by_ds.get(data_source, []):
             if m.name == name:
                 return m
         return None
 
     async def load_datasets(self, *, data_source: str, exclude: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
-        return [m for m in self._models_by_ds.get(data_source, []) if m.name != exclude], []
+        return [m for m in self._datasets_by_ds.get(data_source, []) if m.name != exclude], []
 
     async def get_datasource(self, datasource: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
         schema = self._schema_by_ds.get(datasource)
@@ -2635,7 +2635,7 @@ async def test_refresh_rebuilds_catalog_when_fingerprint_changes() -> None:
     before = conn._catalog
 
     # A dataset edit that also bumps the storage fingerprint.
-    storage._models_by_ds["jaffle"][0].description = "edited"
+    storage._datasets_by_ds["jaffle"][0].description = "edited"
     storage.fingerprint = "v2"
 
     await conn._maybe_refresh_catalog()
@@ -2653,7 +2653,7 @@ async def test_refresh_skips_when_fingerprint_unchanged() -> None:
 
     # Content changes but the fingerprint doesn't -> the cheap check
     # short-circuits and we never pay for a rebuild.
-    storage._models_by_ds["jaffle"].append(_orders_dataset())
+    storage._datasets_by_ds["jaffle"].append(_orders_dataset())
 
     await conn._maybe_refresh_catalog()
 
@@ -2736,7 +2736,7 @@ async def test_describe_triggers_catalog_refresh() -> None:
     await _seed_catalog(conn, storage)
     before = conn._catalog
 
-    storage._models_by_ds["jaffle"][0].description = "edited"
+    storage._datasets_by_ds["jaffle"][0].description = "edited"
     storage.fingerprint = "v2"
 
     # Missing statement still exercises the refresh at the top of _handle_describe.

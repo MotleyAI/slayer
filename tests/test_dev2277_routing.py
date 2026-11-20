@@ -22,7 +22,7 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev1954_fixtures import POP_MAX_BY_RNAME, by_key, make_exec_engine, table_count
-from tests._dev2102_fixtures import ext, join, q, rows, shop
+from tests._dev2102_fixtures import ext, relationship_to, q, rows, shop
 from tests._dev2219_fixtures import m as m19, orders as orders19, q as q19, shop as shop19, with_datasets as with_datasets19
 from tests._dev2277_fixtures import (
     BACKENDS,
@@ -73,8 +73,8 @@ def _fields(*spec: tuple[str, DataType]) -> list[DatasetField]:
     return [DatasetField(name=n, datatype=t, primary_key=(n == "id")) for n, t in spec]
 
 
-def _to(target: str, column: str) -> DatasetRelationship:
-    return DatasetRelationship(to=target, from_columns=[column], to_columns=["id"], cardinality=_M2O)
+def _to(target: str, field: str) -> DatasetRelationship:
+    return DatasetRelationship(to=target, from_columns=[field], to_columns=["id"], cardinality=_M2O)
 
 
 def _chain_datasets(*, direct_customer: bool = False) -> list[SlayerDataset]:
@@ -336,7 +336,7 @@ class TestJoinedStageFlatColumns:
     async def test_a_joined_stage_column_keys_by_the_stage(self, backend: str, root: str) -> None:
         pairs = [["customer_id", "customer_id"]] if root == "addresses" else [["id", "customer_id"]]
         payload: list[Any] = [q(**self._STAGE), q(population=root, dimensions=[f"{root}.id", "s.customers__name"],
-                                       extensions=[ext(root, relationships=[join("s", pairs)])])]
+                                       extensions=[ext(root, relationships=[relationship_to("s", pairs)])])]
         async with shop(backend) as eng:
             resp = await eng.execute(payload)
         assert resp.columns == [f"{root}.id", "s.customers__name"]

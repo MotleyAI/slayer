@@ -34,7 +34,7 @@ CUSTOMERS = TableSpec(
 )
 
 
-def orders_columns() -> list[DatasetField]:
+def orders_fields() -> list[DatasetField]:
     return [
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="customer_id", datatype=DataType.INTEGER),
@@ -50,7 +50,7 @@ def orders_dataset(*, edge_name: Optional[str] = None) -> SlayerDataset:
     """``orders`` → ``customers`` (the edge optionally named), saved metric ``revenue``."""
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
-        fields=orders_columns(),
+        fields=orders_fields(),
         relationships=[DatasetRelationship(to="customers", name=edge_name, from_columns=["customer_id"], to_columns=["id"])],
         metrics=[DatasetMetric(name="revenue", expression="sum(amount)")],
     )

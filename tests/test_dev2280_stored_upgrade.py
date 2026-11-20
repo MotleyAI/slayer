@@ -137,8 +137,8 @@ def logged(caplog: pytest.LogCaptureFixture) -> Generator[list[str]]:
     texts.extend(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
 
 
-def ids(resp: Any, *, model: str = "orders") -> set[int]:
-    return {int(r[f"{model}.id"]) for r in resp.data}
+def ids(resp: Any, *, dataset: str = "orders") -> set[int]:
+    return {int(r[f"{dataset}.id"]) for r in resp.data}
 
 
 def notices(resp: Any) -> list[str]:
@@ -162,7 +162,7 @@ class TestRewrites:
         stage = (model.source_queries or [])[0]
         assert stage.filter == ["orders.created_at < '2025-01-01'"]
         resp = await run(storage, {"population": "year_end", "dimensions": ["year_end.id"]})
-        assert ids(resp, model="year_end") == {1, 2, 3, 4, 5, 6}
+        assert ids(resp, dataset="year_end") == {1, 2, 3, 4, 5, 6}
         assert notices(resp) == []
 
     async def test_each_operator_in_a_memory_query(self, tmp_path: Path, shop_ds: DatasourceConfig,

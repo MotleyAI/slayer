@@ -116,8 +116,8 @@ def m(expression: str, name: str = "v") -> QueryMetric:
     return QueryMetric(metric=expression, alias=name)
 
 
-def month_td(column: str = "account_snapshots.snapshot_date") -> List[TimeDimension]:
-    return [TimeDimension(field=column, granularity=TimeGranularity.MONTH)]
+def month_td(field: str = "account_snapshots.snapshot_date") -> List[TimeDimension]:
+    return [TimeDimension(field=field, granularity=TimeGranularity.MONTH)]
 
 
 # --------------------------------------------------------------------------- #
@@ -156,8 +156,8 @@ BALANCE_BY_BAND = {"big": 530.0, "small": 70.0}
 #: time_shift(<x>, -1) by customer, month: Feb reads Jan (last 70 / 40; 30d 370 / 70).
 SHIFTED_LAST_BY_CUSTOMER_MONTH = {(100, JAN): None, (100, FEB): 70.0, (200, JAN): None, (200, FEB): 40.0}
 SHIFTED_30D_BY_CUSTOMER_MONTH = {(100, JAN): None, (100, FEB): 370.0, (200, JAN): None, (200, FEB): 70.0}
-CROSS_MODEL_SUM_BY_NAME ={"A": 230.0, "B": 30.0, "C": None}
-CROSS_MODEL_COUNT_BY_NAME = {"A": 2, "B": 1, "C": 0}
+CROSS_DATASET_SUM_BY_NAME ={"A": 230.0, "B": 30.0, "C": None}
+CROSS_DATASET_COUNT_BY_NAME = {"A": 2, "B": 1, "C": 0}
 
 
 # --------------------------------------------------------------------------- #

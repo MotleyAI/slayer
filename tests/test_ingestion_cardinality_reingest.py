@@ -65,7 +65,7 @@ async def _setup(workspace: Path) -> tuple[YAMLStorage, DatasourceConfig]:
     return storage, ds
 
 
-def _order_join(dataset: SlayerDataset):
+def _order_relationship(dataset: SlayerDataset):
     return next(j for j in dataset.relationships if j.to == "customers")
 
 
@@ -78,7 +78,7 @@ class TestFillsMetadataAndPersists:
         # Simulate legacy persisted data: relationship without a cardinality.
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        orders.relationships[0] = _order_join(orders).model_copy(update={"cardinality": None})
+        orders.relationships[0] = _order_relationship(orders).model_copy(update={"cardinality": None})
         await storage.save_dataset(orders)
 
         await _ingest(datasource=ds, storage=storage)
@@ -86,7 +86,7 @@ class TestFillsMetadataAndPersists:
         reloaded = await storage.get_dataset("orders", data_source="ds")
         assert reloaded is not None
         # Refilled AND persisted (reloaded from storage proves the save).
-        assert _order_join(reloaded).cardinality is RelationshipCardinality.MANY_TO_ONE
+        assert _order_relationship(reloaded).cardinality is RelationshipCardinality.MANY_TO_ONE
 
     async def test_reingest_sets_unique_and_persists(self, workspace: Path) -> None:
         storage, ds = await _setup(workspace)
@@ -115,7 +115,7 @@ class TestAdditiveContract:
         # A deliberate user override that disagrees with the structural guess.
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        orders.relationships[0] = _order_join(orders).model_copy(
+        orders.relationships[0] = _order_relationship(orders).model_copy(
             update={"cardinality": RelationshipCardinality.ONE_TO_ONE}
         )
         await storage.save_dataset(orders)
@@ -124,7 +124,7 @@ class TestAdditiveContract:
 
         reloaded = await storage.get_dataset("orders", data_source="ds")
         assert reloaded is not None
-        assert _order_join(reloaded).cardinality is RelationshipCardinality.ONE_TO_ONE
+        assert _order_relationship(reloaded).cardinality is RelationshipCardinality.ONE_TO_ONE
 
     async def test_reingest_does_not_downgrade_user_unique(
         self, workspace: Path

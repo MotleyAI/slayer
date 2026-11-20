@@ -65,7 +65,7 @@ GROUP BY DATE_TRUNC('MONTH', orders.created_at)
 
 # forward cross-dataset ``_cm_*`` CTE + combined SELECT. The combined SELECT names
 # only projected columns of ``_base`` / ``_cm_customers``.
-SQL_CROSS_MODEL_CM = """
+SQL_CROSS_DATASET_CM = """
 WITH _base AS (
   SELECT orders.status AS "orders.status", SUM(orders.revenue) AS "orders.revenue_sum"
   FROM orders AS orders
@@ -165,7 +165,7 @@ class TestClosedShapesPass:
         [
             SQL_HOST_BASE,
             SQL_FIRST_LAST_RANKED,
-            SQL_CROSS_MODEL_CM,
+            SQL_CROSS_DATASET_CM,
             SQL_TIME_SHIFT,
             SQL_LEGACY_FM,
             SQL_LEGACY_WM,
@@ -178,7 +178,7 @@ class TestClosedShapesPass:
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb", "mysql", "snowflake"])
     def test_closed_sql_across_dialects(self, dialect: str) -> None:
-        assert_scope_closed(SQL_CROSS_MODEL_CM, dialect=dialect)
+        assert_scope_closed(SQL_CROSS_DATASET_CM, dialect=dialect)
 
     def test_quoted_mixed_case_qualifiers_close(self) -> None:
         # Reserved-word / mixed-case quoted identifiers must not
@@ -453,7 +453,7 @@ class TestEnvGatedRuntimeHook:
 
     def test_closed_sql_passes_when_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
-        maybe_validate_scopes(SQL_CROSS_MODEL_CM)  # closed ⇒ no raise
+        maybe_validate_scopes(SQL_CROSS_DATASET_CM)  # closed ⇒ no raise
 
 
 # --------------------------------------------------------------------------- #

@@ -16,7 +16,7 @@ from slayer.engine.param_binding import default_reference_sites
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import NarrowedAccessFinding
 from slayer.memories.resolver import extract_entities_from_query
-from tests._model_access_fixtures import DS, AccessStore, access_store, mcp_text
+from tests._dataset_access_fixtures import DS, AccessStore, access_store, mcp_text
 
 
 @pytest.fixture

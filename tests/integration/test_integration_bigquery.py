@@ -484,7 +484,7 @@ async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> Non
 # NUMERIC / BIGNUMERIC ingest as DOUBLE: collect's typed ``[]`` fallback must unify with their ARRAY_AGG.
 _AMOUNT_ROWS = ("(1, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (2, 'a', NUMERIC '2.25', BIGNUMERIC '2.25', 2), "
                 "(3, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (4, 'b', NULL, NULL, NULL)")
-_AMOUNT_COLUMNS = ("n", "big", "i")
+_AMOUNT_FIELDS = ("n", "big", "i")
 
 
 @pytest.fixture(scope="module")
@@ -504,25 +504,25 @@ def bq_amounts(bq_dataset, tmp_path_factory):
 async def test_collect_over_exact_numerics(bq_amounts) -> None:
     resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
         "population": "amounts", "dimensions": ["team"],
-        "metrics": [{"metric": f"collect({c})", "alias": f"{c}_set"} for c in _AMOUNT_COLUMNS],
+        "metrics": [{"metric": f"collect({c})", "alias": f"{c}_set"} for c in _AMOUNT_FIELDS],
     }))
-    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_COLUMNS}
+    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_FIELDS}
            for r in resp.data}
     assert got == {"a": {"n": [1.5, 2.25], "big": [1.5, 2.25], "i": [1.0, 2.0]},
                    "b": {"n": [], "big": [], "i": []}}, resp.sql
-    assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_COLUMNS), resp.data
+    assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_FIELDS), resp.data
 
 
 # Last in the module: re-ingest re-types the shared ``stale`` dataset too. The BigQuery driver reports a
 # REPEATED result column by its element type, so only sqlglot typing finds the list (no untypeable shape).
-@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores", untypeable=None))
+@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", field="scores", untypeable=None))
 async def test_sql_mode_list_retype(bq_lists: tuple[StorageBackend, Any], sql: str, column: str, element: DataType) -> None:
     storage, ds = bq_lists
     engine = SlayerQueryEngine(storage=storage)
-    await storage.save_dataset(stale_sql_dataset(sql=sql, column=column, data_source=ds.name))
-    await check_validation_finding(engine, data_source=ds.name, column=column)
-    await check_query_carries_finding(engine, column=column)
-    await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)
+    await storage.save_dataset(stale_sql_dataset(sql=sql, field=column, data_source=ds.name))
+    await check_validation_finding(engine, data_source=ds.name, field=column)
+    await check_query_carries_finding(engine, field=column)
+    await check_reingest_retypes(engine, datasource=ds, table="contractors", field=column, element=element)
 
 
 # ---------------------------------------------------------------------------

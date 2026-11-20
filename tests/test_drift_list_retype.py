@@ -23,7 +23,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._sql_mode_retype_fixtures import (
-    MODEL,
+    DATASET,
     check_query_carries_finding,
     check_reingest_retypes,
     check_validation_finding,
@@ -185,30 +185,30 @@ class TestReingest:
         assert second_seen.model_dump() == first_seen.model_dump()
 
 
-_SQL_SHAPES = sql_shapes(table="players", column="scores", untypeable="list_reverse")
+_SQL_SHAPES = sql_shapes(table="players", field="scores", untypeable="list_reverse")
 
 
 class TestSqlMode:
     @pytest.mark.parametrize(("sql", "column", "element"), _SQL_SHAPES)
     async def test_validation_finding(self, sql: str, column: str, element: DataType) -> None:
-        async with _env(stale_sql_dataset(sql=sql, column=column, data_source="ds")) as (engine, _):
-            await check_validation_finding(engine, data_source="ds", column=column)
+        async with _env(stale_sql_dataset(sql=sql, field=column, data_source="ds")) as (engine, _):
+            await check_validation_finding(engine, data_source="ds", field=column)
 
     @pytest.mark.parametrize(("sql", "column", "element"), _SQL_SHAPES)
     async def test_a_refused_query_carries_the_finding(self, sql: str, column: str, element: DataType) -> None:
-        async with _env(stale_sql_dataset(sql=sql, column=column, data_source="ds")) as (engine, _):
-            await check_query_carries_finding(engine, column=column)
+        async with _env(stale_sql_dataset(sql=sql, field=column, data_source="ds")) as (engine, _):
+            await check_query_carries_finding(engine, field=column)
 
     @pytest.mark.parametrize(("sql", "column", "element"), _SQL_SHAPES)
     async def test_re_ingest_re_types_in_place(self, sql: str, column: str, element: DataType) -> None:
-        async with _env(stale_sql_dataset(sql=sql, column=column, data_source="ds")) as (engine, ds):
-            await check_reingest_retypes(engine, datasource=ds, table="players", column=column, element=element)
+        async with _env(stale_sql_dataset(sql=sql, field=column, data_source="ds")) as (engine, ds):
+            await check_reingest_retypes(engine, datasource=ds, table="players", field=column, element=element)
 
     async def test_a_by_name_union_aligns_branches_by_name(self) -> None:
         sql = "SELECT id, scores FROM players UNION ALL BY NAME SELECT scores, id FROM players"
-        async with _env(stale_sql_dataset(sql=sql, column="scores", data_source="ds")) as (engine, ds):
-            await check_reingest_retypes(engine, datasource=ds, table="players", column="scores", element=DataType.INTEGER)
-            loaded = await engine.storage.get_dataset(MODEL, data_source="ds")
+        async with _env(stale_sql_dataset(sql=sql, field="scores", data_source="ds")) as (engine, ds):
+            await check_reingest_retypes(engine, datasource=ds, table="players", field="scores", element=DataType.INTEGER)
+            loaded = await engine.storage.get_dataset(DATASET, data_source="ds")
         assert loaded is not None
         key = loaded.get_field("id")
         assert key is not None
@@ -216,30 +216,30 @@ class TestSqlMode:
 
     async def test_a_by_name_union_types_a_column_only_a_later_branch_has(self) -> None:
         sql = "SELECT id FROM players UNION ALL BY NAME SELECT id, scores FROM players"
-        async with _env(stale_sql_dataset(sql=sql, column="scores", data_source="ds")) as (engine, ds):
-            await check_reingest_retypes(engine, datasource=ds, table="players", column="scores", element=DataType.INTEGER)
+        async with _env(stale_sql_dataset(sql=sql, field="scores", data_source="ds")) as (engine, ds):
+            await check_reingest_retypes(engine, datasource=ds, table="players", field="scores", element=DataType.INTEGER)
 
     async def test_re_ingest_skips_a_parameterized_model(self) -> None:
         sql = "SELECT id, scores FROM players WHERE id > {min_id}"
-        async with _env(stale_sql_dataset(sql=sql, column="scores", data_source="ds")) as (engine, ds):
+        async with _env(stale_sql_dataset(sql=sql, field="scores", data_source="ds")) as (engine, ds):
             result = await engine.ingest_idempotent(ds, include_tables=["players"])
-        assert [e for e in result.errors if e.dataset_name == MODEL] == []
+        assert [e for e in result.errors if e.dataset_name == DATASET] == []
 
     async def test_re_ingest_keeps_an_edit_made_meanwhile(self) -> None:
-        model = stale_sql_dataset(sql="SELECT id, scores FROM players", column="scores", data_source="ds")
+        model = stale_sql_dataset(sql="SELECT id, scores FROM players", field="scores", data_source="ds")
         async with _env(model) as (engine, ds):
             real = ingestion.sql_result_types
 
             async def edited_meanwhile(**kwargs: Any) -> Any:
                 result = await real(**kwargs)
-                stored = await engine.storage.get_dataset(MODEL, data_source="ds")
+                stored = await engine.storage.get_dataset(DATASET, data_source="ds")
                 assert stored is not None
                 await engine.storage.save_dataset(stored.model_copy(update={"description": "edited meanwhile"}))
                 return result
 
             with patch.object(ingestion, "sql_result_types", side_effect=edited_meanwhile):
                 await engine.ingest_idempotent(ds, include_tables=["players"])
-            loaded = await engine.storage.get_dataset(MODEL, data_source="ds")
+            loaded = await engine.storage.get_dataset(DATASET, data_source="ds")
         assert loaded is not None
         scores = loaded.get_field("scores")
         assert scores is not None

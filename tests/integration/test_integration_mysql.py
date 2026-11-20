@@ -492,7 +492,7 @@ class TestMySQLQueries:
     async def test_consecutive_periods_breaks_on_calendar_gap(
         self, mysql_env: SlayerQueryEngine, column: str, granularity: str,
     ) -> None:
-        await assert_calendar_streak(mysql_env, column=column, granularity=granularity)
+        await assert_calendar_streak(mysql_env, field=column, granularity=granularity)
 
     async def test_change_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(

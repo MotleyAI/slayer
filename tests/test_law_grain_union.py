@@ -9,9 +9,11 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.query import QueryMetric
+from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._law_harness import (
     OPERAND_GRAIN,
+    LawShape,
     canon,
     execute_shape,
     keyed_rows,
@@ -47,7 +49,7 @@ async def exec_engine(request):
         yield engine
 
 
-def _grain_projection(key: tuple, *, shape, grain: tuple) -> tuple:
+def _grain_projection(key: tuple, *, shape: LawShape, grain: tuple) -> tuple:
     parts = []
     if "region" in grain:
         parts.append(key[0])
@@ -60,7 +62,7 @@ def _grain_projection(key: tuple, *, shape, grain: tuple) -> tuple:
     return tuple(parts)
 
 
-async def test_population_and_operand_broadcast_constancy(law_case):
+async def test_population_and_operand_broadcast_constancy(law_case: tuple[SlayerQueryEngine, LawShape]):
     engine, shape = law_case
     full = await execute_shape(engine, shape, to_many_handling="broadcast")
     if full is None:
@@ -79,7 +81,7 @@ async def test_population_and_operand_broadcast_constancy(law_case):
             shape=shape,
         )
 
-    for meas in shape.measure_keys:
+    for meas in shape.metric_keys:
         grain = OPERAND_GRAIN.get(meas)
         if grain is None:
             continue

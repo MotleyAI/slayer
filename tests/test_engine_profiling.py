@@ -29,11 +29,11 @@ def _stored_col(dataset: SlayerDataset, name: str) -> DatasetField:
 
 
 async def _sample(
-    *, dataset: SlayerDataset, column: DatasetField, engine: SlayerQueryEngine, storage, force: bool = False,
+    *, dataset: SlayerDataset, field: DatasetField, engine: SlayerQueryEngine, storage, force: bool = False,
 ) -> DatasetField:
     """Profile one field through the owner and return the refreshed field."""
     outcome = await ensure_samples_fresh(
-        dataset=dataset, fields=[column], engine=engine, storage=storage, force=force,
+        dataset=dataset, fields=[field], engine=engine, storage=storage, force=force,
     )
     return outcome.fields[0]
 
@@ -105,7 +105,7 @@ async def test_profile_returns_column_sample_for_categorical(sqlite_setup: tuple
     assert model is not None
     col = model.get_field("status")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     # Low-cardinality TEXT → list-form + distinct_count + comma-joined text.
     assert sample.sampled_values is not None
@@ -124,7 +124,7 @@ async def test_profile_categorical_orders_by_frequency_desc(sqlite_setup: tuple[
     assert model is not None
     col = model.get_field("status")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.sampled_values is not None
     assert sample.sampled_values[0] == "paid"
@@ -139,7 +139,7 @@ async def test_profile_categorical_sampled_text_is_top_20_joined(sqlite_setup: t
     assert model is not None
     col = model.get_field("status")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.sampled is not None
     # Below the 20-cap → entire list joined; no overflow suffix.
@@ -156,7 +156,7 @@ async def test_profile_returns_min_max_for_numeric(sqlite_setup: tuple[SlayerQue
     assert model is not None
     col = model.get_field("amount")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.sampled is not None
     assert ".." in sample.sampled
@@ -173,7 +173,7 @@ async def test_profile_handles_pk_columns(sqlite_setup: tuple[SlayerQueryEngine,
     assert model is not None
     col = model.get_field("id")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample == col
 
 
@@ -229,7 +229,7 @@ async def test_categorical_distinct_count_matches_observed_distinct(freq_setup: 
     assert model is not None
     col = model.get_field("category")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.distinct_count == 3  # alpha, beta, gamma
 
@@ -241,7 +241,7 @@ async def test_categorical_ordering_strict_frequency_desc(freq_setup: tuple[Slay
     assert model is not None
     col = model.get_field("category")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     # 5 / 2 / 1 → unambiguous order, no ties.
     assert sample.sampled_values == ["alpha", "beta", "gamma"]
@@ -255,7 +255,7 @@ async def test_categorical_all_single_value_alphabetical_tiebreak(freq_setup: tu
     assert model is not None
     col = model.get_field("label")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.sampled_values == ["x"]
     assert sample.distinct_count == 1
@@ -269,7 +269,7 @@ async def test_boolean_column_treated_as_categorical(freq_setup: tuple[SlayerQue
     assert model is not None
     col = model.get_field("flag")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     # Both 1 (5 rows) and 0 (2 rows) present; NULL filtered. 1 first by freq.
     assert sample.sampled_values is not None
@@ -324,7 +324,7 @@ async def test_all_null_categorical_returns_empty_list_and_empty_text(all_null_s
     assert model is not None
     col = model.get_field("notes")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.sampled_values == []
     assert sample.sampled == ""
@@ -382,7 +382,7 @@ async def test_overflow_stores_top_50_by_frequency(overflow_setup: tuple[SlayerQ
     assert model is not None
     col = model.get_field("name")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.sampled_values is not None
     assert len(sample.sampled_values) == 50
@@ -403,7 +403,7 @@ async def test_overflow_distinct_count_is_unknown(overflow_setup: tuple[SlayerQu
     assert model is not None
     col = model.get_field("name")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.distinct_count is None
     assert sample.sampled_values is not None
@@ -418,7 +418,7 @@ async def test_overflow_text_includes_top_20_and_marker(overflow_setup: tuple[Sl
     assert model is not None
     col = model.get_field("name")
     assert col is not None
-    sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert sample is not None
     assert sample.sampled is not None
     assert sample.sampled.endswith("(50+ distinct)")
@@ -462,7 +462,7 @@ async def test_overflow_classification_unaffected_by_one_null_row() -> None:
         assert model is not None
         col = model.get_field("label")
         assert col is not None
-        sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+        sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
         assert sample is not None
         # 51 non-null distinct → overflow. Exact total not computed (single
         # scan), top-50 retained.
@@ -501,7 +501,7 @@ async def test_non_overflow_at_50_boundary() -> None:
         assert model is not None
         col = model.get_field("label")
         assert col is not None
-        sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+        sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
         assert sample is not None
         assert sample.distinct_count == 50
         assert sample.sampled_values is not None
@@ -555,7 +555,7 @@ async def test_tiebreak_deterministic_at_limit_boundary(monkeypatch: pytest.Monk
         assert model is not None
         col = model.get_field("label")
         assert col is not None
-        sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+        sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
         assert sample is not None
         assert sample.distinct_count is None  # overflow → exact total not computed
         assert sample.sampled_values is not None
@@ -567,7 +567,7 @@ async def test_tiebreak_deterministic_at_limit_boundary(monkeypatch: pytest.Monk
 
         # Re-profile produces the same list — deterministic across runs.
         queries = _count_queries(engine=engine, monkeypatch=monkeypatch)
-        sample2 = await _sample(dataset=model, column=col, engine=engine, storage=storage, force=True)
+        sample2 = await _sample(dataset=model, field=col, engine=engine, storage=storage, force=True)
         assert len(queries) == 1
         assert sample2 is not None
         assert sample2.sampled_values == sample.sampled_values
@@ -613,7 +613,7 @@ async def test_values_with_commas_preserved_in_structured_list() -> None:
         assert model is not None
         col = model.get_field("bracket")
         assert col is not None
-        sample = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+        sample = await _sample(dataset=model, field=col, engine=engine, storage=storage)
         assert sample is not None
         assert sample.sampled_values is not None
         # The structured list has the exact 3 strings.
@@ -799,7 +799,7 @@ async def test_ensure_fresh_returns_input_when_cache_hit(
     monkeypatch.setattr(storage, "update_field_sampled", counting_persist)
     queries = _count_queries(engine=engine, monkeypatch=monkeypatch)
 
-    result = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    result = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert result == col
     assert queries == []
     assert persist_calls["n"] == 0
@@ -819,7 +819,7 @@ async def test_ensure_fresh_categorical_miss_profiles_and_persists(
     col.sampled_values = None
     col.distinct_count = None
 
-    refreshed = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    refreshed = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert refreshed.sampled is not None
     assert refreshed.sampled_values is not None
     assert refreshed.distinct_count is not None
@@ -864,7 +864,7 @@ async def test_ensure_fresh_returns_input_when_profile_raises(
     monkeypatch.setattr(storage, "update_field_sampled", tracking_persist)
 
     with caplog.at_level(logging.WARNING, logger="slayer.engine.profiling"):
-        result = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+        result = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert result == col
     # Writing None on failure would clobber a stale cache.
     assert persist_calls == []
@@ -894,7 +894,7 @@ async def test_ensure_fresh_swallows_persist_failure_returns_refreshed(
     monkeypatch.setattr(storage, "update_field_sampled", boom_persist)
 
     with caplog.at_level(logging.WARNING, logger="slayer.engine.profiling"):
-        result = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+        result = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert result.sampled_values is not None
     assert result.distinct_count is not None
     assert any(
@@ -915,7 +915,7 @@ async def test_ensure_fresh_refreshes_uncached_numeric_temporal(
     assert col is not None
     assert col.sampled is None
 
-    result = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    result = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert result is not col
     assert result.sampled is not None
     assert ".." in result.sampled
@@ -954,7 +954,7 @@ async def test_ensure_fresh_refreshes_uncached_temporal(tmp_path) -> None:
     assert col is not None
     assert col.sampled is None
 
-    result = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    result = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert result is not col
     assert result.sampled is not None
     assert ".." in result.sampled
@@ -976,7 +976,7 @@ async def test_ensure_fresh_cached_numeric_short_circuits(
     col.sampled = "5.0 .. 99.99"
 
     queries = _count_queries(engine=engine, monkeypatch=monkeypatch)
-    result = await _sample(dataset=model, column=col, engine=engine, storage=storage)
+    result = await _sample(dataset=model, field=col, engine=engine, storage=storage)
     assert result == col
     assert queries == [], "a cached numeric field must not be re-profiled"
 
@@ -1004,7 +1004,7 @@ async def test_ensure_fresh_skips_hidden_and_primary_key(
     assert pk_col is not None
     assert pk_col.primary_key is True
 
-    result = await _sample(dataset=model, column=pk_col, engine=engine, storage=storage)
+    result = await _sample(dataset=model, field=pk_col, engine=engine, storage=storage)
     assert result == pk_col
     assert queries == [], "PK fields must never be profiled"
     assert "id" not in persist_calls
@@ -1017,7 +1017,7 @@ async def test_ensure_fresh_skips_hidden_and_primary_key(
     hidden_col = refreshed_model.get_field("hidden_one")
     assert hidden_col is not None
     result_hidden = await _sample(
-        dataset=refreshed_model, column=hidden_col, engine=engine, storage=storage,
+        dataset=refreshed_model, field=hidden_col, engine=engine, storage=storage,
     )
     assert result_hidden == hidden_col
     assert queries == [], "hidden fields must never be profiled"
@@ -1041,6 +1041,6 @@ async def test_ensure_fresh_does_not_hard_gate_sql_mode(
     assert col is not None
 
     queries = _count_queries(engine=engine, monkeypatch=monkeypatch)
-    result = await _sample(dataset=sql_model, column=col, engine=engine, storage=storage)
+    result = await _sample(dataset=sql_model, field=col, engine=engine, storage=storage)
     assert queries, "sql-mode datasets must be profiled on the lazy path"
     assert result.sampled_values == ["paid", "cancelled", "refunded"]

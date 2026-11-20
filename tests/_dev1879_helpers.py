@@ -20,7 +20,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 def mart_dataset(
     *,
-    extra_columns: Sequence[DatasetField] = (),
+    extra_fields: Sequence[DatasetField] = (),
     metrics: Sequence[DatasetMetric] = (),
 ) -> SlayerDataset:
     return SlayerDataset(
@@ -35,7 +35,7 @@ def mart_dataset(
             DatasetField(name="logo_churn", datatype=DataType.FLOAT),
             DatasetField(name="logo_bop", datatype=DataType.FLOAT),
             DatasetField(name="cmrr_eop", datatype=DataType.FLOAT),
-            *extra_columns,
+            *extra_fields,
             DatasetField(name="price", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],

@@ -58,18 +58,18 @@ def _id(**kw: Any) -> DatasetField:
     return DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True, **kw)
 
 
-def _order_columns() -> list[DatasetField]:
+def _order_fields() -> list[DatasetField]:
     return [
         _id(), DatasetField(name="status", datatype=DataType.STRING), DatasetField(name="amount", datatype=DataType.INTEGER),
         DatasetField(name="ordered_at", datatype=DataType.DATE),
     ]
 
 
-def _returns(name: str, *, joins: list[DatasetRelationship], extra: Sequence[DatasetField] = (), **kw: Any) -> SlayerDataset:
+def _returns(name: str, *, relationships: list[DatasetRelationship], extra: Sequence[DatasetField] = (), **kw: Any) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql_table="returns",
         fields=[_id(), DatasetField(name="order_id", datatype=DataType.INTEGER), DatasetField(name="reason", datatype=DataType.STRING), *extra],
-        relationships=joins, **kw,
+        relationships=relationships, **kw,
     )
 
 
@@ -78,7 +78,7 @@ def _to(target: str, *, pairs: tuple[str, str] = ("order_id", "id"), **kw: Any) 
 
 
 def _orders(name: str, **kw: Any) -> SlayerDataset:
-    return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=_order_columns(), **kw)
+    return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=_order_fields(), **kw)
 
 
 def table_datasets() -> list[SlayerDataset]:
@@ -97,15 +97,15 @@ def table_datasets() -> list[SlayerDataset]:
         SlayerDataset(name="carriers", data_source="test", sql_table="carriers", fields=[
             _id(), DatasetField(name="name", datatype=DataType.STRING),
         ]),
-        _returns("returns", joins=[_to("done_orders"), _to("ups_orders")],
+        _returns("returns", relationships=[_to("done_orders"), _to("ups_orders")],
                  extra=[DatasetField(name="done_status", datatype=DataType.STRING, sql="done_orders.status")]),
-        _returns("late_returns", joins=[_to("orders")], filters=["reason = 'late'"]),
-        _returns("returns_of_done", joins=[_to("done_orders")], filters=["done_orders.id is not null"]),
-        _returns("returns_inner", joins=[_to("done_orders", join_type=JoinType.INNER)]),
+        _returns("late_returns", relationships=[_to("orders")], filters=["reason = 'late'"]),
+        _returns("returns_of_done", relationships=[_to("done_orders")], filters=["done_orders.id is not null"]),
+        _returns("returns_inner", relationships=[_to("done_orders", join_type=JoinType.INNER)]),
         SlayerDataset(name="done_orders_sql", data_source="test", sql="SELECT id, status FROM orders",
                     fields=[_id(), DatasetField(name="status", datatype=DataType.STRING)], filters=["status = 'done'"]),
-        _returns("returns_sql", joins=[_to("done_orders_sql")]),
-        _returns("returns_qb", joins=[_to("done_orders_qb")]),
+        _returns("returns_sql", relationships=[_to("done_orders_sql")]),
+        _returns("returns_qb", relationships=[_to("done_orders_qb")]),
     ]
 
 

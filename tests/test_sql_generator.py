@@ -2855,7 +2855,7 @@ class TestMeasureSourceSqlJoinInference:
         ))
         return s
 
-    def _orders_dataset(self, *, extra_columns=None) -> SlayerDataset:
+    def _orders_dataset(self, *, extra_fields=None) -> SlayerDataset:
         """Build the orders dataset with the standard customer/regions chain and any extra derived fields the per-test wants."""
         cols = [
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
@@ -2863,8 +2863,8 @@ class TestMeasureSourceSqlJoinInference:
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ]
-        if extra_columns:
-            cols.extend(extra_columns)
+        if extra_fields:
+            cols.extend(extra_fields)
         return SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=cols,
@@ -2904,7 +2904,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_local_last_with_path_aliased_derived_source(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
@@ -2936,7 +2936,7 @@ class TestMeasureSourceSqlJoinInference:
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ))
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="cust_balance", sql="customers.balance", datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
@@ -2953,7 +2953,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_filtered_last_cross_join_value_materialized(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.FLOAT, filter="orders.amount > 100"),
         ])
@@ -2983,7 +2983,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """Two metrics over the SAME crossing sql but DISTINCT derived fields intern to distinct ``AggregateKey``s (identity carries the field name), so each isolates into its OWN host-rooted CTE with its own ``_val`` materialisation — per-slot isolation, no CTE merging (merging is ``may_inline`` territory). Dedupe is therefore per-CTE."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="region_payment_a", sql="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
             DatasetField(name="region_payment_b", sql="customers.regions.payment_amount",
@@ -3018,7 +3018,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_same_sql_different_type_no_bad_dedupe(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="region_pay_d", sql="customers.regions.payment_amount * 2",
                    datatype=DataType.FLOAT),
             DatasetField(name="region_pay_i", sql="customers.regions.payment_amount * 2",
@@ -3046,7 +3046,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_composite_last_cross_join_source(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
@@ -3068,7 +3068,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """An aggregate-phase query filter referencing the isolated first/last routes to the OUTER WHERE on the combined SELECT (HAVING-into-the-CTE would surface host rows as NULL instead of dropping them)."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
         ])
@@ -3094,7 +3094,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_val_alias_avoids_source_column_collision(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="_val_0", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.FLOAT),
@@ -3119,7 +3119,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """The negative control: a LOCAL-only derived source (``amount * 2``) crosses no join, so the ranked CTE pulls none."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.FLOAT),
         ])
         await engine.storage.save_dataset(model)
@@ -3152,7 +3152,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A single-hop ``customers.region_id`` alias in the metric source SQL isolates host-rooted; the ``customers`` join lives inside the ``_cm_*`` CTE only."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="customer_region_count",
                 sql="customers.region_id",
@@ -3177,7 +3177,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """``sum(region_pop_sum) + sum(amount)`` is rendered as a composite AGGREGATE slot (``ArithmeticKey`` wrapping two ``AggregateKey``s). The _visit recursion must descend through the operands so the path-aliased operand's joins surface."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3207,7 +3207,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """``coalesce(sum(region_pop_sum), 0)`` is a ``ScalarCallKey`` wrapping an ``AggregateKey``. The _visit recursion descends through ``key.args``."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3233,7 +3233,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A Mode-A SQL function call wrapping a ``__`` ref in the field sql (``json_extract(customers__regions.props, '$.x')``) still triggers join discovery — ``_joined_paths_in_sql`` walks the parsed AST regardless of wrapper functions."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="region_prop_x",
                 sql="json_extract(customers.regions.props, '$.x')",
@@ -3256,7 +3256,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """``doubled_pop`` references sibling ``pop_helper``, whose own sql crosses the customers→regions join. ``_expand_derived_column_sql`` recursively inlines siblings; the new collector scans the recursively-expanded SQL."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="pop_helper",
                 sql="customers.regions.population",
@@ -3285,7 +3285,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A POST-phase transform like ``cumsum(sum(region_pop_sum))`` aux- materialises its inner ``AggregateKey`` into ``base_render_order``. The new collector visits aux slots the same way it visits public AGGREGATE slots, so the join discovery still fires."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3316,7 +3316,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """Two DISTINCT crossing aggregates isolate into two separate host-rooted CTEs (per-AggregateKey-slot isolation), each pulling its own scope-local join set — so each hop's LEFT JOIN appears exactly once PER CTE and never in the host scope. Cross-CTE join sharing is optimizer territory (``may_inline``)."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3353,7 +3353,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A joined DIMENSION base-pulls its join into the host scope (Law 1); the crossing METRIC isolates with its own scope-local join set (Law 3). Each scope emits its joins exactly once: the ``customers`` hop appears once in the host and once inside the CTE; the deeper ``customers__regions`` hop only inside the CTE."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3380,7 +3380,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """Filter crosses the shallow join (customers) and source crosses the deeper join (customers__regions): both are crossing INPUTS of the same aggregate, so ONE host-rooted CTE owns both joins; the shared customers hop is emitted exactly once inside it, and the host scope stays join-free."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3491,7 +3491,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """``weighted_avg(weight=region_weight)`` where ``region_weight`` is a derived field with a path alias in its sql."""
-        model = self._orders_dataset(extra_columns=[
+        model = self._orders_dataset(extra_fields=[
             DatasetField(
                 name="region_weight",
                 sql="customers.regions.weight",
@@ -3541,7 +3541,7 @@ class TestDev1709WidenedIsolationShapes:
 
     @staticmethod
     def _orders_dataset(
-        *, extra_columns=None, default_time_dimension=None, aggregations=None,
+        *, extra_fields=None, default_time_dimension=None, aggregations=None,
     ) -> SlayerDataset:
         cols = [
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
@@ -3549,7 +3549,7 @@ class TestDev1709WidenedIsolationShapes:
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ]
-        cols.extend(extra_columns or [])
+        cols.extend(extra_fields or [])
         return SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=cols,
@@ -3568,7 +3568,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_crossing_sum_coexists_with_local_last(self) -> None:
         """A regular crossing aggregate next to a local first/last isolates — it never renders in the ranked outer scope."""
-        orders = self._orders_dataset(extra_columns=[
+        orders = self._orders_dataset(extra_fields=[
             DatasetField(name="region_pop_sum", sql="customers.regions.population",
                    datatype=DataType.FLOAT),
         ])
@@ -3595,7 +3595,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_crossing_kwarg_coexists_with_local_last(self) -> None:
         """A crossing KWARG next to a local first/last isolates the parametric aggregate the same way (Codex plan-review F4 fold-in: kwarg expressions must never leak into the ranked outer scope)."""
-        orders = self._orders_dataset(extra_columns=[
+        orders = self._orders_dataset(extra_fields=[
             DatasetField(name="region_weight", sql="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
@@ -3633,7 +3633,7 @@ class TestDev1709WidenedIsolationShapes:
         assert "LEFT JOIN" not in host_part, sql
 
     async def test_derived_crossing_time_arg_isolates(self) -> None:
-        orders = self._orders_dataset(extra_columns=[
+        orders = self._orders_dataset(extra_fields=[
             DatasetField(name="cross_time", sql="customers.signup_at",
                    datatype=DataType.DATETIME),
         ])
@@ -3695,7 +3695,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_pathed_host_row_filter_inherited_into_cte(self) -> None:
         """F4 (Codex plan-review F5): a host ROW filter whose expression crosses a join constrains the host-rooted scope — it renders in BOTH the host base WHERE and the isolation CTE's scope, each with its own join registration."""
-        orders = self._orders_dataset(extra_columns=[
+        orders = self._orders_dataset(extra_fields=[
             DatasetField(name="region_pop_sum", sql="customers.regions.population",
                    datatype=DataType.FLOAT),
         ])
@@ -3720,7 +3720,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_order_only_crossing_aggregate_isolates(self) -> None:
         """F3, hidden ORDER-only consumer: a crossing aggregate referenced ONLY by ORDER BY (colon-form ``OrderItem``) still isolates as a hidden slot; the ORDER BY reads the joined-back CTE column and the crossing ref never leaves the CTE."""
-        orders = self._orders_dataset(extra_columns=[
+        orders = self._orders_dataset(extra_fields=[
             DatasetField(name="region_pop_sum", sql="customers.regions.population",
                    datatype=DataType.FLOAT),
         ])
@@ -3740,7 +3740,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_filter_only_composite_with_crossing_leaf(self) -> None:
         """F3, filter-only consumer: a composite referenced only by an aggregate-phase filter lowers the same way — crossing leaf isolates, the comparison lands in the combined outer WHERE (never HAVING), local operand promoted into ``_base``."""
-        orders = self._orders_dataset(extra_columns=[
+        orders = self._orders_dataset(extra_fields=[
             DatasetField(name="region_pop_sum", sql="customers.regions.population",
                    datatype=DataType.FLOAT),
         ])
@@ -3764,7 +3764,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_ranked_isolation_survives_the_recursion_guard(self) -> None:
         """Two same-sql, different-CAST-type crossing first/lasts get a ranked producer scope EACH, and each materialises its own type-distinct value (the kernel form of the type-distinctness pin)."""
-        orders = self._orders_dataset(extra_columns=[
+        orders = self._orders_dataset(extra_fields=[
             DatasetField(name="region_pay_d", sql="customers.regions.population * 2",
                    datatype=DataType.FLOAT),
             DatasetField(name="region_pay_i", sql="customers.regions.population * 2",
@@ -3800,7 +3800,7 @@ class TestDev1709WidenedIsolationShapes:
         self,
     ) -> None:
         """A crossing KWARG next to a first/last: the ranking has its own producer scope, so the crossing kwarg lives in ITS OWN producer and the ranked producer neither sees it nor is affected."""
-        orders = self._orders_dataset(extra_columns=[
+        orders = self._orders_dataset(extra_fields=[
             DatasetField(name="region_weight", sql="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
@@ -3832,7 +3832,7 @@ class TestDev1709WidenedIsolationShapes:
     # Local first/last desugar to the unified _cm_ producer and isolate universally; the crossing default-time first/last (formerly strict-xfail) now isolates.
     async def test_implicit_crossing_default_time_isolates_xfail(self) -> None:
         orders = self._orders_dataset(
-            extra_columns=[
+            extra_fields=[
                 DatasetField(name="cross_time", sql="customers.signup_at",
                        datatype=DataType.DATETIME),
             ],
@@ -5234,7 +5234,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
 
 @asynccontextmanager
 async def _persist_and_engine(
-    *models: SlayerDataset,
+    *datasets: SlayerDataset,
     ds_name: str = "test",
     ds_type: str = "postgres",
 ):
@@ -5244,7 +5244,7 @@ async def _persist_and_engine(
         await storage.save_datasource(
             DatasourceConfig(name=ds_name, type=ds_type),
         )
-        for m in models:
+        for m in datasets:
             await storage.save_dataset(m)
         yield SlayerQueryEngine(storage=storage)
 
@@ -6398,13 +6398,13 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
         return policy, policy_amount, premium, agreement_party_role
 
     @asynccontextmanager
-    async def _setup_engine(self, *models):
+    async def _setup_engine(self, *datasets):
         """Yield a SlayerQueryEngine backed by a temporary YAML storage dir."""
 
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
             await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            for m in models:
+            for m in datasets:
                 await storage.save_dataset(m)
             yield SlayerQueryEngine(storage=storage)
 
@@ -9904,14 +9904,14 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         ))
         return s
 
-    def _customers_v2(self, *, extra_columns=None, filters=None) -> SlayerDataset:
+    def _customers_v2(self, *, extra_fields=None, filters=None) -> SlayerDataset:
         cols = [
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
             DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
         ]
-        if extra_columns:
-            cols.extend(extra_columns)
+        if extra_fields:
+            cols.extend(extra_fields)
         return SlayerDataset(
             name="customers_v2", sql_table="customers", data_source="test",
             fields=cols,
@@ -9937,7 +9937,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         return SlayerQueryEngine(storage=storage)
 
     async def test_single_further_hop_source_sql(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
@@ -9950,7 +9950,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "SUM(regions.population)" in cm_body, cm_body
 
     async def test_multi_hop_further_join_source_sql(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="deep_gdp", sql="regions.countries.gdp", datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(
@@ -9964,7 +9964,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "SUM(regions__countries.gdp)" in cm_body, cm_body
 
     async def test_path_alias_source_sql(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="deep_country_name", sql="regions.countries.name",
                    datatype=DataType.STRING),
         ]))
@@ -9979,7 +9979,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "COUNT(DISTINCT regions__countries.name)" in cm_body, cm_body
 
     async def test_mode_a_function_wrapping_source_sql(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="region_prop_x",
                    sql="json_extract(regions.props, '$.x')", datatype=DataType.FLOAT),
         ]))
@@ -9993,7 +9993,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "regions.props" in cm_body, cm_body
 
     async def test_sibling_derived_chain_source_sql(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="pop_helper", sql="regions.population", datatype=DataType.FLOAT),
             DatasetField(name="doubled_pop", sql="pop_helper * 2", datatype=DataType.FLOAT),
         ]))
@@ -10007,7 +10007,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "regions.population" in cm_body, cm_body
 
     async def test_mixed_base_col_and_further_join_source_sql(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="deep_score", sql="lifetime_value + regions.population",
                    datatype=DataType.FLOAT),
         ]))
@@ -10024,7 +10024,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_dedup_source_and_target_model_filter_same_join(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(
-            extra_columns=[
+            extra_fields=[
                 DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
             ],
             filters=["regions.name IS NOT NULL"],
@@ -10042,7 +10042,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     async def test_filter_and_source_cross_different_depths(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(
-            extra_columns=[
+            extra_fields=[
                 DatasetField(name="deep_gdp", sql="regions.countries.gdp",
                        datatype=DataType.FLOAT),
             ],
@@ -10061,7 +10061,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "SUM(regions__countries.gdp)" in cm_body, cm_body
 
     async def test_composite_two_operand_each_cte_pulls_join(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
             DatasetField(name="deep_weight", sql="regions.weight", datatype=DataType.FLOAT),
         ]))
@@ -10079,7 +10079,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "SUM(regions.weight)" in weight_body, weight_body
 
     async def test_first_last_source_join_in_ranked_subquery(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
             # The ranking field must be one of the TARGET's own — the ranked CTE is rooted there and a host field is not in its scope.
             DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
@@ -10112,7 +10112,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "countries" not in cm_body, cm_body
 
     async def test_deeper_join_only_in_cte_not_host_base(self, storage) -> None:
-        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+        engine = await self._engine_with(storage, self._customers_v2(extra_fields=[
             DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
         ]))
         query = SlayerQuery(

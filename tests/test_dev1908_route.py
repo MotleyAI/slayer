@@ -22,9 +22,9 @@ from slayer.engine.cardinality.relationship_safety import (
 )
 
 
-def _m(name, cols, joins=None):
+def _m(name, cols, relationships=None):
     return SlayerDataset(name=name, data_source="ds", sql_table=name,
-                       fields=[DatasetField(name=c) for c in cols], relationships=joins or [])
+                       fields=[DatasetField(name=c) for c in cols], relationships=relationships or [])
 
 
 def _graph(*, named_event: bool = False) -> dict[str, SlayerDataset]:

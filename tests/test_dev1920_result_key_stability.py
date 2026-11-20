@@ -15,7 +15,7 @@ from tests._dev1920_fixtures import FISCAL_QUARTER, StoreFactory, make_store, ru
 MONTH = {"field": "orders.created_at", "granularity": "month"}
 
 #: (unnamed metric, its result key).
-MEASURE_KEYS = [
+METRIC_KEYS = [
     ("sum(orders.amount)", "orders.amount_sum"),
     ("count(orders.*)", "orders._count"),
     ("sum(orders.amount) / count(orders.*)", "orders.amount_sum_count"),
@@ -85,7 +85,7 @@ async def _keys(factory: StoreFactory, fields: dict[str, Any]) -> list[str]:
     return resp.columns
 
 
-@pytest.mark.parametrize(("measure", "key"), MEASURE_KEYS)
+@pytest.mark.parametrize(("measure", "key"), METRIC_KEYS)
 async def test_measure_key(make_store: StoreFactory, measure: str, key: str) -> None:  # noqa: F811
     assert await _keys(make_store, {"metrics": [measure], "variables": {"k": 2}}) == [key]
 

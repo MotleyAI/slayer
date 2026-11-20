@@ -135,18 +135,18 @@ class TestQuotedPlaceholderIsRead:
 
 
 class TestDoubledBraces:
-    FORMULA = "MAX(CASE WHEN {value} > 0 THEN '{{n}}' END)"
+    EXPRESSION = "MAX(CASE WHEN {value} > 0 THEN '{{n}}' END)"
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
     async def test_doubled_braces_emit_one_brace(self, dialect: str) -> None:
-        sql = await _dry("lit(orders.amount)", agg=_agg(self.FORMULA, name="lit"), dialect=dialect)
+        sql = await _dry("lit(orders.amount)", agg=_agg(self.EXPRESSION, name="lit"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
         assert isinstance(lit, exp.Literal)
         assert lit.is_string
         assert lit.this == "{n}"
 
     def test_doubled_braces_are_not_a_read(self) -> None:
-        assert placeholder_names(self.FORMULA, "postgres") == frozenset({"value"})
+        assert placeholder_names(self.EXPRESSION, "postgres") == frozenset({"value"})
 
 
 class TestInertBraces:
