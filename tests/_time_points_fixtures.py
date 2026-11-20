@@ -221,7 +221,7 @@ def bucket_text(value: Any) -> str:
 async def ids(engine: SlayerQueryEngine, *filters: str, dataset: str = "ev", **extra: Any) -> set[int]:
     """Row ids of ``dataset`` passing ``filters`` (plus any extra query fields)."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": dataset, "dimensions": ["id"], "filter": list(filters), **extra,
+        "population": dataset, "dimensions": [f"{dataset}.id"], "filter": list(filters), **extra,
     }))
     return {int(r[f"{dataset}.id"]) for r in resp.data}
 
@@ -233,7 +233,7 @@ async def ids_with_range(
     """Row ids counted under a time dimension on ``column`` carrying ``date_range``."""
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": dataset, "dimensions": ["ev.id"],
-        "time_dimensions": [{"field": column, "granularity": granularity, "date_range": date_range}],
+        "time_dimensions": [{"field": f"{dataset}.{column}", "granularity": granularity, "date_range": date_range}],
     }))
     return {int(r[f"{dataset}.id"]) for r in resp.data}
 
@@ -243,7 +243,7 @@ async def monthly(
     date_range: Any = None, whole_periods_only: bool = False, column: str = "ts", dataset: str = "ev",
 ) -> dict[str, dict[str, Any]]:
     """Monthly buckets → {metric name: value}."""
-    td: dict[str, Any] = {"field": column, "granularity": "month"}
+    td: dict[str, Any] = {"field": f"{dataset}.{column}", "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range
     resp = await engine.execute(SlayerQuery.model_validate({

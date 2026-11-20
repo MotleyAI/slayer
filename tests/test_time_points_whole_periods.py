@@ -54,7 +54,7 @@ class TestSnappingAtMonth:
         assert min(got) == "2025-01"
         assert got["2025-01"]["s"] == pytest.approx(24.0)  # ids 7, 8, 9
         residual = await monthly(
-            engine, metrics=[PLAIN], filters=["ts >= '2025-01-15' and amount >= 8"], whole_periods_only=True,
+            engine, metrics=[PLAIN], filters=["ev.ts >= '2025-01-15' and ev.amount >= 8"], whole_periods_only=True,
         )
         assert residual["2025-01"]["s"] == pytest.approx(17.0)  # ids 8, 9
 
@@ -69,7 +69,7 @@ class TestSnappingAtMonth:
 
     async def test_lower_bound_in_the_future_is_empty(self, engine) -> None:
         assert await monthly(engine, metrics=[PLAIN], date_range=["next month", None], whole_periods_only=True) == {}
-        assert await monthly(engine, metrics=[PLAIN], filters=["ts >= '2027-01-01'"], whole_periods_only=True) == {}
+        assert await monthly(engine, metrics=[PLAIN], filters=["ev.ts >= '2027-01-01'"], whole_periods_only=True) == {}
 
     async def test_with_trailing_window(self, engine) -> None:
         got = await monthly(engine, metrics=[WINDOW, PLAIN], date_range="last 3 months", whole_periods_only=True)
@@ -102,7 +102,7 @@ class TestSubDay:
 def _two_grain_query(order: list[str]) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "ev", "metrics": [PLAIN],
-        "time_dimensions": [{"field": "ts", "granularity": g} for g in order],
+        "time_dimensions": [{"field": "ev.ts", "granularity": g} for g in order],
         "filter": ["ev.ts >= '2025-01-15'"], "whole_periods_only": True,
     })
 

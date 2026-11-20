@@ -24,7 +24,7 @@ async def _sql(
     dialect: str, *, filters: list[str], date_range=None, granularity: str = "month", column: str = "ts",
     metrics: list | None = None,
 ) -> str:
-    td: dict = {"field": column, "granularity": granularity}
+    td: dict = {"field": f"ev.{column}", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     query = {

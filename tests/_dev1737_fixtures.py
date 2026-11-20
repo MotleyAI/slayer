@@ -287,29 +287,29 @@ def matrix_cases() -> list[DateCase]:
     for part in PARTS:
         for col in ("d1", "t1"):
             cases.append(_case(
-                f"part|{part}|{col}", f"date_part('{part}', {col})",
+                f"part|{part}|{col}", f"date_part('{part}', dt.{col})",
                 lambda r, p=part, c=col: oracle_part(p, r[c]),
             ))
     for unit in UNITS:
         for s, e in (("d1", "d2"), ("t1", "t2"), ("d1", "t2"), ("t1", "d2")):
             cases.append(_case(
-                f"diff|{unit}|{s}-{e}", f"date_diff('{unit}', {s}, {e})",
+                f"diff|{unit}|{s}-{e}", f"date_diff('{unit}', dt.{s}, dt.{e})",
                 lambda r, u=unit, a=s, b=e: oracle_diff(u, r[a], r[b]),
             ))
     for unit in UNITS:
         for col in ("d1", "t1"):
-            for label, count in (("plus1", "1"), ("minus13", "-13"), ("computed", "n")):
+            for label, count in (("plus1", "1"), ("minus13", "-13"), ("computed", "dt.n")):
                 cases.append(_case(
-                    f"add|{unit}|{col}|{label}", f"date_add({col}, {count}, '{unit}')",
+                    f"add|{unit}|{col}|{label}", f"date_add(dt.{col}, {count}, '{unit}')",
                     lambda r, u=unit, c=col, k=count: oracle_add(
-                        r[c], r["n"] if k == "n" else int(k), u),
+                        r[c], r["n"] if k == "dt.n" else int(k), u),
                 ))
     cases += [
-        _case("interval|plus|d1", "d1 + interval(1, 'month')", lambda r: oracle_add(r["d1"], 1, "month")),
-        _case("interval|commuted|d1", "interval(2, 'week') + d1", lambda r: oracle_add(r["d1"], 2, "week")),
-        _case("interval|minus_computed|t1", "t1 - interval(n, 'hour')",
+        _case("interval|plus|d1", "dt.d1 + interval(1, 'month')", lambda r: oracle_add(r["d1"], 1, "month")),
+        _case("interval|commuted|d1", "interval(2, 'week') + dt.d1", lambda r: oracle_add(r["d1"], 2, "week")),
+        _case("interval|minus_computed|t1", "dt.t1 - interval(dt.n, 'hour')",
               lambda r: oracle_add(r["t1"], None if r["n"] is None else -r["n"], "hour")),
-        _case("interval|chain|t1", "t1 + interval(1, 'month') + interval(2, 'hour')",
+        _case("interval|chain|t1", "dt.t1 + interval(1, 'month') + interval(2, 'hour')",
               lambda r: oracle_add(oracle_add(r["t1"], 1, "month"), 2, "hour")),
     ]
     return cases
