@@ -786,12 +786,12 @@ DOCS_S = {1: "x", 2: None, 3: None, 4: None, 5: None}
 DOCS_A_INT = {1: 1, 2: 2, 3: None, 4: None, 5: None}
 
 
-async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs", column: str = "payload") -> None:
+async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs", field: str = "payload") -> None:
     """``json_value`` over an ingested native-JSON column: TEXT and ``RETURNING INT`` reads."""
     for expr, expected in (
-        (f"json_value({dataset}.{column}, '$.s')", DOCS_S),
-        (f"json_value({dataset}.{column}, '$.a' RETURNING INT)", DOCS_A_INT),
-        (f"{dataset}.{column} ->> 's'", DOCS_S),
+        (f"json_value({dataset}.{field}, '$.s')", DOCS_S),
+        (f"json_value({dataset}.{field}, '$.a' RETURNING INT)", DOCS_A_INT),
+        (f"{dataset}.{field} ->> 's'", DOCS_S),
     ):
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": dataset, "distinct_dimension_values": False,

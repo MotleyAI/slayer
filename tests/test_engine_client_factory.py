@@ -288,7 +288,7 @@ class TestEngineOwnsItsClients:
 
         assert asyncio.run(_inside_a_loop()) == 4
         with pytest.raises(SlayerError):
-            client.query_sync({"population": "no_such_model", "metrics": [{"metric": "count(no_such_model.*)"}]})
+            client.query_sync({"population": "no_such_dataset", "metrics": [{"metric": "count(no_such_dataset.*)"}]})
         assert acloses() == 0
 
     def test_run_sync_leaves_custom_clients_open_when_cancelled(self, shop: Shop) -> None:

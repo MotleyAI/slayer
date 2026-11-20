@@ -22,8 +22,8 @@ from tests._library_names_fixtures import (
 from tests._stored_upgrade_fixtures import DS
 
 
-def _query(*measures: dict, source: str = "t", **body: object) -> dict:
-    return {"population": source, "metrics": list(measures), **body}
+def _query(*metrics: dict, source: str = "t", **body: object) -> dict:
+    return {"population": source, "metrics": list(metrics), **body}
 
 
 class TestStoredShadow:

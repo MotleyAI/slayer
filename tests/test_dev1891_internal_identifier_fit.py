@@ -35,7 +35,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1739_fixtures import _seed_duckdb, _seed_sqlite, dev1739_datasets, gen
 from tests._engine_helpers import build_exec_engine
-from tests._dev1824_fixtures import BAND35, dev1824_models, q
+from tests._dev1824_fixtures import BAND35, dev1824_datasets, q
 from tests.test_dev1824_golden_sql import GOLDEN_PATH, _cases
 
 # Dev-1891 machinery — absent until the implementation lands (collapse to plain
@@ -222,7 +222,7 @@ class TestNestedAttachEmission:
             dimensions=[QueryDimension(field="qb.band")],
             metrics=[QueryMetric(metric="sum(qb.s)", alias="t")],
         )
-        sql = await _dry_sql([*dev1824_models(), qb], query)
+        sql = await _dry_sql([*dev1824_datasets(), qb], query)
         over = [n for n in _identifiers(sql, "postgres") if _nbytes(n) > PG_LIMIT]
         assert not over, f"{over}\n{sql}"
         for name in names:
@@ -856,7 +856,7 @@ class TestManglingComposition:
         canonical result keys — that identity is what result-key decoding
         rebuilds — and decode must return the canonical dotted names."""
         d = get_dialect(dialect)
-        resp = await _dry_run(dev1824_models(), NESTED, dialect=dialect)
+        resp = await _dry_run(dev1824_datasets(), NESTED, dialect=dialect)
         assert resp.columns == ["band", "b2", "s"]
         assert resp.sql is not None
         tree = sqlglot.parse_one(resp.sql, dialect=dialect)

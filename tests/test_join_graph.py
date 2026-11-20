@@ -14,7 +14,7 @@ from slayer.core.relationship_search import reachable, shortest_route
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 
 
-def _m(name: str, joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _m(name: str, relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name,
         data_source="mydb",
@@ -23,7 +23,7 @@ def _m(name: str, joins: list[DatasetRelationship] | None = None) -> SlayerDatas
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="x_id", datatype=DataType.INTEGER),
         ],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 

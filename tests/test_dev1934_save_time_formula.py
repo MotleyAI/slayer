@@ -327,7 +327,7 @@ async def _call(*, server: Any, name: str, arguments: dict[str, Any]) -> str:
     return blocks[0].text
 
 
-_COLUMNS = [
+_FIELDS = [
     {"name": "id", "sql": "id", "datatype": "number", "primary_key": True},
     {"name": "amount", "sql": "amount", "datatype": "number"},
 ]
@@ -337,7 +337,7 @@ class TestMcp:
     async def test_create_model_rejects_broken_formula(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, _engine, store = mcp
         out = await _call(server=server, name="create_dataset", arguments={
-            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _COLUMNS,
+            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _FIELDS,
             "aggregations": [{"name": "custom_agg", "expression": _BROKEN}],
         })
         assert "Error" in out
@@ -348,7 +348,7 @@ class TestMcp:
     async def test_create_model_with_aggregation_is_queryable(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
         out = await _call(server=server, name="create_dataset", arguments={
-            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _COLUMNS,
+            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _FIELDS,
             "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
         assert "created" in out, out

@@ -31,7 +31,7 @@ from slayer.core.keys import AggregateKey
 from slayer.core.keys import FieldKey
 from slayer.core.keys import Phase
 
-_MEASURE = [{"metric": "sum(orders.amount)", "alias": "rev"}]
+_METRIC = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 
 def _plan(query: SlayerQuery):
@@ -98,7 +98,7 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(field="orders.status", direction="asc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE
@@ -107,7 +107,7 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(field="rev", direction="desc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE
@@ -118,7 +118,7 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(field="orders.created_at", direction="asc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE_HIDDEN
@@ -177,7 +177,7 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem.model_validate({"field": "sum(customers.spend) + sum(orders.amount)", "direction": "desc"})],
         ))
         assert entry.scope is OrderScope.OUTER_COMPOSITE
@@ -188,7 +188,7 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(
                 field="customers.regions.name",
                 direction="asc",
@@ -206,7 +206,7 @@ class TestPhaseAndDirection:
         entry = _sole_entry(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(field="orders.status", direction="asc")],
         ))
         assert entry.phase is Phase.ROW
@@ -216,7 +216,7 @@ class TestPhaseAndDirection:
         entry = _sole_entry(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(field="rev", direction="desc")],
         ))
         assert entry.phase is Phase.AGGREGATE
@@ -225,7 +225,7 @@ class TestPhaseAndDirection:
         plan = _plan(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[
                 OrderItem(field="orders.status", direction="asc"),
                 OrderItem(field="rev", direction="desc"),
@@ -247,7 +247,7 @@ class TestDirectionAwareWrapIsPlanned:
         plan = _plan(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(
                 field="orders.created_at", direction=direction,
             )],
@@ -270,7 +270,7 @@ class TestDirectionAwareWrapIsPlanned:
         plan = _plan(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[
                 OrderItem(field="orders.created_at", direction="asc"),
                 OrderItem(field="orders.created_at", direction="desc"),
@@ -293,7 +293,7 @@ class TestHostGrainMarker:
         plan = _plan(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(
                 field="customers.regions.name",
                 direction="asc",
@@ -312,7 +312,7 @@ class TestHostGrainMarker:
         plan = _plan(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(field="orders.created_at", direction="asc")],
         ))
         wraps = [
@@ -347,7 +347,7 @@ _GROUPED_HEAD = {
 #: trigger reads ``if not agg_path and not has_crossing_input: continue`` and
 #: then routes any path-bearing key to a TARGET-rooted CTE.
 _HOST_GRAIN_WITH_PATH = SlayerQuery(
-    **_GROUPED_HEAD, metrics=_MEASURE,
+    **_GROUPED_HEAD, metrics=_METRIC,
     order=[OrderItem(
         field="customers.regions.name", direction="asc",
     )],
@@ -365,7 +365,7 @@ _TARGET_GRAIN_WITH_PATH = SlayerQuery(
 #: Host-grain, NO path, crossing input — the branch that already
 #: works. Included so the matrix proves D2 does not disturb it.
 _HOST_GRAIN_CROSSING_INPUT = SlayerQuery(
-    **_GROUPED_HEAD, metrics=_MEASURE,
+    **_GROUPED_HEAD, metrics=_METRIC,
     order=[OrderItem(field="orders.cust_region", direction="asc")],
 )
 

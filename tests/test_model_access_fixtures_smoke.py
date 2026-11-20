@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.embeddings import client as embedding_client
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     ALL_LOADABLE,
     DS,

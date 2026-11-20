@@ -18,21 +18,21 @@ from tests._engine_helpers import _engine_generate
 _COLLIDING = {"metric": "sum(customers.credit)", "alias": "credit"}
 
 
-def _customers(*extra_columns: str) -> SlayerDataset:
+def _customers(*extra_fields: str) -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="credit", datatype=DataType.INTEGER),
-            *(DatasetField(name=c, datatype=DataType.INTEGER) for c in extra_columns),
+            *(DatasetField(name=c, datatype=DataType.INTEGER) for c in extra_fields),
         ],
     )
 
 
-async def _suggestion(metrics: list[Any], *extra_columns: str) -> str:
+async def _suggestion(metrics: list[Any], *extra_fields: str) -> str:
     query = SlayerQuery.model_validate({"population": "customers", "metrics": metrics})
-    model = _customers(*extra_columns)
+    model = _customers(*extra_fields)
     with pytest.raises(MetricNameCollidesWithFieldError) as ei:
         await _engine_generate(query=query, dataset=model, dialect="duckdb", validate=False)
     exc = ei.value

@@ -34,7 +34,7 @@ from tests._dev2219_fixtures import (
     base_datasets,
     by,
     customers,
-    join,
+    relationship_to,
     m,
     over,
     per_customer,
@@ -76,7 +76,7 @@ class TestExecution:
     async def test_an_identical_declared_edge_applies_once(self, dialect: str) -> None:
         async with shop(dialect) as engine:
             await engine.save_dataset(_saved("undeclared"))
-            await engine.save_dataset(_saved(relationships=[join("customers", [("customer_id", "id")])]))
+            await engine.save_dataset(_saved(relationships=[relationship_to("customers", [("customer_id", "id")])]))
             undeclared = await engine.execute(over("undeclared", dimensions=["customers.region"]))
             resp = await engine.execute(over("customer_revenue", dimensions=["customers.region"]))
         assert by(undeclared, key="customers.region", value="total") == REVENUE_BY_REGION
@@ -137,19 +137,19 @@ async def _seed(storage: YAMLStorage) -> None:
     try:
         await engine.save_dataset(_saved(dry_run=True))
         await engine.save_dataset(_saved("customer_revenue_declared", dry_run=True,
-                                         relationships=[join("customers", [("customer_id", "id")])]))
+                                         relationships=[relationship_to("customers", [("customer_id", "id")])]))
     finally:
         await engine.aclose()
     await storage.save_dataset(_raw_saved(_CYCLE[0], {"population": _CYCLE[1], "dimensions": [f"{_CYCLE[1]}.customer_id"]}))
     await storage.save_dataset(_raw_saved(_CYCLE[1], {"population": _CYCLE[0], "dimensions": [f"{_CYCLE[0]}.customer_id"]}))
-    await storage.save_dataset(_raw_saved("bad_key", {"population": "orders", "dimensions": ["orders.nope_column"],
+    await storage.save_dataset(_raw_saved("bad_key", {"population": "orders", "dimensions": ["orders.nope_field"],
                                                       "metrics": [m("sum(orders.amount)", "revenue")]}))
     await storage.save_dataset(_raw_saved("needs_var", {
         "population": "orders", "dimensions": ["orders.customer_id"], "metrics": [m("sum(orders.amount)", "revenue")],
         "filter": ["orders.amount > {threshold_var}"]}))
     await storage.save_dataset(_raw_saved("stale_key", {
         "population": "orders", "dimensions": ["orders.customer_id"], "metrics": [m("sum(orders.amount)", "revenue")]},
-        relationships=[join("customers", [("stale_col", "id")])]))
+        relationships=[relationship_to("customers", [("stale_col", "id")])]))
     await storage.save_dataset(SlayerDataset.model_validate({
         "name": "stage_cycle", "data_source": DS,
         "source_queries": [{"name": "a", "population": "b", "dimensions": ["b.customer_id"]},
@@ -189,7 +189,7 @@ def _check_absorbed(payload: dict) -> None:
     assert not to_customers[0].get("inherited")
 
 
-_FAILURE_TOKENS = {_CYCLE[0]: _CYCLE[0], "bad_key": "nope_column", "needs_var": "threshold_var",
+_FAILURE_TOKENS = {_CYCLE[0]: _CYCLE[0], "bad_key": "nope_field", "needs_var": "threshold_var",
                    "stage_cycle": "Cycle in query list", "stale_key": "stale_col"}
 
 

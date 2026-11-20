@@ -14,9 +14,9 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.cardinality.relationship_safety import safe_reachable
 
 
-def _dataset(name, cols, joins=None):
+def _dataset(name, cols, relationships=None):
     return SlayerDataset(name=name, data_source="ds", sql_table=name,
-                       fields=cols, relationships=joins or [])
+                       fields=cols, relationships=relationships or [])
 
 
 def _pair(*, declare, cardinality, customers_id_pk):

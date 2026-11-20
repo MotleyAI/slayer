@@ -46,7 +46,7 @@ def _bind(text: str) -> ValueKey:
     return bind_expr(parse_expr(text), scope=DatasetScope(population=ORDERS), bundle=BUNDLE, allow_metrics=True).value_key
 
 
-def _column_type(key: ValueKey):
+def _field_type(key: ValueKey):
     assert isinstance(key, FieldKey), key
     model = CUSTOMERS if key.path else ORDERS
     col = model.get_field(key.leaf)
@@ -123,7 +123,7 @@ class TestTemporalType:
         ("'2024-01-01'", None),
     ])
     def test_bottom_up(self, text: str, expected) -> None:
-        assert temporal_type(_bind(text), field_type=_column_type) == expected
+        assert temporal_type(_bind(text), field_type=_field_type) == expected
 
 
 class TestTypedDateLiterals:

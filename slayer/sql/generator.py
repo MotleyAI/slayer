@@ -913,7 +913,7 @@ class SQLGenerator:
         #: later split recovers a hoisted producer's edges (never AST-scanned).
         self._gen_dep_stack: List[Dict[str, List[str]]] = []
         #: Field-type resolvers of the planned queries being rendered (innermost last).
-        self._gen_column_types: List[FieldTypeFn] = []
+        self._gen_field_types: List[FieldTypeFn] = []
         #: Per planned query: its placeholders' types and their list element types.
         self._gen_placeholder_types: List[Tuple[Dict[Any, DataType], Dict[Any, DataType]]] = []
         #: Multi-stage statement state: every stage relation, the current
@@ -992,7 +992,7 @@ class SQLGenerator:
 
     def _current_field_types(self) -> Optional[FieldTypeFn]:
         """The active ``generate()`` call's field types; ``None`` outside one (untyped)."""
-        return self._gen_column_types[-1] if self._gen_column_types else None
+        return self._gen_field_types[-1] if self._gen_field_types else None
 
     def _alias_render_ctx(self, *, slot_id_by_key, available_alias_by_slot_id):
         """RenderContext carrying only the plain slot-alias facilities."""
@@ -1314,7 +1314,7 @@ class SQLGenerator:
                                              field_element=dataset_elements)) is not None
         }
         self._gen_placeholder_types.append((placeholders, elements))
-        self._gen_column_types.append(lambda key: placeholders.get(key) or dataset_types(key))
+        self._gen_field_types.append(lambda key: placeholders.get(key) or dataset_types(key))
         # The outermost spine render declares every sequence CTE rendered within it (nested producers included).
         owns_spine = planned_query.spine is not None and not self._gen_spines
         outer_spine_ctes = self._gen_spine_ctes
@@ -1331,7 +1331,7 @@ class SQLGenerator:
                 raise ValueError("a spine sequence CTE was rendered but never declared")
             return out
         finally:
-            self._gen_column_types.pop()
+            self._gen_field_types.pop()
             self._gen_placeholder_types.pop()
             if planned_query.spine is not None:
                 self._gen_spines.pop()
@@ -2071,7 +2071,7 @@ class SQLGenerator:
 
         # Every relationship-crossing ref registers its path into host_scope.join_paths as it resolves (Law 1);
         # first-seen order keeps the FROM byte-identical to the legacy collectors'.
-        needed_join_paths = self._collect_joined_paths_for_base(
+        needed_relationship_paths = self._collect_joined_paths_for_base(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
             order_slot_ids=[e.slot_id for e in planned_query.order],
@@ -2100,7 +2100,7 @@ class SQLGenerator:
         )
         # WHERE filters register their relationship paths too; skip those routed to a _cm_ CTE (registering here would
         # add an unused, cardinality-changing LEFT JOIN).
-        self._resolve_where_filter_joins_via_scope(
+        self._resolve_where_filter_relationships_via_scope(
             planned_query=planned_query, scope=host_scope,
             skip_filter_ids=skip_filter_ids,
         )
@@ -2110,13 +2110,13 @@ class SQLGenerator:
             scope=host_scope,
             skip_cross_dataset_aggs=skip_cross_dataset_aggs,
         )
-        for p in host_scope.join_paths.as_list():
-            if p not in needed_join_paths:
-                needed_join_paths.append(p)
+        for p in host_scope.relationship_paths.as_list():
+            if p not in needed_relationship_paths:
+                needed_relationship_paths.append(p)
         from_clause, base_joins = self._build_from_and_joins(
             source_dataset=source_dataset,
             source_relation=source_relation,
-            joined_paths=needed_join_paths,
+            joined_paths=needed_relationship_paths,
             bundle=bundle,
         )
 
@@ -2447,7 +2447,7 @@ class SQLGenerator:
         definition = self._resolve_aggregation_def(
             key=key,
             source_dataset=(
-                self._walk_join_path_dataset(
+                self._walk_relationship_path_dataset(
                     source_dataset=source_dataset,
                     path=source_anchor_path(key.source), bundle=bundle,
                 ) or source_dataset
@@ -2505,7 +2505,7 @@ class SQLGenerator:
         all_filter_ids = {fp.id for fp in lowered_src}
         skip_for_src = all_filter_ids - set(plan.where_filter_ids)
         src_filters = _effective_src_filters(lowered_filters=lowered_src, plan=plan)
-        self._resolve_where_filter_joins_via_scope(
+        self._resolve_where_filter_relationships_via_scope(
             planned_query=planned_query, scope=src_scope,
             skip_filter_ids=skip_for_src, filters_override=src_filters,
         )
@@ -2521,7 +2521,7 @@ class SQLGenerator:
 
         from_expr, src_joins = self._build_from_and_joins(
             source_dataset=source_dataset, source_relation=source_relation,
-            joined_paths=src_scope.join_paths.as_list(), bundle=bundle,
+            joined_paths=src_scope.relationship_paths.as_list(), bundle=bundle,
         )
         src_select = exp.Select().select(*src_cols).from_(from_expr)
         src_select = _apply_joins(select=src_select, joins=src_joins)
@@ -2739,12 +2739,12 @@ class SQLGenerator:
     ) -> None:
         """Record the relationship paths ``expr`` reads (``path`` included) in the ranked CTE's scope."""
         if path:
-            scope.join_paths.add(path)
+            scope.relationship_paths.add(path)
         for p in self._joined_paths_in_sql(
             sql_expr=expr, source_relation=root_relation,
             source_dataset=root_dataset, bundle=bundle,
         ):
-            scope.join_paths.add(p)
+            scope.relationship_paths.add(p)
 
     def _ranked_value_expr(
         self, *, key, root_dataset: SlayerDataset, root_relation: str, bundle, scope: ScopeFrame,
@@ -2785,7 +2785,7 @@ class SQLGenerator:
             sql_expr=expr, source_relation=root_relation,
             source_dataset=root_dataset, bundle=bundle,
         ):
-            scope.join_paths.add(p)
+            scope.relationship_paths.add(p)
         return expr
 
     def _render_ranked_cte_from_planned(  # NOSONAR(S3776) — single linear ranked-CTE assembly (src → ROW_NUMBER → collapse); the branches are sequential dialect/shape guards, not nested logic
@@ -2897,7 +2897,7 @@ class SQLGenerator:
 
         from_expr, joins = self._build_from_and_joins(
             source_dataset=root_dataset, source_relation=root_relation,
-            joined_paths=ranked_scope.join_paths.as_list(), bundle=bundle,
+            joined_paths=ranked_scope.relationship_paths.as_list(), bundle=bundle,
         )
         inner = exp.Select()
         # A named projection list, never <relation>.*: the projection boundary keeps the rank column's name private.
@@ -2962,7 +2962,7 @@ class SQLGenerator:
         skip_ids = {
             fp.id for fp in _lower_positions(planned_query).filters
         } - set(plan.where_filter_ids)
-        self._resolve_where_filter_joins_via_scope(
+        self._resolve_where_filter_relationships_via_scope(
             planned_query=planned_query, scope=scope,
             skip_filter_ids=skip_ids,
         )
@@ -3206,7 +3206,7 @@ class SQLGenerator:
                 input_type=_picked_type,
             )
 
-        self._resolve_where_filter_joins_via_scope(
+        self._resolve_where_filter_relationships_via_scope(
             planned_query=planned_query, scope=scope, skip_filter_ids=set(),
         )
         where, _having = self._build_where_having_from_planned(
@@ -3220,7 +3220,7 @@ class SQLGenerator:
         )
         from_expr, joins = self._build_from_and_joins(
             source_dataset=source_dataset, source_relation=source_relation,
-            joined_paths=scope.join_paths.as_list(), bundle=bundle, distinct_lists=list_rows,
+            joined_paths=scope.relationship_paths.as_list(), bundle=bundle, distinct_lists=list_rows,
         )
         inner = exp.Select().select(*inner_cols).from_(from_expr)
         inner = _apply_joins(select=inner, joins=joins)
@@ -3363,7 +3363,7 @@ class SQLGenerator:
             _emit(tslot, self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity))
         # ROW filters gate the visible grain; the trailing window in the _src join reaches rows before them via
         # plan.where_filter_ids (a strict subset).
-        self._resolve_where_filter_joins_via_scope(
+        self._resolve_where_filter_relationships_via_scope(
             planned_query=planned_query, scope=scope, skip_filter_ids=set(),
         )
         where, _having = self._build_where_having_from_planned(
@@ -3375,7 +3375,7 @@ class SQLGenerator:
         )
         from_expr, joins = self._build_from_and_joins(
             source_dataset=source_dataset, source_relation=source_relation,
-            joined_paths=scope.join_paths.as_list(), bundle=bundle,
+            joined_paths=scope.relationship_paths.as_list(), bundle=bundle,
         )
         base = exp.Select().select(*cols).from_(from_expr)
         base = _apply_joins(select=base, joins=joins)
@@ -3511,7 +3511,7 @@ class SQLGenerator:
                     dataset=source_dataset, relation=source_relation,
                     bundle=bundle, allocator=placeholder_allocator,
                 )
-                self._resolve_where_filter_joins_via_scope(
+                self._resolve_where_filter_relationships_via_scope(
                     planned_query=planned_query,
                     scope=placeholder_scope,
                     skip_filter_ids=placeholder_skip_ids,
@@ -3520,7 +3520,7 @@ class SQLGenerator:
                 placeholder_from, placeholder_joins = self._build_from_and_joins(
                     source_dataset=source_dataset,
                     source_relation=source_relation,
-                    joined_paths=placeholder_scope.join_paths.as_list(),
+                    joined_paths=placeholder_scope.relationship_paths.as_list(),
                     bundle=bundle,
                 )
                 base_select = exp.Select().select(
@@ -4431,12 +4431,12 @@ class SQLGenerator:
         joins: List = []
         emitted_aliases: set = {source_relation}
         if source_dataset.list_of is not None:
-            parent_name, column = source_dataset.list_of
+            parent_name, field = source_dataset.list_of
             parent = bundle.datasets_by_name[parent_name]
-            parent_alias = self._join_alias(root=source_relation, path=(column,))
+            parent_alias = self._join_alias(root=source_relation, path=(field,))
             base_from = self._emit_relation(dataset=parent, alias=parent_alias, bundle=bundle)
             joins.append(self._list_join(
-                parent=parent, field=column, parent_alias=parent_alias, alias=source_relation, bundle=bundle,
+                parent=parent, field=field, parent_alias=parent_alias, alias=source_relation, bundle=bundle,
                 positioned=source_dataset.get_field(LIST_POSITION) is not None,
             ))
             emitted_aliases.add(parent_alias)
@@ -4598,7 +4598,7 @@ class SQLGenerator:
     @staticmethod
     def _transform_grain_slot_ids(*, planned_query, slots_by_id, axis: object = None) -> List[str]:
         """The transform auto-grain: every grain dimension, and every grain time dimension off the axis's field."""
-        axis_column = axis.source if isinstance(axis, TimeTruncKey) else None
+        axis_field = axis.source if isinstance(axis, TimeTruncKey) else None
         combined_placeholders = {
             sub.placeholder
             for plan in planned_query.regroup_attach_plans
@@ -4609,7 +4609,7 @@ class SQLGenerator:
             sid for sid in planned_query.grain or ()
             if (slot := slots_by_id.get(sid)) is not None and slot.phase == Phase.ROW
             and slot.key not in combined_placeholders
-            and SQLGenerator._in_transform_grain(slot=slot, axis_field=axis_column)
+            and SQLGenerator._in_transform_grain(slot=slot, axis_field=axis_field)
         ]
 
     @staticmethod
@@ -5247,7 +5247,7 @@ class SQLGenerator:
 
         def _add(path: Tuple[str, ...]) -> None:
             if path:
-                scope.join_paths.add(path)
+                scope.relationship_paths.add(path)
 
         derived_expr_by_sid: Dict[str, Expression] = {}
         seen_sids: Set[str] = set()
@@ -5301,7 +5301,7 @@ class SQLGenerator:
     ) -> "Optional[Expression]":
         """The rendered expression for a derived (``FieldSqlKey``) field."""
         if key.path:
-            owner_dataset = self._walk_join_path_dataset(
+            owner_dataset = self._walk_relationship_path_dataset(
                 source_dataset=source_dataset, path=key.path, bundle=bundle,
             )
             if owner_dataset is None:
@@ -5404,7 +5404,7 @@ class SQLGenerator:
         for text in filters:
             frame = self._scope_frame(dataset=dataset, relation=rows, bundle=bundle, allocator=allocator)
             predicate = frame.enter_predicate(text, location=f"dataset filter {text!r} on dataset {dataset.name!r}")
-            paths = _prefix_closed(frame.join_paths.as_list())
+            paths = _prefix_closed(frame.relationship_paths.as_list())
             chains = {p: self._oriented_hop_chain(source_dataset=dataset, path=p, bundle=bundle) for p in paths}
             proven = all(
                 not is_lateral_edge(edge) and provably_to_one(edge=edge, target_dataset=target)
@@ -5563,7 +5563,7 @@ class SQLGenerator:
             )
         if isinstance(time_field, FieldSqlKey):
             if time_field.path:
-                joined_dataset = self._walk_join_path_dataset(
+                joined_dataset = self._walk_relationship_path_dataset(
                     source_dataset=source_dataset, path=time_field.path,
                     bundle=bundle,
                 )
@@ -5649,7 +5649,7 @@ class SQLGenerator:
             bundle=bundle,
         )
 
-    def _resolve_where_filter_joins_via_scope(
+    def _resolve_where_filter_relationships_via_scope(
         self, *, planned_query, scope: ScopeFrame,
         skip_filter_ids: Optional[Set[str]] = None,
         filters_override: "Optional[List[Any]]" = None,
@@ -5664,13 +5664,13 @@ class SQLGenerator:
         for fp in filters:
             if fp.phase != Phase.ROW or fp.id in skip:
                 continue
-            for p in self._value_key_join_paths(
+            for p in self._value_key_relationship_paths(
                 key=fp.expression.value_key, source_dataset=scope.root_dataset,
                 source_relation=scope.root_relation, bundle=scope.bundle,
             ):
-                scope.join_paths.add(p)
+                scope.relationship_paths.add(p)
 
-    def _value_key_join_paths(  # NOSONAR(S3776) — one cohesive recursive ValueKey-tree walk; complexity is the per-key-type dispatch.
+    def _value_key_relationship_paths(  # NOSONAR(S3776) — one cohesive recursive ValueKey-tree walk; complexity is the per-key-type dispatch.
         self, *, key, source_dataset, source_relation: str, bundle,
     ) -> List[Tuple[str, ...]]:
         """Relationship paths a typed filter ``ValueKey`` tree references"""
@@ -5700,7 +5700,7 @@ class SQLGenerator:
             elif isinstance(k, FieldSqlKey):
                 _add(k.path)
                 dataset = (
-                    self._walk_join_path_dataset(
+                    self._walk_relationship_path_dataset(
                         source_dataset=source_dataset, path=k.path, bundle=bundle,
                     ) if k.path
                     else source_dataset
@@ -5819,7 +5819,7 @@ class SQLGenerator:
             return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
         return self._expression_template(agg_name=agg, expression=expression).placeholder_names
 
-    def _walk_join_path_dataset(
+    def _walk_relationship_path_dataset(
         self, *, source_dataset: SlayerDataset, path: Sequence[str], bundle: ResolvedSourceBundle,
     ) -> Optional[SlayerDataset]:
         """The terminal dataset of a relationship ``path`` walked from ``source_dataset``
@@ -5903,7 +5903,7 @@ class SQLGenerator:
         if isinstance(source, (FieldKey, FieldSqlKey)):
             host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
-                terminal = self._walk_join_path_dataset(
+                terminal = self._walk_relationship_path_dataset(
                     source_dataset=source_dataset, path=source.path, bundle=bundle,
                 )
                 if terminal is not None:
@@ -5956,14 +5956,14 @@ class SQLGenerator:
                 )
                 # The declared-type CAST is baked into sql_text (on the value), so
                 # the aggregate must not re-cast the whole expression.
-                column_type = None
+                field_type = None
                 zoned_value = None
             else:
                 sql_text = col.sql if col.sql else col.name
-                column_type = col.datatype
+                field_type = col.datatype
                 # A zoned physical column reads as the dialect's naive type inside the aggregate too.
                 zoned_value = self._dialect.read_column(
-                    self._resolve_sql(sql=sql_text, name=col.name, dataset_name=source_relation, type=column_type),
+                    self._resolve_sql(sql=sql_text, name=col.name, dataset_name=source_relation, type=field_type),
                     zoned=True,
                 ) if self._dialect.is_zoned_db_type(col.db_type) else None
             expression = rendered_expression(agg=key.agg, definition=agg_def)
@@ -5974,7 +5974,7 @@ class SQLGenerator:
                 alias=full_alias,
                 dataset_name=source_relation,
                 type=slot_type,
-                field_type=column_type,
+                field_type=field_type,
                 input_type=input_type,
                 element_type=element_type,
                 value=zoned_value,

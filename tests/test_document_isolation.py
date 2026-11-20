@@ -35,7 +35,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 DS = "ds"
 BAD = "orders"
 CAUSE = "cid_expr"
-GOOD_MODELS = ("customers", "products")
+GOOD_DATASETS = ("customers", "products")
 BAD_MEMORY = "broken-note"
 GOOD_MEMORIES = ("good-a", "good-b")
 
@@ -268,7 +268,7 @@ class TestTypedLoadError:
 
 
 class TestEnumerationSkipsAndWarns:
-    @pytest.mark.parametrize("name", GOOD_MODELS)
+    @pytest.mark.parametrize("name", GOOD_DATASETS)
     async def test_every_valid_model_resaves_with_one_warning(
         self, bad_store: StorageBackend, recorded: list, name: str,
     ) -> None:
@@ -322,13 +322,13 @@ class TestEnumerationSurfaces:
 
     async def test_mcp_models_summary(self, bad_store: StorageBackend, recorded: list) -> None:
         text = await _mcp_text(bad_store, tool="datasets_summary", arguments={"datasource_name": DS})
-        assert all(name in text for name in GOOD_MODELS)
+        assert all(name in text for name in GOOD_DATASETS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_mcp_inspect_model_collection_lists_the_rest(self, bad_store: StorageBackend, recorded: list) -> None:
         text = await _mcp_text(bad_store, tool="inspect", arguments={"entity_type": "dataset", "format": "json"})
         listed = {f"{e['data_source']}.{m['name']}" for e in json.loads(text)["datasources"] for m in e["datasets"]}
-        assert all(f"{DS}.{name}" in listed for name in GOOD_MODELS)
+        assert all(f"{DS}.{name}" in listed for name in GOOD_DATASETS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_search_carries_the_warning(self, bad_store: StorageBackend, recorded: list) -> None:
@@ -341,7 +341,7 @@ class TestEnumerationSurfaces:
         resp = TestClient(create_app(storage=bad_store)).get("/datasets", params={"data_source": DS})
         assert resp.status_code == 200
         names = {m["name"] for m in resp.json()}
-        assert set(GOOD_MODELS) <= names
+        assert set(GOOD_DATASETS) <= names
         assert BAD not in names
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 

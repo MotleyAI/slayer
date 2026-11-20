@@ -113,7 +113,7 @@ def dev2101_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
 # --------------------------------------------------------------------------- #
 # Data
 # --------------------------------------------------------------------------- #
-ORDER_COLUMNS = (
+ORDER_FIELDS = (
     "id", "customer_id", "region", "city", "status", "amount", "discount", "price", "quantity",
     "created_at", "order_date", "created_txt", "code", "customer_name", "note", "path", "order_total", "payload",
 )
@@ -129,9 +129,9 @@ ORDER_ROWS: list[tuple[Any, ...]] = [
     (5, 3, None, "Rome", "void", None, 2.0, 1.0, 4, "2024-03-15 08:00:00", "2024-03-15", None,
      None, "Lee", "x", "y", None, None),
 ]
-CUSTOMER_COLUMNS = ("id", "name", "Region", "tier")
+CUSTOMER_FIELDS = ("id", "name", "Region", "tier")
 CUSTOMER_ROWS: list[tuple[Any, ...]] = [(1, "A", "North", "gold"), (2, "B", "South", "silver"), (3, "C", None, "gold")]
-BALANCE_COLUMNS = ("id", "customer_id", "balance", "updated_at", "status")
+BALANCE_FIELDS = ("id", "customer_id", "balance", "updated_at", "status")
 BALANCE_ROWS: list[tuple[Any, ...]] = [
     (1, 1, 100.0, "2024-01-01 00:00:00", "active"),
     (2, 1, 150.0, "2024-02-01 00:00:00", "active"),
@@ -141,9 +141,9 @@ BALANCE_ROWS: list[tuple[Any, ...]] = [
     (6, 2, 80.0, "2024-03-15 00:00:00", "active"),
 ]
 TABLES = {
-    "orders": (ORDER_COLUMNS, ORDER_ROWS),
-    "customers": (CUSTOMER_COLUMNS, CUSTOMER_ROWS),
-    "balances": (BALANCE_COLUMNS, BALANCE_ROWS),
+    "orders": (ORDER_FIELDS, ORDER_ROWS),
+    "customers": (CUSTOMER_FIELDS, CUSTOMER_ROWS),
+    "balances": (BALANCE_FIELDS, BALANCE_ROWS),
 }
 
 #: Per-dialect (text, double, timestamp, identifier quote) spellings for the DDL.

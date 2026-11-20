@@ -29,7 +29,7 @@ from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2171_fixtures import collect_over_engine, column, typing_notes, write_yaml
+from tests._dev2171_fixtures import collect_over_engine, field_of, typing_notes, write_yaml
 from tests._engine_helpers import disposable_engine, owned_query_engine
 from tests._osi_helpers import ds, f, flat, rel
 
@@ -205,7 +205,7 @@ def _messages(result: ConversionResult) -> list[str]:
 
 
 def _typed(dataset: SlayerDataset, name: str) -> DataType:
-    return column(dataset, name).datatype
+    return field_of(dataset, name).datatype
 
 
 def _probed(live: Live) -> DataType:

@@ -23,7 +23,7 @@ LIVE = ("CREATE TABLE contractors (id INTEGER, skills VARCHAR[])",
 
 
 @contextlib.asynccontextmanager
-async def _env(*models: SlayerDataset) -> AsyncGenerator[SlayerQueryEngine]:
+async def _env(*datasets: SlayerDataset) -> AsyncGenerator[SlayerQueryEngine]:
     duckdb = pytest.importorskip("duckdb")
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "live.duckdb")
@@ -33,7 +33,7 @@ async def _env(*models: SlayerDataset) -> AsyncGenerator[SlayerQueryEngine]:
         ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         await storage.save_datasource(ds)
-        for model in models:
+        for model in datasets:
             await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         try:

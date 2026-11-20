@@ -56,8 +56,8 @@ from slayer.facade.info_schema import _serve_columns
 def _dataset(
     *,
     name: str,
-    columns: list[DatasetField],
-    joins: list[DatasetRelationship] | None = None,
+    fields: list[DatasetField],
+    relationships: list[DatasetRelationship] | None = None,
     metrics: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
 ) -> SlayerDataset:
@@ -65,8 +65,8 @@ def _dataset(
         name=name,
         data_source="jaffle",
         sql_table=name,
-        fields=columns,
-        relationships=joins or [],
+        fields=fields,
+        relationships=relationships or [],
         metrics=metrics or [],
         aggregations=aggregations or [],
     )
@@ -83,17 +83,17 @@ def _orders_customers_catalog() -> FacadeCatalog:
     a typed field set that produces a non-trivial cross-dataset fan-out."""
     orders = _dataset(
         name="orders",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="total", datatype=DataType.FLOAT),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
-        joins=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     customers = _dataset(
         name="customers",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="email", datatype=DataType.STRING),
@@ -146,7 +146,7 @@ def test_local_metrics_excludes_same_model_custom_aggregation_metrics() -> None:
     fan-out — same rule as builtin field×agg."""
     orders = _dataset(
         name="orders",
-        columns=[DatasetField(name="amount", datatype=DataType.FLOAT)],
+        fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
         aggregations=[
             Aggregation(name="my_count", expression="COUNT(DISTINCT {value})"),
         ],
@@ -164,7 +164,7 @@ def test_local_metrics_keeps_saved_model_measures() -> None:
     view so BI tools can project / aggregate against it by name."""
     orders = _dataset(
         name="orders",
-        columns=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
+        fields=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
         metrics=[
             DatasetMetric(
                 name="aov",
@@ -198,20 +198,20 @@ def test_local_dimensions_excludes_multi_hop_entries() -> None:
     dot and must be filtered out."""
     orders = _dataset(
         name="orders",
-        columns=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
-        joins=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
+        fields=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     customers = _dataset(
         name="customers",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     regions = _dataset(
         name="regions",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
         ],
@@ -320,7 +320,7 @@ def test_pg_description_attnum_within_local_range() -> None:
 
     orders = _dataset(
         name="orders",
-        columns=[
+        fields=[
             DatasetField(
                 name="id", datatype=DataType.INTEGER, primary_key=True,
                 description="order pk",
@@ -328,11 +328,11 @@ def test_pg_description_attnum_within_local_range() -> None:
             DatasetField(name="customer_id", datatype=DataType.INTEGER, description="fk"),
             DatasetField(name="total", datatype=DataType.FLOAT, description="ord total"),
         ],
-        joins=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     customers = _dataset(
         name="customers",
-        columns=[
+        fields=[
             DatasetField(
                 name="id", datatype=DataType.INTEGER, primary_key=True,
                 description="cust pk",
@@ -399,16 +399,16 @@ def test_graph_fingerprint_changes_when_cross_model_metric_changes() -> None:
 
     orders = _dataset(
         name="orders",
-        columns=[
+        fields=[
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
     def _customers_with_revenue_type(revenue_type: DataType) -> SlayerDataset:
         return _dataset(
             name="customers",
-            columns=[
+            fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="revenue", datatype=revenue_type),
             ],

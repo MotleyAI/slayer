@@ -24,12 +24,12 @@ EV_DDL = [
 IMPORT_DDL = [s.replace(" ts ", " created_at ").replace("(id, ts", "(id, created_at") for s in EV_DDL]
 
 
-def ev_dataset(*measures: DatasetMetric) -> SlayerDataset:
+def ev_dataset(*metrics: DatasetMetric) -> SlayerDataset:
     return SlayerDataset(
         name="ev", sql_table="ev", data_source=DATASOURCE,
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="ts", datatype=DataType.DATETIME),
                  DatasetField(name="amount", datatype=DataType.FLOAT)],
-        metrics=list(measures),
+        metrics=list(metrics),
     )
 
 

@@ -446,19 +446,19 @@ async def sql_result_types(*, sql: str, client: SqlClient) -> SqlResultTypes:
     return SqlResultTypes(columns=columns, lists=lists, db_types=db_types)
 
 
-def retyped_sql_columns(dataset: SlayerDataset, *, lists: dict[str, ResultList]) -> tuple[SlayerDataset, list[str]]:
+def retyped_sql_fields(dataset: SlayerDataset, *, lists: dict[str, ResultList]) -> tuple[SlayerDataset, list[str]]:
     """``dataset`` with each stale non-list base field whose result column is a list re-typed to it, and the
     re-typed field names."""
     fields: list[DatasetField] = []
     retyped: list[str] = []
-    for column in dataset.fields:
-        found = lists.get(column.physical_name) if column.is_base else None
+    for field in dataset.fields:
+        found = lists.get(field.physical_name) if field.is_base else None
         fresh = None if found is None else DatasetField(
-            name=column.name, datatype=DataType.ARRAY, element_type=found.element_type, db_type=found.db_type)
-        new = _retyped_list(persisted=column, fresh=fresh) if fresh is not None else None
-        fields.append(new or column)
+            name=field.name, datatype=DataType.ARRAY, element_type=found.element_type, db_type=found.db_type)
+        new = _retyped_list(persisted=field, fresh=fresh) if fresh is not None else None
+        fields.append(new or field)
         if new is not None:
-            retyped.append(column.name)
+            retyped.append(field.name)
     return (dataset.model_copy(update={"fields": fields}) if retyped else dataset), retyped
 
 
@@ -490,15 +490,15 @@ class RenamedField(BaseModel):
 def _renamed_fields(datasets: list[SlayerDataset]) -> list[RenamedField]:
     out: list[RenamedField] = []
     for dataset in datasets:
-        for column in dataset.fields:
-            if column.expression is None or not column.is_base:
+        for field in dataset.fields:
+            if field.expression is None or not field.is_base:
                 continue
-            physical = column.physical_name
-            if _logical_field_name(physical) != column.name:
-                out.append(RenamedField(dataset=dataset.name, field=column.name, physical=physical))
+            physical = field.physical_name
+            if _logical_field_name(physical) != field.name:
+                out.append(RenamedField(dataset=dataset.name, field=field.name, physical=physical))
                 logger.warning(
                     "dataset %r: physical column %r differs from another only in case; ingested as %r",
-                    dataset.name, physical, column.name,
+                    dataset.name, physical, field.name,
                 )
     return out
 
@@ -522,7 +522,7 @@ def _fields_to_dataset(
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col, column_name in zip(fields, case_distinct_names([_logical_field_name(c.name) for c in fields])):
+    for col, field_name in zip(fields, case_distinct_names([_logical_field_name(c.name) for c in fields])):
         if col.is_float:
             fmt = _FLOAT_FORMAT
         elif col.type in _NUMERIC_TYPES:
@@ -532,7 +532,7 @@ def _fields_to_dataset(
 
         cols.append(
             DatasetField(
-                name=column_name,
+                name=field_name,
                 # A quoted lower-case Snowflake / Oracle column names itself exactly.
                 expression=exp.to_identifier(col.name, quoted=True).sql() if col.quoted else col.name,
                 datatype=col.type,
@@ -1407,16 +1407,16 @@ def _merge_persisted_fields(
 def _case_free_new_fields(fields: list[DatasetField], *, taken: list[str], dataset: str) -> list[DatasetField]:
     """``fields``, each whose name a dataset name takes in another case renamed ``<name>_<n>`` (smallest free n)."""
     out: list[DatasetField] = []
-    for column in fields:
-        name, n = column.name, 2
+    for field in fields:
+        name, n = field.name, 2
         while name_taken(name, taken):
-            name, n = f"{column.name}_{n}", n + 1
-        if name != column.name:
+            name, n = f"{field.name}_{n}", n + 1
+        if name != field.name:
             logger.warning("dataset %r: live column %r differs from a dataset name only in case; ingested as %r",
-                           dataset, column.name, name)
-            column = column.model_copy(update={"name": name, "expression": column.expression or column.name})
+                           dataset, field.name, name)
+            field = field.model_copy(update={"name": name, "expression": field.expression or field.name})
         taken.append(name)
-        out.append(column)
+        out.append(field)
     return out
 
 
@@ -1723,10 +1723,10 @@ async def _retype_sql_datasets(
             current = await storage.get_dataset(dataset.name, data_source=datasource.name)
             if current is None or current.sql != dataset.sql:
                 continue
-            updated, columns = retyped_sql_columns(current, lists=types.lists)
-            if columns:
+            updated, fields = retyped_sql_fields(current, lists=types.lists)
+            if fields:
                 await storage.save_dataset(updated)
-                retyped[dataset.name] = columns
+                retyped[dataset.name] = fields
         except Exception as exc:  # noqa: BLE001 — one dataset's failure must not abort the pass
             errors[dataset.name] = f"sql-mode re-type: {exc}"
     return retyped, errors
@@ -1993,8 +1993,8 @@ async def ingest_datasource_idempotent(
         datasource=datasource, storage=storage, client=client, failures=failures,
     )
     additions.extend(
-        schema_drift.DatasetAddition(dataset_name=name, data_source=datasource.name, widened_fields=columns)
-        for name, columns in sql_retyped.items()
+        schema_drift.DatasetAddition(dataset_name=name, data_source=datasource.name, widened_fields=fields)
+        for name, fields in sql_retyped.items()
     )
     errors.extend(
         schema_drift.IngestionError(dataset_name=name, data_source=datasource.name, error=error)

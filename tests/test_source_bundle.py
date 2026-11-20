@@ -33,7 +33,7 @@ def _dataset_with(
     name: str,
     *,
     aggs: list[str] | None = None,
-    joins: list[str] | None = None,
+    relationships: list[str] | None = None,
     ds: str = "prod",
 ) -> SlayerDataset:
     return SlayerDataset(
@@ -49,7 +49,7 @@ def _dataset_with(
         ],
         relationships=[
             DatasetRelationship(to=t, from_columns=["id"], to_columns=["id"])
-            for t in (joins or [])
+            for t in (relationships or [])
         ],
     )
 

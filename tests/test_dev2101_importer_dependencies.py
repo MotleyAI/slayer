@@ -13,7 +13,7 @@ from slayer.cube.report import CubeConversionReport
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 
-MEASURES = {
+METRICS = {
     "a": "sum(amount)",
     "b": "a + missing",
     "c": "b * 2",
@@ -30,7 +30,7 @@ CYCLIC = {"d", "e"}
 
 
 def _metrics(extra: dict[str, str] | None = None) -> list[DatasetMetric]:
-    return [DatasetMetric(name=n, expression=f) for n, f in {**MEASURES, **(extra or {})}.items()]
+    return [DatasetMetric(name=n, expression=f) for n, f in {**METRICS, **(extra or {})}.items()]
 
 
 class TestDbtDependencyCheck:

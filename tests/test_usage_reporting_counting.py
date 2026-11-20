@@ -120,8 +120,8 @@ def test_parse_error_exits_before_any_usage_reporting(usage_reporting_env) -> No
 
 
 def test_cli_failure_counted_as_error(store: str) -> None:
-    cli(["query", json.dumps({"population": "no_such_model", "metrics": ["count(no_such_model.*)"]}), "--storage", store])
-    cli(["datasets", "--storage", store, "show", "no_such_model"])
+    cli(["query", json.dumps({"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}), "--storage", store])
+    cli(["datasets", "--storage", store, "show", "no_such_dataset"])
     report = show()
     for key in ("cli:query", "cli:datasets.show"):
         entry = usage(report, key)
@@ -141,7 +141,7 @@ async def test_mcp_tool_calls_counted_once_each(store: str, started) -> None:
     async with create_connected_server_and_client_session(server) as session:
         await session.call_tool("list_datasources", {})
         await session.call_tool("list_datasources", {})
-        await session.call_tool("inspect", {"entity_type": "dataset", "reference": "no_such_model", "compact": False})
+        await session.call_tool("inspect", {"entity_type": "dataset", "reference": "no_such_dataset", "compact": False})
     end_process()
     report = show()
     assert usage(report, "mcp:list_datasources") == {"ok": 2, "errors": {}}
@@ -223,7 +223,7 @@ def test_rest_counts_route_templates(store: str, started) -> None:
     client = TestClient(create_app(storage=YAMLStorage(base_dir=store)))
     assert client.get("/health").status_code == 200
     client.get("/datasets/orders")
-    client.get("/datasets/no_such_model")
+    client.get("/datasets/no_such_dataset")
     assert client.post("/query", json=_QUERY).status_code == 200
     end_process()
     report = show()
@@ -376,7 +376,7 @@ async def test_pg_engine_error_counted(started) -> None:
 # --- MCP sessions -----------------------------------------------------------------------------------
 
 
-_FAILING_QUERY = {"population": "no_such_model", "metrics": ["count(no_such_model.*)"]}
+_FAILING_QUERY = {"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}
 _T0 = datetime.datetime(2026, 5, 4, 12, 0, tzinfo=datetime.timezone.utc)
 
 

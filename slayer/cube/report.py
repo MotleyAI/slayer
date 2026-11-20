@@ -24,7 +24,7 @@ class CubeIssueCategory(str, Enum):
     UNSUPPORTED_ROLLING_WINDOW = "unsupported_rolling_window"
     UNSUPPORTED_FORMAT = "unsupported_format"
     UNSUPPORTED_DEFAULT_FILTER = "unsupported_default_filter"
-    SEGMENT_AS_COLUMN = "segment_as_column"
+    SEGMENT_AS_FIELD = "segment_as_field"
     UNMAPPED_INFRA = "unmapped_infra"
     GEO_UNMAPPED = "geo_unmapped"
     SUBQUERY_UNMAPPED = "subquery_unmapped"

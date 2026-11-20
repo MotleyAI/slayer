@@ -201,7 +201,7 @@ def ext(dataset: str, *relationships: dict, **fields: Any) -> dict:
     return {"dataset": dataset, "relationships": list(relationships), **fields}
 
 
-def join(target: str, pairs: list[tuple[str, str]], **fields: Any) -> dict:
+def relationship_to(target: str, pairs: list[tuple[str, str]], **fields: Any) -> dict:
     return {"to": target, "from_columns": [a for a, _ in pairs], "to_columns": [b for _, b in pairs], **fields}
 
 

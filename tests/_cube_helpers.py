@@ -21,7 +21,7 @@ def metric(dataset: SlayerDataset, name: str) -> DatasetMetric:
     return m
 
 
-def column(dataset: SlayerDataset, name: str) -> DatasetField:
+def field_of(dataset: SlayerDataset, name: str) -> DatasetField:
     c = dataset.get_field(name)
     assert c is not None, f"field {name} missing on {dataset.name}"
     return c

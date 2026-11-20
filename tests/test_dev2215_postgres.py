@@ -103,14 +103,14 @@ async def _ingest(engine: SlayerQueryEngine, ds: DatasourceConfig, table: str) -
     return model, json.dumps(report.model_dump(mode="json", exclude={"datasets"}), default=str)
 
 
-def _columns(dataset: SlayerDataset) -> list[tuple[str, str | None]]:
+def _fields(dataset: SlayerDataset) -> list[tuple[str, str | None]]:
     return [(c.name, c.definition_sql) for c in dataset.fields]
 
 
 async def test_two_case_variants(pg: tuple[SlayerQueryEngine, Any]) -> None:
     engine, ds = pg
     model, notes = await _ingest(engine, ds, "casey")
-    named = dict(_columns(model))
+    named = dict(_fields(model))
     assert set(named) == {"Foo", "foo_2"}
     assert named["foo_2"] is not None
     assert "foo" in named["foo_2"]
@@ -125,11 +125,11 @@ async def test_suffix_already_taken_and_reingestion(pg: tuple[SlayerQueryEngine,
     engine, ds = pg
     first, _ = await _ingest(engine, ds, "casey3")
     again, _ = await _ingest(engine, ds, "casey3")
-    named = dict(_columns(first))
+    named = dict(_fields(first))
     assert set(named) == {"Foo", "foo_3", "foo_2"}
     assert named["foo_3"] is not None
     assert named["foo_3"] != named["foo_2"]
-    assert _columns(first) == _columns(again)
+    assert _fields(first) == _fields(again)
     await engine.storage.save_dataset(first)
     resp = await engine.execute(q(population="casey3", dimensions=["casey3.Foo", "casey3.foo_3", "casey3.foo_2"]))
     assert [(r["casey3.Foo"], r["casey3.foo_3"], r["casey3.foo_2"]) for r in resp.data] == [(1, 10, 100)]

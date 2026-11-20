@@ -17,11 +17,11 @@ from tests._engine_helpers import seeded_exec_engine
 RANKED = DatasetField(name="ranked", datatype=DataType.INTEGER, sql="rank() over (order by amount)")
 
 
-def _orders(name: str, *, columns: Sequence[DatasetField] = (), **kw) -> SlayerDataset:
+def _orders(name: str, *, fields: Sequence[DatasetField] = (), **kw) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql_table="orders",
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="status", datatype=DataType.STRING),
-                 DatasetField(name="amount", datatype=DataType.INTEGER), *columns],
+                 DatasetField(name="amount", datatype=DataType.INTEGER), *fields],
         **kw,
     )
 
@@ -63,7 +63,7 @@ class TestSaveRefusesInvalidFilters:
         assert await engine.storage.get_dataset("orders_tot", data_source="test") is None
 
     async def test_filter_on_joined_windowed_column(self, engine: SlayerQueryEngine, door):
-        await engine.storage.save_dataset(_orders("ranked_orders", columns=[RANKED]), _validate=False)
+        await engine.storage.save_dataset(_orders("ranked_orders", fields=[RANKED]), _validate=False)
         model = _returns("returns_ranked", target="ranked_orders", filters=["ranked_orders.ranked > 1"])
         with pytest.raises(DatasetFilterError) as exc:
             await _save(engine, model, door=door)
@@ -71,7 +71,7 @@ class TestSaveRefusesInvalidFilters:
         assert await engine.storage.get_dataset("returns_ranked", data_source="test") is None
 
     async def test_filter_on_windowed_column_through_derived_column(self, engine, door):
-        model = _orders("orders_rank_plus", columns=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, sql="ranked + 0")],
+        model = _orders("orders_rank_plus", fields=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, sql="ranked + 0")],
                         filters=["orders_rank_plus.rank_plus > 1"])
         with pytest.raises(DatasetFilterError):
             await _save(engine, model, door=door)

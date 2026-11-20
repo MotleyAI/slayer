@@ -45,13 +45,13 @@ def _names_pair(text: str, *, a: str, b: str) -> bool:
     return a in text and b in text and bool(_REMEDY.search(text))
 
 
-def _m(name: str, *, cols: tuple[str, ...] = (), joins: list[DatasetRelationship] | None = None,
+def _m(name: str, *, cols: tuple[str, ...] = (), relationships: list[DatasetRelationship] | None = None,
        metrics: list[DatasetMetric] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source=DS, sql_table=name,
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                  *(DatasetField(name=c, datatype=DataType.INTEGER if c.endswith("_id") else DataType.STRING) for c in cols)],
-        relationships=joins or [], metrics=metrics or [],
+        relationships=relationships or [], metrics=metrics or [],
     )
 
 
@@ -60,15 +60,15 @@ def _to(target: str, src: str, *, tgt: str = "id", name: str | None = None,
     return DatasetRelationship(to=target, from_columns=[src], to_columns=[tgt], name=name, cardinality=cardinality)
 
 
-def _by(*models: SlayerDataset) -> dict[str, SlayerDataset]:
-    return {m.name: m for m in models}
+def _by(*datasets: SlayerDataset) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
 def _unnamed_pair() -> list[SlayerDataset]:
     """``orders`` declares two unnamed relationships onto ``addresses``."""
     return [
         _m("orders", cols=("status", "billing_id", "shipping_id"),
-           joins=[_to("addresses", "billing_id"), _to("addresses", "shipping_id")]),
+           relationships=[_to("addresses", "billing_id"), _to("addresses", "shipping_id")]),
         _m("addresses", cols=("city",)),
     ]
 
@@ -89,8 +89,8 @@ class TestRecommendation:
     @pytest.mark.parametrize("item", ["regions.rname", "regions.n"])
     async def test_single_named_edge_is_emitted_as_written(self, make_engine: EngineBuilder, item: str) -> None:
         engine = await make_engine([
-            _m("orders", cols=("customer_id",), joins=[_to("customers", "customer_id")]),
-            _m("customers", cols=("region_id",), joins=[_to("regions", "region_id", name="hr")]),
+            _m("orders", cols=("customer_id",), relationships=[_to("customers", "customer_id")]),
+            _m("customers", cols=("region_id",), relationships=[_to("regions", "region_id", name="hr")]),
             _m("regions", cols=("rname",), metrics=[DatasetMetric(name="n", expression="count(rname)")]),
         ])
         rec = await engine.recommend_population(["orders.id", item])
@@ -100,8 +100,8 @@ class TestRecommendation:
 
     async def test_equal_length_routes_prefer_the_to_one_hop_is_emitted_as_written(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine([
-            _m("a", cols=("b_id", "x"), joins=[_to("b", "b_id", name="to_b")]),
-            _m("b", cols=("a_id", "y"), joins=[_to("a", "a_id", name="to_a")],
+            _m("a", cols=("b_id", "x"), relationships=[_to("b", "b_id", name="to_b")]),
+            _m("b", cols=("a_id", "y"), relationships=[_to("a", "a_id", name="to_a")],
                metrics=[DatasetMetric(name="total", expression="count(y)")]),
         ])
         rec = await engine.recommend_population(["a.x", "b.total"])
@@ -119,7 +119,7 @@ class TestRecommendation:
 class TestShortFormRouting:
     def test_unaddressable_pair_on_the_only_route_is_named(self) -> None:
         models = _by(
-            _m("shipments", cols=("order_id",), joins=[_to("orders", "order_id")]),
+            _m("shipments", cols=("order_id",), relationships=[_to("orders", "order_id")]),
             *_unnamed_pair(),
         )
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
@@ -131,9 +131,9 @@ class TestShortFormRouting:
     def test_suggestion_through_a_single_named_edge_uses_its_name(self) -> None:
         models = _by(
             _m("orders", cols=("customer_id", "store_id"),
-               joins=[_to("customers", "customer_id"), _to("stores", "store_id")]),
-            _m("customers", cols=("region_id",), joins=[_to("regions", "region_id", name="hr")]),
-            _m("stores", cols=("region_id",), joins=[_to("regions", "region_id")]),
+               relationships=[_to("customers", "customer_id"), _to("stores", "store_id")]),
+            _m("customers", cols=("region_id",), relationships=[_to("regions", "region_id", name="hr")]),
+            _m("stores", cols=("region_id",), relationships=[_to("regions", "region_id")]),
             _m("regions", cols=("name",)),
         )
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
@@ -145,9 +145,9 @@ class TestShortFormRouting:
         # Both 2-hop routes fan out somewhere; via "aaa" twice, via "zzz" once.
         models = _by(
             _m("root", cols=("grp", "zzz_id"),
-               joins=[_to("aaa", "grp", tgt="grp", cardinality=None), _to("zzz", "zzz_id")]),
-            _m("aaa", cols=("grp", "grp2"), joins=[_to("d", "grp2", tgt="grp", cardinality=None)]),
-            _m("zzz", cols=("grp",), joins=[_to("d", "grp", tgt="grp", cardinality=None)]),
+               relationships=[_to("aaa", "grp", tgt="grp", cardinality=None), _to("zzz", "zzz_id")]),
+            _m("aaa", cols=("grp", "grp2"), relationships=[_to("d", "grp2", tgt="grp", cardinality=None)]),
+            _m("zzz", cols=("grp",), relationships=[_to("d", "grp", tgt="grp", cardinality=None)]),
             _m("d", cols=("grp", "name")),
         )
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
@@ -243,9 +243,9 @@ class TestPopulationInference:
 def _cycle_datasets() -> list[SlayerDataset]:
     """``x → y → z → x``, every edge declared many-to-one."""
     return [
-        _m("x", cols=("y_id", "v"), joins=[_to("y", "y_id")]),
-        _m("y", cols=("z_id", "v"), joins=[_to("z", "z_id")]),
-        _m("z", cols=("x_id", "v"), joins=[_to("x", "x_id")]),
+        _m("x", cols=("y_id", "v"), relationships=[_to("y", "y_id")]),
+        _m("y", cols=("z_id", "v"), relationships=[_to("z", "z_id")]),
+        _m("z", cols=("x_id", "v"), relationships=[_to("x", "x_id")]),
     ]
 
 

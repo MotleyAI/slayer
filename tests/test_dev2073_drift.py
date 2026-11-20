@@ -19,11 +19,11 @@ from tests._dev2073_fixtures import (
     SHIPPING_PAIRS,
     Live,
     addresses_dataset,
-    join_to,
+    relationship_to,
     live,
     named_pair,
     orders_with,
-    stored_joins,
+    stored_relationships,
 )
 
 # Live orders has lost billing_address_id; every other modelled column survives.
@@ -72,7 +72,7 @@ class TestDropAddressesOneEdge:
         finally:
             await engine.aclose()
         assert result.errors == []
-        assert await stored_joins(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
+        assert await stored_relationships(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
 
     async def test_json_removal_replays_through_edit_model(self, drifted: Live) -> None:
         entry = await _orders_entry(drifted)
@@ -84,7 +84,7 @@ class TestDropAddressesOneEdge:
         (block,) = blocks
         assert isinstance(block, TextContent)
         assert '"success": true' in block.text
-        assert await stored_joins(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
+        assert await stored_relationships(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
 
 
 class TestQueryBackedCascadeFollowsTheEdge:
@@ -120,7 +120,7 @@ def _route_datasets() -> list[SlayerDataset]:
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                      DatasetField(name="email", datatype=DataType.STRING),
                      *(DatasetField(name=fk, datatype=DataType.INTEGER) for fk in fks)],
-            relationships=[join_to([[fk, "id"]], target=_ROUTE_FKS[fk]) for fk in fks],
+            relationships=[relationship_to([[fk, "id"]], target=_ROUTE_FKS[fk]) for fk in fks],
         )
         for table, fks in _ROUTE_TABLES.items()
     ]
@@ -167,7 +167,7 @@ class TestNonParallelDropReportsTheTarget:
                 name="orders", data_source=DS, sql_table="orders",
                 fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                          DatasetField(name="customer_id", datatype=DataType.INTEGER)],
-                relationships=[join_to([["customer_id", "id"]], target="customers")],
+                relationships=[relationship_to([["customer_id", "id"]], target="customers")],
             )
             for model in (customers, orders):
                 await lv.storage.save_dataset(model)

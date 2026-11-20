@@ -52,7 +52,7 @@ ACCESS_PARAMS = [
 #: Datasets a ``{fin}`` caller must not see.
 HIDDEN_FROM_FIN = frozenset({
     "hr", "hr_summary", "hr_rollup", "fin_hop", "fin_ordered",
-    "pay", "pay_col", "pay_colfilter", "pay_filter", "pay_measure", "pay_agg",
+    "pay", "pay_col", "pay_colfilter", "pay_filter", "pay_metric", "pay_agg",
 })
 #: Datasets a ``{fin}`` caller sees.
 VISIBLE_TO_FIN = frozenset({"pub", "fin", "fin_report", "pub_link", "dangling"})
@@ -118,7 +118,7 @@ def _seed(db_path: str, *, dialect: str) -> None:
             cur.executemany(stmt, data)
 
 
-def _staff_join() -> DatasetRelationship:
+def _staff_relationship() -> DatasetRelationship:
     return DatasetRelationship(to="hr", from_columns=["staff_id"], to_columns=["id"], cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
@@ -129,7 +129,7 @@ def _pay(name: str, **extra) -> SlayerDataset:
         DatasetField(name="gross", datatype=DataType.FLOAT),
         *extra.pop("fields", []),
     ]
-    return SlayerDataset(name=name, sql_table="pay_runs", data_source=DS, fields=columns, relationships=[_staff_join()], **extra)
+    return SlayerDataset(name=name, sql_table="pay_runs", data_source=DS, fields=columns, relationships=[_staff_relationship()], **extra)
 
 
 def table_datasets() -> list[SlayerDataset]:
@@ -158,7 +158,7 @@ def table_datasets() -> list[SlayerDataset]:
                 DatasetField(name="staff_id", datatype=DataType.INTEGER),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
-            relationships=[_staff_join()],
+            relationships=[_staff_relationship()],
         ),
         SlayerDataset(
             name="pub_link", sql_table="pub_items", data_source=DS,
@@ -176,7 +176,7 @@ def table_datasets() -> list[SlayerDataset]:
         _pay("pay_col", fields=[hr_dept]),
         _pay("pay_colfilter", fields=[masked]),
         _pay("pay_filter", filters=["hr.dept = 'eng'"]),
-        _pay("pay_measure", metrics=[hr_total]),
+        _pay("pay_metric", metrics=[hr_total]),
         _pay("pay_agg", aggregations=[Aggregation(
             name="weighted", expression="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="hr.salary")],
         )]),

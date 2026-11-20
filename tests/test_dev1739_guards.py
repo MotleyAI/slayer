@@ -117,7 +117,7 @@ class TestDeferredShapeGuards:
         assert "__regroup__" not in await gen(q)
 
 
-_NON_RANK_FORMULAS = {
+_NON_RANK_EXPRESSIONS = {
     "cumsum": "cumsum(sum(orders.amount), partition_by=orders.region)",
     "lag": "lag(sum(orders.amount), 1, partition_by=orders.region)",
     "lead": "lead(sum(orders.amount), 1, partition_by=orders.region)",
@@ -129,8 +129,8 @@ _NON_RANK_FORMULAS = {
 
 
 class TestDriveByNonRankTransform:
-    @pytest.mark.parametrize("formula", list(_NON_RANK_FORMULAS.values()),
-                             ids=list(_NON_RANK_FORMULAS))
+    @pytest.mark.parametrize("formula", list(_NON_RANK_EXPRESSIONS.values()),
+                             ids=list(_NON_RANK_EXPRESSIONS))
     async def test_partition_by_rejected_on_non_rank_transforms(self, formula: str) -> None:
         q = _q(
             dimensions=["orders.region"],

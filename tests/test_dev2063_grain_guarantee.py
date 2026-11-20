@@ -279,9 +279,9 @@ def _metric(sid: str = "m") -> ValueSlot:
                      phase=Phase.AGGREGATE, stage=_BASE, needs_field=True)
 
 
-def _hidden(sid: str, key, *, needs_column: bool = True) -> ValueSlot:
+def _hidden(sid: str, key, *, needs_field: bool = True) -> ValueSlot:
     return ValueSlot(type=DataType.INTEGER, id=sid, key=key, declared_name=f"__{sid}", hidden=True, phase=Phase.ROW,
-                     stage=_BASE, needs_field=needs_column)
+                     stage=_BASE, needs_field=needs_field)
 
 
 def _producer() -> PlannedQuery:
@@ -326,7 +326,7 @@ class TestGrainDeterminationInvariant:
                      projection=["d"], grain=None)
 
     def test_hidden_value_without_a_column_is_accepted(self) -> None:
-        _grouped(_hidden("h", _CITY, needs_column=False))
+        _grouped(_hidden("h", _CITY, needs_field=False))
 
     def test_literal_is_accepted(self) -> None:
         _grouped(_hidden("h", LiteralKey(value=Decimal(1))))

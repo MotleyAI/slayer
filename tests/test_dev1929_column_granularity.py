@@ -45,7 +45,7 @@ _MONTH_SUMS = {"2024-11-01": 100.0, "2024-12-01": 200.0, "2025-01-01": 350.0, "2
 _YEAR_SUMS = {"2024-01-01": 300.0, "2025-01-01": 850.0}
 
 
-def _orders_columns(*, created_at_granularity=None) -> list[DatasetField]:
+def _orders_fields(*, created_at_granularity=None) -> list[DatasetField]:
     return [
         DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
@@ -61,7 +61,7 @@ def _orders_dataset(*, gran=None, data_source="ds") -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
-        fields=_orders_columns(created_at_granularity=gran),
+        fields=_orders_fields(created_at_granularity=gran),
     )
 
 

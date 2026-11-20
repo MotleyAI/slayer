@@ -86,17 +86,17 @@ def _orders() -> SlayerDataset:
     )
 
 
-_MODELS = {"orders": _orders(), "customers": _customers(), "regions": _regions()}
+_DATASETS = {"orders": _orders(), "customers": _customers(), "regions": _regions()}
 
 
 def _expand(sql: str) -> str:
-    # The SAME ``_MODELS`` instances — the reference resolver walks
+    # The SAME ``_DATASETS`` instances — the reference resolver walks
     # ``dataset``'s relationships by identity, so passing a second, equal-but-distinct
     # ``_orders()`` would diverge the moment the root path resolves.
     # ``owner_path=()`` (the default) roots at ``orders``.
     out = expand_derived_refs_sync(
-        sql=sql, dataset=_MODELS["orders"], alias_path="orders",
-        datasets_by_name=_MODELS, dialect="postgres",
+        sql=sql, dataset=_DATASETS["orders"], alias_path="orders",
+        datasets_by_name=_DATASETS, dialect="postgres",
     )
     assert out is not None, f"expansion returned None for {sql!r}"
     return out

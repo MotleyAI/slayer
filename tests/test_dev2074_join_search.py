@@ -29,7 +29,7 @@ M2O = RelationshipCardinality.MANY_TO_ONE
 
 
 def _m(
-    name: str, *, joins: list[DatasetRelationship] | None = None, extra: list[DatasetField] | None = None,
+    name: str, *, relationships: list[DatasetRelationship] | None = None, extra: list[DatasetField] | None = None,
     default_time_dimension: str | None = None,
 ) -> SlayerDataset:
     cols = [
@@ -40,7 +40,7 @@ def _m(
         *(extra or []),
     ]
     return SlayerDataset(
-        name=name, data_source="ds", sql_table=name, fields=cols, relationships=joins or [],
+        name=name, data_source="ds", sql_table=name, fields=cols, relationships=relationships or [],
         default_time_dimension=default_time_dimension,
     )
 
@@ -50,22 +50,22 @@ def _to(target: str, *, name: str | None = None, src: str = "fk", tgt: str = "id
     return DatasetRelationship(to=target, from_columns=[src], to_columns=[tgt], name=name, cardinality=cardinality)
 
 
-def _by(*models: SlayerDataset) -> dict[str, SlayerDataset]:
-    return {m.name: m for m in models}
+def _by(*datasets: SlayerDataset) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
 def _named_two_cycle() -> dict[str, SlayerDataset]:
     """``a.to_b`` (a→b m:1) and ``b.to_a`` (b→a m:1): two named edges between one pair."""
     return _by(
-        _m("a", joins=[_to("b", name="to_b", cardinality=M2O)]),
-        _m("b", joins=[_to("a", name="to_a", cardinality=M2O)]),
+        _m("a", relationships=[_to("b", name="to_b", cardinality=M2O)]),
+        _m("b", relationships=[_to("a", name="to_a", cardinality=M2O)]),
     )
 
 
 def _unnamed_parallel() -> dict[str, SlayerDataset]:
     """``orders`` declares two unnamed relationships onto ``addresses``."""
     return _by(
-        _m("orders", joins=[_to("addresses"), _to("addresses", src="fk2")]),
+        _m("orders", relationships=[_to("addresses"), _to("addresses", src="fk2")]),
         _m("addresses"),
     )
 
@@ -76,26 +76,26 @@ def _tok(route: Route | None) -> tuple[str, ...] | None:
 
 class TestAddressability:
     def test_single_named_edge_emits_its_name(self) -> None:
-        models = _by(_m("customers", joins=[_to("regions", name="hr")]), _m("regions"))
+        models = _by(_m("customers", relationships=[_to("regions", name="hr")]), _m("regions"))
         route = shortest_route(root=models["customers"], target="regions", datasets_by_name=models)
         assert _tok(route) == ("hr",)
         hops = addressable_hops(dataset=models["customers"], datasets_by_name=models)
         assert [(e.name, e.to) for e in hops] == [("hr", "regions")]
 
     def test_reverse_traversal_of_a_named_edge_emits_its_name(self) -> None:
-        models = _by(_m("customers", joins=[_to("regions", name="hr")]), _m("regions"))
+        models = _by(_m("customers", relationships=[_to("regions", name="hr")]), _m("regions"))
         assert _tok(shortest_route(root=models["regions"], target="customers",
                                    datasets_by_name=models)) == ("hr",)
 
     def test_unnamed_edge_emits_target_model(self) -> None:
-        models = _by(_m("orders", joins=[_to("customers")]), _m("customers"))
+        models = _by(_m("orders", relationships=[_to("customers")]), _m("customers"))
         assert _tok(shortest_route(root=models["orders"], target="customers",
                                    datasets_by_name=models)) == ("customers",)
 
     def test_every_emitted_token_resolves_to_the_edge_traversed(self) -> None:
         models = _by(
-            _m("orders", joins=[_to("customers", name="buyer"), _to("customers", src="fk2", name="seller")]),
-            _m("customers", joins=[_to("regions")]),
+            _m("orders", relationships=[_to("customers", name="buyer"), _to("customers", src="fk2", name="seller")]),
+            _m("customers", relationships=[_to("regions")]),
             _m("regions"),
         )
         for hop in addressable_hops(dataset=models["orders"], datasets_by_name=models):
@@ -115,7 +115,7 @@ class TestAddressability:
 
     def test_named_sibling_does_not_rescue_an_unnamed_parallel_edge(self) -> None:
         models = _by(
-            _m("orders", joins=[_to("addresses", name="billing"), _to("addresses", src="fk2")]),
+            _m("orders", relationships=[_to("addresses", name="billing"), _to("addresses", src="fk2")]),
             _m("addresses"),
         )
         hops = addressable_hops(dataset=models["orders"], datasets_by_name=models)
@@ -126,7 +126,7 @@ class TestAddressability:
 
     def test_named_parallel_pair_is_addressable(self) -> None:
         models = _by(
-            _m("orders", joins=[_to("addresses", name="billing"), _to("addresses", src="fk2", name="shipping")]),
+            _m("orders", relationships=[_to("addresses", name="billing"), _to("addresses", src="fk2", name="shipping")]),
             _m("addresses"),
         )
         hops = addressable_hops(dataset=models["orders"], datasets_by_name=models)
@@ -135,7 +135,7 @@ class TestAddressability:
 
     def test_edge_name_shadowing_a_model_makes_the_bare_edge_unaddressable(self) -> None:
         models = _by(
-            _m("mid", joins=[_to("leaf"), _to("other", src="fk2", name="leaf")]),
+            _m("mid", relationships=[_to("leaf"), _to("other", src="fk2", name="leaf")]),
             _m("leaf"),
             _m("other"),
         )
@@ -146,8 +146,8 @@ class TestAddressability:
         assert [{p.source_dataset, p.to} for p in pairs] == [{"mid", "leaf"}]
 
     def test_stage_spelling_shadowing_a_model(self) -> None:
-        stage = _m("__stage_1", joins=[_to("orders", cardinality=M2O)]).with_spelling("customers")
-        models = _by(_m("orders", joins=[_to("customers", src="fk2")]), _m("customers"), stage)
+        stage = _m("__stage_1", relationships=[_to("orders", cardinality=M2O)]).with_spelling("customers")
+        models = _by(_m("orders", relationships=[_to("customers", src="fk2")]), _m("customers"), stage)
         assert _tok(shortest_route(root=models["orders"], target="__stage_1",
                                    datasets_by_name=models)) == ("customers",)
         assert shortest_route(root=models["orders"], target="customers", datasets_by_name=models) is None
@@ -159,9 +159,9 @@ class TestSpineRule:
     def _two_facts(self) -> dict[str, SlayerDataset]:
         """Axes on ``orders`` and ``returns``; ``lines`` reaches ``orders`` to-one; ``customers`` is detached."""
         ts = [DatasetField(name="at", datatype=DataType.DATETIME)]
-        orders = _m("orders", extra=ts, default_time_dimension="at", joins=[_to("customers", cardinality=M2O)])
+        orders = _m("orders", extra=ts, default_time_dimension="at", relationships=[_to("customers", cardinality=M2O)])
         returns = _m("returns", extra=ts, default_time_dimension="at")
-        lines = _m("lines", joins=[_to("orders", cardinality=M2O)])
+        lines = _m("lines", relationships=[_to("orders", cardinality=M2O)])
         return _by(orders, returns, lines, _m("customers"), spine_dataset(data_source="ds"))
 
     def test_routes_may_end_at_the_spine(self) -> None:
@@ -220,8 +220,8 @@ class TestTieBreak:
     def test_fewer_hops_beat_fewer_fanning_hops(self) -> None:
         # root→t directly fans out; root→mid→t is fan-out-free but longer.
         models = _by(
-            _m("root", joins=[_to("t", src="grp", tgt="grp"), _to("mid", cardinality=M2O)]),
-            _m("mid", joins=[_to("t", cardinality=M2O)]),
+            _m("root", relationships=[_to("t", src="grp", tgt="grp"), _to("mid", cardinality=M2O)]),
+            _m("mid", relationships=[_to("t", cardinality=M2O)]),
             _m("t"),
         )
         assert _tok(shortest_route(root=models["root"], target="t", datasets_by_name=models)) == ("t",)
@@ -229,9 +229,9 @@ class TestTieBreak:
     def test_equal_length_prefers_fewer_fanning_hops_over_tokens(self) -> None:
         # Two 2-hop routes: via "aaa" fans out at the second hop, via "zzz" never does.
         models = _by(
-            _m("root", joins=[_to("aaa", cardinality=M2O), _to("zzz", src="fk2", cardinality=M2O)]),
-            _m("aaa", joins=[_to("t", src="grp", tgt="grp")]),
-            _m("zzz", joins=[_to("t", cardinality=M2O)]),
+            _m("root", relationships=[_to("aaa", cardinality=M2O), _to("zzz", src="fk2", cardinality=M2O)]),
+            _m("aaa", relationships=[_to("t", src="grp", tgt="grp")]),
+            _m("zzz", relationships=[_to("t", cardinality=M2O)]),
             _m("t"),
         )
         route = shortest_route(root=models["root"], target="t", datasets_by_name=models)
@@ -241,17 +241,17 @@ class TestTieBreak:
 
     def test_equal_length_equal_fanning_picks_smallest_tokens(self) -> None:
         models = _by(
-            _m("root", joins=[_to("zzz", cardinality=M2O), _to("aaa", src="fk2", cardinality=M2O)]),
-            _m("aaa", joins=[_to("t", cardinality=M2O)]),
-            _m("zzz", joins=[_to("t", cardinality=M2O)]),
+            _m("root", relationships=[_to("zzz", cardinality=M2O), _to("aaa", src="fk2", cardinality=M2O)]),
+            _m("aaa", relationships=[_to("t", cardinality=M2O)]),
+            _m("zzz", relationships=[_to("t", cardinality=M2O)]),
             _m("t"),
         )
         assert _tok(shortest_route(root=models["root"], target="t", datasets_by_name=models)) == ("aaa", "t")
 
     def test_to_one_filter_skips_fanning_hops(self) -> None:
         models = _by(
-            _m("root", joins=[_to("t", src="grp", tgt="grp"), _to("mid", cardinality=M2O)]),
-            _m("mid", joins=[_to("t", cardinality=M2O)]),
+            _m("root", relationships=[_to("t", src="grp", tgt="grp"), _to("mid", cardinality=M2O)]),
+            _m("mid", relationships=[_to("t", cardinality=M2O)]),
             _m("t"),
         )
         route = shortest_route(root=models["root"], target="t", datasets_by_name=models,
@@ -272,8 +272,8 @@ class TestTieBreak:
 
     def test_shortest_routes_covers_every_reachable_model(self) -> None:
         models = _by(
-            _m("orders", joins=[_to("customers", cardinality=M2O)]),
-            _m("customers", joins=[_to("regions", name="hr", cardinality=M2O)]),
+            _m("orders", relationships=[_to("customers", cardinality=M2O)]),
+            _m("customers", relationships=[_to("regions", name="hr", cardinality=M2O)]),
             _m("regions"),
             _m("island"),
         )
@@ -286,12 +286,12 @@ class TestRoutes:
     def _diamond(self) -> dict[str, SlayerDataset]:
         """root reaches t directly and via ``mid``; a dead-end chain hangs off root."""
         return _by(
-            _m("root", joins=[_to("t", cardinality=M2O), _to("mid", src="fk2", cardinality=M2O),
+            _m("root", relationships=[_to("t", cardinality=M2O), _to("mid", src="fk2", cardinality=M2O),
                               _to("dead1", src="grp", tgt="grp")]),
-            _m("mid", joins=[_to("t", cardinality=M2O)]),
+            _m("mid", relationships=[_to("t", cardinality=M2O)]),
             _m("t"),
-            _m("dead1", joins=[_to("dead2", cardinality=M2O)]),
-            _m("dead2", joins=[_to("dead3", cardinality=M2O)]),
+            _m("dead1", relationships=[_to("dead2", cardinality=M2O)]),
+            _m("dead2", relationships=[_to("dead3", cardinality=M2O)]),
             _m("dead3"),
         )
 
@@ -311,9 +311,9 @@ class TestRoutes:
 
     def test_shortest_only_keeps_every_equal_minimal_route(self) -> None:
         models = _by(
-            _m("root", joins=[_to("aaa", cardinality=M2O), _to("zzz", src="fk2", cardinality=M2O)]),
-            _m("aaa", joins=[_to("t", cardinality=M2O)]),
-            _m("zzz", joins=[_to("t", cardinality=M2O)]),
+            _m("root", relationships=[_to("aaa", cardinality=M2O), _to("zzz", src="fk2", cardinality=M2O)]),
+            _m("aaa", relationships=[_to("t", cardinality=M2O)]),
+            _m("zzz", relationships=[_to("t", cardinality=M2O)]),
             _m("t"),
         )
         got = routes(root=models["root"], target="t", datasets_by_name=models, cap=5, shortest_only=True)
@@ -326,7 +326,7 @@ class TestRoutes:
 
     def test_to_one_filter_applies_to_route_enumeration(self) -> None:
         models = self._diamond()
-        models["root"] = _m("root", joins=[_to("t", src="grp", tgt="grp"),
+        models["root"] = _m("root", relationships=[_to("t", src="grp", tgt="grp"),
                                            _to("mid", src="fk2", cardinality=M2O)])
         got = routes(root=models["root"], target="t", datasets_by_name=models, cap=5,
                      hop_filter=HopFilter.TO_ONE)
@@ -345,9 +345,9 @@ class TestRoutes:
 
     def test_cycles_terminate(self) -> None:
         models = _by(
-            _m("x", joins=[_to("y", cardinality=M2O)]),
-            _m("y", joins=[_to("z", cardinality=M2O)]),
-            _m("z", joins=[_to("x", cardinality=M2O)]),
+            _m("x", relationships=[_to("y", cardinality=M2O)]),
+            _m("y", relationships=[_to("z", cardinality=M2O)]),
+            _m("z", relationships=[_to("x", cardinality=M2O)]),
         )
         got = routes(root=models["x"], target="z", datasets_by_name=models, cap=5)
         assert [r.tokens for r in got] == [("z",), ("y", "z")]
@@ -357,9 +357,9 @@ class TestBlockingPairs:
     def _shop(self) -> dict[str, SlayerDataset]:
         """``shop → orders ⇉ addresses → cities``."""
         return _by(
-            _m("shop", joins=[_to("orders")]),
-            _m("orders", joins=[_to("addresses"), _to("addresses", src="fk2")]),
-            _m("addresses", joins=[_to("cities")]),
+            _m("shop", relationships=[_to("orders")]),
+            _m("orders", relationships=[_to("addresses"), _to("addresses", src="fk2")]),
+            _m("addresses", relationships=[_to("cities")]),
             _m("cities"),
         )
 
@@ -376,7 +376,7 @@ class TestBlockingPairs:
     def test_pair_reaching_the_target_only_through_the_spine_is_not_reported(self) -> None:
         ts = [DatasetField(name="at", datatype=DataType.DATETIME)]
         models = _by(
-            _m("a", joins=[_to("b"), _to("b", src="fk2")]),
+            _m("a", relationships=[_to("b"), _to("b", src="fk2")]),
             _m("b", extra=ts, default_time_dimension="at"),
             _m("c", extra=ts, default_time_dimension="at"),
             spine_dataset(data_source="ds"),
@@ -384,9 +384,9 @@ class TestBlockingPairs:
         assert blocking_pairs(root=models["a"], target="c", datasets_by_name=models) == []
 
     def test_neighbor_reads_do_not_grow_with_the_pair_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        hub = _m("hub", joins=[_to(f"m{i}", src="grp", tgt="grp") for i in range(3)])
-        spokes = [_m(f"m{i}", joins=[_to(f"leaf{i}"), _to(f"leaf{i}", src="fk2")]) for i in range(3)]
-        models = _by(hub, *spokes, _m("leaf0", joins=[_to("far")]), _m("leaf1"), _m("leaf2"), _m("far"))
+        hub = _m("hub", relationships=[_to(f"m{i}", src="grp", tgt="grp") for i in range(3)])
+        spokes = [_m(f"m{i}", relationships=[_to(f"leaf{i}"), _to(f"leaf{i}", src="fk2")]) for i in range(3)]
+        models = _by(hub, *spokes, _m("leaf0", relationships=[_to("far")]), _m("leaf1"), _m("leaf2"), _m("far"))
         calls: dict[str, int] = {}
 
         def counting(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]):
@@ -402,7 +402,7 @@ class TestBlockingPairs:
 class TestCountRoutes:
     def test_parallel_edges_count_as_distinct_routes(self) -> None:
         for models in (_unnamed_parallel(), _by(
-            _m("orders", joins=[_to("addresses", name="billing"), _to("addresses", src="fk2", name="shipping")]),
+            _m("orders", relationships=[_to("addresses", name="billing"), _to("addresses", src="fk2", name="shipping")]),
             _m("addresses"),
         )):
             assert count_routes(root=models["orders"], target="addresses", datasets_by_name=models, cap=5) == 2
@@ -410,14 +410,14 @@ class TestCountRoutes:
 
     def test_unaddressable_pair_on_the_only_route_is_ambiguous(self) -> None:
         models = _by(
-            _m("root", joins=[_to("orders", cardinality=M2O)]),
-            _m("orders", joins=[_to("addresses"), _to("addresses", src="fk2")]),
+            _m("root", relationships=[_to("orders", cardinality=M2O)]),
+            _m("orders", relationships=[_to("addresses"), _to("addresses", src="fk2")]),
             _m("addresses"),
         )
         assert count_routes(root=models["root"], target="addresses", datasets_by_name=models) == 2
 
     def test_unique_unreachable_and_trivial(self) -> None:
-        models = _by(_m("orders", joins=[_to("customers")]), _m("customers"), _m("island"))
+        models = _by(_m("orders", relationships=[_to("customers")]), _m("customers"), _m("island"))
         assert count_routes(root=models["orders"], target="customers", datasets_by_name=models) == 1
         assert count_routes(root=models["customers"], target="orders", datasets_by_name=models) == 1
         assert count_routes(root=models["orders"], target="island", datasets_by_name=models) == 0
@@ -425,7 +425,7 @@ class TestCountRoutes:
 
     def test_count_is_capped(self) -> None:
         models = _by(
-            _m("root", joins=[_to("t"), _to("t", src="fk2"), _to("t", src="grp", tgt="grp")]),
+            _m("root", relationships=[_to("t"), _to("t", src="fk2"), _to("t", src="grp", tgt="grp")]),
             _m("t"),
         )
         assert count_routes(root=models["root"], target="t", datasets_by_name=models, cap=2) == 2
@@ -439,9 +439,9 @@ class TestCountRoutes:
 class TestPathsFrom:
     def _chain(self) -> dict[str, SlayerDataset]:
         return _by(
-            _m("a", joins=[_to("b", cardinality=M2O)]),
-            _m("b", joins=[_to("c", name="to_c", cardinality=M2O)]),
-            _m("c", joins=[_to("d", cardinality=M2O)]),
+            _m("a", relationships=[_to("b", cardinality=M2O)]),
+            _m("b", relationships=[_to("c", name="to_c", cardinality=M2O)]),
+            _m("c", relationships=[_to("d", cardinality=M2O)]),
             _m("d"),
         )
 
@@ -477,11 +477,11 @@ class TestDeterminism:
     @pytest.mark.parametrize("reverse", [False, True])
     def test_answers_do_not_depend_on_model_order(self, reverse: bool) -> None:
         base = _by(
-            _m("root", joins=[_to("aaa", cardinality=M2O), _to("zzz", src="fk2", cardinality=M2O),
+            _m("root", relationships=[_to("aaa", cardinality=M2O), _to("zzz", src="fk2", cardinality=M2O),
                               _to("t", src="grp", tgt="grp")]),
-            _m("aaa", joins=[_to("t", cardinality=M2O)]),
-            _m("zzz", joins=[_to("t", cardinality=M2O)]),
-            _m("t", joins=[_to("leaf", name="lf", cardinality=M2O)]),
+            _m("aaa", relationships=[_to("t", cardinality=M2O)]),
+            _m("zzz", relationships=[_to("t", cardinality=M2O)]),
+            _m("t", relationships=[_to("leaf", name="lf", cardinality=M2O)]),
             _m("leaf"),
         )
         names = sorted(base, reverse=reverse)

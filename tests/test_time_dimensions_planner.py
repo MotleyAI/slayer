@@ -81,7 +81,7 @@ def _customers_dataset() -> SlayerDataset:
     )
 
 
-def _orders_with_customers_join() -> SlayerDataset:
+def _orders_with_customers_relationship() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -98,7 +98,7 @@ def _orders_with_customers_join() -> SlayerDataset:
     )
 
 
-def _customers_with_regions_join() -> SlayerDataset:
+def _customers_with_regions_relationship() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         data_source="prod",
@@ -164,7 +164,7 @@ def _bundle_local() -> ResolvedSourceBundle:
 def _bundle_joined() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_with_customers_join(),
+        population=_orders_with_customers_relationship(),
         referenced_datasets=[_customers_dataset()],
     )
 
@@ -172,8 +172,8 @@ def _bundle_joined() -> ResolvedSourceBundle:
 def _bundle_multi_hop() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_with_customers_join(),
-        referenced_datasets=[_customers_with_regions_join(), _regions_dataset()],
+        population=_orders_with_customers_relationship(),
+        referenced_datasets=[_customers_with_regions_relationship(), _regions_dataset()],
     )
 
 
@@ -206,7 +206,7 @@ class TestBindTimeDimension:
         assert bound.bound.phase == Phase.ROW
 
     def test_joined_td_path_is_populated(self) -> None:
-        host = _orders_with_customers_join()
+        host = _orders_with_customers_relationship()
         td = TimeDimension(
             field="customers.signed_up_at",
             granularity=TimeGranularity.DAY,
@@ -231,7 +231,7 @@ class TestBindTimeDimension:
     def test_unknown_column_raises_unknown_reference(self) -> None:
         model = _orders_dataset()
         td = TimeDimension(
-            field="not_a_column",
+            field="not_a_field",
             granularity=TimeGranularity.MONTH,
         )
         scope = DatasetScope(population=model)
@@ -273,7 +273,7 @@ class TestBindTimeDimension:
     def test_multi_hop_joined_td(self) -> None:
         # orders → customers → regions. TD on regions.opened_at via the
         # multi-hop path. The bound key carries the full path.
-        host = _orders_with_customers_join()
+        host = _orders_with_customers_relationship()
         td = TimeDimension(
             field="customers.regions.opened_at",
             granularity=TimeGranularity.MONTH,

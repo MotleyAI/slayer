@@ -138,9 +138,9 @@ async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
     )
 
 
-def month_td(column: str = "orders.ordered_at") -> List[TimeDimension]:
+def month_td(field: str = "orders.ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        field=column,
+        field=field,
         granularity=TimeGranularity.MONTH,
     )]
 

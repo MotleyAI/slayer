@@ -33,14 +33,14 @@ def _seed(db_path) -> None:
         )
 
 
-async def _engine_with(*models: SlayerDataset):
+async def _engine_with(*datasets: SlayerDataset):
     tmp = tempfile.TemporaryDirectory()
     _seed(f"{tmp.name}/orders.db")
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=f"{tmp.name}/orders.db")
     )
-    for m in models:
+    for m in datasets:
         await storage.save_dataset(m)
     return SlayerQueryEngine(storage=storage), tmp
 

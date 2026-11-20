@@ -46,7 +46,7 @@ DIM_R = {"field": "rank(sum(sales.amount, partition_by=[sales.city, ureg]), part
          "alias": "r"}
 
 # Spec constants.
-MEASURE_RANKS = {
+METRIC_RANKS = {
     ("EAST", "Zeta"): 1, ("EAST", "Delta"): 2, ("EAST", "Epsilon"): 2,
     ("NORTH", "Beta"): 1, ("NORTH", "Alpha"): 2,
     ("SOUTH", "Gamma"): 1, ("SOUTH", "Alpha"): 2,
@@ -139,7 +139,7 @@ def _alias(name: str, expr: str) -> Dict:
 
 class TestOracleSelfCheck:
     def test_oracles_reproduce_spec_constants(self):
-        assert _ureg_city_ranks() == MEASURE_RANKS
+        assert _ureg_city_ranks() == METRIC_RANKS
         approx_map(got=_param_by_ureg(), want=PARAM_BY_UREG)
         assert {k for k, v in _ureg_city_ranks().items() if v == 1} == FILTER_RANK1
         approx_map(got=_dim_cells(), want=DIM_CELLS)
@@ -203,7 +203,7 @@ class TestExecutedPositions:
         resp = await engine.execute(sales_q(
             dimensions=[UREG, "sales.city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")]))
         got = {k: v["r"] for k, v in rows_by(resp, "ureg", "sales.city").items()}
-        assert got == MEASURE_RANKS
+        assert got == METRIC_RANKS
 
     async def test_aggregation_parameter(self, engine):
         resp = await engine.execute(sales_q(
@@ -222,10 +222,10 @@ class TestExecutedPositions:
             dimensions=[UREG, "sales.city"], metrics=[AMOUNT],
             order=[{"field": RANK_UREG, "direction": "asc"}]))
         keys = [(r["ureg"], r["sales.city"]) for r in resp.data]
-        pos = {MEASURE_RANKS[k]: [] for k in keys}
+        pos = {METRIC_RANKS[k]: [] for k in keys}
         for i, k in enumerate(keys):
-            pos[MEASURE_RANKS[k]].append(i)
-        assert {k for k in keys if MEASURE_RANKS[k] == 1} == FILTER_RANK1
+            pos[METRIC_RANKS[k]].append(i)
+        assert {k for k in keys if METRIC_RANKS[k] == 1} == FILTER_RANK1
         assert max(pos[1]) < min(pos[2])
 
     async def test_dimension_position_member_key(self, engine):

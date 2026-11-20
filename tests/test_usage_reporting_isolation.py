@@ -45,8 +45,8 @@ def _commands(store: str) -> list[list[str]]:
     return [
         ["datasets", "--storage", store, "list"],
         ["query", json.dumps(_QUERY), "--storage", store],
-        ["query", json.dumps({"population": "no_such_model", "metrics": ["count(no_such_model.*)"]}), "--storage", store],
-        ["datasets", "--storage", store, "show", "no_such_model"],
+        ["query", json.dumps({"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}), "--storage", store],
+        ["datasets", "--storage", store, "show", "no_such_dataset"],
     ]
 
 

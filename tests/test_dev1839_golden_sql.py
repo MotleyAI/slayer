@@ -17,13 +17,13 @@ from slayer.core.query import QueryMetric
 from tests._dev1839_fixtures import (
     EXPLICIT_PART_RANK,
     KEYLESS_RANK,
-    MEASURE_DIFF,
+    METRIC_DIFF,
     MIXED_RANK,
     NESTED_RANK,
     SAMEGRAIN_DIFF,
     SAMEGRAIN_RANK,
     SUBSET_RANK,
-    dev1839_models,
+    dev1839_datasets,
     month_td,
     q,
 )
@@ -72,7 +72,7 @@ def _cases() -> dict:
         ),
         "lift/measure_mixed_arithmetic": q(
             dimensions=["orders.region", "orders.city"],
-            metrics=[QueryMetric(metric=MEASURE_DIFF, alias="d"), s],
+            metrics=[QueryMetric(metric=METRIC_DIFF, alias="d"), s],
         ),
         "lift/measure_same_grain_arithmetic": q(
             dimensions=["orders.region"],
@@ -123,7 +123,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(query, dialect: str):
-    models = dev1839_models()
+    models = dev1839_datasets()
     try:
         return await _engine_generate(
             query=query, dataset=models[0], extra_datasets=models[1:],

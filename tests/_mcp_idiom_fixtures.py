@@ -71,9 +71,9 @@ ANTI_JOIN = "orders.id is null"
 ORDER_UNDISPLAYED = '{"field": "sum(orders.amount)", "direction": "desc"}'
 POPULATION_COUNT = "count(customers.orders.id)"
 CONDITIONAL = "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))"
-STAGE_COLUMN = "customers__regions__name"
+STAGE_FIELD = "customers__regions__name"
 SPINE_TIME_DIMENSION = '{"field": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
-SPINE_MEASURE = "sum(orders.amount)"
+SPINE_METRIC = "sum(orders.amount)"
 SECOND_CHILD = "sum(returns.amount)"
 AGG_FILTER = "count(orders.*) FILTER (WHERE orders.status = 'paid')"
 IN_LIST_VARIABLE = "items.status in ({statuses})"
@@ -107,7 +107,7 @@ EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
     ORDER_UNDISPLAYED: ("SlayerQuery", "order"),
     POPULATION_COUNT: ("SlayerQuery", "population"),
     CONDITIONAL: ("SlayerQuery", "population"),
-    STAGE_COLUMN: ("SlayerQuery", "name"),
+    STAGE_FIELD: ("SlayerQuery", "name"),
     SPINE_TIME_DIMENSION: ("SlayerQuery", "time_dimensions"),
     SECOND_CHILD: ("SlayerQuery", "metrics"),
     CROSS_DATASET_RATIO: ("SlayerQuery", "metrics"),

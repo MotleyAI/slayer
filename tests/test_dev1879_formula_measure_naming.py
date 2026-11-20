@@ -27,7 +27,7 @@ _KEY_RE = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
 
 async def _dry(query: SlayerQuery):
     mart = mart_dataset(
-        extra_columns=[
+        extra_fields=[
             DatasetField(name="revenue", datatype=DataType.FLOAT),
             DatasetField(name="quantity", datatype=DataType.FLOAT),
         ],
