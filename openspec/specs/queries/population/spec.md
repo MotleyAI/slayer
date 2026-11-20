@@ -79,7 +79,7 @@ dimension anchor undefined.
 - **THEN** the dimension anchor is `customers`, while the rows are the regions the orders reach:
   a region with no orders is not a row
 
-#### Scenario: Field filter participates as a hidden dimension
+#### Scenario: A field filter is not a determination item
 
 - **WHEN** a query without `population` has `dimensions=[customers.region]` and a
   field-typed filter on `orders.status`
@@ -98,7 +98,7 @@ dimension anchor undefined.
 - **THEN** the dimension anchor is unchanged (or the added measure fails to bind — never a
   different anchor)
 
-#### Scenario: Not-provably-to-one path is not determination
+#### Scenario: A to-many path is not determination
 
 - **WHEN** the only route from a candidate to a queried dimension crosses a hop
   whose oriented cardinality is to-many
@@ -126,7 +126,7 @@ dimension anchor undefined.
 - **THEN** that candidate is not viable, even though binding would route the same
   reference for other purposes
 
-#### Scenario: Raw-row mode uses the same rule
+#### Scenario: Raw-row mode infers from the dimensions without unproven hops
 
 - **WHEN** a `distinct_dimension_values=false` query omits `population`
 - **THEN** the dimension anchor is inferred from the dimensions alone, an unknown-cardinality hop

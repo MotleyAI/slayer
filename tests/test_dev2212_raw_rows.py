@@ -1,5 +1,5 @@
 """Raw-row mode lists the rows of the named population, else of the dimension anchor read from dimensions only
-(spec: queries/population › Dimension-determined default › Raw-row mode uses the same rule; semantics Axiom 12.5)."""
+(spec: queries/population › Dimension-determined default › Raw-row mode infers from the dimensions without unproven hops; semantics Axiom 12.5)."""
 
 from __future__ import annotations
 
