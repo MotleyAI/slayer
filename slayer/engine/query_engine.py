@@ -1734,10 +1734,14 @@ class SlayerQueryEngine:
                                              sibling_stage_names=sibling_stage_names)
             )
             p = choice.dataset_name
+            data_source_p = choice.data_source or None
+            if p == TIME_SPINE_DATASET and data_source_p is None:
+                data_source_p = await spine_datasource(queries=[query], storage=self.storage, data_source=data_source,
+                                                       sibling_stage_names=sibling_stage_names)
             return _StageInference(
                 query=query.model_copy(update={"population": p, "population_inferred": True}),
-                data_source=choice.data_source or None, reported=p, supply=RowSupply(),
-                row_sources=[p] if p != TIME_SPINE_DATASET else [], pin=p if p != TIME_SPINE_DATASET else None,
+                data_source=data_source_p, reported=p, supply=RowSupply(),
+                row_sources=[p] if p != TIME_SPINE_DATASET else [], pin=p,
             )
         rows = await infer_rows(query=free, storage=self.storage, data_source=data_source,
                                 sibling_stage_names=sibling_stage_names,

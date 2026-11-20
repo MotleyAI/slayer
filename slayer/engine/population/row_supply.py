@@ -226,7 +226,7 @@ def _cells(query: SlayerQuery, *, population: str, filters: list[str],
     return SlayerQuery.model_validate(data)
 
 
-def _first_anchor(query: SlayerQuery) -> Optional[str]:
+def first_metric_anchor(query: SlayerQuery) -> Optional[str]:
     """The first dataset a metric (else a filter) of ``query`` names."""
     for text in [*(m.metric for m in query.metrics or []), *query.filter_conditions]:
         try:
@@ -289,7 +289,7 @@ def plan_rows(
         return RowPlan(population=population, supply=RowSupply(), row_sources=(population,), reported=population)
     if not has_dims:
         host = (classify_row_sources(query, datasets_by_name=datasets_by_name).homes or (None,))[0]
-        population = host or _first_anchor(query)
+        population = host or first_metric_anchor(query)
         if population is None:
             anchor.required()
             raise ValueError("a query with no dimensions, metrics or filters has no rows")
@@ -314,7 +314,7 @@ def plan_rows(
         return RowPlan(population=sources.homes[0], supply=RowSupply(), row_sources=row_sources,
                        reported=anchor.display)
     # A supplying home hosts the stage, so a producer rooted at the host reads that home's own rows.
-    population = (sources.homes or anchor_datasets or (_first_anchor(query),))[0]
+    population = (sources.homes or anchor_datasets or (first_metric_anchor(query),))[0]
     if population is None:
         anchor.required()
         raise ValueError("an inferred query with metrics names no dataset")

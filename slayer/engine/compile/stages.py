@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType
 from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.time_spine import is_spine
 from slayer.core.models import DatasetField, EmptyValue, SlayerDataset, aggregation_definition, empty_value
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, first_bucket_remedy, key_display, legacy_class_name
 from slayer.engine.reference_closure import (
@@ -4377,6 +4378,10 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             and len(pushed_conjunct_keys) < n_semi
         ), "a spine-covered fanning mask coexists with an inline plain aggregate"
         host_population_gated = bool(pop_semi_join_groups)
+    # An inferred spine stage with no other dimensions lists every bucket: its filters restrict the homes only.
+    spine_unit = bundle.row_supply is not None and render_source_dataset is not None and is_spine(render_source_dataset)
+    if spine_unit:
+        pop_semi_join_groups, host_population_gated = [], False
 
     # Each filter conjunct compiles to a hidden whole-predicate slot; the mask entry
     # carries its typing and stratum. Interned after every other slot so no earlier
@@ -4400,6 +4405,8 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     for i, (bf, ct) in enumerate(zip(bound_filters, filter_typings)):
         key = _drop_conjuncts(value_key=bf.value_key, drop=pushed_set)
         key = host_mask(key, spine=spine) if key is not None else None
+        if spine_unit and ct.typing == MaskTyping.FIELD:
+            key = None
         if key is None:
             continue  # every conjunct moved to the EXISTS, or bounds the spine series
         mask_sid = projection.registry.find_by_key(key)
