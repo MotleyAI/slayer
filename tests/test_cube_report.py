@@ -48,7 +48,7 @@ def test_report_filters_by_category_and_severity():
 def test_report_has_no_errors_when_all_info_or_warning():
     report = CubeConversionReport()
     report.add(CubeConversionIssue(
-        category=CubeIssueCategory.SEGMENT_AS_COLUMN, severity="info", message="x"))
+        category=CubeIssueCategory.SEGMENT_AS_FIELD, severity="info", message="x"))
     assert not report.has_errors
 
 

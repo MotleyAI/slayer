@@ -21,7 +21,7 @@ from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema.ingestion import (
     IntrospectedColumn, ResultList, _inferred_elements, _retyped_list, ingest_datasource_idempotent,
-    retyped_sql_columns,
+    retyped_sql_fields,
 )
 from slayer.mcp.server import create_mcp_server
 from slayer.live_schema.schema_scope import SchemaRef
@@ -585,7 +585,7 @@ class TestSqlModeElementType:
         model = SlayerDataset.model_validate({"name": "tagged", "sql": "SELECT id, tags FROM t", "data_source": "sf",
                                             "fields": [{"name": "id", "datatype": "Integer"},
                                                         {"name": "tags", "datatype": "Array"}]})
-        updated, retyped = retyped_sql_columns(model, lists={"tags": ResultList(element_type=DataType.INTEGER,
+        updated, retyped = retyped_sql_fields(model, lists={"tags": ResultList(element_type=DataType.INTEGER,
                                                                                 db_type="ARRAY")})
         tags = updated.get_field("tags")
         assert tags is not None

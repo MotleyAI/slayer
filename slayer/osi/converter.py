@@ -1154,7 +1154,7 @@ class OsiToSlayerConverter:
         *quals, leaf = tree.parts
         if not quals or not isinstance(leaf, exp.Identifier) or self._is_self_qualifier(quals, dataset=dataset):
             return None
-        target = self._walk_join_alias(host=dataset, alias=".".join(q.name for q in quals),
+        target = self._walk_relationship_alias(host=dataset, alias=".".join(q.name for q in quals),
                                        quoted=self._hop_quoting(quals))
         field = self._field_reached(target, leaf) if target is not None else None
         return None if target is None or field is None else (target, field)
@@ -1198,7 +1198,7 @@ class OsiToSlayerConverter:
             own = self._is_self_qualifier(quals, dataset=dataset)
             if not own and self._is_physical_multihop_ref(dataset=dataset, quals=names):
                 continue
-            target = dataset if own else self._walk_join_alias(
+            target = dataset if own else self._walk_relationship_alias(
                 host=dataset, alias=".".join(names), quoted=self._hop_quoting(quals))
             if target is None or self._field_reached(target, leaf) is None:
                 bad.append(".".join([*names, leaf.name]))
@@ -1218,7 +1218,7 @@ class OsiToSlayerConverter:
         except AmbiguousReferenceError:
             return None
 
-    def _walk_join_alias(self, host: SlayerDataset, alias: str, quoted: Sequence[bool] = ()) -> SlayerDataset | None:
+    def _walk_relationship_alias(self, host: SlayerDataset, alias: str, quoted: Sequence[bool] = ()) -> SlayerDataset | None:
         """Resolve a dotted relationship qualifier (``quoted`` hops matched exactly) to its terminal joined dataset, or
         None (never ``__``-split)."""
         return resolve_ref_target(

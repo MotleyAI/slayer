@@ -355,7 +355,7 @@ def test_segment_becomes_boolean_column():
     col = column(models["orders"], "completed")
     assert col.datatype == DataType.BOOLEAN
     assert col.sql == "status = 'completed'"
-    assert any(i.category == CubeIssueCategory.SEGMENT_AS_COLUMN for i in report.issues)
+    assert any(i.category == CubeIssueCategory.SEGMENT_AS_FIELD for i in report.issues)
 
 
 # ── 7. unmapped infra ──────────────────────────────────────────────────────

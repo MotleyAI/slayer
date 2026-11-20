@@ -12,9 +12,9 @@
 
 ## 3. `slayer/` stragglers (pr-implement)
 
-- [ ] 3.1 Rename each former straggler's SLayer-concept uses with `dr-refactor rename-map` (dry-run → review → `--apply`, the full gate), stand-ins triaged one by one with `--with` / `--without`. Verify: `la-typecheck` reports no new errors.
-- [ ] 3.2 Mixed-use names (e.g. `slayer/live_schema/ingestion.py: columns`, `slayer/sql/generator.py: column`): rename the straggler uses, add a `carve_outs` entry with its reason (Decision 9). Verify: the guard test passes.
-- [ ] 3.3 `SEGMENT_AS_COLUMN` → `SEGMENT_AS_FIELD = "segment_as_field"` in `slayer/cube/report.py` and its uses; before/after entry in `docs/upgrading/2.0.md` (Decisions 5, 13). Verify: test 2.4 passes.
+- [x] 3.1 Rename each former straggler's SLayer-concept uses with `dr-refactor rename-map` (dry-run → review → `--apply`, the full gate), stand-ins triaged one by one with `--with` / `--without`. Verify: `la-typecheck` reports no new errors.
+- [x] 3.2 Mixed-use names (e.g. `slayer/live_schema/ingestion.py: columns`, `slayer/sql/generator.py: column`): rename the straggler uses, add a `carve_outs` entry with its reason (Decision 9). Verify: the guard test passes.
+- [x] 3.3 `SEGMENT_AS_COLUMN` → `SEGMENT_AS_FIELD = "segment_as_field"` in `slayer/cube/report.py` and its uses; before/after entry in `docs/upgrading/2.0.md` (Decisions 5, 13). Verify: test 2.4 passes.
 
 ## 4. `tests/` sweep
 
