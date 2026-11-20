@@ -413,16 +413,16 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage: StorageBackend
     engine = SlayerQueryEngine(storage=bq_dev2120_storage)
     for column in ("zoned_ts", "wall_ts"):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "events", "dimensions": ["id", {"field": f"date_add({column}, 1, 'day')", "alias": "v"}],
-            "filter": [f"{column} < now()", f"{column} > date_add(now(), -36500, 'day')"],
+            "population": "events", "dimensions": ["events.id", {"field": f"date_add(events.{column}, 1, 'day')", "alias": "v"}],
+            "filter": [f"events.{column} < now()", f"events.{column} > date_add(now(), -36500, 'day')"],
         }))
-        got = {int(r["events.id"]): r["events.v"] for r in resp.data}
+        got = {int(r["events.id"]): r["v"] for r in resp.data}
         assert got == {1: datetime(2024, 3, 1, 10, 0), 2: datetime(2025, 6, 2, 23, 30)}, (column, resp.sql)
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "events",
-            "dimensions": ["id", column, {"field": f"date_trunc('month', {column})", "alias": "bucket"}],
+            "dimensions": ["events.id", f"events.{column}", {"field": f"date_trunc('month', events.{column})", "alias": "bucket"}],
         }))
-        rows = {int(r["events.id"]): (r[f"events.{column}"], r["events.bucket"]) for r in resp.data}
+        rows = {int(r["events.id"]): (r[f"events.{column}"], r["bucket"]) for r in resp.data}
         assert rows == {1: (datetime(2024, 2, 29, 10, 0), datetime(2024, 2, 1)),
                         2: (datetime(2025, 6, 1, 23, 30), datetime(2025, 6, 1))}, (column, resp.sql)
 
@@ -474,7 +474,7 @@ def test_repeated_field_ingested(bq_lists) -> None:
 
 async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> None:
     engine = SlayerQueryEngine(storage=bq_lists[0])
-    stale = SlayerQuery.model_validate({"population": "stale", "dimensions": ["skills"]})
+    stale = SlayerQuery.model_validate({"population": "stale", "dimensions": ["stale.skills"]})
     with pytest.raises(SchemaDriftError) as info:
         await engine.execute(stale)
     assert "skills" in str(info.value), str(info.value)
@@ -503,14 +503,14 @@ def bq_amounts(bq_dataset, tmp_path_factory):
 
 async def test_collect_over_exact_numerics(bq_amounts) -> None:
     resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
-        "population": "amounts", "dimensions": ["team"],
-        "metrics": [{"metric": f"collect({c})", "alias": f"{c}_set"} for c in _AMOUNT_FIELDS],
+        "population": "amounts", "dimensions": ["amounts.team"],
+        "metrics": [{"metric": f"collect(amounts.{c})", "alias": f"{c}_set"} for c in _AMOUNT_FIELDS],
     }))
-    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_FIELDS}
+    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"{c}_set"]) or ()] for c in _AMOUNT_FIELDS}
            for r in resp.data}
     assert got == {"a": {"n": [1.5, 2.25], "big": [1.5, 2.25], "i": [1.0, 2.0]},
                    "b": {"n": [], "big": [], "i": []}}, resp.sql
-    assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_FIELDS), resp.data
+    assert all(r[f"{c}_set"] is not None for r in resp.data for c in _AMOUNT_FIELDS), resp.data
 
 
 # Last in the module: re-ingest re-types the shared ``stale`` dataset too. The BigQuery driver reports a
