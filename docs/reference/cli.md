@@ -364,19 +364,21 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `connection_string` | Yes | Database URL (e.g. `postgresql://…`, `mysql+pymysql://…`, `sqlite:///path/to/file.db`, `duckdb:///…`, `clickhouse+http://…`). `${ENV_VAR}` references are resolved at use time. Pass the literal `demo` to spin up the bundled Jaffle Shop demo DuckDB. |
 | `--name` | No | Override the auto-derived name (default for the demo: `jaffle_shop`) |
 | `--description` | No | Human-readable description |
-| `--ingest` | No | Run auto-ingestion immediately after creating the datasource |
+| `--ingest` | No | Run `slayer ingest` immediately after creating the datasource (the demo runs its own enriched ingest instead) |
 | `--schema` | No | (with `--ingest`) Schema to ingest from |
 | `--include` | No | (with `--ingest`) Comma-separated tables to include |
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
 | `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
 | `--surface-internals` | No | (with `--ingest`) Ingest recognised ELT/migration internals visible instead of hidden |
 | `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
-| `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
+| `-y`, `--yes` | No | Overwrite an existing datasource without prompting |
 | `--storage` | No | Storage path |
 
 The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. Ingested demo models are enriched with curated column labels/descriptions, currency and percent formats, saved measures (e.g. `orders.total_revenue`, `orders.avg_order_value`, `orders.effective_tax_rate`), and a `weighted_avg` custom-aggregation example on `orders`. The enrichment is additive-only: labels/descriptions are filled only where unset and existing measures are never overwritten, so user edits survive re-runs. `duckdb` and `jafgen` are core dependencies of `motley-slayer`, so the demo works after a single `pip install motley-slayer` with no extras needed.
 
-If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
+If a datasource with the same name already exists, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
+
+For a database URL (not `demo`), `--ingest` runs the same idempotent, additive ingest as `slayer ingest` and prints the same output. Re-creating a datasource replaces its config but merges the fresh scan into its stored models, never overwriting them. To reset a model to a fresh scan, run `slayer models delete` first. Once the datasource is created, the command exits 0 whatever the ingest reports. An ingest that raises exits 1.
 
 With `--ingest`, the `Hidden` and `Skipped` sections described under [`slayer ingest`](#slayer-ingest) are printed after the models are written. Neither affects the exit code here — creating the datasource is this command's job, and it succeeded.
 
