@@ -13,7 +13,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import AmbiguousRelationshipPathError, UnresolvableDimensionRelationshipError
+from slayer.core.errors import AmbiguousRelationshipPathError, UnknownReferenceError
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -1298,15 +1298,14 @@ async def test_cross_model_measure_monthly(cross_dataset_env):
 
 
 async def test_cross_model_measure_no_join_raises(cross_dataset_env):
-    """An unreachable cross-dataset metric target is route-aware-rejected:
-    ``UnresolvableDimensionJoinError`` (a ``ValueError``) with no route to target."""
+    """A metric whose first segment names no dataset is an unknown reference."""
     engine = cross_dataset_env
 
     query = SlayerQuery(
         population="orders",
         metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(nonexistent.some_measure)")],
     )
-    with pytest.raises(UnresolvableDimensionRelationshipError, match="no route to target"):
+    with pytest.raises(UnknownReferenceError, match="nonexistent"):
         await engine.execute(query)
 
 

@@ -26,9 +26,8 @@ postgresql_proc = factories.postgresql_proc(port=None)
 
 DS = "testpg"
 
-LONG_EMAIL = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
-NAME_KEY = "SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
-EMAIL_KEY = "SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
+NAME_KEY = "SandboxSubscriptionRecord.SandboxCustomerAccount.SandboxConsumerProfile.name"
+EMAIL_KEY = "SandboxSubscriptionRecord.SandboxCustomerAccount.SandboxConsumerProfile.email"
 
 
 def _create_db(postgresql_proc):
@@ -88,7 +87,7 @@ def _chain_storage(postgresql_proc, tmp_path_factory):
         )))
 
         run_sync(storage.save_dataset(SlayerDataset(
-            name="SandboxConsumer", sql_table="consumers", data_source=DS,
+            name="SandboxConsumerProfile", sql_table="consumers", data_source=DS,
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="name", sql="name", datatype=DataType.STRING),
@@ -97,20 +96,20 @@ def _chain_storage(postgresql_proc, tmp_path_factory):
             ],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
-            name="SandboxCustomer", sql_table="customers", data_source=DS,
+            name="SandboxCustomerAccount", sql_table="customers", data_source=DS,
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="SandboxConsumer", from_columns=["consumer_id"], to_columns=["id"])],
+            relationships=[DatasetRelationship(to="SandboxConsumerProfile", from_columns=["consumer_id"], to_columns=["id"])],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
-            name="SandboxSubscription", sql_table="subscriptions", data_source=DS,
+            name="SandboxSubscriptionRecord", sql_table="subscriptions", data_source=DS,
             fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="SandboxCustomer", from_columns=["customer_id"], to_columns=["id"])],
+            relationships=[DatasetRelationship(to="SandboxCustomerAccount", from_columns=["customer_id"], to_columns=["id"])],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxInvoiceV2", sql_table="invoices", data_source=DS,
@@ -121,7 +120,7 @@ def _chain_storage(postgresql_proc, tmp_path_factory):
                 DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(
-                to="SandboxSubscription", from_columns=["subscription_id"], to_columns=["id"],
+                to="SandboxSubscriptionRecord", from_columns=["subscription_id"], to_columns=["id"],
             )],
         )))
         yield storage
@@ -137,7 +136,7 @@ async def chain_env(_chain_storage: YAMLStorage) -> AsyncIterator[SlayerQueryEng
         yield engine
 
 
-DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
+DEEP = "SandboxSubscriptionRecord.SandboxCustomerAccount.SandboxConsumerProfile"
 
 
 @pytest.mark.integration
@@ -149,8 +148,8 @@ class TestPostgresIdentifierLength:
                 dataset=cast(SlayerDataset, await chain_env.storage.get_dataset("SandboxInvoiceV2", data_source=DS)),
             ),
         )
-        rows = (await client.execute(sql=f'SELECT 1 AS "{LONG_EMAIL}"')).rows
-        assert list(rows[0])[0] != LONG_EMAIL, "server did not truncate; premise broken"
+        rows = (await client.execute(sql=f'SELECT 1 AS "{EMAIL_KEY}"')).rows
+        assert list(rows[0])[0] != EMAIL_KEY, "server did not truncate; premise broken"
         assert len(list(rows[0])[0].encode()) == 63
 
     async def test_collapse_with_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
@@ -223,7 +222,7 @@ class TestPostgresIdentifierLength:
         })
         result = await chain_env.execute(query=query)
         assert set(result.data[0]) >= {NAME_KEY, EMAIL_KEY}
-        assert LONG_EMAIL not in cast(str, result.sql)
+        assert EMAIL_KEY not in cast(str, result.sql)
 
     async def test_cached_execution_round_trip(self, chain_env: SlayerQueryEngine) -> None:
         """A cache hit returns canonical keys too, proving decode runs before storage."""
@@ -263,7 +262,7 @@ class TestPostgresIdentifierLength:
         })
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "dimensions": [QueryDimension(field="stage1.SandboxSubscription__SandboxCustomer__SandboxConsumer__email")],
+            "dimensions": [QueryDimension(field="stage1.SandboxSubscriptionRecord__SandboxCustomerAccount__SandboxConsumerProfile__email")],
             "metrics": [{"metric": "sum(stage1.totalAmount_sum)"}],
         })
         result = await chain_env.execute(query=[stage1, stage2])
