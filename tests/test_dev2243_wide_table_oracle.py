@@ -32,14 +32,9 @@ FIXTURES = {
     "stores": ("stores/stores.sql", "stores/stores_model.ossie.yaml"),
     "stores_ambiguous": ("stores/stores.sql", "stores/stores_ambiguous_model.ossie.yaml"),
 }
-#: Row cases whose rows follow Ossie's root-less row rule (groups from each metric's home, the union of branch keys,
-#: one row without dimensions, paths from each home), which SLayer's inferred population does not give yet.
-ROW_RULE = frozenset({
-    "a05_groups_from_orders", "a06_groups_from_returns", "a09_aliases", "a14_filter_false_without_dimension",
-    "a15_unconnected_filter_false", "a16_shared_dimensions_stores", "a19_sales_by_year", "a20_filter_on_sale_year",
-    "a21_single_path_on_ambiguous_model",
-})
-ROW_RULE_XFAIL = "DEV-2212: the root-less row rule (rows from each metric's home) is not implemented yet"
+#: Row cases whose metric binds through the stage's host, which has two routes to the metric's home.
+OWN_HOME = frozenset({"a16_shared_dimensions_stores"})
+OWN_HOME_XFAIL = "DEV-2388: a metric binds through its host, not from its own home"
 ERROR_XFAIL = "DEV-2217: the strict binding does not raise Ossie's error codes yet"
 
 Cell = Decimal | str | None
@@ -116,8 +111,8 @@ def _case_param(case: Path) -> Any:
     marks = []
     if name.startswith("e"):
         marks.append(pytest.mark.xfail(strict=True, reason=ERROR_XFAIL))
-    elif name in ROW_RULE:
-        marks.append(pytest.mark.xfail(strict=True, reason=ROW_RULE_XFAIL))
+    elif name in OWN_HOME:
+        marks.append(pytest.mark.xfail(strict=True, reason=OWN_HOME_XFAIL))
     return pytest.param(case, id=name, marks=marks)
 
 
@@ -154,7 +149,7 @@ async def run_case(case: Path, tmp: Path) -> tuple[Expected, dict[str, Any], Any
 def test_every_case_names_a_known_fixture() -> None:
     assert CASES
     assert {read_expected(case).fixture for case in CASES} <= set(FIXTURES)
-    assert ROW_RULE <= {case.name for case in CASES}
+    assert OWN_HOME <= {case.name for case in CASES}
 
 
 @pytest.mark.parametrize("case", [_case_param(c) for c in CASES])

@@ -20,7 +20,7 @@ Element principles that apply: system 4, 5, 6, 8, 10, 11; storage 1, 2, 3, 3.1, 
 - No regression for standalone datasets, custom storage backends, or anything the 1.x converter imported.
 
 **Non-Goals:**
-- Evaluating `OVER` (DEV-2282), composite unique-key proofs and the rest of the dataset surface (DEV-2244), the root-less row rule (DEV-2212), Ossie error codes and the strict binding (DEV-2217).
+- Evaluating `OVER` (DEV-2282), composite unique-key proofs and the rest of the dataset surface (DEV-2244), binding a metric from its own home (DEV-2388), Ossie error codes and the strict binding (DEV-2217).
 - Registering SLayer in apache/ossie-converters (moved to DEV-2220).
 - A document-name qualifier in references.
 - Probing and persisting types at save.
@@ -36,7 +36,7 @@ Each entry keeps its source tag: `(user)` the owner decided, `(default)` taken b
 4. **Unknown datatypes are probed lazily at query time,** cached per engine and storage fingerprint, never persisted on load; `validate-datasets` reports untyped fields and `--force-clean` writes them in (`Array` as `Opaque` plus a `SLAYER` entry). Rejected: probing and persisting at save — two type paths, stale types, unrequested writes. (user)
 5. **Textual fidelity via ruamel.yaml round-trip mode,** patching only changed nodes; SQLite stores text verbatim; `ruamel-yaml` becomes a runtime dependency. Rejected: semantic-only fidelity — every edit would wipe comments. (user)
 6. **`AGG(…)` is accepted in stored dataset metrics** with the same meaning as in queries and model-scoped metrics. Rejected: refusing it there — a position-dependent refusal of a well-typed term breaks closure (semantics Axioms 9, 13). (user)
-7. **The query oracle is upstream `compliance/wide_table`, every case,** run on in-process DuckDB; row-rule cases strict-xfail against DEV-2212, `e*` cases against DEV-2217. Rejected: a self-written reference lowering — its misreadings can mirror ours. (user)
+7. **The query oracle is upstream `compliance/wide_table`, every case,** run on in-process DuckDB; cases whose metric binds through a host with two routes to its home strict-xfail against DEV-2388, `e*` cases against DEV-2217. Rejected: a self-written reference lowering — its misreadings can mirror ours. (user)
 8. **The corpus is every file-based upstream semantic-model document plus the accepted inline validator documents, harvested.** This extends the issue's m0–m3 to m0–m8 and adds the compliance models. PRs run it against the pinned snapshot; a dedicated job, on the weekly schedule and manual dispatch only, refreshes it from upstream `main` (with the harvest) and runs the same suite. Rejected: file-based documents only. (user)
 9. **System Principle 11 is unchanged.** `import-osi` stores the user's file verbatim after an Ossie-validity check, like a hand-written file; save-time checks judge only what a save adds or changes (plus today's broken-dependents analysis); SLayer authoring stays strict. Rejected: a Principle 11.1 exempting Ossie-valid definitions at save. (user)
 10. **The upstream grader registration moves to DEV-2220;** this change ships `slayer ossie-roundtrip` and the vendored-grader test. Rejected: drafting the upstream PR now — upstream's runner interface may change before release. (user)

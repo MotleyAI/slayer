@@ -184,7 +184,7 @@ A corpus vendored with provenance pinning the upstream apache/ossie commit SHALL
 - **THEN** the export equals the original text byte for byte
 
 ### Requirement: Upstream's wide-table cases are the query oracle
-Every case of upstream `compliance/wide_table/cases` SHALL run against its named fixture model, stored as a native document over its SQL data loaded into in-process DuckDB. A row case (`a*`) SHALL return exactly the expected rows under the default conformance; a case that depends on the root-less row rule SHALL be a strict expected failure naming DEV-2212. An error case (`e*`) SHALL be a strict expected failure naming DEV-2217 until the strict binding raises Ossie's error codes.
+Every case of upstream `compliance/wide_table/cases` SHALL run against its named fixture model, stored as a native document over its SQL data loaded into in-process DuckDB. A row case (`a*`) SHALL return exactly the expected rows under the default conformance; a case whose metric binds through a host with two routes to its home SHALL be a strict expected failure naming DEV-2388. An error case (`e*`) SHALL be a strict expected failure naming DEV-2217 until the strict binding raises Ossie's error codes.
 
 #### Scenario: The model-scoped metric components case
 - **WHEN** case `a08_model_metric_components` runs on the `retail` fixture

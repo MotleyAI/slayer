@@ -41,4 +41,4 @@ An Ossie semantic-model document reaches SLayer today only through `slayer impor
 - **Architecture**: `architecture/semantics.arc42.md` Principle 3 gains the model-scoped metric clause (approved wording); no `model.c4` or `index.yaml` change intended.
 - **CI**: a new weekly-only job for the fresh-upstream corpus; `scripts/ossie_schema_drift.py` extended to the corpus.
 - **Docs**: new `docs/concepts/semantic-models.md` (in `zensical.toml` nav), updates to datasets, storage, Ossie import/export, schema drift and reference pages, and a migration-guide section in `docs/upgrading/2.0.md`.
-- **Related issues**: DEV-2212 and DEV-2217 take over the xfailed wide-table cases; DEV-2220 takes the upstream grader registration; DEV-1661 mirrors the layout; DEV-2282 and DEV-2244 own the constructs that load but cannot yet be evaluated.
+- **Related issues**: DEV-2388 and DEV-2217 take over the xfailed wide-table cases; DEV-2220 takes the upstream grader registration; DEV-1661 mirrors the layout; DEV-2282 and DEV-2244 own the constructs that load but cannot yet be evaluated.
