@@ -2303,9 +2303,7 @@ class _ProjectionPlan(BaseModel):
     projection_types: list[DataType | None]
 
 
-def _record_metric(
-    *, plan: _ProjectionPlan, item: _ProjectionItem, table: FacadeTable,
-) -> None:
+def _record_metric(*, plan: _ProjectionPlan, item: _ProjectionItem) -> None:
     assert item.metric is not None
     plan.metrics.append({
         "metric": item.metric.metric_expression,
@@ -2385,7 +2383,7 @@ def _build_projection_plan(
     )
     for item in items:
         if item.metric is not None:
-            _record_metric(plan=plan, item=item, table=table)
+            _record_metric(plan=plan, item=item)
         elif item.time_grain is not None:
             _record_time_grain(plan=plan, item=item, table=table)
         elif item.extraction is not None:

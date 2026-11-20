@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import SlayerError, UnknownReferenceError
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1954_fixtures import execution_spy
@@ -214,6 +214,15 @@ async def test_a_dataset_first_path_never_converts(seed: SlayerQueryEngine) -> N
     assert resp.columns == ["customers.region"]
 
 
+async def test_a_population_spelled_in_another_case_reads_its_datasets_names(seed: SlayerQueryEngine) -> None:
+    # ``nosuch`` is neither a dataset nor a field or edge of ``orders``: nothing to convert.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(UnknownReferenceError):
+            await seed.execute({"population": "ORDERS", "dimensions": ["nosuch.region"]})
+    assert conversions(caught) == []
+
+
 async def test_each_stage_converts_against_its_own_population(engine: SlayerQueryEngine) -> None:
     await assert_converts(
         engine,
@@ -361,6 +370,17 @@ async def test_a_refinement_matches_a_converted_entry(seed: SlayerQueryEngine, r
     assert refined.sql == plain.sql
     assert refined.columns == plain.columns
     assert sorted(conversions(caught)) == sorted(expected)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_refinement_converts_an_edge_declared_on_the_other_side(backend: str) -> None:
+    async with orders_engine(backend, edge_name="buyer") as eng:
+        await eng.create_dataset_from_query(
+            query={"population": "customers", "metrics": [m("count(customers.buyer.id)", "n")]}, name="buyers")
+        plain = await eng.execute("buyers")
+        refined, caught = await execute_recording(eng, "buyers", refine={"metrics": [m("count(buyer.id)", "n")]})
+    assert refined.sql == plain.sql
+    assert conversions(caught) == [("buyer.id", "customers.buyer.id")]
 
 
 async def test_a_converted_query_shares_its_twins_cached_result(seed: SlayerQueryEngine,
