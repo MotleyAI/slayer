@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Hashable
 from typing import Any, TypeVar
 
+from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
@@ -17,6 +18,8 @@ _T = TypeVar("_T")
 
 class EngineStorage(StorageBackend):
     """``inner`` as one query engine reads it; closing the view never closes ``inner``."""
+
+    _delegates_documents = True
 
     def __init__(self, inner: StorageBackend, *, client_source: ClientSource) -> None:
         # Another engine's view is unwrapped: a view always reads its own engine's clients.
@@ -105,6 +108,26 @@ class EngineStorage(StorageBackend):
         await self._sourced(self._inner.delete_memory(memory_id))
 
     # ---- datasets -----------------------------------------------------------
+
+    # ---- semantic-model documents (the inner store's) ------------------------
+
+    async def list_semantic_models(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        return await self._inner.list_semantic_models(data_source=data_source)
+
+    async def get_semantic_model_text(self, name: str, data_source: str | None = None) -> str | None:
+        return await self._inner.get_semantic_model_text(name, data_source=data_source)
+
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
+        await self._inner.save_semantic_model_text(data_source=data_source, name=name, text=text)
+
+    async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
+        return await self._inner.delete_semantic_model(name, data_source=data_source)
+
+    async def semantic_model_owner(self, name: str, *, data_source: str) -> str | None:
+        return await self._inner.semantic_model_owner(name, data_source=data_source)
+
+    async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
+        return await self._inner.list_model_scoped_metrics(data_source)
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         return await self._sourced(self._inner.get_dataset(name, data_source=data_source))

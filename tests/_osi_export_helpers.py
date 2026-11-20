@@ -23,7 +23,7 @@ from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.sql.ossie_dialects import read, render, select_expression
 from slayer.osi.exporter import OsiExportResult, export_osi
 from slayer.core.ossie_expression import OSIExpression
-from slayer.osi.source import parse_source
+from slayer.sql.ossie_source import parse_source
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine

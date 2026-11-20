@@ -79,7 +79,7 @@ from slayer.osi.models import (
 )
 from slayer.core.ossie_expression import OSINonportableExtension
 from slayer.core import slayer_extension as ext
-from slayer.osi.source import ParsedSource, parse_source, resolve_datasource
+from slayer.sql.ossie_source import ParsedSource, parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
 

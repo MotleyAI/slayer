@@ -25,7 +25,7 @@ import asyncio
 import contextlib
 import os
 from typing import Any
-from collections.abc import Generator, Hashable
+from collections.abc import Callable, Generator, Hashable
 
 import yaml
 from pydantic import ValidationError
@@ -259,6 +259,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self.base_dir = base_dir
         self.models_dir = os.path.join(base_dir, "models")
         self.datasources_dir = os.path.join(base_dir, "datasources")
+        self.semantic_models_dir = os.path.join(base_dir, "semantic_models")
         self._priority_path = os.path.join(base_dir, "priority.yaml")
         # Memories are one ``.md`` file per id under ``memories/``.
         # ``_memories_path`` still names the legacy flat file (used only by the
@@ -510,6 +511,74 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             )
         _atomic_write_yaml(path=path, data=data)
         self._forget_raw(data_source=data_source, name=dataset_name)
+
+    # ---- semantic-model documents ------------------------------------------
+
+    def _document_path(self, data_source: str, name: str) -> str:
+        _validate_path_component(data_source, kind="datasource name")
+        _validate_path_component(name, kind="semantic model name")
+        return os.path.join(self.semantic_models_dir, data_source, f"{name}.yaml")
+
+    def _document_exists(self, data_source: str, name: str) -> bool:
+        return _exact_entry_exists(dir_path=self.semantic_models_dir, entry_name=data_source) and _exact_entry_exists(
+            dir_path=os.path.join(self.semantic_models_dir, data_source), entry_name=f"{name}.yaml")
+
+    @contextlib.contextmanager
+    def _document_lock(self, path: str) -> Generator[None, None, None]:
+        """An exclusive ``flock`` on the document's sibling ``.lock`` file across one read-patch-write."""
+        if _fcntl is None:
+            yield
+            return
+        with open(f"{path}.lock", "ab") as fh:
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+
+    async def _save_semantic_model_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        path = self._document_path(data_source, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with self._document_lock(path):
+            _atomic_write_text(path=path, text=text)
+
+    async def _get_semantic_model_text_impl(self, *, data_source: str, name: str) -> str | None:
+        path = self._document_path(data_source, name)
+        if not self._document_exists(data_source, name):
+            return None
+        try:
+            with open(path, encoding="utf-8", newline="") as f:  # NOSONAR(S7493) — local read
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
+        if not os.path.isdir(self.semantic_models_dir):
+            return []
+        out: list[tuple[str, str]] = []
+        for ds in sorted(os.listdir(self.semantic_models_dir)):
+            ds_dir = os.path.join(self.semantic_models_dir, ds)
+            if os.path.isdir(ds_dir):
+                out += [(ds, f[:-5]) for f in sorted(os.listdir(ds_dir)) if f.endswith(".yaml")]
+        return out
+
+    async def _delete_semantic_model_row(self, *, data_source: str, name: str) -> bool:
+        if not self._document_exists(data_source, name):
+            return False
+        path = self._document_path(data_source, name)
+        with self._document_lock(path):
+            os.remove(path)
+        with contextlib.suppress(OSError):
+            os.remove(f"{path}.lock")
+        return True
+
+    async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        path = self._document_path(data_source, name)
+        with self._document_lock(path):
+            with open(path, encoding="utf-8", newline="") as f:  # NOSONAR(S7493) — local read
+                text = patch(f.read())
+            _atomic_write_text(path=path, text=text)
+        return text
 
     # ---- datasource CRUD ---------------------------------------------------
 

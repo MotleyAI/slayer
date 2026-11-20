@@ -282,11 +282,11 @@ class DatasetField(DatasetPart):
         default=None,
         description="Deprecated: use expression. Kept only until the datasource's dialect is known.",
     )
-    datatype: DataType = Field(
+    datatype: DataType | None = Field(
         default=DataType.STRING,
         description=(
             "String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz, Opaque (stored and shown, "
-            "never operated on), or Array (a list)."
+            "never operated on), or Array (a list). Unset (null) only on a semantic-model document's undeclared type."
         ),
     )
     element_type: DataType | None = Field(
@@ -325,6 +325,7 @@ class DatasetField(DatasetPart):
     allowed_aggregations: list[str] | None = None
     filter: str | None = None  # Desugars to CASE WHEN (filter) THEN (value) END in every position
     meta: dict[str, Any] | None = None
+    load_warning: str | None = Field(default=None, exclude=True)  # runtime: why a document entity cannot run yet
     sampled: str | None = None  # cached sample-value snapshot
     sampled_values: list[str] | None = None  # structured top-N
     distinct_count: int | None = None  # true cardinality at profile time
@@ -652,6 +653,7 @@ class DatasetMetric(MetricBase, DatasetPart):
     description: str | None = None
     datatype: DataType | None = None
     meta: dict[str, Any] | None = None
+    load_warning: str | None = Field(default=None, exclude=True)  # runtime: why a document entity cannot run yet
 
     @model_validator(mode="wrap")
     @classmethod

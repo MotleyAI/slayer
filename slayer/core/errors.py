@@ -1345,6 +1345,53 @@ class StoredDocumentLoadError(SlayerError, ValueError):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
+class OssieDocumentInvalidError(SlayerError):
+    """A semantic-model document that is not a valid Ossie ``0.3.0.dev0`` document; ``reasons`` lists every reason."""
+
+    def __init__(self, *, name: str, reasons: Sequence[str]) -> None:
+        self.name = name
+        self.reasons = list(reasons)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Semantic model {name!r} is not a valid Ossie document:\n"
+                    + "\n".join(f"  - {r}" for r in self.reasons),
+        ))
+
+
+class NamespaceCollisionError(SlayerError):
+    """A name a datasource already uses: datasets and model-scoped metrics are unique per datasource, in any case."""
+
+    def __init__(self, *, name: str, owner: str, existing: str, data_source: str) -> None:
+        self.name = name
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{name!r} in {owner} collides with {existing} in datasource {data_source!r}; dataset and "
+                    "model-scoped metric names are unique per datasource (case-insensitively).",
+            suggestion="Rename one of them.",
+        ))
+
+
+class SemanticModelsUnsupportedError(SlayerError):
+    """A storage backend that does not implement the semantic-model hooks."""
+
+    def __init__(self, *, backend: str) -> None:
+        self.backend = backend
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Storage backend {backend} does not support semantic-model documents.",
+            suggestion="Implement its semantic-model storage hooks, or use YAML or SQLite storage.",
+        ))
+
+
+class UnevaluableEntityError(SlayerError):
+    """A document entity SLayer loads but cannot evaluate yet, read by a query."""
+
+    def __init__(self, *, entity: str, reason: str) -> None:
+        self.entity = entity
+        self.reason = reason
+        super().__init__(_format_error_message(cls_name=type(self).__name__, summary=f"{entity} {reason}."))
+
+
 class HiddenContentConflictError(SlayerError):
     """A write conflicts with stored parts the caller cannot access; names only the caller's own document."""
 

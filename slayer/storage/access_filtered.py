@@ -14,6 +14,7 @@ from slayer.core.errors import (
     MemoryNotFoundError,
     UnknownRelationshipTargetError,
 )
+from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
@@ -91,6 +92,8 @@ def _visible_identities(
 
 class AccessFilteredStorage(StorageBackend):
     """``backend`` as a caller with ``tags`` sees it; ``bypass=True`` sees and writes everything."""
+
+    _delegates_documents = True
 
     def __init__(self, backend: StorageBackend, *, tags: Iterable[str], bypass: bool) -> None:
         self._inner = backend
@@ -178,6 +181,26 @@ class AccessFilteredStorage(StorageBackend):
         if self._bypass:
             return await self._inner._list_all_dataset_identities()
         return list((await self._view()).identities)
+
+    # ---- semantic-model documents (the inner store's) ------------------------
+
+    async def list_semantic_models(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        return await self._inner.list_semantic_models(data_source=data_source)
+
+    async def get_semantic_model_text(self, name: str, data_source: str | None = None) -> str | None:
+        return await self._inner.get_semantic_model_text(name, data_source=data_source)
+
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
+        await self._inner.save_semantic_model_text(data_source=data_source, name=name, text=text)
+
+    async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
+        return await self._inner.delete_semantic_model(name, data_source=data_source)
+
+    async def semantic_model_owner(self, name: str, *, data_source: str) -> str | None:
+        return await self._inner.semantic_model_owner(name, data_source=data_source)
+
+    async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
+        return await self._inner.list_model_scoped_metrics(data_source)
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         if self._bypass:

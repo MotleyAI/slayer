@@ -40,7 +40,7 @@ PINNED: dict[tuple[str, str], str] = {
             "core.join_edges", "core.join_search", "core.join_walker", "engine.cardinality.join_safety",
             "engine.column_dependency", "engine.model_reads", "importers.measures", "inspect.model_render",
             "sql.column_expansion", "storage.extension_columns", "storage.model_overlay", "osi.slayer_extension",
-            "osi.dialects",
+            "osi.dialects", "osi.source",
         )
     },
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",

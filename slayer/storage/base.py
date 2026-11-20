@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import functools
 from functools import partial
 import logging
 import os
@@ -26,7 +27,9 @@ from slayer.core.errors import (
     CaseCollisionError,
     ColonSpellingError,
     IdCollisionError,
+    NamespaceCollisionError,
     RelationshipTargetCaseError,
+    SemanticModelsUnsupportedError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
     ReservedFunctionNameError,
@@ -52,6 +55,7 @@ from slayer.core.models import (
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery, mode_a_texts
+from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.syntax import parse_expr
 from slayer.core.vocabulary import bridge_renamed_hooks, method_twin
 from slayer.core.warnings import (
@@ -110,6 +114,7 @@ from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
 from slayer.storage.qualified_references import qualified_stages
+from slayer.storage.semantic_models import DocumentIndex, build_index, checked_document
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
@@ -133,6 +138,8 @@ _RELATIONSHIP_TARGET_REPAIR_BELOW_VERSION = 25
 #: The Memory version from which stored extension fields are inlined.
 _EXTENSION_FIELDS_INLINED_AT = 10
 # Raw document reads of the enclosing ``load_datasets`` pass, by ``(backend, data_source, name)``.
+#: Set while reading the backend's own (standalone) datasets, bypassing the document layer.
+_STANDALONE_ONLY: ContextVar[bool] = ContextVar("_STANDALONE_ONLY", default=False)
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
 # Inside the one-time granularity settle, whose own loads must not wait on it.
@@ -606,6 +613,44 @@ HOOK_ARGUMENTS = {
 }
 
 
+def _documents_first(get: Callable[..., Any]) -> Callable[..., Any]:
+    """``get_dataset`` answering a document dataset first, then the backend's own."""
+
+    @functools.wraps(get)
+    async def get_dataset(self: StorageBackend, name: str, data_source: str | None = None) -> SlayerDataset | None:
+        if not _STANDALONE_ONLY.get() and self._supports_semantic_models():
+            found = await self._document_dataset(name, data_source=data_source)
+            if found is not None:
+                return found
+        return await get(self, name, data_source=data_source)
+
+    setattr(get_dataset, "__documents__", True)
+    return get_dataset
+
+
+def _with_document_identities(identities: Callable[..., Any]) -> Callable[..., Any]:
+    """``_list_all_dataset_identities`` listing every loadable document dataset too."""
+
+    @functools.wraps(identities)
+    async def listed(self: StorageBackend) -> list[tuple[str, str]]:
+        own = await identities(self)
+        if _STANDALONE_ONLY.get() or not self._supports_semantic_models():
+            return own
+        out, seen = list(own), set(own)
+        for ds in sorted({d for d, _ in await self._list_semantic_model_identities()}):
+            for dataset in (await self._document_index(ds)).datasets.values():
+                if (ds, dataset.name) not in seen:
+                    seen.add((ds, dataset.name))
+                    out.append((ds, dataset.name))
+        return out
+
+    setattr(listed, "__documents__", True)
+    return listed
+
+
+_DOCUMENT_WRAPPERS = {"get_dataset": _documents_first, "_list_all_dataset_identities": _with_document_identities}
+
+
 class StorageBackend(ABC):
     """Abstract async storage backend keyed by ``(data_source, name)``. Concrete backends implement the composite-key CRUD; this class supplies shared validation and the priority-aware bare-name resolver."""
 
@@ -613,10 +658,18 @@ class StorageBackend(ABC):
     #: by case (they alias on case-insensitive filesystems). Wrappers copy it.
     _ids_collide_as_filenames = False
     _instance_identity: str | None = None
+    #: A wrapper whose dataset reads already see its inner store's documents.
+    _delegates_documents = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         bridge_renamed_hooks(cls, HOOK_RENAMES, arguments=HOOK_ARGUMENTS)
+        if cls.__dict__.get("_delegates_documents", False):
+            return
+        for attr, wrap in _DOCUMENT_WRAPPERS.items():
+            own = cls.__dict__.get(attr)
+            if own is not None and not getattr(own, "__documents__", False):
+                setattr(cls, attr, wrap(own))
 
     @method_twin("get_dataset")
     @deprecated("get_model is deprecated; use get_dataset", category=None)
@@ -833,19 +886,192 @@ class StorageBackend(ABC):
                 except StoredDocumentLoadError as exc:
                     return exc
 
+        indexes = {ds: await self._document_index(ds) for ds in await self._document_data_sources()
+                   if data_source is None or ds == data_source}
         token = _RAW_PASS.set({}) if _RAW_PASS.get() is None else None
         try:
             loaded = await asyncio.gather(*(
-                _load(ds, name) for ds, name in await self._list_all_dataset_identities()
+                _load(ds, name) for ds, name in await self._standalone_identities()
                 if (data_source is None or ds == data_source) and name != exclude
+                and (ds not in indexes or name.casefold() not in indexes[ds].quarantined)
             ))
         finally:
             if token is not None:
                 _RAW_PASS.reset(token)
+        for index in indexes.values():
+            loaded += [d.model_copy(deep=True) for d in index.datasets.values() if d.name != exclude]
+            loaded += index.failures
         return (
             [m for m in loaded if isinstance(m, SlayerDataset)],
             [e for e in loaded if isinstance(e, StoredDocumentLoadError)],
         )
+
+    # ---- semantic-model documents ------------------------------------------
+
+    def _supports_semantic_models(self) -> bool:
+        return type(self)._get_semantic_model_text_impl is not StorageBackend._get_semantic_model_text_impl
+
+    def _unsupported(self) -> SemanticModelsUnsupportedError:
+        return SemanticModelsUnsupportedError(backend=type(self).__name__)
+
+    async def _save_semantic_model_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        """Durably store a document's text verbatim (backends implement this to support documents)."""
+        raise self._unsupported()
+
+    async def _get_semantic_model_text_impl(self, *, data_source: str, name: str) -> str | None:
+        """A stored document's text, ``None`` when absent."""
+        raise self._unsupported()
+
+    async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
+        """Every stored ``(data_source, name)`` document; a backend without documents lists none."""
+        await asyncio.sleep(0)
+        return []
+
+    async def _delete_semantic_model_row(self, *, data_source: str, name: str) -> bool:
+        raise self._unsupported()
+
+    async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        """Read, ``patch`` and write a document as one serialized step; the written text. Every document content or
+        membership change must change ``graph_fingerprint``."""
+        raise self._unsupported()
+
+    async def _standalone_identities(self) -> list[tuple[str, str]]:
+        token = _STANDALONE_ONLY.set(True)
+        try:
+            return await self._list_all_dataset_identities()
+        finally:
+            _STANDALONE_ONLY.reset(token)
+
+    async def _document_data_sources(self) -> list[str]:
+        if not self._supports_semantic_models():
+            return []
+        return sorted({ds for ds, _ in await self._list_semantic_model_identities()})
+
+    async def _document_index(self, data_source: str) -> DocumentIndex:
+        """``data_source``'s documents resolved against its namespace."""
+        names = [n for ds, n in await self._list_semantic_model_identities() if ds == data_source] \
+            if self._supports_semantic_models() else []
+        if not names:
+            return DocumentIndex(data_source=data_source)
+        documents = []
+        for name in names:
+            text = await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+            if text is not None:
+                documents.append((name, text))
+        standalone = [n for ds, n in await self._standalone_identities() if ds == data_source]
+        datasource = await self.get_datasource(data_source)
+        return build_index(data_source=data_source, documents=documents, standalone=standalone,
+                           ds_type=datasource.type if datasource is not None else None)
+
+    async def _document_dataset(self, name: str, *, data_source: str | None) -> SlayerDataset | None:
+        """The document dataset ``name`` (case-insensitive), ``None`` when no document declares it; raises
+        ``StoredDocumentLoadError`` when the name is quarantined."""
+        if data_source is None:
+            if not await self._document_data_sources():
+                return None
+            identity = await self.resolve_dataset_identity(name)
+            if identity is None:
+                return None
+            data_source, name = identity
+        index = await self._document_index(data_source)
+        cause = index.quarantined.get(name.casefold())
+        if cause is not None:
+            raise StoredDocumentLoadError(kind="dataset", name=name, data_source=data_source, cause=ValueError(
+                f"{name!r} is declared by {cause}; rename one of them"))
+        found = index.datasets.get(name.casefold())
+        return found.model_copy(deep=True) if found is not None else None
+
+    async def _resolve_document(self, name: str, data_source: str | None) -> tuple[str, str] | None:
+        _validate_path_component(name, kind="semantic model name")
+        if data_source is not None:
+            _validate_path_component(data_source, kind="datasource name")
+            return data_source, name
+        matches = [(ds, n) for ds, n in await self._list_semantic_model_identities() if n == name]
+        if len(matches) > 1:
+            raise AmbiguousDatasetError(name=name, candidates=[ds for ds, _ in matches])
+        return matches[0] if matches else None
+
+    async def list_semantic_models(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        """Every stored document as ``(data_source, name)``, of ``data_source`` when given."""
+        if not self._supports_semantic_models():
+            return []
+        return sorted(i for i in await self._list_semantic_model_identities() if data_source in (None, i[0]))
+
+    async def get_semantic_model_text(self, name: str, data_source: str | None = None) -> str | None:
+        """A stored document's text as written; ``None`` when absent."""
+        if not self._supports_semantic_models():
+            raise self._unsupported()
+        target = await self._resolve_document(name, data_source)
+        return await self._get_semantic_model_text_impl(data_source=target[0], name=target[1]) if target else None
+
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
+        """Store ``text`` verbatim as document ``name`` of ``data_source`` after the Ossie validity and namespace checks;
+        replaces a stored document of that name."""
+        _validate_path_component(data_source, kind="datasource name")
+        _validate_path_component(name, kind="semantic model name")
+        if not self._supports_semantic_models():
+            raise self._unsupported()
+        doc = checked_document(text=text, name=name)
+        await self._check_document_namespace(
+            name=name, data_source=data_source, datasets=[d.name for d in doc.datasets],
+            metrics=[m.name for m in doc.metrics or []],
+        )
+        await self._save_semantic_model_text_impl(data_source=data_source, name=name, text=text)
+
+    async def _check_document_namespace(self, *, name: str, data_source: str, datasets: list[str],
+                                        metrics: list[str]) -> None:
+        """Refuse a dataset or model-scoped metric name the datasource already uses elsewhere, in any case."""
+        owner = f"semantic model {name!r}"
+        taken: dict[str, str] = {n.casefold(): f"standalone dataset {n!r}"
+                                 for ds, n in await self._standalone_identities() if ds == data_source}
+        others = [(n, t) for n, t in [
+            (n, await self._get_semantic_model_text_impl(data_source=data_source, name=n))
+            for ds, n in await self._list_semantic_model_identities() if ds == data_source and n != name] if t]
+        datasource = await self.get_datasource(data_source)
+        other_metrics: dict[str, str] = {}
+        for other, text in others:
+            with contextlib.suppress(Exception):
+                index = build_index(data_source=data_source, documents=[(other, text)], standalone=[],
+                                    ds_type=datasource.type if datasource else None)
+                taken.update({k: f"dataset {d.name!r} of semantic model {other!r}" for k, d in index.datasets.items()})
+                other_metrics.update({k: f"metric {m.name!r} of semantic model {other!r}"
+                                      for k, m in index.metrics.items()})
+        for dataset in datasets:
+            if dataset.casefold() in taken:
+                raise NamespaceCollisionError(name=dataset, owner=owner, existing=taken[dataset.casefold()],
+                                              data_source=data_source)
+        own = {d.casefold(): f"dataset {d!r} of {owner}" for d in datasets}
+        for metric in metrics:
+            existing = other_metrics.get(metric.casefold()) or taken.get(metric.casefold()) or own.get(metric.casefold())
+            if existing is not None:
+                raise NamespaceCollisionError(name=metric, owner=owner, existing=existing, data_source=data_source)
+
+    async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
+        """Delete a document, cascading every member's embeddings and memory entities; ``False`` when absent."""
+        if not self._supports_semantic_models():
+            raise self._unsupported()
+        target = await self._resolve_document(name, data_source)
+        if target is None:
+            return False
+        ds, name = target
+        index = await self._document_index(ds)
+        members = [d.name for k, d in index.datasets.items() if index.owners.get(k) == name]
+        metrics = [m.name for m in index.metrics.values() if m.semantic_model == name]
+        if not await self._delete_semantic_model_row(data_source=ds, name=name):
+            return False
+        for entity in [*members, *metrics]:
+            await self.delete_embeddings_for_canonical(canonical_id_prefix=f"{ds}.{entity}")
+        for member in members:
+            await self.strip_dangling_entities_from_memories(canonical_id=f"{ds}.{member}")
+        return True
+
+    async def semantic_model_owner(self, name: str, *, data_source: str) -> str | None:
+        """The document declaring dataset ``name``, ``None`` for a standalone or absent one."""
+        return (await self._document_index(data_source)).owners.get(name.casefold())
+
+    async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
+        """``data_source``'s loadable model-scoped metrics, in document order."""
+        return [m.model_copy(deep=True) for m in (await self._document_index(data_source)).metrics.values()]
 
     async def get_dataset_or_builtin(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         """``get_dataset``, falling back to a built-in dataset of the datasource (the only one when unnamed)."""
