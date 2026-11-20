@@ -12,7 +12,8 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import SlayerError
-from slayer.core.models import Aggregation, DatasourceConfig, DatasetRelationship
+from slayer.core.field_expression import DialectEntry, ExpressionObject
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetRelationship
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_METRICS, DATASOURCE, PG_DDL, col, customers, slayer_metric, orders, orders_fields, to_customers, visits,
@@ -224,7 +225,7 @@ async def test_dialect_only_field_expression(tmp_path: Path) -> None:
     storage = YAMLStorage(base_dir=str(store))
     await storage.save_datasource(DatasourceConfig(name=DATASOURCE, type="postgres", host="127.0.0.1", port=1,
                                                    database="none"))
-    model = orders(fields=[*orders_fields(), col("month_label", DataType.STRING, "to_char(ordered_on, 'YYYY-MM')")],
+    model = orders(fields=[*orders_fields(), DatasetField(name="month_label", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="to_char(ordered_on, 'YYYY-MM')")]))],
                    relationships=[], metrics=BASIC_METRICS)
     await storage.save_dataset(model, _validate=False)
     label = field(dataset((await export(pg)).document, "orders"), "month_label")

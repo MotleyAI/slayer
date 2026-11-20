@@ -267,7 +267,7 @@ def _dated(*, ts: DataType, d: DataType) -> SlayerDataset:
         DatasetField(name="x", datatype=DataType.FLOAT),
         DatasetField(name="ts", datatype=ts),
         DatasetField(name="d", datatype=d),
-        DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="no_such_fn(x)")]), datatype=DataType.FLOAT)])
+        DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="no_such_fn(x)") for d in ("DUCKDB", "SQLITE")]), datatype=DataType.FLOAT)])
 
 
 def _retypes(entries: list[Any]) -> list[tuple[str, DataType, DataType]]:

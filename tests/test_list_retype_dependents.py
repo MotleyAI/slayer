@@ -20,6 +20,7 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.cli import _run_ingest
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.warnings import BrokenDependentWarning, SlayerBrokenDependentWarning
 from slayer.live_schema.broken_dependents import FoundBreak, report_broken
@@ -43,7 +44,7 @@ LIVE = (
 )
 TAGS = "contractors.tags"
 NT = DatasetMetric(name="nt", expression="max(tags)")
-FIRST_TAG = DatasetField(name="first_tag", expression="upper(tags)", datatype=DataType.STRING)
+FIRST_TAG = DatasetField(name="first_tag", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="upper(tags)")]), datatype=DataType.STRING)
 BY_TAG = {"population": "contractors", "metrics": ["count(contractors.*)"], "filter": ["contractors.tags = 'go'"]}
 
 Key = tuple[str, str, str]
