@@ -1,18 +1,21 @@
-"""Omitting ``to_many_handling`` associates; association-ineligible aggregates fall back to
-broadcast with their reason; ungrained re-aggregation inners resolve per the mode (spec:
-queries/attribution-modes, queries/semantics)."""
+"""Omitting ``to_many_handling`` associates every aggregation, first/last and windowed included; ungrained
+re-aggregation inners resolve per the mode (spec: queries/attribution-modes, queries/semantics)."""
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
-from slayer.core.errors import AssociationError, PartitionKeyError, SlayerError, UnsafeRelationshipInputError
-from slayer.core.warnings import DICE_SLICE_HINT, BroadcastGrainWarningPayload
+from slayer.core.errors import PartitionKeyError, SlayerError, UnsafeRelationshipInputError
+from slayer.core.warnings import DICE_SLICE_HINT
 from slayer.core.query import QueryMetric
 
-from tests._dev1840_fixtures import month_key
+from tests._dev1914_fixtures import (
+    LAST_BY_STATUS,
+    LOCAL_LAST_BROADCAST,
+    LOCAL_LAST_BY_STATUS,
+    WINDOW_90D_BY_STATUS_SIGNUP,
+    known_status_signup,
+)
 from tests._dev1841_fixtures import (
     ASSOC_COUNT_BY_STATUS,
     ASSOC_LOCAL_SPEND_BY_STATUS,
@@ -44,16 +47,14 @@ CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 COUNT = QueryMetric(metric="count(customers.*)", alias="n")
 LAST = QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="ls")
 WINDOWED = QueryMetric(metric="sum(customers.spend, window='90d')", alias="win")
-MIXED = QueryMetric(
-    metric="last(customers.spend, customers.signup_at) + sum(customers.spend, window='90d')", alias="mix")
 STAGE_ROWS = QueryMetric(metric="count(s.*)", alias="k")
 SIGNUP_MONTH = [TimeDimension(field="customers.signup_at", granularity=TimeGranularity.MONTH)]
-FIRST_LAST = re.compile(r"first|last", re.IGNORECASE)
-WINDOW = re.compile(r"window", re.IGNORECASE)
-REMEDY = re.compile(r"attribut", re.IGNORECASE)
-INELIGIBLE = {
-    "first_last": ({"dimensions": ["orders.status"]}, LAST),
-    "window": ({"dimensions": ["orders.status"], "time_dimensions": SIGNUP_MONTH}, WINDOWED),
+#: shape → (query keywords, measure, reader, associated cells).
+RANKED_WINDOWED = {
+    "first_last": ({"dimensions": ["orders.status"]}, LAST,
+                   lambda resp: _status(resp, "ls"), LAST_BY_STATUS),
+    "window": ({"dimensions": ["orders.status"], "time_dimensions": SIGNUP_MONTH}, WINDOWED,
+               lambda resp: known_status_signup(resp, "win"), WINDOW_90D_BY_STATUS_SIGNUP),
 }
 
 
@@ -72,11 +73,7 @@ def _same_rows(a, b) -> bool:
 
 
 def _status(resp, metric: str) -> dict:
-    return {k[0]: float(v[metric]) for k, v in status_key(resp).items()}
-
-
-def _fallbacks(resp) -> list[BroadcastGrainWarningPayload]:
-    return [w for w in broadcast_warnings(resp) if getattr(w, "association_unsupported", None)]
+    return {k[0]: None if v[metric] is None else float(v[metric]) for k, v in status_key(resp).items()}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -115,8 +112,7 @@ class TestTheDefaultAssociates:
     async def test_explicit_broadcast_keeps_the_previous_behaviour(self, engine) -> None:
         resp = await engine.execute(_q("broadcast", dimensions=["orders.status"], metrics=[CM]))
         assert _status(resp, "cm") == dict.fromkeys(ASSOC_SPEND_BY_STATUS, BCAST_SPEND_CROSS)
-        (w,) = broadcast_warnings(resp)
-        assert w.association_unsupported is None
+        assert len(broadcast_warnings(resp)) == 1
         assert not associated_warnings(resp)
 
     async def test_local_metric_never_double_counts(self, engine) -> None:
@@ -174,65 +170,32 @@ class TestRowSupply:
         assert _status(resp, "n")[None] == 2.0
 
 
-class TestBroadcastFallback:
-    async def test_first_last_broadcasts_with_its_reason(self, engine) -> None:
-        default = await engine.execute(_q(None, dimensions=["orders.status"], metrics=[LAST]))
-        bcast = await engine.execute(_q("broadcast", dimensions=["orders.status"], metrics=[LAST]))
-        assert _same_rows(default, bcast)
-        assert len(set(_status(default, "ls").values())) == 1
-        (w,) = _fallbacks(default)
-        assert "ls" in w.metric
-        assert [d.dimension for d in w.dimensions] == ["status"]
-        assert FIRST_LAST.search(w.association_unsupported or "")
-        assert w.hint != DICE_SLICE_HINT
-        assert FIRST_LAST.search(w.hint)
-        assert REMEDY.search(w.hint)
-        assert not associated_warnings(default)
+class TestRankedAndWindowedResolveByMode:
+    @pytest.mark.parametrize("mode", MODES)
+    @pytest.mark.parametrize("shape", RANKED_WINDOWED)
+    async def test_default_and_associate_associate(self, engine, shape, mode) -> None:
+        kw, measure, read, expected = RANKED_WINDOWED[shape]
+        resp = await engine.execute(_q(mode, metrics=[measure], **kw))
+        assert read(resp) == expected
+        assert associated_warnings(resp)
+        assert not broadcast_warnings(resp)
 
-    async def test_window_broadcasts_with_its_reason(self, engine) -> None:
-        kw = {"dimensions": ["orders.status"], "time_dimensions": SIGNUP_MONTH, "metrics": [WINDOWED]}
-        default = await engine.execute(_q(None, **kw))
-        bcast = await engine.execute(_q("broadcast", **kw))
-        assert _same_rows(default, bcast)
-        by_month: dict[str, set] = {}
-        for row in default.data:
-            by_month.setdefault(month_key(row["customers.signup_at"]), set()).add(row["win"])
-        assert all(len(values) == 1 for values in by_month.values())
-        (w,) = _fallbacks(default)
-        assert WINDOW.search(w.association_unsupported or "")
-        assert w.hint != DICE_SLICE_HINT
-        assert WINDOW.search(w.hint)
-        assert REMEDY.search(w.hint)
-
-    async def test_each_reason_is_reported(self, engine) -> None:
-        resp = await engine.execute(_q(
-            None, dimensions=["orders.status"], time_dimensions=SIGNUP_MONTH, metrics=[MIXED]))
-        reasons = [w.association_unsupported or "" for w in _fallbacks(resp)]
-        assert any(FIRST_LAST.search(r) for r in reasons)
-        assert any(WINDOW.search(r) for r in reasons)
-        assert all(w.hint != DICE_SLICE_HINT for w in _fallbacks(resp))
-
-    @pytest.mark.parametrize("shape", INELIGIBLE)
-    async def test_explicit_associate_keeps_the_typed_error(self, engine, shape) -> None:
-        kw, measure = INELIGIBLE[shape]
-        query = _q("associate", metrics=[measure], **kw)
-        with pytest.raises(AssociationError):
-            await engine.execute(query)
-
-    @pytest.mark.parametrize("shape", INELIGIBLE)
+    @pytest.mark.parametrize("shape", RANKED_WINDOWED)
     async def test_explicit_broadcast_warns_ordinarily(self, engine, shape) -> None:
-        kw, measure = INELIGIBLE[shape]
+        kw, measure, _, _ = RANKED_WINDOWED[shape]
         resp = await engine.execute(_q("broadcast", metrics=[measure], **kw))
         (w,) = broadcast_warnings(resp)
-        assert w.association_unsupported is None
         assert w.hint == DICE_SLICE_HINT
 
-    @pytest.mark.parametrize("shape", INELIGIBLE)
+    @pytest.mark.parametrize("shape", RANKED_WINDOWED)
     async def test_error_mode_refuses(self, engine, shape) -> None:
-        kw, measure = INELIGIBLE[shape]
+        kw, measure, _, _ = RANKED_WINDOWED[shape]
         query = _q("error", metrics=[measure], **kw)
         with pytest.raises(SlayerError):
             await engine.execute(query)
+
+
+class TestModeResolution:
 
     async def test_a_stages_error_mode_refuses_under_a_default_root(self, engine) -> None:
         stages = [_q("error", name="s", dimensions=["orders.status"], metrics=[CM]),
@@ -240,20 +203,18 @@ class TestBroadcastFallback:
         with pytest.raises(SlayerError):
             await engine.execute(query=stages)
 
-    async def test_a_root_error_mode_spares_a_default_stages_fallback(self, engine) -> None:
+    async def test_a_root_error_mode_spares_a_default_stages_association(self, engine) -> None:
         stage = _q(None, name="s", dimensions=["orders.status"], metrics=[LAST])
         resp = await engine.execute(query=[stage, _q("error", population="s", metrics=[STAGE_ROWS])])
         assert resp.data[0]["k"] == len(ASSOC_SPEND_BY_STATUS)
-        assert _fallbacks(resp)
+        assert not broadcast_warnings(resp)
 
-    async def test_requested_grain_is_never_broadcast(self, engine) -> None:
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_requested_grain_is_never_broadcast(self, engine, mode) -> None:
         part = QueryMetric(metric="last(customers.spend, customers.signup_at, partition_by=orders.status)", alias="lp")
-        default, associate = (_q(mode, dimensions=["orders.status"], metrics=[part]) for mode in (None, "associate"))
-        with pytest.raises(AssociationError) as by_default:
-            await engine.execute(default)
-        with pytest.raises(AssociationError) as by_associate:
-            await engine.execute(associate)
-        assert type(by_default.value) is type(by_associate.value)
+        resp = await engine.execute(_q(mode, dimensions=["orders.status"], metrics=[part]))
+        assert _status(resp, "lp") == LAST_BY_STATUS
+        assert not broadcast_warnings(resp)
 
     @pytest.mark.parametrize("mode", [None, "broadcast", "associate", "error"])
     async def test_input_safety_is_not_a_fallback(self, crossing_engine, mode) -> None:
@@ -267,12 +228,18 @@ class TestBroadcastFallback:
         with pytest.raises(PartitionKeyError, match="region_events"):
             await fanning_engine.execute(query)
 
-    async def test_local_ranked_aggregate_never_raises(self, engine) -> None:
+    async def test_local_ranked_aggregate_follows_the_mode(self, engine) -> None:
         kw = {"population": "customers", "dimensions": ["orders.status"],
               "metrics": [QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="l")]}
         default = await engine.execute(_q(None, **kw))
+        assoc = await engine.execute(_q("associate", **kw))
         bcast = await engine.execute(_q("broadcast", **kw))
-        assert _same_rows(default, bcast)
+        assert _status(default, "l") == LOCAL_LAST_BY_STATUS
+        assert _same_rows(default, assoc)
+        assert _status(bcast, "l") == dict.fromkeys(LOCAL_LAST_BY_STATUS, LOCAL_LAST_BROADCAST)
+        refused = _q("error", **kw)
+        with pytest.raises(SlayerError):
+            await engine.execute(refused)
 
 
 class TestUngrainedReaggregationInner:
@@ -292,13 +259,9 @@ class TestUngrainedReaggregationInner:
         with pytest.raises(SlayerError):
             await engine.execute(query)
 
-    async def test_ranked_inner_falls_back_by_default(self, engine) -> None:
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_ranked_inner_associates(self, engine, mode) -> None:
         nested = QueryMetric(metric="sum(last(customers.spend, customers.signup_at))", alias="sl")
-        resp = await engine.execute(_q(None, dimensions=["orders.status"], metrics=[nested]))
-        assert any(FIRST_LAST.search(w.association_unsupported or "") for w in _fallbacks(resp))
-
-    async def test_ranked_inner_fails_under_associate(self, engine) -> None:
-        query = _q("associate", dimensions=["orders.status"],
-                   metrics=[QueryMetric(metric="sum(last(customers.spend, customers.signup_at))", alias="sl")])
-        with pytest.raises(AssociationError):
-            await engine.execute(query)
+        resp = await engine.execute(_q(mode, dimensions=["orders.status"], metrics=[nested]))
+        assert _status(resp, "sl") == LAST_BY_STATUS
+        assert not broadcast_warnings(resp)

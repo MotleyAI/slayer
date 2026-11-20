@@ -12,7 +12,7 @@ from typing import Optional
 import pytest
 
 from slayer.core.enums import RANKED_AGGREGATIONS
-from slayer.core.errors import AssociationError, ReaggregationError, TimeAxisError
+from slayer.core.errors import ReaggregationError, TimeAxisError
 from slayer.core.keys import AggregateKey, FieldKey, walk_value_keys, window_kwarg_of
 from slayer.engine import plan
 from slayer.engine.compile import stages
@@ -30,6 +30,7 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.core.query import QueryMetric
 
 from tests import _dev1841_fixtures as f1841
+from tests._dev1914_fixtures import LAST_BY_STATUS_SIGNUP, known_status_signup
 from tests._dev2006_fixtures import (
     AVG_LAST_BY_CUSTOMER,
     BALANCE_BY_BAND,
@@ -344,7 +345,7 @@ class TestAttributabilityModes:
             await exec_engine.execute(query)
 
 
-class TestAssociatedRankedPickStaysTyped:
+class TestAssociatedRankedPick:
     KW = {
         "dimensions": ["orders.status"],
         "time_dimensions": [f1841.TimeDimension(
@@ -353,14 +354,15 @@ class TestAssociatedRankedPickStaysTyped:
     }
 
     async def test_cross_model_last_needing_association(self, dev1841_engine):
-        query = f1841.assoc_q(**self.KW)
-        with pytest.raises(AssociationError):
-            await dev1841_engine.execute(query)
+        resp = await dev1841_engine.execute(f1841.assoc_q(**self.KW))
+        assert known_status_signup(resp, "l") == LAST_BY_STATUS_SIGNUP
+        assert warnings_of(resp, "associated")
 
-    async def test_default_mode_broadcasts_with_the_reason(self, dev1841_engine):
+    async def test_default_mode_associates(self, dev1841_engine):
         resp = await dev1841_engine.execute(f1841.q(**self.KW))
-        (w,) = warnings_of(resp, "broadcast")
-        assert w.association_unsupported
+        assert known_status_signup(resp, "l") == LAST_BY_STATUS_SIGNUP
+        assert warnings_of(resp, "associated")
+        assert not warnings_of(resp, "broadcast")
 
 
 # --------------------------------------------------------------------------- #

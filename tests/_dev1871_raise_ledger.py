@@ -290,11 +290,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "metric …"
          + SUGGEST + "…",
          category="checker", family="cross-model", user=True, owner="checker"),
-    _row(module=_EE, function="check_association_windowed_ranked", exc="AssociationError",
-         message="The aggregate needs distinct-entity association over an unattributable dimension, which is unsupported in combination with window=/first/last."
-         + AT + "metric …"
-         + SUGGEST + "Drop the window/first-last or attribute the dimension.",
-         category="checker", family="association", user=True, owner="checker"),
     _row(module=_EE, function="check_parameter_determined", exc="ParameterGrainError",
          message="Parameter … is not determined by the operand grain (…); the aggregation reads one value per cell of that grain."
          + AT + "metric …"
