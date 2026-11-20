@@ -5,9 +5,9 @@
 
 ## 2. Guard test (pr-tests)
 
-- [ ] 2.1 Write `tests/test_field_expression_spelling_guard.py` (design decisions 2, 16, 17): AST scan of `tests/**/*.py` failing with `file:line` on a field-level `sql` spelling — `sql=` on `DatasetField`/`Column` (import aliases resolved) or on a test helper forwarding `sql` into one, a `"sql"` key in a field dict (in a `fields` list, a `model_validate` field payload, or `model_copy(update=…)` on a field) — outside an inline allowlist of `path::function` entries, each with expected count and reason; a count mismatch fails. Verify: it fails on the current tree, listing the expected sites.
-- [ ] 2.2 Detector unit tests on synthetic snippets for every form in 2.1 (positive and negative: `AggregationParam(sql=)`, `SlayerDataset(sql=)`, Cube models, Ossie `{sql, dialects}` objects are not flagged). Verify: they pass.
-- [ ] 2.3 Populate the allowlist with the deprecated-spelling tests (design decision 3, 18), each with its count and reason. Verify: every entry names a test whose assertion depends on the deprecated input.
+- [x] 2.1 Write `tests/test_field_expression_spelling_guard.py` (design decisions 2, 16, 17): AST scan of `tests/**/*.py` failing with `file:line` on a field-level `sql` spelling — `sql=` on `DatasetField`/`Column` (import aliases resolved) or on a test helper forwarding `sql` into one, a `"sql"` key in a field dict (in a `fields` list, a `model_validate` field payload, or `model_copy(update=…)` on a field) — outside an inline allowlist of `path::function` entries, each with expected count and reason; a count mismatch fails. Verify: it fails on the current tree, listing the expected sites.
+- [x] 2.2 Detector unit tests on synthetic snippets for every form in 2.1 (positive and negative: `AggregationParam(sql=)`, `SlayerDataset(sql=)`, Cube models, Ossie `{sql, dialects}` objects are not flagged). Verify: they pass.
+- [x] 2.3 Populate the allowlist with the deprecated-spelling tests (design decision 3, 18), each with its count and reason. Verify: every entry names a test whose assertion depends on the deprecated input.
 
 ## 3. Value pass (pr-implement)
 
