@@ -161,19 +161,19 @@ def _reaches(*, home: str, item: str, datasets_by_name: dict[str, SlayerDataset]
 
 
 def _operand(agg: AggCall, *, owner: Optional[str], dims: list[str],
-             datasets_by_name: dict[str, SlayerDataset]) -> Optional[_Operand]:
+             datasets_by_name: dict[str, SlayerDataset], broadcast: bool = False) -> Optional[_Operand]:
     home = _home(agg, owner=owner, datasets_by_name=datasets_by_name)
     if home is None:
         return None
     partition = _partition_grain(agg, owner=owner)
     if partition is not None and set(partition) != set(dims):
         return _Operand(home=home, full=False, grain=partition)
-    determined = [d for d in dims if probe_item(root=home, item=d, datasets_by_name=datasets_by_name,
-                                                 associate=True)[0] == _OK]
+    determined = [d for d in dims if probe_item(root=home, item=d, datasets_by_name=datasets_by_name)[0] == _OK]
     if len(determined) == len(dims):
         return _Operand(home=home, full=True)
     reached = [d for d in dims if d in determined or _reaches(home=home, item=d, datasets_by_name=datasets_by_name)]
-    associates = agg.agg.lower() not in _BROADCAST_ONLY and not any(n == "window" for n, _ in call_keywords(agg))
+    associates = not broadcast and agg.agg.lower() not in _BROADCAST_ONLY and not any(
+        n == "window" for n, _ in call_keywords(agg))
     if len(reached) == len(dims) and associates:
         return _Operand(home=home, full=True)
     return _Operand(home=home, full=False, grain=tuple(reached if associates else determined))
@@ -190,7 +190,8 @@ def classify_row_sources(query: SlayerQuery, *, datasets_by_name: dict[str, Slay
         except Exception:  # noqa: BLE001 — an unparseable metric is refused where it binds
             continue
         operands = [op for agg, owner in _top_aggregates(tree, owner=None, datasets_by_name=datasets_by_name)
-                    if (op := _operand(agg, owner=owner, dims=dims, datasets_by_name=datasets_by_name)) is not None]
+                    if (op := _operand(agg, owner=owner, dims=dims, datasets_by_name=datasets_by_name,
+                                       broadcast=query.to_many_handling == "broadcast")) is not None]
         full = [op.home for op in operands if op.full]
         homes.extend(full)
         if not full:

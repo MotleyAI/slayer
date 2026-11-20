@@ -1483,9 +1483,9 @@ class SlayerQuery(BaseModel):
             "{\"metric\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", "
             '"alias": "orders_2025"} list every region, including those without orders (a count '
             "over no rows is 0, any other aggregate NULL). Always alias a conditional aggregate. "
-            "Otherwise root where the facts are (rows without facts then drop out), or omit: the "
-            "rows are then every dimension combination some metric's rows reach (the dimension "
-            "values alone with no metrics, one row with no dimensions), reported in the response. "
+            "Otherwise root where the facts are (rows without facts then drop out), or omit to infer "
+            "the rows: every dimension combination some metric's rows reach (the dimension values "
+            "alone with no metrics, one row with no dimensions), reported in the response. "
             "A saved dataset or stage name. "
             "Write a per-query field as an expression in the position that uses it (a "
             "dimension, a filter, an aggregation's argument)."
