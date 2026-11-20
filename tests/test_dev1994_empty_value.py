@@ -113,8 +113,11 @@ class TestNonCountStaysNull:
 
 
 async def test_inferred_population(dialect) -> None:
+    # Root-less, the rows are the customers orders reach (no childless cell is fabricated); the empty value is
+    # covered with `population` named.
     resp = await _run(dialect, dimensions=["customers.name"], metrics=[m("count(orders.id)", "c")])
-    assert _ints(by(resp.data, resp.columns, key="name", value="c")) == ORDERS_BY_CUSTOMER
+    assert _ints(by(resp.data, resp.columns, key="name", value="c")) == {
+        k: v for k, v in ORDERS_BY_CUSTOMER.items() if v}
 
 
 async def test_multi_hop(dialect) -> None:

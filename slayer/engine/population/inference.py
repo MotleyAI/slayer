@@ -839,9 +839,32 @@ def _filter_anchor_names(query: SlayerQuery) -> set[str]:
     return names
 
 
+def _filter_source_anchors(query: SlayerQuery, *, dataset_scopes: list[dict[str, SlayerDataset]]) -> set[str]:
+    """First segments of the references inside filters' aggregations, a saved metric excepted."""
+    names: set[str] = set()
+    for f in query.filter_conditions:
+        try:
+            parsed = _parse(f, root=None)
+        except Exception:  # noqa: BLE001 — an unparseable filter is refused where it binds
+            continue
+        names.update(r.split(".")[0] for r in _qualified_refs(parsed)
+                     if "." in r and not _saved_metric_in_every_scope(r, dataset_scopes=dataset_scopes))
+    return names
+
+
 def _scoping_anchors(query: SlayerQuery) -> set[str]:
     """The datasets that scope a root-less query's datasource: its dimensions', filters' and metrics' anchors."""
     return _anchor_names(query) | metric_anchor_names(query)
+
+
+def _refuse_sibling_anchors(anchored: set[str], *, what: str) -> None:
+    """A root-less stage reading a sibling stage's name: binding would read the stage, inference the dataset."""
+    if anchored:
+        name = min(anchored)
+        raise PopulationInferenceError(
+            PopulationErrorReason.SIBLING_STAGE, candidates=sorted(anchored),
+            detail=f"{what} anchor at sibling stage {name!r}; name it as the stage's population",
+        )
 
 
 async def infer_rows(
@@ -855,18 +878,15 @@ async def infer_rows(
     """A root-less query's dimension anchor (undefined anchors carry their error) and datasource."""
     siblings = sibling_stage_names or set()
     query = await _anchor_spellings(query, storage=storage, data_source=data_source, siblings=siblings)
-    anchored_siblings = _dimension_anchor_names(query) & set(siblings)
-    if anchored_siblings:
-        name = min(anchored_siblings)
-        raise PopulationInferenceError(
-            PopulationErrorReason.SIBLING_STAGE,
-            candidates=sorted(anchored_siblings),
-            detail=f"dimensions anchor at sibling stage {name!r}; name it as the stage's population",
-        )
+    _refuse_sibling_anchors(_dimension_anchor_names(query) & set(siblings), what="dimensions")
     syntactic = _scoping_anchors(query) - siblings - {TIME_SPINE_DATASET}
     scopes, ds_by_dataset = await _classification_scopes(storage=storage, data_source=data_source, anchors=syntactic)
+    # A saved-measure filter reference anchors nothing, so it never meets a sibling nor steers scoping.
+    read = (_anchor_names(query, dataset_scopes=list(scopes.values())) | metric_anchor_names(query)
+            | _filter_source_anchors(query, dataset_scopes=list(scopes.values())))
+    _refuse_sibling_anchors(read & set(siblings), what="references")
     # A saved-measure filter reference never steers scoping; measure filters alone scope a query with nothing else.
-    anchors = (_anchor_names(query, dataset_scopes=list(scopes.values())) | metric_anchor_names(query)) - siblings
+    anchors = read - siblings
     anchors = (anchors or _filter_anchor_names(query) - siblings) - {TIME_SPINE_DATASET}
     if anchors - syntactic:
         scopes, ds_by_dataset = await _classification_scopes(storage=storage, data_source=data_source,

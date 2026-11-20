@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.errors import PopulationErrorReason, PopulationInferenceError
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.population.inference import infer_population
 from slayer.engine.query_engine import SlayerResponse
@@ -88,6 +90,18 @@ class TestFailClosed:
         assert set(err.datasources) == {DS_WIDGETS_A, DS_WIDGETS_B}
         _assert_stable_prefix(err)
 
+    async def test_an_aggregate_filter_dataset_scopes_the_datasource(self, storage) -> None:
+        """A dataset only an aggregate-bearing filter reads still picks the one datasource holding it."""
+        await storage.save_dataset(SlayerDataset(
+            name="gadgets", data_source=DS_WIDGETS_B, sql_table="gadgets",
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="v", datatype=DataType.FLOAT)],
+        ))
+        query = SlayerQuery.model_validate({"dimensions": ["widgets.x"], "metrics": ["count(widgets.*)"],
+                                            "filter": "sum(gadgets.v) > 0"})
+        choice = await infer_population(query=query, storage=storage)
+        assert choice.data_source == DS_WIDGETS_B
+
     async def test_zero_candidate_datasources_fails_closed(self, storage) -> None:
         """No single datasource holds every referenced anchor dataset."""
         query = SlayerQuery(dimensions=["widgets.x", "customers.region"])
@@ -128,18 +142,16 @@ class TestFailClosed:
         resp = await _dry_run(storage, SlayerQuery(filter=["sum(orders.amount) > 100"]))
         assert resp.population is None
 
-    async def test_measure_referencing_sibling_does_not_fail_closed(self, storage) -> None:
-        """A metric whose anchor matches a sibling stage name must not trigger
-        SIBLING_STAGE — metrics never anchor inference."""
-        choice = await infer_population(
-            query=SlayerQuery.model_validate({
-                "dimensions": ["customers.region"],
-                "metrics": [{"metric": "sum(s1.total)", "alias": "t"}],
-            }),
-            storage=storage,
-            sibling_stage_names={"s1"},
-        )
-        assert choice.dataset_name == "customers"
+    async def test_measure_referencing_sibling_fails_closed(self, storage) -> None:
+        """A metric homed on a sibling stage refuses: its rows come from a stage inference cannot see; name the
+        sibling as the population."""
+        query = SlayerQuery.model_validate({
+            "dimensions": ["customers.region"],
+            "metrics": [{"metric": "sum(s1.total)", "alias": "t"}],
+        })
+        with pytest.raises(PopulationInferenceError) as ei:
+            await infer_population(query=query, storage=storage, sibling_stage_names={"s1"})
+        assert ei.value.reason is PopulationErrorReason.SIBLING_STAGE
 
     async def test_string_literal_is_not_a_sibling_anchor(self, storage) -> None:
         """A dotted value inside a string literal must not be read as a reference

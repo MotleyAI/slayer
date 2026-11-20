@@ -13,7 +13,9 @@ from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.migrations import CURRENT_VERSIONS
 
-from tests._dev2212_fixtures import BACKENDS, rows, run, seed_engine, table
+from tests._dev2212_fixtures import (
+    BACKENDS, orders_dataset, returns_dataset, rows, run, seed_datasets, seed_engine, table,
+)
 from tests._dev2277_fixtures import cycle_engine
 
 R, REV, STATUS = "customers.region", "orders.total_revenue", "orders.status"
@@ -146,3 +148,38 @@ async def test_an_inferred_stage_keeps_its_column_names(engine) -> None:
         SlayerQuery.model_validate({"population": "s1", "dimensions": ["s1.region", "s1.orders__total_revenue"]}),
     ])
     assert table(inline, "s1.region", "s1.orders__total_revenue") == rows(("EAST", 350), ("WEST", 300))
+
+
+@pytest.mark.parametrize(("query", "total"), [
+    ({"metrics": [REV]}, 650), ({"metrics": [REV], "filter": "orders.status = 'completed'"}, 150),
+])
+async def test_a_saved_query_with_no_dimensions_is_read_by_another_query(engine, query: dict, total: int) -> None:
+    await engine.create_dataset_from_query(query=query, name="tot")
+    resp = await run(engine, population="tot", metrics=[{"metric": "sum(tot.orders__total_revenue)", "alias": "t"}])
+    assert [r["t"] for r in resp.data] == [total]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_spliced_stage_reads_its_supply_with_its_dataset_variables(backend: str) -> None:
+    # orders' own filter carries a Mode-A variable: the cells of the spliced stage read it bound, as the stage does.
+    orders = orders_dataset(filters=["status = '{s}'"], query_variables={"s": "open"})
+    async with seed_engine(backend, datasets=seed_datasets(orders=orders)) as eng:
+        query = {"dimensions": [R], "metrics": [REV, "returns.total_returns"]}
+        await eng.create_dataset_from_query(query=query, name="saved")
+        direct = await run(eng, **query)
+        spliced = await run(eng, population="saved", dimensions=["saved.region"],
+                            metrics=[{"metric": "sum(saved.orders__total_revenue)", "alias": "rev"}])
+    assert {r[R] for r in direct.data} == {r["saved.region"] for r in spliced.data} == {"EAST", "NORTH", "WEST"}
+    assert {r["saved.region"]: r["rev"] for r in spliced.data}["WEST"] == 300
+
+
+@pytest.mark.xfail(strict=True, reason="DEV-2392: a joined dataset's own Mode-A variables are never substituted")
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_spliced_stage_reads_a_non_host_supply_with_its_dataset_variables(backend: str) -> None:
+    returns = returns_dataset().model_copy(update={"filters": ["amount > {m}"], "query_variables": {"m": 15}})
+    async with seed_engine(backend, datasets=[*seed_datasets()[:2], returns, *seed_datasets()[3:]]) as eng:
+        await eng.create_dataset_from_query(query={"dimensions": [R], "metrics": [REV, "returns.total_returns"]},
+                                            name="saved")
+        spliced = await run(eng, population="saved", dimensions=["saved.region"],
+                            metrics=[{"metric": "sum(saved.returns__total_returns)", "alias": "ret"}])
+    assert {r["saved.region"]: r["ret"] for r in spliced.data} == {"EAST": 25, "WEST": None}

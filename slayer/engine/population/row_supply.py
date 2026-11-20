@@ -14,7 +14,9 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.errors import UnrelatedDatasetError, UnresolvableDimensionRelationshipError
 from slayer.core.field_expression import portable_text
 from slayer.core.query import SlayerQuery
-from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, call_keywords, parse_template, walk_parsed_refs
+from slayer.core.syntax import (
+    AggCall, DottedRef, Ref, StarSource, call_keywords, parse_template, respell_bare_names, walk_parsed_refs,
+)
 from slayer.core.models import SlayerDataset
 from slayer.core.time_spine import is_spine_query
 from slayer.engine.population.anchors import anchor_route, find_anchor
@@ -217,9 +219,11 @@ def classify_row_sources(query: SlayerQuery, *, datasets_by_name: dict[str, Slay
 # Composition
 # --------------------------------------------------------------------------- #
 def _field_filters(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> list[str]:
-    """The query's aggregate-free filters reading only fields (no metric alias, no saved metric)."""
+    """The query's aggregate-free filters reading only fields (no metric alias, no saved metric), a dimension alias
+    spelled as its field."""
+    fields = {d.alias: d.field for d in query.dimensions or [] if d.alias and d.ref is not None}
     out: list[str] = []
-    for f in query.filter_conditions:
+    for f in (respell_bare_names(c, respell=fields.get) for c in query.filter_conditions):
         refs, ok = _all_filter_refs(f, root=None)
         if ok and all("." in r and not _is_saved_metric_ref(r, datasets_by_name=datasets_by_name) for r in refs):
             out.append(f)
@@ -374,11 +378,16 @@ def _supply_branches(query: SlayerQuery, *, sources: RowSources, anchor_datasets
     return branches
 
 
-def pinned_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[RowPlan]:
-    """A stored inferred stage's row plan from its pinned anchor; ``None`` for an anchored or spine stage (whose rows
-    are its population's)."""
+def stored_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[RowPlan]:
+    """A stored inferred stage's row plan: from its pinned anchor, or the unit for an unpinned stage with no
+    dimensions; ``None`` for an anchored or spine stage (whose rows are its population's)."""
     anchor = query.population_name
-    if not query.population_inferred or anchor is None or anchor not in datasets_by_name or is_spine_query(query):
+    if is_spine_query(query):
+        return None
+    if anchor is None:
+        unit = not (query.dimensions or query.time_dimensions)
+        return plan_rows(query, anchor=DimensionAnchor(), datasets_by_name=datasets_by_name) if unit else None
+    if not query.population_inferred or anchor not in datasets_by_name:
         return None
     free = query.model_copy(update={"population": None, "population_inferred": False})
     return plan_rows(free, anchor=DimensionAnchor(datasets=(anchor,)), datasets_by_name=datasets_by_name)

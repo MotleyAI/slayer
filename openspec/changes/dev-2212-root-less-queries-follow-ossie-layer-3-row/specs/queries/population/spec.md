@@ -170,7 +170,7 @@ anchor, reporting `population` as `null` when that anchor is undefined. Datasour
 zero or several candidate datasources SHALL fail closed (named). A query with metrics and no
 dimensions SHALL NOT raise an error for lack of determination items: its rows are the unit. A
 query whose only dimensions are on the spine SHALL NOT raise the nothing-to-infer error: its P is
-the one-row unit. A stage query omitting `population` whose dimensions are anchored at sibling
+the one-row unit. A stage query omitting `population` whose dimensions, filters or metrics are anchored at sibling
 stage names SHALL fail closed with a diagnostic naming the sibling.
 
 #### Scenario: Tie names the candidates
@@ -192,7 +192,7 @@ stage names SHALL fail closed with a diagnostic naming the sibling.
 
 #### Scenario: Sibling-anchored stage refs
 
-- **WHEN** a stage in a multi-stage query omits `population` and its dimensions
+- **WHEN** a stage in a multi-stage query omits `population` and its dimensions, filters or metrics
   are anchored at a sibling stage's name
 - **THEN** the error tells the author to name that sibling as the stage's
   `population`

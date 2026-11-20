@@ -463,14 +463,14 @@ class PlannedQuery(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
-    def stage_column_relation(self) -> str:
-        """The relation this stage's column names drop from its result keys."""
-        return self.column_relation if self.column_relation is not None else self.source_relation
+    def stage_field_relation(self) -> str:
+        """The relation this stage's field names drop from its result keys."""
+        return self.field_relation if self.field_relation is not None else self.source_relation
 
     source_relation: str
-    #: The relation a stage's column names drop from its result keys: its dimension anchor in an inferred stage
+    #: The relation a stage's field names drop from its result keys: its dimension anchor in an inferred stage
     #: (``""``: none, for the unit or a product), else ``source_relation``.
-    column_relation: Optional[str] = None
+    field_relation: Optional[str] = None
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     regroup_attach_plans: List["RegroupAttachPlan"] = Field(default_factory=list)

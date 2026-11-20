@@ -11,8 +11,10 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
+from slayer.core.query import SlayerQuery
 from slayer.engine.cache import CacheConfig
 from slayer.mcp.server import create_mcp_server
+from slayer.memories.resolver import extract_entities_from_query
 from slayer.storage.sqlite_conn import transaction
 
 from tests._dev2212_fixtures import BACKENDS, q, run, seed_engine, seeded
@@ -170,3 +172,14 @@ async def test_mcp_prints_row_sources_only_when_inferred() -> None:
     assert "returns" in row_lines[0]
     assert any(line.startswith("#") and "row sources" in line.lower() for line in csv.splitlines())
     assert "row sources" not in anchored_md.lower()
+
+
+@pytest.mark.parametrize(("query", "root"), [
+    ({"metrics": [REV], "filter": "orders.status = 'completed'"}, "test.orders"),
+    ({"metrics": [REV, RET]}, "test.orders"),
+    (TWO, "test.customers"),
+])
+async def test_memory_entities_of_a_rootless_query(query: dict, root: str) -> None:
+    async with seed_engine("sqlite") as eng:
+        resolved = await extract_entities_from_query(SlayerQuery.model_validate(query), storage=eng.storage)
+    assert resolved.canonical_forms[0] == root

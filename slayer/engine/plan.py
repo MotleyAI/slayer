@@ -214,9 +214,11 @@ class _StagePlanner:
     def plan_stage(
         self, query: SlayerQuery, *, chain: Tuple[str, ...], stage_dataset: Optional[SlayerDataset],
         single: bool = False, owner: Optional[str] = None, row_supply: Optional[RowSupply] = None,
+        variables: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Plan ``query`` after every query-backed dataset it names or reads is spliced; an inferred stage's
-        ``row_supply`` rides its bundle, and each branch's cells are planned beside it."""
+        ``row_supply`` rides its bundle, and each branch's cells are planned beside it (each source's Mode-A
+        surfaces substituted with its own defaults under ``variables``, a spliced stage's layers)."""
         for name in self._explicit_demands(query, chain=chain):
             self.ensure(name, chain=chain, explicit=True)
         for name in self._spine_demands(query):
@@ -234,7 +236,8 @@ class _StagePlanner:
                 self._raise_failure(failure, on_chain=on_chain, unspliceable=unspliceable, chain=chain)
             assert planned is not None
             if row_supply is not None and row_supply.branches:
-                planned = planned.model_copy(update={"row_supply": self._plan_row_supply(row_supply)})
+                planned = planned.model_copy(update={"row_supply": self._plan_row_supply(row_supply,
+                                                                                         variables=variables)})
             self._record(query, planned=planned, stamped=stamped, seen=seen, chain=chain,
                          raw=[*on_chain, *unspliceable], owner=owner)
             return
@@ -258,25 +261,31 @@ class _StagePlanner:
                 failure = exc
         return planned, failure, seen, stamped
 
-    def _plan_row_supply(self, supply: RowSupply) -> PlannedRowSupply:
+    def _plan_row_supply(self, supply: RowSupply, *, variables: Optional[Dict[str, Any]]) -> PlannedRowSupply:
         """Each branch's cells (and restricting cells) planned as dimension-only queries over their sources."""
         plans: Dict[int, PlannedQuery] = {}
 
         def cells(query: SlayerQuery) -> PlannedQuery:
             if id(query) not in plans:
-                plans[id(query)] = self._plan_cells(query)
+                plans[id(query)] = self._plan_cells(query, variables=variables)
             return plans[id(query)]
 
         return PlannedRowSupply(branches=[
             PlannedRowBranch(cells=cells(b.cells), restrict=[cells(r) for r in b.restrict]) for b in supply.branches
         ])
 
-    def _plan_cells(self, query: SlayerQuery) -> PlannedQuery:
+    def _plan_cells(self, query: SlayerQuery, *, variables: Optional[Dict[str, Any]]) -> PlannedQuery:
         """The cells ``query``'s population supplies; a product anchor's dimensions read across ``×``."""
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
+        source = self.bundle.datasets_by_name.get(query.population_name or "")
+        if source is not None and variables is not None:
+            source = substitute_dataset_sql_surfaces(
+                dataset=source, variables={**(source.query_variables or {}), **variables},
+                bind_mode_a=partial(bind_mode_a, dialect=get_dialect(self.bundle.dialect)),
+            )
         scope, stamped = _stage_scope_and_bundle(
             query=query, bundle=base, stage_schemas=self.state.schemas, data_source=self.data_source,
-            stage_dataset=self.bundle.datasets_by_name.get(query.population_name or ""),
+            stage_dataset=source,
             placeholders=self._placeholders(),
         )
         stamped = stamped.model_copy(update={"row_supply": RowSupply(product=True)})
@@ -464,7 +473,9 @@ class _StagePlanner:
                 stage = stage.model_copy(update={"population": pinned.population})
             prepared, source, placeholders, variables = self._prepare(stage, chain=chain, private=own)
             record.footprint |= placeholders
-            self.plan_stage(prepared, chain=chain, stage_dataset=source, owner=name,
+            layers = {**self._chain_variables(chain), **self.outer_variables, **(prepared.variables or {}),
+                      **self.bundle.runtime_variables}
+            self.plan_stage(prepared, chain=chain, stage_dataset=source, owner=name, variables=layers,
                             row_supply=bound_supply(pinned.supply, variables=variables) if pinned else None)
         for child in record.children:
             if child in self.state.spliced:

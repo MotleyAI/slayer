@@ -10,6 +10,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import UnrelatedDatasetError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.syntax import respell_bare_names
 
 from tests._dev1737_fixtures import TableSpec
 from tests._dev2212_fixtures import (
@@ -22,6 +23,7 @@ from tests._dev2212_fixtures import (
     customers_dataset,
     kinds,
     notes_dataset,
+    orders_dataset,
     rows,
     run,
     seed_datasets,
@@ -374,3 +376,29 @@ async def test_a_metric_written_through_another_anchor_supplies_rows(backend: st
     async with seed_engine(backend) as eng:
         resp = await run(eng, dimensions=[R], metrics=[{"metric": "sum(customers.orders.amount)", "alias": "s"}, *extra])
     assert {r[R]: r["s"] for r in resp.data} == {"EAST": 350, "WEST": 300, **({"NORTH": None} if extra else {})}
+
+
+async def test_a_filter_on_a_dimension_alias_restricts_the_supply(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[{"field": R, "alias": "region"}], metrics=[REV, RET],
+                         filter=["region = 'EAST'"])
+    assert table(resp, "region", REV, RET) == rows(("EAST", 350, 25))
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("region = 'EAST'", "customers.region = 'EAST'"),
+    ("region <> 'region' AND customers.region IS NOT NULL", "customers.region <> 'region' AND customers.region IS NOT NULL"),
+    ("upper(region) = 'X'", "upper(customers.region) = 'X'"),
+    ('"region" = 1', '"region" = 1'),
+    ("region(x) = 1", "region(x) = 1"),
+    ("region = = 1", "region = = 1"),
+], ids=["bare", "string-and-path", "argument", "quoted", "call", "unparseable"])
+def test_respell_bare_names_replaces_only_bare_references(text: str, expected: str) -> None:
+    assert respell_bare_names(text, respell={"region": "customers.region"}.get) == expected
+
+
+async def test_a_supplying_hosts_own_filter_never_restricts_another_home(backend: str) -> None:
+    orders = orders_dataset(filters=["status = 'open'"])
+    async with seed_engine(backend, datasets=seed_datasets(orders=orders)) as eng:
+        resp = await run(eng, dimensions=[R], metrics=[REV, RET])
+    assert table(resp, R, REV, RET) == rows(("EAST", 200, 25), ("NORTH", None, 10), ("WEST", 300, None))

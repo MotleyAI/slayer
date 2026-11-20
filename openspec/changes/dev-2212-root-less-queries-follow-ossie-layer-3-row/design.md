@@ -26,7 +26,7 @@ semantics Axioms 1, 2 (2.9 edited), 3.1 (edited), 3.3, 4, 6, 7–8, 10, 12 (rewr
 8. **Spine queries**: `spine × P`, P = A of the other dimensions (filters no longer choose P; they restrict by association). The row-supply union for spine queries is DEV-2218 (Axiom 15 tagged).
 9. **Transforms** evaluate over the result rows as today; monotonicity for transforms is DEV-2218 (Laws 3/7 tagged). A transform's supply is its operand's (calendar-step transforms included).
 10. **Raw-row mode** (12.5): one row per row of `population`, else of A (dimensions only); every dimension provably determined (no association, no product fallback) else fail closed; measures stay banned.
-11. **Multi-stage**: each stage omitting `population` is inferred by the same rule; sibling-stage-anchored **dimensions** keep the SIBLING_STAGE refusal (A inference reads stored datasets only).
+11. **Multi-stage**: each stage omitting `population` is inferred by the same rule; sibling-stage-anchored **dimensions, filters and metrics** keep the SIBLING_STAGE refusal (A inference reads stored datasets only).
 12. **Datasource scoping**: anchors now include metric anchors (so measures-only queries scope); saved-measure filter refs stay excluded.
 13. **Anchored mode** (`population` named): unchanged — today's Axiom 12 / Law 7 closure — except P1 home routing (item 6).
 
@@ -91,7 +91,7 @@ Saved queries:
 13. No presence marker: COALESCE-to-empty is exact by Axiom 4. Deviation from the issue's implementation sketch. (default)
 14. `count(*)`: no work — DEV-2277 refuses every root-less `count(*)`. Unit-keys decision dropped (moot under DEV-2277). (default)
 15. Datasource scoping reads metric anchors too. (default)
-16. Sibling-stage-anchored dimensions keep the SIBLING_STAGE refusal. (default)
+16. Sibling-stage-anchored dimensions, filters and metrics keep the SIBLING_STAGE refusal: binding gives a same-named stage precedence, inference reads stored datasets only. (user)
 17. Pinned A's cells = anchored query at A; refinements never refused for it. (default)
 18. SlayerQuery 17 → 18 stamp. (default)
 19. `queries/references` › "The anchor is reached by its only to-one path" MODIFIED on DEV-2277's text: the reader is the population, or an aggregate's home for its grain dimensions and filters; the one-rule clause names producer synthesis. (codex)

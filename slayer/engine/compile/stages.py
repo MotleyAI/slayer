@@ -24,7 +24,6 @@ from typing import (
     Sequence,
     Tuple,
     TypeVar,
-    Union,
     cast,
 )
 
@@ -2166,7 +2165,7 @@ def _home_routing(
 
 
 def _home_reroute(
-    r: Union[FieldKey, FieldSqlKey, StarKey], *, anchors: Mapping[Tuple[str, ...], Tuple[str, ...]],
+    r: FieldKey | FieldSqlKey | StarKey, *, anchors: Mapping[Tuple[str, ...], Tuple[str, ...]],
     host_dataset: SlayerDataset, target_path: Tuple[str, ...], root_dataset: SlayerDataset,
     datasets_by_name: Dict[str, SlayerDataset], source_anchor: Optional[str],
 ) -> Optional[ValueKey]:
@@ -4572,9 +4571,9 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     supply = bundle.row_supply
-    column_relation = source_relation if supply is None else (supply.anchor or "")
+    field_relation = source_relation if supply is None else (supply.anchor or "")
     stage_schema = _emit_stage_schema(
-        stage_name=query.name, source_relation=source_relation, column_relation=column_relation,
+        stage_name=query.name, source_relation=source_relation, field_relation=field_relation,
         projection=projection, grain=grain,
         root=render_source_dataset, datasets_by_name=bundle.datasets_by_name,
         originals={sub.placeholder: sub.original_key
@@ -4636,7 +4635,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     )
     planned = PlannedQuery(
         source_relation=source_relation,
-        column_relation=column_relation,
+        field_relation=field_relation,
         row_slots=row_slots,
         aggregate_slots=agg_slots,
         regroup_attach_plans=regroup_attach_plans,
@@ -4695,7 +4694,11 @@ def _host_membership(
     bundle: ResolvedSourceBundle,
 ) -> List[Tuple[BoundFilter, Optional[str]]]:
     """For a home beyond a restricted host, the row filter ``<host join column> IS NOT NULL`` on the
-    home's first hop from the host: re-rooted, it keeps only home rows associated with a host row."""
+    home's first hop from the host: re-rooted, it keeps only home rows associated with a host row. An inferred
+    stage hosted elsewhere than its dimension anchor has no population to restrict by (semantics 12.4)."""
+    supply = bundle.row_supply
+    if supply is not None and supply.anchor != host_dataset.name:
+        return []
     if not target_path or not _restricted_dataset(host_dataset, bundle=bundle):
         return []
     chain = follow(root=host_dataset, path=target_path[:1], datasets_by_name=datasets_by_name)
@@ -4888,7 +4891,7 @@ def _emit_stage_schema(
     *,
     stage_name: Optional[str],
     source_relation: str,
-    column_relation: str,
+    field_relation: str,
     projection,
     grain: Optional[List[SlotId]],
     root: Optional[SlayerDataset],
@@ -4910,7 +4913,7 @@ def _emit_stage_schema(
         alias = pick_slot_alias(slot=slot, alias_index=alias_idx)
         rk = slot_result_key(slot=slot, alias=alias, source_relation=source_relation)
         # Downstream bind + CTE column name are the ``__``-flattened form; public_alias keeps the dotted result-key form.
-        flat = flat_name(rk, strip_relation=column_relation)
+        flat = flat_name(rk, strip_relation=field_relation)
         # Two public fields flattening to one downstream name make the column ambiguous to a stage reading it by name.
         if flat in key_by_flat:
             check_stage_flatten_collision(flat_name=flat, collides=stage_name is not None or key_by_flat[flat] == rk,
@@ -4919,7 +4922,7 @@ def _emit_stage_schema(
             continue
         key_by_flat[flat] = rk
         fields.append(_stage_field(
-            slot=slot, alias=rk.removeprefix(f"{column_relation}."), flat=flat,
+            slot=slot, alias=rk.removeprefix(f"{field_relation}."), flat=flat,
             source=_source_field(key=slot.key, root=root, datasets_by_name=datasets_by_name),
             respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,

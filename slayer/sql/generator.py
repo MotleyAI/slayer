@@ -3990,7 +3990,7 @@ class SQLGenerator:
         absent from a cell reading its empty value (semantics 12.4, Axiom 4). Returns ``(base, ctes, base deps)``."""
         allocator = self._gen_allocator or self._new_allocator()
         dims = [sid for sid in planned_query.grain or [] if aliases_by_slot_id.get(sid)]
-        columns = {sid: aliases_by_slot_id[sid][0] for sid in dims}
+        key_names = {sid: aliases_by_slot_id[sid][0] for sid in dims}
         # A cell plan spells a dimension by its alias, or by its field when it is a coarser grain's restriction.
         names = {
             name: sid for sid in dims
@@ -4006,13 +4006,13 @@ class SQLGenerator:
             plan_slots = {s.id: s for s in (*plan.row_slots, *plan.aggregate_slots, *plan.combined_expression_slots)}
             outputs = [e.alias_or_name for e in body.expressions]
             if len(outputs) != len(plan.projection):
-                raise ValueError("a row-source plan projects other columns than its dimensions")
+                raise ValueError("a row-source plan projects other values than its dimensions")
             public = {sid: plan_slots[sid].public_name or plan_slots[sid].declared_name for sid in plan.projection}
             by_dim = {names[public[sid]]: col for sid, col in zip(plan.projection, outputs) if public[sid] in names}
             return body, by_dim
 
         branches = [
-            self._row_supply_branch(index=i, branch=branch, cells=cells, dims=dims, columns=columns,
+            self._row_supply_branch(index=i, branch=branch, cells=cells, dims=dims, key_names=key_names,
                                     slots_by_id=slots_by_id)
             for i, branch in enumerate(planned_query.row_supply.branches)
         ]
@@ -4021,15 +4021,15 @@ class SQLGenerator:
             union = exp.union(union, b, distinct=True)
         host, keys = allocator.allocate("_base_host"), allocator.allocate("_keys")
         local = [
-            (sid, alias) for sid, als in aliases_by_slot_id.items() if sid not in columns for alias in als
+            (sid, alias) for sid, als in aliases_by_slot_id.items() if sid not in key_names for alias in als
         ]
         on = build_grain_joinback_condition(pairs=self._keyed_pairs([
-            (exp.column(columns[sid], table=keys, quoted=True), exp.column(columns[sid], table=host, quoted=True),
+            (exp.column(key_names[sid], table=keys, quoted=True), exp.column(key_names[sid], table=host, quoted=True),
              slots_by_id[sid].key)
             for sid in dims
         ]), dialect=self._dialect)
         wrapped = exp.Select().select(
-            *(exp.column(columns[sid], table=keys, quoted=True).as_(alias, quoted=True)
+            *(exp.column(key_names[sid], table=keys, quoted=True).as_(alias, quoted=True)
               for sid in dims for alias in aliases_by_slot_id[sid]),
             *(self._with_empty(exp.column(alias, table=host, quoted=True), slot=slots_by_id[sid], bundle=bundle)
               .as_(alias, quoted=True) for sid, alias in local),
@@ -4045,7 +4045,7 @@ class SQLGenerator:
 
     def _row_supply_branch(
         self, *, index: int, branch: PlannedRowBranch, cells: Callable[[Any], Tuple[Expression, Dict[str, str]]],
-        dims: List[str], columns: Dict[str, str], slots_by_id: Dict[str, ValueSlot],
+        dims: List[str], key_names: Dict[str, str], slots_by_id: Dict[str, ValueSlot],
     ) -> exp.Select:
         """One branch's cells, each dimension cast to its type, kept where every ``restrict`` plan has the cell."""
         body, by_dim = cells(branch.cells)
@@ -4058,7 +4058,7 @@ class SQLGenerator:
                     dialect=self._dialect, expr=exp.column(by_dim[sid], table=alias, quoted=True),
                     dt=self._dialect.declared_cast_type(slots_by_id[sid].type),
                 ),
-                alias=exp.to_identifier(columns[sid], quoted=True),
+                alias=exp.to_identifier(key_names[sid], quoted=True),
             )
             for sid in dims
         )).from_(exp.Subquery(this=body, alias=exp.TableAlias(this=exp.to_identifier(alias))))
@@ -6929,7 +6929,7 @@ def _build_planned_stages_ast(
             name=relation,
             query=build_flat_rename_wrapper(
                 stage=planned.stage_schema.display_name,
-                source_relation=planned.stage_column_relation,
+                source_relation=planned.stage_field_relation,
                 inner=body,
                 expected_columns=[c.name for c in planned.stage_schema.fields],
                 dialect=_as_dialect(dialect).sqlglot_name,

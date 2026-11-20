@@ -91,7 +91,7 @@ from slayer.engine.population.inference import (
     spine_factor_out,
 )
 from slayer.engine.population.row_supply import (
-    RowPlan, anchored_rows, pinned_rows, plan_rows, refuse_product_split,
+    RowPlan, anchored_rows, plan_rows, refuse_product_split, stored_rows,
 )
 from slayer.core.time_points import host_clock
 from slayer.core.names import name_taken
@@ -429,7 +429,7 @@ def _spliced_rows(bundle: ResolvedSourceBundle) -> Dict[Tuple[str, str], Spliced
     out: Dict[Tuple[str, str], SplicedRows] = {}
     for name, dataset in bundle.query_backed.items():
         for stage in dataset.source_queries or []:
-            plan = pinned_rows(stage, datasets_by_name=bundle.datasets_by_name)
+            plan = stored_rows(stage, datasets_by_name=bundle.datasets_by_name)
             if plan is not None:
                 out[(name, stage.name or ROOT_STAGE)] = SplicedRows(population=plan.population, supply=plan.supply)
     return out
@@ -3326,7 +3326,7 @@ class SlayerQueryEngine:
         # Wrap the stage AST with a flat-renamed SELECT over the root stage's output columns, then render once.
         wrapped_ast = build_flat_rename_wrapper(
             stage=dataset.name,
-            source_relation=root_planned.stage_column_relation,
+            source_relation=root_planned.stage_field_relation,
             inner=rendered.statement,
             expected_columns=[c.name for c in expansion.stage_schema.fields],
             dialect=dialect,
