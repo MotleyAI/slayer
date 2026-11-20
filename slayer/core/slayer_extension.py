@@ -26,6 +26,8 @@ from slayer.core.ossie_expression import OSINonportableExtension
 
 VENDOR = "SLAYER"
 PAYLOAD_VERSION = 3
+#: Every payload version ``decode`` reads.
+KNOWN_VERSIONS = (1, 2, PAYLOAD_VERSION)
 _FINGERPRINT_VERSION = 1
 
 

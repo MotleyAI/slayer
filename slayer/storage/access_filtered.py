@@ -23,6 +23,7 @@ from slayer.engine.dataset_reads import Identity, datasets_read_by, placeholder
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX, Memory
 from slayer.storage.base import StorageBackend, _find_case_colliding_id, check_relationship_target_spellings
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
+from slayer.storage.model_metric_rules import visible_model_metrics
 
 
 def can_access(dataset: SlayerDataset, *, tags: Iterable[str]) -> bool:
@@ -214,7 +215,11 @@ class AccessFilteredStorage(StorageBackend):
         await self._inner.edit_semantic_model(name, data_source=data_source, **edits)
 
     async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
-        return await self._inner.list_model_scoped_metrics(data_source)
+        metrics = await self._inner.list_model_scoped_metrics(data_source)
+        if self._bypass:
+            return metrics
+        view = await self._view()
+        return visible_model_metrics(metrics, hidden_datasets={n.casefold() for ds, n in view.hidden if ds == data_source})
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         if self._bypass:

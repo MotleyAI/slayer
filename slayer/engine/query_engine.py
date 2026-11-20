@@ -161,6 +161,7 @@ from slayer.live_schema import ingestion, schema_drift
 from slayer.engine.dataset_reads import narrowing_datasets
 from slayer.live_schema.schema_scope import IngestScopeArgs
 from slayer.live_schema.type_refinement import live_table_location
+from slayer.engine.unknown_types import UnknownTypes
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -954,6 +955,10 @@ class SlayerQueryEngine:
         self._drift_snapshots = schema_drift.LiveSnapshotCache()
         # Live source-column types a portable definition's undeclared columns read, by table.
         self._source_column_types: dict[tuple, dict[str, DataType]] = {}
+        self._unknown_types = UnknownTypes()
+
+    async def _resolve_unknown_types(self, dataset: SlayerDataset) -> SlayerDataset:
+        return await self._unknown_types.resolve(dataset, storage=self.storage, client_for=self.client_for)
 
     async def _live_column_types(self, *, datasource: DatasourceConfig, dataset: SlayerDataset) -> dict[str, DataType]:
         """``dataset``'s live source columns and their types, when a definition needs them; empty when unknown."""
@@ -1498,6 +1503,7 @@ class SlayerQueryEngine:
             stage_displays=stage_displays,
             splice_chain=splice_chain,
             now=self._clock(),
+            resolve_types=self._resolve_unknown_types,
             failures=failures,
             respelled_spine=respelled_spine,
         )
@@ -2397,6 +2403,7 @@ class SlayerQueryEngine:
             runtime_variables={},
             named_queries={},
             now=self._clock(),
+            resolve_types=self._resolve_unknown_types,
         )
         dialect = self._dialect_for_type(datasource.type)
         bundle = await self._resolved_bundle(bundle.model_copy(update={

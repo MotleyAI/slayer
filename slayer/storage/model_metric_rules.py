@@ -13,10 +13,12 @@ from slayer.core.errors import (
     AggArgumentError, AggFilterError, MetricCycleError, ModelMetricNameError, ModelMetricReferenceError,
     UnqualifiedModelMetricReferenceError,
 )
+from slayer.core.field_expression import Expression, ExpressionObject, portable_text
 from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.ossie_validity import columns, is_agg_call, parse_ossie_sql
+from slayer.core.semantic_model import ModelScopedMetric
 
-__all__ = ["DocumentScope", "check_model_metric", "metric_cycle"]
+__all__ = ["DocumentScope", "check_model_metric", "metric_cycle", "metric_references", "visible_model_metrics"]
 
 _OSSIE_SQL = "OSSIE_SQL_2026"
 RESERVED_WORDS = frozenset({"true", "false", "null", "and", "or", "not", "is", "in", "between", "like", "case", "when",
@@ -153,3 +155,31 @@ def metric_cycle(dependencies: dict[str, set[str]]) -> None:
     for start in sorted(dependencies):
         if state.get(start) is None:
             visit(start, [start])
+
+
+def metric_references(expression: Expression) -> tuple[set[str], set[str]]:
+    """``(datasets, model-scoped metrics)`` a model-scoped metric's every form names, case-folded."""
+    portable = portable_text(expression)
+    texts = [portable] if portable is not None else [
+        e.expression for e in (expression.dialects or [] if isinstance(expression, ExpressionObject) else [])]
+    datasets: set[str] = set()
+    metrics: set[str] = set()
+    for text in texts:
+        tree, _ = parse_ossie_sql(text, _OSSIE_SQL)
+        for column in tree.find_all(exp.Column) if tree is not None else []:
+            (datasets if column.table else metrics).add((column.table or column.name).casefold())
+    return datasets, metrics
+
+
+def visible_model_metrics(metrics: list[ModelScopedMetric], *, hidden_datasets: set[str]) -> list[ModelScopedMetric]:
+    """``metrics`` without any that reads a hidden dataset or such a metric, transitively."""
+    references = {m.name.casefold(): metric_references(m.expression) for m in metrics}
+    hidden: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for name, (datasets, names) in references.items():
+            if name not in hidden and (datasets & hidden_datasets or names & hidden):
+                hidden.add(name)
+                changed = True
+    return [m for m in metrics if m.name.casefold() not in hidden]

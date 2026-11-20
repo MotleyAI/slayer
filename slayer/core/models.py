@@ -441,8 +441,9 @@ class DatasetField(DatasetPart):
 
     @model_validator(mode="after")
     def _validate_granularity_temporal(self) -> "DatasetField":
-        # A bucket only makes sense on a temporal field (like filter/aggregations, fail at construction).
-        if self.granularity is not None and self.datatype not in TEMPORAL_DATATYPES:
+        # A bucket only makes sense on a temporal field (like filter/aggregations, fail at construction); an unknown
+        # type defers the check to query time.
+        if self.granularity is not None and self.datatype is not None and self.datatype not in TEMPORAL_DATATYPES:
             raise ValueError(
                 f"DatasetField {self.name!r} declares granularity "
                 f"'{self.granularity}' but its type is {self.datatype.value}; "
@@ -602,6 +603,8 @@ def _check_allowed_aggregation(
     if agg_name in custom_agg_names and agg_name not in BUILTIN_AGGREGATIONS:
         # Custom aggregations bypass type-default eligibility; the expression decides.
         return
+    if field.datatype is None:
+        return  # an unknown type defers the check to query time
     allowed_for_type = DEFAULT_AGGREGATIONS_BY_TYPE.get(field.datatype, frozenset())
     if agg_name not in allowed_for_type:
         raise ValueError(
@@ -1350,7 +1353,7 @@ class SlayerDataset(DatasetPart):
         for c in self.fields:
             if c.allowed_aggregations is None:
                 continue
-            if c.datatype.is_opaque:
+            if c.datatype is not None and c.datatype.is_opaque:
                 db_type_note = f" (db_type={c.db_type!r})" if c.db_type else ""
                 raise ValueError(
                     f"DatasetField '{c.name}'{db_type_note}: allowed_aggregations "

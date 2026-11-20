@@ -265,6 +265,8 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
         lines.append(f"Sample values: {field.sampled}")
     if field.primary_key:
         lines.append("Primary key: yes")
+    if field.load_warning:
+        lines.append(f"Load warning: {field.load_warning}")
     return "\n".join(lines)
 
 
@@ -283,6 +285,8 @@ def render_metric_text(*, dataset: SlayerDataset, metric: DatasetMetric) -> str:
         lines.append(f"Description: {metric.description}")
     if metric.label:
         lines.append(f"Label: {metric.label}")
+    if metric.load_warning:
+        lines.append(f"Load warning: {metric.load_warning}")
     return "\n".join(lines)
 
 

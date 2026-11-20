@@ -303,6 +303,11 @@ def _append_verbose_dataset_lines(
         dataset_lines.append(f"**Relationships to:** {rendered}")
     else:
         dataset_lines.append("**Relationships to:** _(none)_")
+    warned = [(kind, e) for kind, entities in (("field", m.fields), ("metric", m.metrics))
+              for e in entities if e.load_warning]
+    if warned:
+        dataset_lines.extend(["", "**Load warnings:**",
+                              *(f"- {kind} `{e.name}`: {e.load_warning}" for kind, e in warned)])
 
 
 # ---------------------------------------------------------------------------

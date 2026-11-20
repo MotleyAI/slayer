@@ -79,6 +79,16 @@ class _OneResult(NamedTuple):
     serialized: str
 
 
+def load_warnings(dataset: SlayerDataset, *, kind: str | None = None, name: str | None = None) -> list[str]:
+    """A dataset's load warnings and unapplied ``SLAYER`` entries; with ``kind`` and ``name``, one entity's."""
+    def wanted(k: str, entity: str) -> bool:
+        return kind is None or (k == kind and entity.casefold() == (name or "").casefold())
+
+    out = [f"{k} {e.name!r}: {e.load_warning}" for k, entities in (("field", dataset.fields), ("metric", dataset.metrics))
+           for e in entities if e.load_warning and wanted(k, e.name)]
+    return out + [n.message for n in dataset.extension_notes if wanted(n.kind, n.entity)]
+
+
 def _warn_line(*, arg: str, entity_type: str) -> str:
     """Dataset-only-arg warning text (the ``> Warning:`` prefix is added at render time)."""
     return (
@@ -716,6 +726,7 @@ class InspectService:
                 f"Dataset '{canonical}' not found "
                 f"(reference '{reference}')."
             ))
+        warnings = [*warnings, *load_warnings(dataset)]
         if compact:
             # DB-free skeleton; short-circuits the full renderer's DB work.
             saved_queries = saved_queries_index(
@@ -816,9 +827,10 @@ class InspectService:
                 f"(reference '{reference}')."
             ))
 
-        dataset =await self._maybe_refresh_leaf_sample(
+        dataset = await self._maybe_refresh_leaf_sample(
             dataset=dataset, entity_type=entity_type, compact=compact, leaf=leaf,
         )
+        warnings = [*warnings, *load_warnings(dataset, kind=entity_type, name=leaf)]
 
         pairs = collect_dataset_entity_pairs(dataset=dataset, include_hidden=True)
         matches = [

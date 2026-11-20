@@ -31,7 +31,7 @@
 - [ ] 2.5 Decomposition into datasets/relationships/model-scoped metrics, merged into `get_dataset`/`load_datasets`/`list_datasets`; per-datasource namespace with dependency-aware quarantine; unevaluable-entity load warnings; verify the decomposition and collision tests pass
 - [ ] 2.6 Owner lookup routing every dataset mutation (decision 25) and the lossless SLayer → Ossie-core-or-`SLAYER` mapping (decision 26) built from the exporter's classification; verify edit-through tests pass
 - [ ] 2.7 Delete cascades and broken-dependent warnings for document members and documents; save scope (decision 28); verify cascade and save-scope tests pass
-- [ ] 2.8 Access filtering of documents with transitive model-scoped metric pruning; verify access tests pass
+- [x] 2.8 Access filtering of documents with transitive model-scoped metric pruning; verify access tests pass
 - [x] 2.9 Lift the relationship refusals: edge-name/dataset-name namespace, self-relationships (inert, refused when spelled), computed keys (emission at ON, semi-join spine, profiling); ambiguous-hop refusal; verify relationship-shape tests pass
 
 ## 3. Engine and queries
@@ -39,7 +39,7 @@
 - [x] 3.1 Model-scoped metrics expanded in place once per statement at the planning entry (before population inference), so binding, population inference and the bundle see only qualified expressions; the legacy conversion skips model-scoped names; saved definitions keep the bare name; bare-name order alias → model-scoped → legacy → unknown; `recommend_population` resolves model-scoped items itself; verify resolution tests pass
 - [ ] 3.2 In-place expansion with one component per aggregate; result key = bare name; save-time reference rules and refusals (reserved word, library function, dataset name, circularity); verify model-scoped tests pass
 - [ ] 3.3 `AGG(d.m)` in `core.syntax` (the one Mode B reader) and binding, in queries, model-scoped metrics and dataset metrics, with every refusal; verify AGG tests pass
-- [ ] 3.4 Unknown datatype: explicit unknown on load; engine probe off the event loop, cached per engine + fingerprint; deferred save-time checks; verify unknown-type tests pass
+- [x] 3.4 Unknown datatype: explicit unknown on load; engine probe off the event loop, cached per engine + fingerprint; deferred save-time checks; verify unknown-type tests pass
 - [ ] 3.5 Native parity for every construct the 1.x converter mapped (decision 34) and in-memory translation of expressions without a runnable form; verify parity tests pass against the converter's expected values before deleting the converter
 
 ## 4. Import, export, drift, surfaces

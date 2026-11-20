@@ -50,7 +50,8 @@ def read_entry(extensions: list[Any] | None, *, kind: str, entity: str, ossie: A
     try:
         payload = ext.decode(entries[0].data)
     except ValueError as exc:
-        reason = "of an unknown version" if "version" in str(exc) else "malformed"
+        version = entries[0].data.get("version") if isinstance(entries[0].data, dict) else None
+        reason = "of an unknown version" if version not in ext.KNOWN_VERSIONS else "malformed"
         note(f"its SLAYER extension entry is {reason} ({str(exc).splitlines()[0]})")
         return None
     if payload.kind != kind or payload.entity != entity:
