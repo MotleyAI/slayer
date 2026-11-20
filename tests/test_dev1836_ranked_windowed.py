@@ -9,10 +9,12 @@ query's active time dimension attributable from its root.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.errors import SlayerError
+from slayer.core.errors import TimeAxisError
 from slayer.core.query import QueryMetric, TimeDimension
 from slayer.sql.scope_check import assert_scope_closed
 
@@ -27,8 +29,6 @@ from tests._dev1836_fixtures import (
     q,
     rows_by,
 )
-
-RAISES = (SlayerError, ValueError, NotImplementedError)
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -168,8 +168,8 @@ class TestCrossModelWindowed:
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_windowed_requires_attributable_td(self, exec_backend):
-        """The query's active TD (orders.ordered_at) is not attributable from
-        customers: clear error, not wrong numbers."""
+        """Under broadcast, the query's active TD (orders.ordered_at), not attributable from customers, is a typed
+        error naming association among the remedies — not wrong numbers."""
         _, engine = exec_backend
         query = q(
             time_dimensions=month_td(),
@@ -178,8 +178,9 @@ class TestCrossModelWindowed:
             )],
             to_many_handling="broadcast",
         )
-        with pytest.raises(RAISES) as ei:
+        with pytest.raises(TimeAxisError) as ei:
             await engine.execute(query)
         message = str(ei.value)
         assert "ordered_at" in message or "time dimension" in message
+        assert re.search(r"to_many_handling|associat", ei.value.suggestion or "", re.IGNORECASE), message
         assert "__regroup__" not in message

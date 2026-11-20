@@ -50,13 +50,11 @@ class ModePolicy(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     mode: ToManyHandling = "associate"
-    # The default: an association-ineligible aggregate broadcasts instead of raising.
-    fallback: bool = True
 
     @classmethod
     def resolve(cls, requested: Optional[ToManyHandling]) -> "ModePolicy":
-        """The one reader of the raw field: omitted associates with the broadcast fallback."""
-        return cls() if requested is None else cls(mode=requested, fallback=False)
+        """The one reader of the raw field: omitted associates."""
+        return cls() if requested is None else cls(mode=requested)
 
     @property
     def associates(self) -> bool:

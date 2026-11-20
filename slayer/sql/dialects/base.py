@@ -1341,14 +1341,11 @@ class SqlDialect(BaseModel):
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier,
         element: Optional[DataType],  # NOSONAR(S1172) — hook parameter read by dialect overrides
-        leading: bool, distinct: bool = False, positioned: bool = False,
+        leading: bool, positioned: bool = False,
     ) -> ListRelation:
-        """The elements of ``values`` (non-NULL; ``distinct``: each once) as ``alias``; ``leading``: the first FROM
-        item (no LATERAL); ``positioned``: each element's position in its list as ``alias.<LIST_POSITION>``."""
-        assert not (distinct and positioned), "a distinct list relation carries no position"
-        rows = kept_elements(values).distinct() if distinct else kept_elements(values)
-        if positioned:
-            rows = self.positioned_elements(values)
+        """The non-NULL elements of ``values`` as ``alias``; ``leading``: the first FROM item (no LATERAL);
+        ``positioned``: each element's position in its list as ``alias.<LIST_POSITION>``."""
+        rows = self.positioned_elements(values) if positioned else kept_elements(values)
         table_alias = exp.TableAlias(this=alias.copy())
         subquery = exp.Subquery(this=rows, alias=table_alias) if leading else None
         return ListRelation(relation=subquery or exp.Lateral(this=exp.Subquery(this=rows), alias=table_alias))
