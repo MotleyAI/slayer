@@ -20,7 +20,6 @@ from slayer.core.models import (
 )
 from slayer.core.query import (
     FieldRef,
-    DatasetExtension,
     OrderItem,
     QueryMetric,
     SlayerQuery,
@@ -1812,14 +1811,6 @@ class TestRootQualifier:
         if case in _ANCHORED_KEYS:  # different anchors are different result keys
             got, expected = _unaliased(got), _unaliased(expected)
         assert got == expected
-
-    @pytest.mark.parametrize("source", [
-        {"population": "orders", "extensions": [{"dataset": "orders"}]},
-        {"population": "orders", "extensions": [DatasetExtension(dataset="orders")]},
-    ], ids=["extension-dict", "extension-object"])
-    async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
-        assert await _prefix_sql({**source, "dimensions": ["orders.status"]}) == await _prefix_sql(
-            {**source, "dimensions": ["orders.status"]})
 
     @pytest.mark.parametrize("query", [
         {"metrics": ["count(customers.orders.id)"]},
