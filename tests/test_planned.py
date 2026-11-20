@@ -331,7 +331,7 @@ class TestPlannedQuery:
         # against it (P6).
         ss = StageSchema(
             relation_name="stage_a",
-            fields=[StageField(name="rev", sql_alias="rev")],
+            fields=[StageField(name="rev", sql_alias="rev", datatype=DataType.FLOAT)],
         )
         pq = PlannedQuery(source_relation="orders", stage_schema=ss)
         assert pq.stage_schema is ss

@@ -253,13 +253,13 @@ class TestValueType:
     def test_joined_branch_type(self, expression: str, joined: DataType | None) -> None:
         assert self._value_type(expression) is joined
 
-    # An untyped stage field reads as FLOAT until DEV-2373 types every stage field.
     @pytest.mark.parametrize(("expression", "joined"), [
-        ("coalesce(u, n)", DataType.FLOAT), ("iif(n > 1, u, 'x')", None), ("greatest(u, n)", DataType.FLOAT),
+        ("coalesce(u, n)", None), ("iif(n > 1, u, 'x')", DataType.STRING), ("greatest(u, n)", None),
     ])
-    def test_untyped_stage_column_is_absorbed(self, expression: str, joined: DataType | None) -> None:
+    def test_typed_stage_column_branches(self, expression: str, joined: DataType | None) -> None:
         schema = StageSchema(relation_name="s1", fields=[
-            StageField(name="u", sql_alias="u"), StageField(name="n", sql_alias="n", datatype=DataType.INTEGER),
+            StageField(name="u", sql_alias="u", datatype=DataType.STRING),
+            StageField(name="n", sql_alias="n", datatype=DataType.INTEGER),
         ])
         bundle = ResolvedSourceBundle(dialect="postgres")
         scope = DatasetScope(population=dataset_from_stage_schema(name="s1", schema=schema, data_source="test"))

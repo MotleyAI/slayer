@@ -19,7 +19,9 @@ from slayer.core.enums import (
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.keys import AggregateKey, FieldKey, ValueKey
 from slayer.core.models import Aggregation, DatasetField, SlayerDataset
+from slayer.core.query import SlayerQuery
 from slayer.core.scope import DatasetScope, StageField, StageSchema
+from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import aggregated_type, metric_key_type
 from slayer.engine.response_meta import _infer_aggregated_format
@@ -153,6 +155,14 @@ def _facade_dataset() -> SlayerDataset:
     )
 
 
+def _plan_type(model: SlayerDataset, expression: str) -> Optional[DataType]:
+    """The query plan's type of ``expression`` as the one metric of a query over ``model``."""
+    query = SlayerQuery.model_validate({"population": model.name, "metrics": [{"metric": expression, "alias": "x"}]})
+    prebound = bind_query_inputs(query=query, bundle=ResolvedSourceBundle(dialect="postgres", population=model))
+    (declared,) = [dm for dm in prebound.declared_metrics if dm.public_name == "x"]
+    return declared.datatype
+
+
 class TestFacadeAgreement:
     """Scenario: facade agrees with the engine (custom aggregations included)."""
 
@@ -162,15 +172,15 @@ class TestFacadeAgreement:
         by_name = {mt.name: mt for mt in metrics}
         aggs = set().union(*DEFAULT_AGGREGATIONS_BY_TYPE.values()) | {"wsum"}
         checked = 0
-        for col in model.fields:
+        for col in (c for c in model.fields if not c.primary_key):  # the plan refuses aggregating a key
             for agg in sorted(aggs):
                 metric = by_name.get(f"{col.name}_{agg}")
                 if metric is None:
                     continue
-                expected = aggregated_type(dataset=model, metric_name=col.name, aggregation=agg)
+                expected = _plan_type(model, f"{agg}(facts.{col.name})")
                 assert metric.data_type == expected, (col.name, agg, metric.data_type, expected)
                 checked += 1
         assert checked > 0
         assert "flag_avg" in by_name
         assert by_name["flag_sum"].data_type is DataType.INTEGER
-        assert by_name["flag_wsum"].data_type is None
+        assert by_name["flag_wsum"].data_type is DataType.INTEGER
