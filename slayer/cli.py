@@ -2461,7 +2461,7 @@ def _run_export_osi(args: _ExportOsiArgs):
     if args.out.endswith(".json"):
         text = json.dumps(result.document, indent=2, ensure_ascii=False) + "\n"
     else:
-        text = dump_yaml(result.document)
+        text = result.text or dump_yaml(result.document)
     # The output path is an intended, user-specified CLI location.
     with open(args.out, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
         fh.write(text)

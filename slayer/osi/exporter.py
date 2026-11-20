@@ -11,11 +11,13 @@ from collections.abc import Iterator
 from typing import Any, Literal, cast
 
 import sqlglot
+import yaml
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
+from slayer.core.document_text import edit_text, without_vendor
 from slayer.core.errors import AmbiguousReferenceError, SlayerError
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
@@ -55,6 +57,7 @@ from slayer.ingest_report import ConversionReport, ConversionWarning
 from slayer.core import slayer_extension as ext
 from slayer.sql.ossie_dialects import PORTABLE_READER, expression_digest, ossie_token, source_digest
 from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, explicit_description
+from slayer.osi.yaml_writer import dump_yaml
 from slayer.core.ossie_expression import OSIExpression
 from slayer.sql.field_expansion import expand_field_definition_parts_sync, expand_derived_refs_sync
 from slayer.sql.root_scope import root_scope_field_ids
@@ -79,8 +82,9 @@ class OsiExportError(Exception):
 
 
 class OsiExportResult(ConversionReport):
-    """The exported Ossie document and its report."""
+    """The exported Ossie document, its text and its report."""
     document: dict[str, Any] = Field(default_factory=dict)
+    text: str = ""
 
 
 class _Refused(Exception):
@@ -166,14 +170,14 @@ def _strip_self(tree: exp.Expr) -> exp.Expr:
 
 def _datatype(field: DatasetField) -> str | None:
     """The field's datatype as Ossie writes it; a list has none."""
-    return field.datatype.value if field.datatype.value in OSSIE_DATATYPES else None
+    return field.datatype.value if field.datatype is not None and field.datatype.value in OSSIE_DATATYPES else None
 
 
 def _time_role(field: DatasetField) -> bool:
     recorded = (field.meta or {}).get("osi_is_time")
     if isinstance(recorded, bool):
         return recorded
-    return field.datatype.is_temporal
+    return field.datatype is not None and field.datatype.is_temporal
 
 
 _AGGREGATE_MARK = "slayer_rendered_aggregate"
@@ -238,8 +242,13 @@ def _row_leaves(value: Any) -> Iterator[FieldKey | FieldSqlKey | StarKey]:
 class _Exporter:
     def __init__(self, *, config: DatasourceConfig, datasets: dict[str, SlayerDataset], selected: list[str],
                  virtual: dict[str, SlayerDataset | Exception], extensions: bool,
-                 resolved: dict[str, SlayerDataset | Exception] | None = None) -> None:
+                 resolved: dict[str, SlayerDataset | Exception] | None = None,
+                 documents: list[dict[str, Any]] | None = None) -> None:
         self.config = config
+        #: The stored documents, each merged verbatim; their datasets are fixed.
+        self.documents = documents or []
+        self.fixed: dict[str, dict[str, Any]] = {
+            d["name"]: d for doc in self.documents for d in doc["datasets"] if d["name"] in datasets}
         self.datasets = datasets
         self.selected = selected
         self.extensions = extensions
@@ -292,25 +301,39 @@ class _Exporter:
     # ---- top level ----
 
     def run(self) -> OsiExportResult:
+        for name, entity in self.fixed.items():
+            self._fixed_dataset(name, entity)
         for name in self.selected:
-            self._dataset(name)
+            if name not in self.fixed:
+                self._dataset(name)
         if not self.osi_datasets:
             reasons = "; ".join(e.message for e in self.entries) or "it has no datasets"
             raise OsiExportError(f"Nothing to export from datasource {self.config.name!r}: {reasons}")
-        for name in self.osi_datasets:
+        own = [n for n in self.osi_datasets if n not in self.fixed]
+        for name in own:
             self._fields(name)
-        for name in self.osi_datasets:
+        for name in own:
             self._keys(name)
-        for name in self.osi_datasets:
+        for name in own:
             for relationship in self.datasets[name].relationships:
                 self._relationship(name, relationship)
-        metrics = [m for name in self.osi_datasets for m in self._metrics(name)]
+        metrics = [m for name in own for m in self._metrics(name)]
         self._name_entities(metrics)
         for metric in metrics:
             self._place(metric)
         return OsiExportResult(document=self._document(), warnings=self.entries)
 
     # ---- datasets and sources ----
+
+    def _fixed_dataset(self, name: str, entity: dict[str, Any]) -> None:
+        """A stored document's dataset, exported verbatim; registered so standalone content can reference it."""
+        dataset = self.datasets[name]
+        self.osi_datasets[name] = _Dataset(
+            dataset=dataset, graph=self.graph[name], source=entity["source"], structure=ext.SourceStructure(),
+            osi_fields={f["name"]: f for f in entity.get("fields") or []}, fields={f.name: f for f in dataset.fields},
+            primary_key=list(entity.get("primary_key") or []),
+            unique_keys=[list(k) for k in entity.get("unique_keys") or []],
+        )
 
     def _dataset(self, name: str) -> None:
         dataset = self.datasets[name]
@@ -683,7 +706,7 @@ class _Exporter:
         for agg in aggregates:
             readers.append(self._aggregate_reader(ds, agg))
         portable = not any(a.agg == "count_distinct_approx" for a in aggregates)
-        scoped = len(set(readers)) == 1
+        scoped = len(set(readers)) == 1 and readers[0] not in self.fixed
         try:
             tree = self._render(ds.graph, _instant_comparisons(key), scoped=scoped, portable=portable)
         except Exception as exc:  # noqa: BLE001 — anything the shared renderer refuses stays SLayer-only
@@ -797,6 +820,9 @@ class _Exporter:
     def _name_document_entities(self, dataset_metrics: list[_Metric]) -> None:
         """Explicitly named relationships first, then model metrics, then the remaining relationships."""
         document = _Names()
+        for doc in self.documents:
+            for taken in [*(doc.get("relationships") or []), *(doc.get("metrics") or [])]:
+                document.allocate(taken["name"])
         for rel in self.relationships:
             explicit = next((d.relationship.name for d in rel.declarations if d.relationship.name), None)
             if explicit:
@@ -861,17 +887,39 @@ class _Exporter:
             document["name"] = self.config.name
             if self.config.description:
                 document["description"] = self.config.description
-        document["datasets"] = [self._dataset_entity(ds) for _, ds in sorted(self.osi_datasets.items())]
+        document["datasets"] = [self._verbatim(self.fixed[name]) if name in self.fixed else self._dataset_entity(ds)
+                                for name, ds in sorted(self.osi_datasets.items())]
         relationships = sorted(self.relationships,
                                key=lambda r: (r.from_dataset, r.to, r.from_columns, r.to_columns))
-        if relationships:
-            document["relationships"] = [self._relationship_entity(r) for r in relationships]
-        if self.model_metrics:
-            document["metrics"] = self.model_metrics
+        merged_rels = [self._verbatim(r) for doc in self.documents for r in doc.get("relationships") or []]
+        merged_rels += [self._relationship_entity(r) for r in relationships]
+        if merged_rels:
+            document["relationships"] = merged_rels
+        merged_metrics = [self._verbatim(m) for doc in self.documents for m in doc.get("metrics") or []]
+        merged_metrics += self.model_metrics
+        if merged_metrics:
+            document["metrics"] = merged_metrics
         foreign = self._foreign((semantic or {}).get("nonportable_extensions"), owner="the document", dataset=None)
+        if self.documents and self.extensions:
+            foreign.append(ext.encode(ext.DocumentPayload(entity=document["name"], documents=[
+                self._boundary(doc) for doc in self.documents]), ossie=document["name"]))
         if foreign:
             document["nonportable_extensions"] = foreign
         return document
+
+    def _verbatim(self, entity: dict[str, Any]) -> dict[str, Any]:
+        """A stored document's entity as written; without ``SLAYER`` entries when extensions are off."""
+        return entity if self.extensions else without_vendor(entity, ext.VENDOR)
+
+    @staticmethod
+    def _boundary(doc: dict[str, Any]) -> ext.DocumentBoundary:
+        return ext.DocumentBoundary(
+            name=doc["name"], description=doc.get("description"), ai_context=doc.get("ai_context"),
+            datasets=[d["name"] for d in doc["datasets"]],
+            relationships=[r["name"] for r in doc.get("relationships") or []],
+            metrics=[m["name"] for m in doc.get("metrics") or []],
+            nonportable_extensions=list(doc.get("nonportable_extensions") or []),
+        )
 
     def _dataset_entity(self, ds: _Dataset) -> dict[str, Any]:
         dataset = ds.dataset
@@ -941,5 +989,18 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
             except Exception as exc:  # noqa: BLE001 — reported on the dataset
                 virtual[name] = exc
     resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
-    return _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual, extensions=extensions,
-                     resolved=resolved).run()
+    documents: list[tuple[str, str]] = []
+    for _, name in await storage.list_semantic_models(datasource):
+        text = await storage.get_semantic_model_text(name, data_source=datasource)
+        if text is not None:
+            documents.append((name, text))
+    parsed = [yaml.safe_load(text) for _, text in documents]
+    members = {d["name"] for doc in parsed for d in doc["datasets"]}
+    if datasets is None and len(documents) == 1 and members == set(stored):
+        text = documents[0][1] if extensions else edit_text(documents[0][1],
+                                                            lambda data: without_vendor(data, ext.VENDOR))
+        return OsiExportResult(document=yaml.safe_load(text), text=text, warnings=[])
+    result = _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual, extensions=extensions,
+                       resolved=resolved, documents=parsed).run()
+    result.text = dump_yaml(result.document)
+    return result

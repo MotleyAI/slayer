@@ -19,7 +19,7 @@ from slayer.core.errors import OssieDocumentInvalidError, StoredDocumentLoadErro
 from slayer.core.field_expression import DialectEntry, Expression, ExpressionObject, token
 from slayer.core import slayer_extension as ext
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
-from slayer.core.ossie_validity import parse_ossie_sql
+from slayer.core.ossie_validity import columns, is_agg_call, parse_ossie_sql
 from slayer.core.semantic_model import (
     ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument, ossie_validity_errors,
 )
@@ -237,6 +237,10 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
             datatype=_OSSIE_TYPES[m.datatype] if m.datatype else None,
             load_warning=WINDOW_WARNING if _windowed(m.expression) else problem,
         ))
+    names = {m.name.casefold() for m in metrics}
+    for metric in metrics:
+        if metric.load_warning is None:
+            metric.load_warning = model_scoped_problem(metric.expression, metric_names=names)
     notes: list[ExtensionNote] = []
     entry = read_entry(doc.nonportable_extensions, kind="semantic_model", entity=doc.name, ossie=doc.name,
                        label=f"semantic model {doc.name!r}", notes=notes)
@@ -251,6 +255,45 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
 def decompose(*, text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
     """``text`` decomposed for a datasource of ``ds_type``; raises ``OssieDocumentInvalidError`` when invalid."""
     return _decomposed(text, name, data_source, ds_type).model_copy(deep=True)
+
+
+def _aggregated(node: exp.Expr) -> bool:
+    """Inside an aggregate call, its ``FILTER`` clause or an ``AGG(d.m)`` call."""
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.AggFunc | exp.Filter) or is_agg_call(parent):
+            return True
+        parent = parent.parent
+    return False
+
+
+def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> str | None:
+    """Why Ossie rejects a model-scoped metric at query time (each aggregate reads one dataset, every field is
+    qualified and aggregated), else ``None``."""
+    text = expression if isinstance(expression, str) else (
+        expression.sql or next((d.expression for d in expression.dialects or []), None))
+    tree, _ = parse_ossie_sql(text, OSSIE_SQL) if text else (None, None)
+    if tree is None:
+        return None
+    for column in columns(tree, OSSIE_SQL):
+        if _aggregated(column):
+            if not column.table:
+                return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
+        elif column.table:
+            return f"reads {column.table}.{column.name} outside an aggregate"
+        elif column.name.casefold() not in metric_names:
+            return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
+    for aggregate in tree.find_all(exp.AggFunc):
+        if is_agg_call(aggregate) or _aggregated(aggregate):
+            continue
+        homes = {c.table.casefold() for c in aggregate.find_all(exp.Column) if c.table}
+        if len(homes) != 1:
+            return (f"has the aggregate {aggregate.sql()}, which reads {'no dataset' if not homes else 'several datasets'}"
+                    "; each aggregate of a model-scoped metric reads one dataset")
+        if isinstance(aggregate.parent, exp.Filter) and {
+                c.table.casefold() for c in aggregate.parent.expression.find_all(exp.Column) if c.table} - homes:
+            return f"filters the aggregate {aggregate.sql()} on another dataset"
+    return None
 
 
 def expression_datasets(expression: Expression) -> tuple[set[str], set[str]]:

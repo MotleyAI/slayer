@@ -123,8 +123,14 @@ class EngineStorage(StorageBackend):
     async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
         return await self._inner.delete_semantic_model(name, data_source=data_source)
 
-    async def semantic_model_owner(self, name: str, *, data_source: str) -> str | None:
+    async def semantic_model_owner(self, name: str, data_source: str) -> str | None:
         return await self._inner.semantic_model_owner(name, data_source=data_source)
+
+    async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
+        await self._sourced(self._inner.save_dataset_extensions(dataset))
+
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
+        await self._sourced(self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing))
 
     async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
         return await self._inner.list_model_scoped_metrics(data_source)

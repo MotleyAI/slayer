@@ -130,9 +130,25 @@ class ModelMetricContent(BaseModel):
     datatype: DataType | None = None
 
 
+class DocumentBoundary(BaseModel):
+    """One stored document merged into an exported document: its own top level and the members it declares."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str | None = None
+    ai_context: Any = None
+    datasets: list[str] = []
+    relationships: list[str] = []
+    metrics: list[str] = []
+    nonportable_extensions: list[dict[str, Any]] = []
+
+
 class DocumentPayload(_Payload):
     kind: Literal["semantic_model"] = "semantic_model"
     metrics: list[ModelMetricContent] = []
+    #: The stored documents an export merged, so a re-import splits them back.
+    documents: list[DocumentBoundary] = []
 
 
 Payload = Annotated[

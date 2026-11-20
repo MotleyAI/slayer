@@ -118,7 +118,7 @@ from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
 from slayer.storage.qualified_references import qualified_stages
 from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
-from slayer.storage.document_text import edit_text
+from slayer.core.document_text import edit_text
 from slayer.storage.semantic_models import (
     DocumentIndex, build_index, checked_document, decompose, expression_datasets,
 )
@@ -797,8 +797,17 @@ class StorageBackend(ABC):
             return None
         return (await self._document_index(data_source)).owners.get(name.casefold())
 
+    async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
+        """Write a document dataset's SLayer content as ``SLAYER`` entries, leaving its document's Ossie core as it is."""
+        owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
+        if owner is None:
+            raise ValueError(f"Dataset {dataset.name!r} is not declared by a semantic model")
+        await self._write_document_dataset(data_source=dataset.data_source, document=owner, name=dataset.name,
+                                           mutate=lambda _old: dataset, core=False)
+
     async def _write_document_dataset(self, *, data_source: str, document: str, name: str,
-                                      mutate: Callable[[SlayerDataset | None], SlayerDataset | None]) -> None:
+                                      mutate: Callable[[SlayerDataset | None], SlayerDataset | None],
+                                      core: bool = True) -> None:
         """Patch document ``document``: dataset ``name`` becomes ``mutate(current)`` (``None`` removes it), read and
         written as one serialized step."""
         datasource = await self.get_datasource(data_source)
@@ -814,7 +823,7 @@ class StorageBackend(ABC):
 
             def edit(doc: dict[str, Any]) -> dict[str, Any]:
                 out = without_dataset(doc, name=name, reads=_reads) if new is None else with_dataset(
-                    doc, old=baseline, new=new, reader=reader)
+                    doc, old=baseline, new=new, reader=reader, core=core)
                 reasons = ossie_validity_errors(out)
                 if reasons:
                     raise OssieDocumentInvalidError(name=document, reasons=reasons)
@@ -1109,6 +1118,19 @@ class StorageBackend(ABC):
         )
         await self._save_semantic_model_text_impl(data_source=data_source, name=name, text=text)
 
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
+        """Store document ``name`` in place of the standalone datasets ``replacing`` (same names, so references keep
+        resolving); the standalone datasets are restored when the document is refused."""
+        replaced = [d for n in replacing if (d := await self.get_dataset(n, data_source=data_source)) is not None]
+        for dataset in replaced:
+            await self._delete_dataset_row(data_source=data_source, name=dataset.name)
+        try:
+            await self.save_semantic_model_text(data_source=data_source, name=name, text=text)
+        except Exception:
+            for dataset in replaced:
+                await self._save_dataset_impl(dataset)
+            raise
+
     async def _check_document_namespace(self, *, name: str, data_source: str, datasets: list[str],
                                         metrics: list[str]) -> None:
         """Refuse a dataset or model-scoped metric name the datasource already uses elsewhere, in any case."""
@@ -1156,7 +1178,7 @@ class StorageBackend(ABC):
             await self.strip_dangling_entities_from_memories(canonical_id=f"{ds}.{member}")
         return True
 
-    async def semantic_model_owner(self, name: str, *, data_source: str) -> str | None:
+    async def semantic_model_owner(self, name: str, data_source: str) -> str | None:
         """The document declaring dataset ``name``, ``None`` for a standalone or absent one."""
         return (await self._document_index(data_source)).owners.get(name.casefold())
 

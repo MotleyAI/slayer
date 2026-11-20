@@ -115,8 +115,11 @@ def dataset_payload(dataset: SlayerDataset, *, source: str, reader: str, fields:
 class _Writer:
     """Writes one dataset into a copy of a document."""
 
-    def __init__(self, doc: dict[str, Any], *, old: SlayerDataset | None, new: SlayerDataset, reader: str) -> None:
+    def __init__(self, doc: dict[str, Any], *, old: SlayerDataset | None, new: SlayerDataset, reader: str,
+                 core: bool = True) -> None:
         self.doc = copy.deepcopy(doc)
+        #: Whether Ossie core may change; otherwise everything new or changed goes to SLAYER entries.
+        self.core = core
         self.old = old
         self.new = new
         self.reader = reader
@@ -134,6 +137,8 @@ class _Writer:
 
     def _try(self, apply: Any) -> bool:
         """Apply ``apply`` to the document when it adds no Ossie validity error; ``False`` (unchanged) otherwise."""
+        if not self.core:
+            return False
         trial = copy.deepcopy(self.doc)
         apply(trial)
         if not set(ossie_validity_errors(trial)) <= set(ossie_validity_errors(self.doc)):
@@ -340,9 +345,11 @@ class _Writer:
         return False
 
 
-def with_dataset(doc: dict[str, Any], *, old: SlayerDataset | None, new: SlayerDataset, reader: str) -> dict[str, Any]:
-    """``doc`` with ``new`` written over ``old`` (its decomposed current form; ``None`` adds it)."""
-    return _Writer(doc, old=old, new=new, reader=reader).run()
+def with_dataset(doc: dict[str, Any], *, old: SlayerDataset | None, new: SlayerDataset, reader: str,
+                 core: bool = True) -> dict[str, Any]:
+    """``doc`` with ``new`` written over ``old`` (its decomposed current form; ``None`` adds it); ``core=False`` keeps
+    Ossie core as it is, writing every change as ``SLAYER`` entries."""
+    return _Writer(doc, old=old, new=new, reader=reader, core=core).run()
 
 
 def document_payload(doc: dict[str, Any]) -> ext.DocumentPayload:

@@ -12,7 +12,24 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedSeq
 from ruamel.yaml.util import load_yaml_guess_indent
 
-__all__ = ["edit_text", "plain"]
+__all__ = ["edit_text", "plain", "without_vendor"]
+
+
+def without_vendor(node: Any, vendor: str) -> Any:
+    """``node`` (plain data) with every ``nonportable_extensions`` entry of ``vendor`` removed, emptied lists too."""
+    if isinstance(node, list):
+        return [without_vendor(v, vendor) for v in node]
+    if not isinstance(node, dict):
+        return node
+    out = {}
+    for key, value in node.items():
+        if key == "nonportable_extensions" and isinstance(value, list):
+            value = [e for e in value if not (isinstance(e, dict) and str(e.get("vendor_name", "")).strip().upper()
+                                              == vendor)]
+            if not value:
+                continue
+        out[key] = without_vendor(value, vendor)
+    return out
 
 _JSON_INDENT = re.compile(r"\n([ \t]+)\S")
 
@@ -49,7 +66,26 @@ def _apply_list(node: list[Any], desired: list[Any]) -> None:
             else:
                 node.append(item)
         return
+    kept = _subsequence(node, desired)
+    if kept is not None:
+        for i in reversed([i for i in range(len(node)) if i not in kept]):
+            del node[i]
+        return
     node[:] = desired
+
+
+def _subsequence(node: list[Any], desired: list[Any]) -> set[int] | None:
+    """Indices of ``node`` whose items, in order, equal ``desired``; ``None`` when ``desired`` is not a subsequence."""
+    kept: set[int] = set()
+    i = 0
+    for want in desired:
+        while i < len(node) and plain(node[i]) != want:
+            i += 1
+        if i == len(node):
+            return None
+        kept.add(i)
+        i += 1
+    return kept
 
 
 def _apply(node: MutableMapping[str, Any], desired: dict[str, Any]) -> None:
