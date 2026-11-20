@@ -44,7 +44,7 @@ LIVE = (
 TAGS = "contractors.tags"
 NT = DatasetMetric(name="nt", expression="max(tags)")
 FIRST_TAG = DatasetField(name="first_tag", sql="upper(tags)", datatype=DataType.STRING)
-BY_TAG = {"population": "contractors", "metrics": ["count(*)"], "filter": ["tags = 'go'"]}
+BY_TAG = {"population": "contractors", "metrics": ["count(contractors.*)"], "filter": ["contractors.tags = 'go'"]}
 
 Key = tuple[str, str, str]
 
@@ -214,7 +214,7 @@ class TestNotReported:
     async def test_a_dependant_that_still_works(self) -> None:
         n_tagged = DatasetMetric(name="n_tagged", expression="count(tags)")
         n_sets = DatasetMetric(name="n_sets", expression="count_distinct(tags)")
-        by_set = {"population": "contractors", "dimensions": ["tags"], "metrics": ["count(*)"]}
+        by_set = {"population": "contractors", "dimensions": ["contractors.tags"], "metrics": ["count(contractors.*)"]}
         async with _env(contractors(metrics=(NT, n_tagged, n_sets)), saved={"by_set": by_set}) as env:
             broken = _by_key(await env.reingest())
         assert ("contractors", "metric", "nt") in broken, broken

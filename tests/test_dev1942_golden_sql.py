@@ -23,13 +23,13 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1942_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(field="ordered_at",
+_MONTH_TD = [TimeDimension(field="monthly.ordered_at",
                            granularity=TimeGranularity.MONTH)]
-_X = "sum(amount, partition_by=[region, ordered_at])"
-_STANDALONE = f"min({_X}, partition_by=region)"
-_MIXED = f"sum(amount * min({_X}, partition_by=region))"
-_POP_MIXED = "sum(spend * avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier))"
-_POP_AVG = "avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)"
+_X = "sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+_STANDALONE = f"min({_X}, partition_by=monthly.region)"
+_MIXED = f"sum(monthly.amount * min({_X}, partition_by=monthly.region))"
+_POP_MIXED = "sum(customers.spend * avg(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier))"
+_POP_AVG = "avg(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier)"
 _OK = "orders.status = 'ok'"
 
 
@@ -38,35 +38,35 @@ def _cases() -> dict:
         # dual_phase/* — the standalone+mixed collision; records a raise today.
         "dual_phase/measure": {
             "source": "monthly", "mode": None,
-            "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
+            "kw": {"dimensions": ["monthly.region"], "time_dimensions": _MONTH_TD,
                    "metrics": [{"metric": _STANDALONE, "alias": "a"},
                                 {"metric": _MIXED, "alias": "b"}]}},
         "dual_phase/filter_position": {
             "source": "monthly", "mode": None,
-            "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
+            "kw": {"dimensions": ["monthly.region"], "time_dimensions": _MONTH_TD,
                    "metrics": [{"metric": _MIXED, "alias": "b"}],
                    "filter": [f"{_STANDALONE} > 5"]}},
         "dual_phase/order_position": {
             "source": "monthly", "mode": None,
-            "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
+            "kw": {"dimensions": ["monthly.region"], "time_dimensions": _MONTH_TD,
                    "metrics": [{"metric": _STANDALONE, "alias": "a"},
                                 {"metric": _MIXED, "alias": "b"}],
                    "order": [{"field": _STANDALONE, "direction": "desc"}]}},
         "dual_phase/with_transform": {
             "source": "monthly", "mode": None,
-            "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
+            "kw": {"dimensions": ["monthly.region"], "time_dimensions": _MONTH_TD,
                    "metrics": [{"metric": _STANDALONE, "alias": "a"},
                                 {"metric": _MIXED, "alias": "b"},
-                                {"metric": "cumsum(sum(amount))", "alias": "c"}]}},
+                                {"metric": "cumsum(sum(monthly.amount))", "alias": "c"}]}},
         # population/* — the fanning-hop population filter over a mixed constituent.
         "population/mixed_reagg_constituent": {
             "source": "customers", "mode": None,
-            "kw": {"dimensions": ["tier"],
+            "kw": {"dimensions": ["customers.tier"],
                    "metrics": [{"metric": _POP_MIXED, "alias": "m"}],
                    "filter": [_OK]}},
         "population/dual_phase_with_filter": {
             "source": "customers", "mode": None,
-            "kw": {"dimensions": ["tier"],
+            "kw": {"dimensions": ["customers.tier"],
                    "metrics": [{"metric": _POP_AVG, "alias": "a"},
                                 {"metric": _POP_MIXED, "alias": "m"}],
                    "filter": [_OK]}},

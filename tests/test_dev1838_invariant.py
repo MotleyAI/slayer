@@ -26,7 +26,7 @@ from tests._dev1838_fixtures import (
     q,
 )
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 class _LegacyCrossModelPlan(Protocol):
@@ -56,23 +56,23 @@ def _walk_cmas(planned: PlannedQuery, out: list[_LegacyCrossModelPlan]) -> None:
 
 
 SHAPES = {
-    "cross_model_sum": q(dimensions=["status"], metrics=[
+    "cross_model_sum": q(dimensions=["orders.status"], metrics=[
         M, QueryMetric(metric="sum(customers.spend)", alias="cm")]),
-    "cross_model_last": q(dimensions=["status"], metrics=[
+    "cross_model_last": q(dimensions=["orders.status"], metrics=[
         QueryMetric(metric="last(customers.spend)", alias="sl")],
         to_many_handling="broadcast"),
-    "filtered_local": q(dimensions=["status"], metrics=[
-        M, QueryMetric(metric="sum(gold_amount)", alias="g")]),
-    "crossing_arg": q(dimensions=["status"], metrics=[
-        M, QueryMetric(metric="wscaled_sum(amount)", alias="w")]),
-    "host_grain_wrap": q(dimensions=["status"], metrics=[M],
+    "filtered_local": q(dimensions=["orders.status"], metrics=[
+        M, QueryMetric(metric="sum(orders.gold_amount)", alias="g")]),
+    "crossing_arg": q(dimensions=["orders.status"], metrics=[
+        M, QueryMetric(metric="wscaled_sum(orders.amount)", alias="w")]),
+    "host_grain_wrap": q(dimensions=["orders.status"], metrics=[M],
                          order=[OrderItem(
                              field="customers.tier",
                              direction="asc")]),
-    "windowed": q(dimensions=["region"], time_dimensions=month_td(),
-                  metrics=[QueryMetric(metric="sum(amount, window='90d')",
+    "windowed": q(dimensions=["orders.region"], time_dimensions=month_td(),
+                  metrics=[QueryMetric(metric="sum(orders.amount, window='90d')",
                                          alias="w")]),
-    "band_cross_model": q(dimensions=["status", BAND], metrics=[
+    "band_cross_model": q(dimensions=["orders.status", BAND], metrics=[
         M, QueryMetric(metric="sum(customers.spend)", alias="cm")]),
 }
 

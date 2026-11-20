@@ -17,13 +17,13 @@ What if a query needs an expression the dataset doesn't define? Write it right w
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)", "sum(order_total)"],
+  "metrics": ["count(orders.*)", "sum(orders.order_total)"],
   "dimensions": ["stores.name"],
-  "filter": ["day_of_week(ordered_at) IN (6, 7)"]
+  "filter": ["day_of_week(orders.ordered_at) IN (6, 7)"]
 }
 ```
 
-Here, `day_of_week(ordered_at) IN (6, 7)` keeps the weekend orders (ISO numbering, Monday = 1) on every database. An expression that can only be phrased in a database's own SQL belongs on the dataset side: add it to the dataset as a field with that `sql`, and filter on the field by name.
+Here, `day_of_week(orders.ordered_at) IN (6, 7)` keeps the weekend orders (ISO numbering, Monday = 1) on every database. An expression that can only be phrased in a database's own SQL belongs on the dataset side: add it to the dataset as a field with that `sql`, and filter on the field by name.
 
 What if you want to get fancy, and use expressions such as time-shift for defining derived metrics or dimensions?
 

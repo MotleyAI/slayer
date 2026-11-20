@@ -47,7 +47,7 @@ from tests._dev1892_fixtures import (
 )
 
 _ATTACHED_ON_ROW = (
-    "weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))"
+    "weighted_avg(customers.spend, weight=sum(orders.amount, partition_by=customers.regions.name))"
 )
 
 
@@ -62,14 +62,14 @@ class TestOperandGrainResidue:
     time, ref-free, naming the parameter / grain / partition_by remedy."""
 
     async def test_column_reference_parameter(self):
-        query = sales_q(dimensions=["region"], metrics=[QueryMetric(
-            metric=f"wavg({INNER_CR}, weight=id)", alias="w")])
+        query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
+            metric=f"wavg({INNER_CR}, weight=sales.id)", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         assert_grain_residue(ei.value, param="weight")
 
     async def test_definition_default_column_parameter(self):
-        query = sales_q(dimensions=["region"], metrics=[QueryMetric(
+        query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
             metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
@@ -78,8 +78,8 @@ class TestOperandGrainResidue:
         assert_grain_residue(ei.value, param="weight")
 
     async def test_aggregate_grained_outside_operand(self):
-        query = sales_q(dimensions=["region"], metrics=[QueryMetric(
-            metric=f"weighted_avg({INNER_CR}, weight=sum(amount, partition_by=product))",
+        query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
+            metric=f"weighted_avg({INNER_CR}, weight=sum(sales.amount, partition_by=sales.product))",
             alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
@@ -95,7 +95,7 @@ class TestResidueFiresAtPlanTime:
         bundle = ResolvedSourceBundle(
             dialect="sqlite",
             population=models[0], referenced_datasets=models[1:])
-        query = sales_q(dimensions=["region"], metrics=[QueryMetric(
+        query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
             metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -112,21 +112,21 @@ class TestAttachedParameterOnRowLevelSource:
 
     async def test_executes_in_associate(self, assoc_engine):
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=_ATTACHED_ON_ROW, alias="w")]))
         assert {r["orders.status"] for r in resp.data} == {"ok", "new"}
 
     async def test_default_mode_executes_and_broadcasts(self, assoc_engine):
         resp = await assoc_engine.execute(bcast_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric=_ATTACHED_ON_ROW, alias="w")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}
-        assert by[("ok",)]["orders.w"] == by[("new",)]["orders.w"] is not None
+        assert by[("ok",)]["w"] == by[("new",)]["w"] is not None
         assert broadcast_warnings(resp)
 
     async def test_error_mode_refuses_the_dimension(self, assoc_engine):
-        q = error_q(dimensions=["status"],
+        q = error_q(dimensions=["orders.status"],
                     metrics=[QueryMetric(metric=_ATTACHED_ON_ROW, alias="w")])
         with pytest.raises(SlayerError) as ei:
             await assoc_engine.execute(q)
@@ -146,7 +146,7 @@ class TestRestSurfaceResidue:
     async def test_residue_maps_to_400(self, sales_storage):
         """A re-aggregation field-parameter residue is a client error (400)."""
         client = TestClient(create_app(storage=sales_storage))
-        body = {"population": "sales", "dimensions": ["region"],
-                "metrics": [{"metric": f"wavg({INNER_CR}, weight=id)", "alias": "w"}]}
+        body = {"population": "sales", "dimensions": ["sales.region"],
+                "metrics": [{"metric": f"wavg({INNER_CR}, weight=sales.id)", "alias": "w"}]}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text

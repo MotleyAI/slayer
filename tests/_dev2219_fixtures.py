@@ -207,15 +207,16 @@ def join(target: str, pairs: list[tuple[str, str]], **fields: Any) -> dict:
 
 def per_customer(name: str = "per_customer", **kw: Any) -> SlayerQuery:
     """``orders`` grouped by ``customer_id``, ``revenue = sum(amount)``."""
-    kw.setdefault("dimensions", ["customer_id"])
-    kw.setdefault("metrics", [m("sum(amount)", "revenue")])
+    kw.setdefault("dimensions", ["orders.customer_id"])
+    kw.setdefault("metrics", [m("sum(orders.amount)", "revenue")])
     return q(name=name, population="orders", **kw)
 
 
-def over(population: str, *, dimensions: list, metric: str = "sum(revenue)", alias: str = "total",
+def over(population: str, *, dimensions: list, metric: str | None = None, alias: str = "total",
          **kw: Any) -> SlayerQuery:
-    """The root stage reading ``population``."""
-    return q(population=population, dimensions=dimensions, metrics=[m(metric, alias)], **kw)
+    """The root stage reading ``population``; ``metric`` defaults to ``sum(<population>.revenue)``."""
+    return q(population=population, dimensions=dimensions, metrics=[m(metric or f"sum({population}.revenue)", alias)],
+             **kw)
 
 
 def column(resp: SlayerResponse, suffix: str) -> str:

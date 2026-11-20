@@ -53,7 +53,7 @@ def _squash(sql: str) -> str:
     lines in one context and inline in another; that is not the subject."""
     return " ".join(sql.split())
 
-_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
+_MEASURE = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
@@ -71,21 +71,21 @@ async def _execute(query: SlayerQuery):
         return await engine.execute(query)
 
 
-def _grouped(direction: str, column: str = "cust_region") -> SlayerQuery:
+def _grouped(direction: str, column: str = "orders.cust_region") -> SlayerQuery:
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         metrics=_MEASURE,
         order=[OrderItem(field=column, direction=direction)],
     )
 
 
-def _ungrouped(direction: str, column: str = "cust_region") -> SlayerQuery:
+def _ungrouped(direction: str, column: str = "orders.cust_region") -> SlayerQuery:
     """Raw rows — ``distinct_dimension_values=False`` means no GROUP BY, so the
     row IS the grain and a bare reference to the sort key is legal."""
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         distinct_dimension_values=False,
         order=[OrderItem(field=column, direction=direction)],
     )
@@ -119,7 +119,7 @@ class TestGroupedDerivedCrossing:
 
     async def test_sibling_measure_untouched(self) -> None:
         response = await _execute(_grouped("asc"))
-        by_status = {r["orders.status"]: r["orders.rev"] for r in response.data}
+        by_status = {r["orders.status"]: r["rev"] for r in response.data}
         assert by_status == {
             "A": GROUP_A_AMOUNT, "B": GROUP_B_AMOUNT, "N": GROUP_NULL_AMOUNT,
         }
@@ -127,7 +127,7 @@ class TestGroupedDerivedCrossing:
     async def test_derived_sort_key_is_not_projected(self) -> None:
         response = await _execute(_grouped("asc"))
         for row in response.data:
-            assert set(row) == {"orders.status", "orders.rev"}
+            assert set(row) == {"orders.status", "rev"}
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ class TestUngroupedDerivedCrossing:
         derived_sql = await _sql(_ungrouped("asc"))
         bare_sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
             order=[OrderItem(
                 field="customers.regions.name",
@@ -254,9 +254,9 @@ class TestDerivedOfDerivedSortKey:
         hidden_sql = await _sql(_ungrouped("asc", column="amount_x4"))
         projected_sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status"), QueryDimension(field="amount_x4")],
+            dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.amount_x4")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="amount_x4", direction="asc")],
+            order=[OrderItem(field="orders.amount_x4", direction="asc")],
         ))
         # The projected query sorts by the ALIAS, so compare the sort term
         # against the projected SELECT expression for the same field.

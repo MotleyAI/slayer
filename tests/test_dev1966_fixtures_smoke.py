@@ -59,16 +59,16 @@ async def test_monthly_by_name(engine: SlayerQueryEngine) -> None:
 @pytest.mark.parametrize("name", list(EMBEDDED_WITH))
 async def test_embedded_with_model(engine, name) -> None:
     resp = await engine.execute(query(
-        population=name, dimensions=["customer_id"], metrics=[m("sum(amount)", "a")]))
+        population=name, dimensions=[f"{name}.customer_id"], metrics=[m(f"sum({name}.amount)", "a")]))
     assert _values(resp.data) == sorted(EMBEDDED_WITH[name][1].items(), key=repr)
 
 
 
 @pytest.mark.parametrize(("name", "measure", "total"), [
-    ("orders", "sum(amount)", 145.0),
-    ("customers", "sum(spend)", 430.0),
-    ("clients", "sum(spend)", 430.0),
+    ("orders", "sum(orders.amount)", 145.0),
+    ("customers", "sum(customers.spend)", 430.0),
+    ("clients", "sum(clients.spend)", 430.0),
 ])
 async def test_storage_model(engine, name, measure, total) -> None:
     resp = await engine.execute(query(population=name, metrics=[m(measure, "t")]))
-    assert resp.data == [{f"{name}.t": total}]
+    assert resp.data == [{"t": total}]

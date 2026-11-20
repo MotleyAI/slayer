@@ -701,6 +701,22 @@ class UnknownReferenceError(SlayerError, ValueError):
         ))
 
 
+class UnknownMetricError(UnknownReferenceError):
+    """A bare query name that is neither an alias of the query nor a metric."""
+
+
+class UnqualifiedRowCountError(SlayerError, ValueError):
+    """``count(*)`` in a query that names no population: a row count names its dataset."""
+
+    def __init__(self, *, suggestion: str | None = None) -> None:
+        self.suggestion = suggestion
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary="'count(*)' names no dataset in a query without a population.",
+            suggestion=suggestion or "Write count(<dataset>.*), or name the query's population.",
+        ))
+
+
 class RefinementConflictError(SlayerError):
     """A saved-query refinement gives an entry of the saved final stage a different value."""
 
@@ -1293,6 +1309,18 @@ class UnconvertibleStoredQueryError(SlayerError):
         super().__init__(
             f"Stored query cannot be converted: {construct}. Rewrite the per-query field as an expression where it "
             f"is used, or the inline dataset as a stored dataset, and save the document again."
+        )
+
+
+class UnqualifiableReferenceError(SlayerError):
+    """A stored query's reference whose pre-2.0 reading has no qualified spelling with the same meaning."""
+
+    def __init__(self, *, reference: str, reason: str) -> None:
+        self.reference = reference
+        self.reason = reason
+        super().__init__(
+            f"Stored query cannot be upgraded to qualified references: {reference!r} {reason}. Spell it as a "
+            f"reference starting at a dataset and save the document again."
         )
 
 

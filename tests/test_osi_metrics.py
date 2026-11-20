@@ -75,7 +75,7 @@ async def test_filtered_distinct_count(db: Path) -> None:
 async def test_filter_does_not_remove_groups(db: Path) -> None:
     result = _import(db, m("v", "SUM(amount) FILTER (WHERE status = 'completed')"))
     rows = await query(result=result, db=db, payload={
-        "population": "orders", "dimensions": ["status"], "metrics": ["v"]})
+        "population": "orders", "dimensions": ["orders.status"], "metrics": ["orders.v"]})
     values = {r["orders.status"]: r["orders.v"] for r in rows}
     assert set(values) == {"completed", "open"}
     assert values["open"] is None

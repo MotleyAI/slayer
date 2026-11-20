@@ -6,7 +6,7 @@ from typing import Iterable, Iterator, Optional, Tuple
 
 
 from slayer.core.relationship_search import count_routes
-from slayer.core.relationship_walker import matching_edges, neighbors
+from slayer.core.relationship_walker import product_token
 from slayer.core.keys import (
     AggregateKey,
     FieldKey,
@@ -20,39 +20,37 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import FieldRef, SlayerQuery
 from slayer.core.time_spine import is_spine
 from slayer.engine.reference_closure import key_closure
-from slayer.core.syntax import drop_root_qualifier, text_paths
+from slayer.core.syntax import text_paths
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = ["ProductSides", "first_hop_names", "stamp_unrelated", "unrelated_targets"]
 
 
-def _parsed_heads(text: str, *, root: Optional[str]) -> Iterator[str]:
-    """The first hop of every dotted reference ``text`` makes from ``root``."""
-    return (path[0] for path in text_paths(text, root=root) if len(path) > 1)
+def _parsed_heads(text: str) -> Iterator[str]:
+    """The anchor of every dotted reference in ``text``."""
+    return (path[0] for path in text_paths(text, root=None) if len(path) > 1)
 
 
-def _path_head(ref: FieldRef, *, root: Optional[str]) -> Iterator[str]:
-    parts = drop_root_qualifier(ref.parts, root, quoted=ref.quoted_parts)
-    if len(parts) > 1:
-        yield parts[0]
+def _path_head(ref: FieldRef) -> Iterator[str]:
+    if len(ref.parts) > 1:
+        yield ref.parts[0]
 
 
 def first_hop_names(query: SlayerQuery) -> set[str]:
-    """The first hop of every dotted reference in ``query``'s own fields."""
-    root = query.population_name
+    """The anchor of every dotted reference in ``query``'s own fields."""
     out: set[str] = set()
     for m in query.metrics or []:
-        out.update(_parsed_heads(m.metric, root=root))
+        out.update(_parsed_heads(m.metric))
     for d in query.dimensions or []:
         ref = d.ref
-        out.update(_parsed_heads(d.field, root=root) if d.is_computed or ref is None else _path_head(ref, root=root))
+        out.update(_parsed_heads(d.field) if d.is_computed or ref is None else _path_head(ref))
     for td in query.time_dimensions or []:
-        out.update(_parsed_heads(td.field, root=root))
+        out.update(_parsed_heads(td.field))
     for f in query.filter_conditions:
-        out.update(_parsed_heads(f, root=root))
+        out.update(_parsed_heads(f))
     for o in query.order or []:
         ref = o.ref
-        out.update(_path_head(ref, root=root) if ref is not None else _parsed_heads(o.raw_expression or o.field, root=root))
+        out.update(_path_head(ref) if ref is not None else _parsed_heads(o.raw_expression or o.field))
     return out
 
 
@@ -67,15 +65,12 @@ def _named(token: str, datasets: Iterable[SlayerDataset]) -> Optional[SlayerData
 def unrelated_targets(
     *, host: SlayerDataset, names: Iterable[str], datasets_by_name: dict[str, SlayerDataset],
 ) -> frozenset[str]:
-    """The datasets ``names`` spell that neither an incident edge nor a route reaches from ``host``."""
+    """The anchors ``names`` spell that no route reaches from ``host``; a relationship spelled the same is no route."""
     universe = {**datasets_by_name, host.name: host}
-    incident = neighbors(dataset=host, datasets_by_name=universe)
     out: set[str] = set()
     for token in names:
-        if token == host.spelling or matching_edges(incident, token):
-            continue
         target = _named(token, universe.values())
-        if target is None or is_spine(target) or target.name == host.name:
+        if target is None or is_spine(target) or target.name == host.name or token == host.spelling:
             continue
         if count_routes(root=host, target=target.name, datasets_by_name=universe) == 0:
             out.add(target.name)
@@ -96,9 +91,14 @@ def crosses_product_hop(
     *, host: SlayerDataset, path: Tuple[str, ...], datasets_by_name: dict[str, SlayerDataset],
 ) -> bool:
     """``path`` from ``host`` starts with a product hop to an unrelated dataset."""
-    return bool(path) and any(
-        datasets_by_name[n].spelling == path[0] for n in host.unrelated_datasets if n in datasets_by_name
-    )
+    return bool(path) and path[0] in _product_tokens(host=host, datasets_by_name=datasets_by_name)
+
+
+def _product_tokens(*, host: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> dict[str, str]:
+    """Each product hop's token from ``host`` → its target's spelling."""
+    universe = {**datasets_by_name, host.name: host}
+    return {product_token(source=host, target=universe[n], datasets_by_name=universe): universe[n].spelling
+            for n in host.unrelated_datasets if n in universe}
 
 
 class ProductSides:
@@ -108,8 +108,7 @@ class ProductSides:
         datasets = bundle.datasets_by_name
         self.host = host
         self.bundle = bundle
-        # A product hop's canonical token is its target's spelling.
-        self.tokens = {datasets[n].spelling: n for n in host.unrelated_datasets if n in datasets}
+        self.tokens = _product_tokens(host=host, datasets_by_name=datasets)
 
     def crossed(self, leaf: ValueKey) -> frozenset[str]:
         """The spellings of the unrelated datasets ``leaf``'s dependency closure reaches."""
@@ -117,7 +116,7 @@ class ProductSides:
             return frozenset()
         closure = key_closure(key=leaf, anchor_dataset=self.host, anchor_relation=self.host.name, bundle=self.bundle)
         paths = closure if closure is not None else (_leaf_path(leaf),)
-        return frozenset(p[0] for p in paths if p and p[0] in self.tokens)
+        return frozenset(self.tokens[p[0]] for p in paths if p and p[0] in self.tokens)
 
     def row_level_reads(self, root: ValueKey) -> Iterator[Tuple[ValueKey, str]]:
         """``(reference, dataset)`` for every read across a product hop outside an aggregation's inputs."""

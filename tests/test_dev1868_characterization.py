@@ -25,7 +25,7 @@ from tests._dev1868_fixtures import (
     keyed_by_month,
 )
 
-TIER = "orders.customers.tier"
+TIER = "customers.tier"
 
 
 @pytest.fixture(params=["sqlite"])
@@ -42,7 +42,7 @@ class TestW1SubstrateIsComplete:
             dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=LAST_TIER, alias="l")],
         ))
-        got = {r[TIER]: r["orders.l"] for r in resp.data}
+        got = {r[TIER]: r["l"] for r in resp.data}
         for tier, expected in LAST_SPEND_BY_TIER.items():
             if expected is None:
                 assert got[tier] is None
@@ -53,13 +53,13 @@ class TestW1SubstrateIsComplete:
         filtered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
             filter=[f"{LAST_TIER} > 100"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert [r[TIER] for r in filtered.data] == ["silver"]
         ordered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
             filter=["customers.tier is not null"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{"field": LAST_TIER, "direction": "desc"}],
         ))
         assert [r[TIER] for r in ordered.data] == ["silver", "gold", "bronze"]
@@ -76,7 +76,7 @@ class TestW2SubstrateIsComplete:
         by = keyed_by_month(resp, TIER)
         assert set(by) == set(CUMSUM_PART_BY_TIER_MONTH)
         for key, expected in CUMSUM_PART_BY_TIER_MONTH.items():
-            cell = by[key]["orders.c"]
+            cell = by[key]["c"]
             if expected is None:
                 assert cell is None
             else:

@@ -83,7 +83,7 @@ class TestDunderTargetResolves:
     async def test_dunder_target_joins_and_projects(self) -> None:
         host = self._host_with_label()
         sql = await _engine_generate(
-            query=SlayerQuery(population="orders", dimensions=["region_label"]),
+            query=SlayerQuery(population="orders", dimensions=["orders.region_label"]),
             dataset=host, extra_datasets=[dunder_target()],
         )
         # The dim's physical table is joined and its label column read.
@@ -145,7 +145,7 @@ class TestLegacyDunderIsHardErrorAtGeneration:
 
     @pytest.mark.asyncio
     async def test_generation_raises_d2(self) -> None:
-        query = SlayerQuery(population="orders", dimensions=["rn"])
+        query = SlayerQuery(population="orders", dimensions=["orders.rn"])
         model = self._orders_with_legacy_alias()
         extras = [chain_customers(), chain_regions()]
         with pytest.raises(ValueError) as ei:
@@ -239,7 +239,7 @@ class TestExactHostQualifier:
             ],
         )
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(doubled)"}]}),
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.doubled)"}]}),
             dataset=host,
         )
         assert "amount" in sql
@@ -306,7 +306,7 @@ class TestAmbiguityImpossible:
     async def test_direct_model_and_chain_resolve_to_distinct_relations(self) -> None:
         sql = await _engine_generate(
             query=SlayerQuery(population="host",
-                              dimensions=["chain_val", "direct_val"]),
+                              dimensions=["host.chain_val", "host.direct_val"]),
             dataset=self._host(), extra_datasets=[ai_a(), ai_b(), ai_a__b()],
         )
         # The chain's leaf table and the direct dataset's table are BOTH joined
@@ -353,7 +353,7 @@ class TestDeepDottedChainResolves:
     async def test_five_part_chain_resolves(self) -> None:
         host, extra = self._four_hop_datasets()
         sql = await _engine_generate(
-            query=SlayerQuery(population="hh", dimensions=["deep"]),
+            query=SlayerQuery(population="hh", dimensions=["hh.deep"]),
             dataset=host, extra_datasets=extra,
         )
         # Every hop's physical table is actually joined (parsed exp.Table names,

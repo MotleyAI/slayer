@@ -66,10 +66,10 @@ def _fresh(**fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 27
-        assert CURRENT_VERSIONS["SlayerQuery"] == 16
+        assert CURRENT_VERSIONS["SlayerModel"] == 28
+        assert CURRENT_VERSIONS["SlayerQuery"] == 17
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 12
+        assert CURRENT_VERSIONS["Memory"] == 13
 
 
 #: (stored metric expression, the expression it loads as).
@@ -101,7 +101,7 @@ class TestModelMeasures:
         model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == [f for _, f in MODEL_MEASURES]
-        names = [f"m{i}" for i in range(len(MODEL_MEASURES))]
+        names = [{"metric": f"orders.m{i}", "alias": f"m{i}"} for i in range(len(MODEL_MEASURES))]
         expected = await run(storage, {"population": "orders",
                                        "metrics": _measures([f for _, f in MODEL_MEASURES])})
         assert rows(await run(storage, {"population": "orders", "metrics": names})) == rows(expected)
@@ -156,7 +156,7 @@ class TestExecution:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_order_items_keep_the_row_order(self, make_store: StoreFactory, dialect: str) -> None:  # noqa: F811
         storage = await make_store(dialect=dialect)
-        stored = stored_query(dimensions=["status"], measures=["sum(amount)"], order=[
+        stored = stored_query(dimensions=["orders.status"], measures=["sum(amount)"], order=[
             {"column": {"name": "amount_sum"}, "direction": "desc", "raw_formula": "amount:sum"},
             {"column": {"name": "_count"}, "raw_formula": "*:count"},
         ])
@@ -174,23 +174,23 @@ class TestExecution:
         [order] = by_month.order or []
         assert order.raw_expression == "date_trunc('month', created_at)"
         assert rows(await run(storage, by_month)) == rows(await run(storage, _fresh(
-            metrics=["sum(amount)"], time_dimensions=[{"field": "created_at", "granularity": "month"}],
-            order=[{"field": "date_trunc('month', created_at)", "direction": "desc"}])))
+            metrics=["sum(orders.amount)"], time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+            order=[{"field": "date_trunc('month', orders.created_at)", "direction": "desc"}])))
         by_fiscal = _stored(measures=["sum(amount)"], dimensions=[
             {"name": "created_at_fiscal_quarter", "expression": "created_at:fiscal_quarter"}])
         [dim] = by_fiscal.dimensions or []
         assert dim.ref is None
         assert dim.field == "fiscal_quarter(created_at)"
-        with pytest.raises(GranularityCallError, match=re.escape("date_trunc('fiscal_quarter', created_at)")):
+        with pytest.raises(GranularityCallError, match=re.escape("date_trunc('fiscal_quarter', orders.created_at)")):
             await run(storage, by_fiscal)
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_saved_query_and_extension_execute(self, make_store: StoreFactory,  # noqa: F811
                                                      backend: str) -> None:
-        stage = stored_query(dimensions=["status"], measures=[{"name": "rev", "formula": "amount:sum"}])
+        stage = stored_query(dimensions=["orders.status"], measures=[{"name": "rev", "formula": "amount:sum"}])
         storage = await make_store(backend=backend, models=[
             orders_doc(), customers_doc(), regions_doc(), query_backed_doc(name="rev_q", stage=stage)])
-        resp = await run(storage, {"population": "rev_q", "dimensions": ["status"], "metrics": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_q", "dimensions": ["rev_q.status"], "metrics": ["sum(rev_q.rev)"]})
         assert {r["rev_q.status"]: r["rev_q.rev_sum"] for r in rows(resp)} == {"paid": 80.0, "new": 70.0}
         extended = stored_query(source_model={"source_name": "orders", "measures": [
             {"name": "m", "formula": "amount:sum"}]}, measures=["m"])
@@ -206,7 +206,7 @@ KEYED_DIMENSIONS = [
 ]
 KEYED_MEASURES = ["amount:sum / *:count", "amount:sum + price:sum + balance:sum + *:count + price:max + price:min"]
 RECORDED_KEYS = [
-    "orders.amount_sum_partition_by_region", "orders.iif_amount_sum_partition_by_002eb04b_gh_other", "orders.band",
+    "amount_sum_partition_by_region", "iif_amount_sum_partition_by_002eb04b_gh_other", "band",
     "orders.amount_sum_count", "orders.amount_sum_price_sum_balance_4ffaf4a2_rice_min",
 ]
 
@@ -237,7 +237,7 @@ class TestKeysAndNames:
     async def test_collides_like_the_functional_spelling(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         stored = stored_query(measures=["sum(amount)"],
-                              dimensions=[KEYED_DIMENSIONS[0], "sum(amount, partition_by=region)"])
+                              dimensions=["amount:sum(partition_by=region)", "sum(orders.amount, partition_by=orders.region)"])
         with pytest.raises(NameCollisionError):
             await run(storage, stored)
 
@@ -252,8 +252,8 @@ class TestMemories:
         for _ in range(2):
             loaded = await storage.get_memory("m_rev")
             assert loaded.query is not None
-            assert [m.metric for m in loaded.query.metrics or []] == ["sum(amount)"]
-            assert rows(await run(storage, loaded.query)) == [{"orders.rev": 150.0}]
+            assert [m.metric for m in loaded.query.metrics or []] == ["sum(orders.amount)"]
+            assert rows(await run(storage, loaded.query)) == [{"rev": 150.0}]
         assert raw_documents(backend=backend, base=store_base(tmp_path, backend=backend))["memories/m_rev"] == before
 
 
@@ -279,7 +279,7 @@ class TestGranularityRename:
         memory = await storage.get_memory("m_left")
         assert memory.query is not None
         fresh = SlayerQuery.model_validate({"population": "events",
-                                            "dimensions": ["date_trunc('left_granularity', created_at)"],
+                                            "dimensions": ["date_trunc('left_granularity', events.created_at)"],
                                             "metrics": [SUM]})
         expected = rows(await run(storage, fresh))
         for loaded in (stage, memory.query):
@@ -295,7 +295,7 @@ async def test_stored_colon_call_to_a_shadowing_aggregation_answers() -> None:
         model = await engine.storage.get_dataset("t", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == ["reverse(a)"]
-        resp = await engine.execute({"population": "t", "metrics": ["c"]})
+        resp = await engine.execute({"population": "t", "metrics": ["t.c"]})
     assert float(value(resp, name="c")) == SUM_A
 
 

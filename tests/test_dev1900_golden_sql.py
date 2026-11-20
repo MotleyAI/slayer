@@ -37,7 +37,7 @@ def _cases() -> dict:
         "fanning/local_kwarg": {
             "models": "dev1900", "source": "orders", "mode": None,
             "kw": {"metrics": [{"metric":
-                "weighted_avg(amount, weight=customers.regions.bad_pop)", "alias": "w"}]}},
+                "weighted_avg(orders.amount, weight=customers.regions.bad_pop)", "alias": "w"}]}},
         "fanning/definition_default": {
             "models": "dev1900", "source": "orders", "mode": None,
             "kw": {"metrics": [{"metric": "wsumx(customers.spend)", "alias": "w"}]}},
@@ -47,10 +47,10 @@ def _cases() -> dict:
         "fanning/dim_error_mode": {
             "models": "dev1900", "source": "orders", "mode": "error",
             "kw": {"dimensions": ["customers.regions.bad_pop"],
-                   "metrics": [{"metric": "sum(amount)", "alias": "amt"}]}},
+                   "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}]}},
         "fanning/pop_filter_derived": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"metrics": [{"metric": "sum(amount)", "alias": "amt"}],
+            "kw": {"metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}],
                    "filter": ["customers.regions.bad_pop > 0"]}},
         # positive/* — cross no fanning hop; byte-identical SQL through the change.
         "positive/reagg_derived_pop": {
@@ -58,12 +58,12 @@ def _cases() -> dict:
             "kw": {"metrics": [{"metric": _REAGG_GOOD, "alias": "ra"}]}},
         "positive/to_one_filter": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"metrics": [{"metric": "sum(amount)", "alias": "amt"}],
+            "kw": {"metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}],
                    "filter": ["customers.tier = 'gold'"]}},
         "positive/assoc_region_name": {
             "models": "dev1900", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["customers.regions.name"], "metrics": [
-                {"metric": "sum(amount)", "alias": "amt"},
+                {"metric": "sum(orders.amount)", "alias": "amt"},
                 {"metric": "sum(customers.spend)", "alias": "csp"}]}},
     }
 

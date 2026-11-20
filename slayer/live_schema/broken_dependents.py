@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.names import qualified_reference
 from slayer.core.warnings import BrokenDependentWarning, SlayerBrokenDependentWarning
 from slayer.engine import query_engine
 from slayer.live_schema import schema_drift
@@ -77,10 +78,10 @@ def _probe(dependent: _Dependent) -> Any:
     if dependent.kind == "saved_query":
         return dependent.dataset
     if dependent.kind == "metric":
-        return {"population": dependent.dataset, "metrics": [dependent.name]}
+        return {"population": dependent.dataset, "metrics": [qualified_reference(dependent.dataset, dependent.name)]}
     if dependent.kind == "field":
-        return {"population": dependent.dataset, "dimensions": [dependent.name]}
-    return {"population": dependent.dataset, "metrics": ["count(*)"]}
+        return {"population": dependent.dataset, "dimensions": [qualified_reference(dependent.dataset, dependent.name)]}
+    return {"population": dependent.dataset, "metrics": [f"count({qualified_reference(dependent.dataset)}.*)"]}
 
 
 async def _plan(engine: query_engine.SlayerQueryEngine, dependent: _Dependent, *, data_source: str) -> None:

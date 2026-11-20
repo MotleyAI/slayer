@@ -81,32 +81,32 @@ class TestBounds:
             await ids_with_range(engine, ["2025-01-01 10:00:00", None], column="d", granularity="day")
 
     async def test_monthly_buckets_with_open_upper(self, engine) -> None:
-        got = await monthly(engine, metrics=[{"metric": "sum(amount)", "alias": "s"}], date_range=["2026-06", None])
+        got = await monthly(engine, metrics=[{"metric": "sum(ev.amount)", "alias": "s"}], date_range=["2026-06", None])
         assert set(got) == {t.strftime("%Y-%m") for t in map(ev_dt, EV_TS) if t >= D(2026, 6, 1)}
 
 
 class TestStages:
     async def test_multi_stage_model_accepts_one_sided_range(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "daily", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
-            "time_dimensions": [{"field": "ts", "granularity": "year", "date_range": ["2026-01-01", None]}],
+            "population": "daily", "metrics": [{"metric": "sum(daily.rev)", "alias": "r"}],
+            "time_dimensions": [{"field": "daily.ts", "granularity": "year", "date_range": ["2026-01-01", None]}],
         }))
-        assert sum(r["daily.r"] for r in resp.data) == pytest.approx(
+        assert sum(r["r"] for r in resp.data) == pytest.approx(
             float(sum(ids_where(lambda t: t >= D(2026, 1, 1)))),
         )
 
     async def test_stage_range_with_period_bounds(self, engine) -> None:
         inner = {
             "name": "m", "population": "ev",
-            "time_dimensions": [{"field": "ts", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [{"field": "ev.ts", "granularity": "month"}],
+            "metrics": [{"metric": "sum(ev.amount)", "alias": "rev"}],
         }
         outer = {
-            "population": "m", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
-            "time_dimensions": [{"field": "ts", "granularity": "month", "date_range": ["2025-02", "2025-03"]}],
+            "population": "m", "metrics": [{"metric": "sum(m.rev)", "alias": "r"}],
+            "time_dimensions": [{"field": "m.ts", "granularity": "month", "date_range": ["2025-02", "2025-03"]}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
-        got = {month_key(r["m.ts"]): r["m.r"] for r in resp.data}
+        got = {month_key(r["m.ts"]): r["r"] for r in resp.data}
         assert got == {
             "2025-02": pytest.approx(float(sum(ids_in(D(2025, 2, 1), D(2025, 3, 1))))),
             "2025-03": pytest.approx(float(sum(ids_in(D(2025, 3, 1), D(2025, 4, 1))))),
@@ -115,20 +115,20 @@ class TestStages:
     async def test_stage_range_on_coarser_rebucketing(self, engine) -> None:
         inner = {
             "name": "m", "population": "ev",
-            "time_dimensions": [{"field": "ts", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [{"field": "ev.ts", "granularity": "month"}],
+            "metrics": [{"metric": "sum(ev.amount)", "alias": "rev"}],
         }
         outer = {
-            "population": "m", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
-            "time_dimensions": [{"field": "ts", "granularity": "year", "date_range": "2025-Q1"}],
+            "population": "m", "metrics": [{"metric": "sum(m.rev)", "alias": "r"}],
+            "time_dimensions": [{"field": "m.ts", "granularity": "year", "date_range": "2025-Q1"}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
         [row] = resp.data
-        assert row["m.r"] == pytest.approx(float(sum(ids_in(D(2025, 1, 1), D(2025, 4, 1)))))
+        assert row["r"] == pytest.approx(float(sum(ids_in(D(2025, 1, 1), D(2025, 4, 1)))))
 
 
 def _td(date_range) -> dict:
-    return {"field": "ts", "granularity": "month", "date_range": date_range}
+    return {"field": "ev.ts", "granularity": "month", "date_range": date_range}
 
 
 class TestConstruction:

@@ -169,7 +169,7 @@ class TestLiveGenerator:
             _inner().sql()
 
         monkeypatch.setattr(SQLGenerator, "_assert_stages_assigned", staticmethod(_renders))
-        query = q(dimensions=["status"], metrics=["sum(amount)"])
+        query = q(dimensions=["orders.status"], metrics=["sum(orders.amount)"])
         with pytest.raises(law.StatementRenderedDuringComposition):
             await gen(query, dialect="postgres")
 
@@ -192,30 +192,30 @@ def _stats_datasets() -> list[SlayerDataset]:
 
 _SEAMS = {
     "plain_hidden_order": q(
-        dimensions=["status"], metrics=["sum(amount)"],
-        order=[{"field": "max(amount)", "direction": "desc"}], limit=2,
+        dimensions=["orders.status"], metrics=["sum(orders.amount)"],
+        order=[{"field": "max(orders.amount)", "direction": "desc"}], limit=2,
     ),
     "where_having": q(
-        dimensions=["region"], metrics=["sum(amount)"],
-        filter=["amount > 15", "region == 'US' or region == 'EU'", "sum(amount) > 55 or count(amount) > 2"],
+        dimensions=["orders.region"], metrics=["sum(orders.amount)"],
+        filter=["orders.amount > 15", "orders.region == 'US' or orders.region == 'EU'", "sum(orders.amount) > 55 or count(orders.amount) > 2"],
     ),
     "chain_post_filter_paginated": cumsum_chain(
-        filter=["cumsum(sum(amount)) > 50"],
-        order=[{"field": "created_at", "direction": "desc"}], limit=2, offset=1,
+        filter=["cumsum(sum(orders.amount)) > 50"],
+        order=[{"field": "orders.created_at", "direction": "desc"}], limit=2, offset=1,
     ),
     "windowed_producer": q(
         time_dimensions=month_td(),
-        metrics=[{"metric": "covar_samp(amount, other=qty, window='90d')", "alias": "cv"}],
+        metrics=[{"metric": "covar_samp(orders.amount, other=orders.qty, window='90d')", "alias": "cv"}],
     ),
     "cross_model_combined": q(
-        dimensions=["status"],
-        metrics=[{"metric": "sum(amount) / count(customers.id)", "alias": "r"}],
+        dimensions=["orders.status"],
+        metrics=[{"metric": "sum(orders.amount) / count(customers.id)", "alias": "r"}],
     ),
     "multi_stage": [
-        {"name": "s1", "population": "orders", "dimensions": ["status"],
+        {"name": "s1", "population": "orders", "dimensions": ["orders.status"],
          "time_dimensions": month_td(),
-         "metrics": [{"metric": "covar_samp(amount, other=qty, window='90d')", "alias": "cv"}]},
-        {"population": "s1", "dimensions": ["status"], "metrics": [{"metric": "max(cv)", "alias": "m"}]},
+         "metrics": [{"metric": "covar_samp(orders.amount, other=orders.qty, window='90d')", "alias": "cv"}]},
+        {"population": "s1", "dimensions": ["s1.status"], "metrics": [{"metric": "max(s1.cv)", "alias": "m"}]},
     ],
 }
 
@@ -239,6 +239,6 @@ async def test_query_backed_expansion_composes_without_a_statement_render(ds_typ
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
-        dimensions=["status"],
+        dimensions=["orders.status"],
     )
     assert sql

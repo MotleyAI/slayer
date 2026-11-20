@@ -29,7 +29,7 @@ from tests._cli_inprocess import run_cli_in_process
 from tests._compat_helpers import future_warnings, recorded
 from tests._gateway_harness import backend_of, orders_dataset, seed_shop, shop_datasource, shop_storage
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 _MESSAGE = "old() is deprecated; use new(). It works until SLayer 3.0."
 
 

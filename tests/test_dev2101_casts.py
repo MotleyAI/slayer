@@ -36,31 +36,31 @@ def _casts(sql: str, *, dialect: str) -> list[exp.Cast]:
 
 
 class TestCastExecution:
-    @pytest.mark.parametrize("spelling", ["CAST(amount AS DECIMAL(10,2))", "amount::decimal(10,2)"])
+    @pytest.mark.parametrize("spelling", ["CAST(orders.amount AS DECIMAL(10,2))", "orders.amount::decimal(10,2)"])
     async def test_parameterised_cast_in_measure(self, engine: SlayerQueryEngine, spelling: str) -> None:
         assert num(single(await engine.execute(q(metrics=[m(f"sum({spelling})")])))) == pytest.approx(100.0)
 
     async def test_chained_casts(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"field": "amount::int::text", "alias": "x"}]))
+        resp = await engine.execute(q(dimensions=["orders.id", {"field": "orders.amount::int::text", "alias": "x"}]))
         assert {int(k): v for k, v in by_key(resp, "id", "x").items()} == {1: "10", 2: "20", 3: "30", 4: "40", 5: None}
 
     @pytest.mark.parametrize("position", ["dimension", "filter", "order"])
     async def test_cast_in_every_position(self, engine: SlayerQueryEngine, position: str) -> None:
-        expr = "CAST(quantity AS TEXT)"
+        expr = "CAST(orders.quantity AS TEXT)"
         if position == "dimension":
-            resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "x"}]))
+            resp = await engine.execute(q(dimensions=["orders.id", {"field": expr, "alias": "x"}]))
             assert by_key(resp, "id", "x")[3] == "3"
         elif position == "filter":
-            resp = await engine.execute(q(dimensions=["id"], filter=[f"{expr} = '4'"]))
+            resp = await engine.execute(q(dimensions=["orders.id"], filter=[f"{expr} = '4'"]))
             assert [int(r["orders.id"]) for r in resp.data] == [5]
         else:
-            resp = await engine.execute(q(dimensions=["id"], distinct_dimension_values=False,
-                                          order=[{"field": expr, "direction": "desc"}, {"field": "id"}]))
+            resp = await engine.execute(q(dimensions=["orders.id"], distinct_dimension_values=False,
+                                          order=[{"field": expr, "direction": "desc"}, {"field": "orders.id"}]))
             assert [int(r["orders.id"]) for r in resp.data] == [5, 3, 2, 4, 1]
 
     async def test_cast_to_date_is_a_date_operand(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=[
-            "id", {"field": "date_diff('day', CAST(created_txt AS DATE), DATE '2025-01-01')", "alias": "x"},
+            "orders.id", {"field": "date_diff('day', CAST(orders.created_txt AS DATE), DATE '2025-01-01')", "alias": "x"},
         ]))
         expected = {1: date(2024, 12, 25), 2: date(2024, 6, 1), 3: date(2024, 2, 29), 4: date(2023, 1, 1), 5: None}
         assert _ints(by_key(resp, "id", "x")) == {
@@ -76,28 +76,28 @@ async def sqlite_engine():
 
 class TestInvalidInputFollowsTheDatabase:
     async def test_sqlite_cast_keeps_its_own_semantics(self, sqlite_engine: SlayerQueryEngine) -> None:
-        resp = await sqlite_engine.execute(q(dimensions=["id", {"field": "CAST(code AS INT)", "alias": "x"}]))
+        resp = await sqlite_engine.execute(q(dimensions=["orders.id", {"field": "CAST(orders.code AS INT)", "alias": "x"}]))
         assert _ints(by_key(resp, "id", "x")) == {1: 12, 2: 0, 3: 12, 4: 7, 5: None}
 
 
 class TestTryCastExecution:
     async def test_invalid_text_becomes_null(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"field": "TRY_CAST(code AS INT)", "alias": "x"}]))
+        resp = await engine.execute(q(dimensions=["orders.id", {"field": "TRY_CAST(orders.code AS INT)", "alias": "x"}]))
         assert _ints(by_key(resp, "id", "x")) == TRY_CODE
 
     async def test_prefix_is_not_truncated(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filter=["TRY_CAST(code AS INT) IS NULL"]))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=["TRY_CAST(orders.code AS INT) IS NULL"]))
         assert {int(r["orders.id"]) for r in resp.data} == {2, 3, 5}
 
     async def test_try_cast_order_target(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], distinct_dimension_values=False,
-                                      filter=["TRY_CAST(code AS INT) IS NOT NULL"],
-                                      order=[{"field": "TRY_CAST(code AS INT)", "direction": "desc"}]))
+        resp = await engine.execute(q(dimensions=["orders.id"], distinct_dimension_values=False,
+                                      filter=["TRY_CAST(orders.code AS INT) IS NOT NULL"],
+                                      order=[{"field": "TRY_CAST(orders.code AS INT)", "direction": "desc"}]))
         assert [int(r["orders.id"]) for r in resp.data] == [1, 4]
 
     async def test_try_cast_in_measure_and_filter(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(metrics=[m("sum(TRY_CAST(code AS INT))")],
-                                      filter=["TRY_CAST(code AS INT) > 0"]))
+        resp = await engine.execute(q(metrics=[m("sum(TRY_CAST(orders.code AS INT))")],
+                                      filter=["TRY_CAST(orders.code AS INT) > 0"]))
         assert num(single(resp)) == 19
 
     @pytest.mark.parametrize(("text", "expected"), [
@@ -142,39 +142,39 @@ class TestSqliteTryCastRange:
 
 class TestCastEmission:
     async def test_postgres_keeps_the_parameterised_type(self) -> None:
-        sql = await emit(q(metrics=[m("sum(CAST(amount AS DECIMAL(10,2)))")]), dialect="postgres")
+        sql = await emit(q(metrics=[m("sum(CAST(orders.amount AS DECIMAL(10,2)))")]), dialect="postgres")
         assert "DECIMAL(10, 2)" in sql, sql
 
     async def test_mysql_text_cast_uses_its_character_type(self) -> None:
-        sql = await emit(q(dimensions=["id", {"field": "amount::text", "alias": "x"}]), dialect="mysql")
+        sql = await emit(q(dimensions=["orders.id", {"field": "orders.amount::text", "alias": "x"}]), dialect="mysql")
         casts = [c for c in _casts(sql, dialect="mysql") if "amount" in c.this.sql().lower()]
         assert casts, sql
         assert all("CHAR" in c.to.sql(dialect="mysql").upper() for c in casts), sql
 
     async def test_chained_casts_nest(self) -> None:
-        sql = await emit(q(dimensions=["id", {"field": "amount::int::text", "alias": "x"}]), dialect="postgres")
+        sql = await emit(q(dimensions=["orders.id", {"field": "orders.amount::int::text", "alias": "x"}]), dialect="postgres")
         outer = next(c for c in _casts(sql, dialect="postgres") if isinstance(c.this, exp.Cast))
         assert outer.to.is_type(exp.DataType.Type.TEXT), sql
         assert outer.this.to.is_type(exp.DataType.Type.INT), sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_cast_emits_everywhere(self, dialect: str) -> None:
-        await emit(q(dimensions=["id", {"field": "CAST(quantity AS TEXT)", "alias": "x"}],
-                     metrics=[m("sum(amount::int)")], filter=["CAST(amount AS DECIMAL(10,2)) > 1"]),
+        await emit(q(dimensions=["orders.id", {"field": "CAST(orders.quantity AS TEXT)", "alias": "x"}],
+                     metrics=[m("sum(orders.amount::int)")], filter=["CAST(orders.amount AS DECIMAL(10,2)) > 1"]),
                    dialect=dialect)
 
     async def test_unknown_target_type_renders(self) -> None:
-        sql = await emit(q(dimensions=["id", {"field": "CAST(payload AS JSON)", "alias": "x"}]), dialect="postgres")
+        sql = await emit(q(dimensions=["orders.id", {"field": "CAST(orders.payload AS JSON)", "alias": "x"}]), dialect="postgres")
         assert any(c.to.is_type(exp.DataType.Type.JSON) for c in _casts(sql, dialect="postgres")), sql
 
     @pytest.mark.parametrize("dialect", ["postgres", "tsql"])
     async def test_dialect_specific_type_accepted_where_expressible(self, dialect: str) -> None:
-        sql = await emit(q(metrics=[m("sum(CAST(amount AS MONEY))")]), dialect=dialect)
+        sql = await emit(q(metrics=[m("sum(CAST(orders.amount AS MONEY))")]), dialect=dialect)
         assert "MONEY" in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ["bigquery", "mysql", "trino", "snowflake", "clickhouse"])
     async def test_inexpressible_type_rejected_at_plan_time(self, dialect: str) -> None:
-        query = q(metrics=[m("sum(CAST(amount AS MONEY))")])
+        query = q(metrics=[m("sum(CAST(orders.amount AS MONEY))")])
         with pytest.raises(QueryTypeError) as info:
             await emit(query, dialect=dialect)
         msg = str(info.value).lower()
@@ -197,13 +197,13 @@ _TRY_CAST_MARKERS = {
 class TestTryCastEmission:
     @pytest.mark.parametrize("dialect", sorted(_TRY_CAST_MARKERS))
     async def test_per_dialect_form(self, dialect: str) -> None:
-        sql = await emit(q(dimensions=["id", {"field": "TRY_CAST(code AS INT)", "alias": "x"}]), dialect=dialect)
+        sql = await emit(q(dimensions=["orders.id", {"field": "TRY_CAST(orders.code AS INT)", "alias": "x"}]), dialect=dialect)
         assert _TRY_CAST_MARKERS[dialect] in sql.upper(), sql
 
     @pytest.mark.parametrize("target", ["INT", "DOUBLE", "DATE", "TIMESTAMP", "BOOLEAN", "DECIMAL(10,2)"])
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_every_target_emits(self, dialect: str, target: str) -> None:
-        await emit(q(dimensions=["id", {"field": f"TRY_CAST(code AS {target})", "alias": "x"}]), dialect=dialect)
+        await emit(q(dimensions=["orders.id", {"field": f"TRY_CAST(orders.code AS {target})", "alias": "x"}]), dialect=dialect)
 
 
 def _patch_profile(monkeypatch: pytest.MonkeyPatch, *, version: tuple[int, int] | None = None, fail: bool = False) -> list[int]:
@@ -219,7 +219,7 @@ def _patch_profile(monkeypatch: pytest.MonkeyPatch, *, version: tuple[int, int] 
     return calls
 
 
-TRY_Q = q(dimensions=["id", {"field": "TRY_CAST(code AS INT)", "alias": "x"}])
+TRY_Q = q(dimensions=["orders.id", {"field": "TRY_CAST(orders.code AS INT)", "alias": "x"}])
 
 
 class TestPostgresTryCast:
@@ -255,7 +255,7 @@ class TestPostgresTryCast:
 
     async def test_profile_probed_only_for_try_cast(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = _patch_profile(monkeypatch, version=(16, 2))
-        await emit(q(dimensions=["id", {"field": "CAST(code AS INT)", "alias": "x"}]), dialect="postgres")
+        await emit(q(dimensions=["orders.id", {"field": "CAST(orders.code AS INT)", "alias": "x"}]), dialect="postgres")
         assert calls == []
         await emit(TRY_Q, dialect="postgres")
         assert calls == [1]

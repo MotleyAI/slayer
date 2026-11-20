@@ -79,11 +79,11 @@ class TestRestatementConflicts:
 class TestNotARestatement:
     def test_other_name_appends(self) -> None:
         merged = merge(saved(REVENUE), {"metric": "revenue", "alias": "r2"})
-        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(amount)"), ("r2", "revenue")]
+        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(orders.amount)"), ("r2", "revenue")]
 
     def test_bare_name_of_no_saved_entry_appends(self) -> None:
         merged = merge(saved(REVENUE), "amount_total")
-        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(amount)"), (None, "amount_total")]
+        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(orders.amount)"), (None, "amount_total")]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

@@ -33,7 +33,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
@@ -43,7 +43,7 @@ class TestAttributableRowFilters:
         AND to the result rows — no warning."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["status"], metrics=[M, CM],
+            dimensions=["orders.status"], metrics=[M, CM],
             filter=["customers.tier = 'gold'"],
             to_many_handling="broadcast",
         )
@@ -52,9 +52,9 @@ class TestAttributableRowFilters:
         assert set(by) == {("ok",), ("new",)}
         for row in by.values():
             # Gold customers only: c1 + c3 spend.
-            assert float(row["orders.cm"]) == pytest.approx(SPEND_BY_TIER["gold"])
-        assert float(by[("ok",)]["orders.m"]) == pytest.approx(20.0)
-        assert float(by[("new",)]["orders.m"]) == pytest.approx(20.0)
+            assert float(row["cm"]) == pytest.approx(SPEND_BY_TIER["gold"])
+        assert float(by[("ok",)]["m"]) == pytest.approx(20.0)
+        assert float(by[("new",)]["m"]) == pytest.approx(20.0)
         dry = await engine.execute(query, dry_run=True)
         assert_scope_closed(dry.sql, dialect=dialect)
 
@@ -70,18 +70,18 @@ class TestUnsafeRowFilters:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
                 dimensions=["customers.tier"], metrics=[M, CM],
-                filter=["channel = 'web'"],
+                filter=["orders.channel = 'web'"],
             ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         # Spine: web orders → o1 (c1), o3 (c2), o6 (c4), o7 (orphan).
         assert set(by) == {("gold",), ("silver",), ("bronze",), (None,)}
         # Web customers: c1 (gold 100), c2 (silver 150), c4 (bronze 40);
         # c3 (gold, app-only) is out — NOT the unfiltered 160 gold slice.
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(100.0)
-        assert float(by[("silver",)]["orders.cm"]) == pytest.approx(150.0)
-        assert float(by[("bronze",)]["orders.cm"]) == pytest.approx(40.0)
-        assert by[(None,)]["orders.cm"] is None
-        assert float(by[("gold",)]["orders.m"]) == pytest.approx(10.0)
+        assert float(by[("gold",)]["cm"]) == pytest.approx(100.0)
+        assert float(by[("silver",)]["cm"]) == pytest.approx(150.0)
+        assert float(by[("bronze",)]["cm"]) == pytest.approx(40.0)
+        assert by[(None,)]["cm"] is None
+        assert float(by[("gold",)]["m"]) == pytest.approx(10.0)
         hits = [c for c in caught
                 if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
         assert hits == []
@@ -91,18 +91,18 @@ class TestUnsafeRowFilters:
         still restricts the result rows."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], metrics=[M, CM],
-            filter=["channel = 'app'"],
+            dimensions=["orders.status"], metrics=[M, CM],
+            filter=["orders.channel = 'app'"],
             to_many_handling="broadcast",
         ))
         by = rows_by(resp, "orders.status")
         # App orders: o2 (new), o4/o5 (ok).
         assert set(by) == {("ok",), ("new",)}
-        assert float(by[("ok",)]["orders.m"]) == pytest.approx(10.0)
-        assert float(by[("new",)]["orders.m"]) == pytest.approx(20.0)
+        assert float(by[("ok",)]["m"]) == pytest.approx(10.0)
+        assert float(by[("new",)]["m"]) == pytest.approx(20.0)
         # App customers c1 + c3 — no longer the unfiltered SPEND_TOTAL.
         for row in resp.data:
-            assert float(row["orders.cm"]) == pytest.approx(160.0)
+            assert float(row["cm"]) == pytest.approx(160.0)
 
 
 class TestAggregatePhaseRouting:
@@ -115,14 +115,14 @@ class TestAggregatePhaseRouting:
             filter=["sum(customers.spend) > 100"],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("silver",)}
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
-        assert float(by[("silver",)]["orders.cm"]) == pytest.approx(150.0)
-        assert float(by[("gold",)]["orders.m"]) == pytest.approx(
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
+        assert float(by[("silver",)]["cm"]) == pytest.approx(150.0)
+        assert float(by[("gold",)]["m"]) == pytest.approx(
             AMOUNT_BY_TIER["gold"],
         )
-        assert float(by[("silver",)]["orders.m"]) == pytest.approx(
+        assert float(by[("silver",)]["m"]) == pytest.approx(
             AMOUNT_BY_TIER["silver"],
         )
         dry = await engine.execute(query, dry_run=True)
@@ -133,9 +133,9 @@ class TestAggregatePhaseRouting:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[M],
-            filter=["sum(amount) > 30"],
+            filter=["sum(orders.amount) > 30"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("bronze",)}
-        assert float(by[("gold",)]["orders.m"]) == pytest.approx(40.0)
-        assert float(by[("bronze",)]["orders.m"]) == pytest.approx(40.0)
+        assert float(by[("gold",)]["m"]) == pytest.approx(40.0)
+        assert float(by[("bronze",)]["m"]) == pytest.approx(40.0)

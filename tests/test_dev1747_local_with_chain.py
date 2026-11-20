@@ -45,12 +45,12 @@ import inspect
 _CHAIN_QUERY = SlayerQuery(
     population="orders",
     time_dimensions=[TimeDimension(
-        field="created_at",
+        field="orders.created_at",
         granularity=TimeGranularity.MONTH,
     )],
     metrics=[
-        {"metric": "sum(amount)", "alias": "rev"},
-        {"metric": "cumsum(sum(amount))", "alias": "cs"},
+        {"metric": "sum(orders.amount)", "alias": "rev"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "cs"},
     ],
 )
 
@@ -59,13 +59,13 @@ _CHAIN_QUERY = SlayerQuery(
 _MULTI_STEP_QUERY = SlayerQuery(
     population="orders",
     time_dimensions=[TimeDimension(
-        field="created_at",
+        field="orders.created_at",
         granularity=TimeGranularity.MONTH,
     )],
     metrics=[
-        {"metric": "sum(amount)", "alias": "rev"},
-        {"metric": "cumsum(sum(amount))", "alias": "cs"},
-        {"metric": "change(sum(amount))", "alias": "ch"},
+        {"metric": "sum(orders.amount)", "alias": "rev"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "cs"},
+        {"metric": "change(sum(orders.amount))", "alias": "ch"},
     ],
 )
 
@@ -132,9 +132,9 @@ class TestWithChainAssembly:
         """The chain's outer wrap is where ORDER BY / LIMIT land; D8 must not
         disturb that while replacing the splice."""
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")], "limit": 2}))
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")], "limit": 2}))
         assert order_by_text(sql), f"chain lost its ORDER BY:\n{sql}"
         assert "LIMIT" in sql.upper() or "TOP" in sql.upper()
 
@@ -225,14 +225,14 @@ class TestChainSemanticsPreserved:
         """A hidden order-only slot has to be carried through every step; the
         carry lists are plan-ordered (B8, PR 3) and must stay that way."""
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="status", direction="desc")]}))
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="orders.status", direction="desc")]}))
         assert order_by_text(sql)
 
     async def test_post_phase_filter_still_wraps_the_chain(self) -> None:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "filter": ["cs > 5"]}))
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "filter": ["cs > 5"]}))
         assert "WHERE" in sql.upper()

@@ -48,8 +48,8 @@ from tests._engine_helpers import _engine_generate
 
 Case = Callable[[], Tuple[SlayerQuery, List[SlayerDataset]]]
 
-_MONTH = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
-_NO_AXIS = "sum(cumsum(sum(amount, partition_by=region)))"
+_MONTH = [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)]
+_NO_AXIS = "sum(cumsum(sum(monthly.amount, partition_by=monthly.region)))"
 
 
 def _m(metric: str, alias: str) -> QueryMetric:
@@ -84,23 +84,23 @@ async def _raise_of(case: Case) -> QueryTypeError:
 
 
 def _time_axis() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return f1832.monthly_q(metrics=[_m(_NO_AXIS, "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()
+    return f1832.monthly_q(metrics=[_m(_NO_AXIS, "m")], time_dimensions=f1832.month_td("monthly")), f1832.dev1832_datasets()
 
 
 def _no_time_dimension() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return orders_q(dimensions=["region"], metrics=[_m("sum(amount, window='90d')", "w")]), f1739.dev1739_datasets()
+    return orders_q(dimensions=["orders.region"], metrics=[_m("sum(orders.amount, window='90d')", "w")]), f1739.dev1739_datasets()
 
 
 def _bad_window() -> Tuple[SlayerQuery, List[SlayerDataset]]:
     query = SlayerQuery(
         population="sales", time_dimensions=f1846.month_td(),
-        metrics=[_m("sum(revenue, window='90x')", "w")],
+        metrics=[_m("sum(sales.revenue, window='90x')", "w")],
     )
     return query, f1846.dev1846_datasets()
 
 
 def _rank_partition() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return orders_q(dimensions=["region"], metrics=[_m("rank(sum(amount), partition_by=city, direction='desc')", "r")]), f1739.dev1739_datasets()
+    return orders_q(dimensions=["orders.region"], metrics=[_m("rank(sum(orders.amount), partition_by=orders.city, direction='desc')", "r")]), f1739.dev1739_datasets()
 
 
 #: (id, case, class, location, has suggestion)
@@ -110,75 +110,75 @@ FAMILY_CASES = [
     ("window-duration", _bad_window, WindowDurationError, None, True),
     ("rank-partition-key", _rank_partition, PartitionKeyError, "transform 'rank'", True),
     ("aggregate-partition-key",
-     lambda: (orders_q(dimensions=["region"], metrics=[_m("sum(amount, partition_by=city)", "p")]), f1739.dev1739_datasets()),
+     lambda: (orders_q(dimensions=["orders.region"], metrics=[_m("sum(orders.amount, partition_by=orders.city)", "p")]), f1739.dev1739_datasets()),
      PartitionKeyError, "metric 'p'", True),
     ("unsafe-join-input",
-     lambda: (f1945.orders_q(metrics=[f1945.metric("last(amount, li_ts)")]), f1945.dev1945_datasets(orders_default="created_at")),
+     lambda: (f1945.orders_q(metrics=[f1945.metric("last(orders.amount, orders.li_ts)")]), f1945.dev1945_datasets(orders_default="created_at")),
      UnsafeRelationshipInputError, "metric 'amount_last_li_ts'", True),
     ("unanalyzable-dependency",
-     lambda: (f1945.orders_q(metrics=[f1945.metric("last(amount)")]), f1945.dev1945_datasets(orders_default="bad_ts")),
+     lambda: (f1945.orders_q(metrics=[f1945.metric("last(orders.amount)")]), f1945.dev1945_datasets(orders_default="bad_ts")),
      UnanalyzableDependencyError, "metric 'amount_last'", True),
     ("transform-input",
-     lambda: (f1832.orders_q(metrics=[_m("sum(cumsum(weight) - 1)", "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()),
+     lambda: (f1832.orders_q(metrics=[_m("sum(cumsum(orders.weight) - 1)", "m")], time_dimensions=f1832.month_td("orders")), f1832.dev1832_datasets()),
      TransformInputError, "transform 'cumsum'", True),
     ("computed-dimension",
      lambda: (SlayerQuery.model_validate({
-         "population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "t"}],
-         "dimensions": ["region", {"field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END", "alias": "band"}],
+         "population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
+         "dimensions": ["orders.region", {"field": "CASE WHEN sum(orders.amount) > 5000 THEN 1 ELSE 0 END", "alias": "band"}],
      }), f1740.dev1740_datasets()),
      ComputedDimensionError, "dimension 'band'", False),
     ("association",
-     lambda: (f1841.assoc_q(dimensions=["status"], metrics=[_m("sum(customers.spend, window='90d')", "cm")],
+     lambda: (f1841.assoc_q(dimensions=["orders.status"], metrics=[_m("sum(customers.spend, window='90d')", "cm")],
                             time_dimensions=[TimeDimension(field="customers.signup_at", granularity=TimeGranularity.MONTH)]),
               f1841.dev1840_datasets()),
      AssociationError, "metric 'cm'", True),
     ("parameter-grain",
-     lambda: (f1847.sales_q(dimensions=["region"], metrics=[_m(f"wavg({f1847.INNER_CR}, weight=id)", "w")]), f1847.dev1847_datasets()),
+     lambda: (f1847.sales_q(dimensions=["sales.region"], metrics=[_m(f"wavg({f1847.INNER_CR}, weight=sales.id)", "w")]), f1847.dev1847_datasets()),
      ParameterGrainError, "metric 'w'", True),
     ("reaggregation",
      lambda: (orders_q(
-         dimensions=["region"], time_dimensions=f1739.month_td(),
-         metrics=[_m("sum(sum(amount, partition_by=[region, city]), window='90d')", "w")],
+         dimensions=["orders.region"], time_dimensions=f1739.month_td(),
+         metrics=[_m("sum(sum(orders.amount, partition_by=[orders.region, orders.city]), window='90d')", "w")],
      ), f1739.dev1739_datasets()),
      ReaggregationError, "metric 'w'", True),
     ("name-collision",
      lambda: (SlayerQuery.model_validate({
-         "population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-         "dimensions": ["region", {"field": "lower(city)", "alias": "rev"}],
+         "population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+         "dimensions": ["orders.region", {"field": "lower(orders.city)", "alias": "rev"}],
      }), f1740.dev1740_datasets()),
      NameCollisionError, "dimension 'rev'", True),
     ("stage-flatten-collision",
      lambda: (SlayerQuery(
          population="orders", time_dimensions=_MONTH,
-         metrics=[_m("cumsum(sum(amount))", "dup"), _m("cumsum(sum(amount))", "dup")],
+         metrics=[_m("cumsum(sum(orders.amount))", "dup"), _m("cumsum(sum(orders.amount))", "dup")],
      ), [_orders(default_time_dimension="created_at")]),
      NameCollisionError, None, True),
     ("dimension-type",
-     lambda: (SlayerQuery(population="orders", dimensions=[QueryDimension(field="loc")]),
+     lambda: (SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.loc")]),
               [_orders(extra_columns=(DatasetField(name="loc", datatype=DataType.OPAQUE, db_type="point"),))]),
      DimensionTypeError, "dimension 'loc'", True),
     ("model-filter",
-     lambda: (SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")]),
+     lambda: (SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(orders.*)")]),
               [_orders(metrics=[DatasetMetric(name="tot", expression="sum(amount)")], filters=["orders.tot > 100"])]),
      DatasetFilterError, "dataset filter 'orders.tot > 100'", True),
     ("position-typing",
      lambda: (SlayerQuery(
-         population="orders", time_dimensions=_MONTH, metrics=[QueryMetric(metric="count(*)")],
-         filter=["_count > 1 or status == 'ok'"],
+         population="orders", time_dimensions=_MONTH, metrics=[QueryMetric(metric="count(orders.*)")],
+         filter=["orders._count > 1 or orders.status == 'ok'"],
      ), [_orders()]),
      PositionTypingError, None, True),
     ("raw-rows",
      lambda: (SlayerQuery(
-         population="orders", dimensions=[QueryDimension(field="status")],
-         filter=["sum(amount) > 100"], distinct_dimension_values=False,
+         population="orders", dimensions=[QueryDimension(field="orders.status")],
+         filter=["sum(orders.amount) > 100"], distinct_dimension_values=False,
      ), [_orders()]),
-     DistinctDimensionValuesError, "filter 'sum(amount) > 100'", True),
+     DistinctDimensionValuesError, "filter 'sum(orders.amount) > 100'", True),
     ("time-dimension-column",
      lambda: (SlayerQuery(
-         population="orders", metrics=[_m("sum(amount)", "t")],
-         time_dimensions=[TimeDimension(field="status", granularity=TimeGranularity.MONTH)],
+         population="orders", metrics=[_m("sum(orders.amount)", "t")],
+         time_dimensions=[TimeDimension(field="orders.status", granularity=TimeGranularity.MONTH)],
      ), [_orders()]),
-     TimeDimensionFieldError, "time dimension 'status'", False),
+     TimeDimensionFieldError, "time dimension 'orders.status'", False),
 ]
 
 
@@ -209,15 +209,15 @@ async def test_family_error_layout(
 
 @pytest.mark.parametrize(("case", "cls", "location"), [
     pytest.param(lambda: (SlayerQuery(
-        population="orders", dimensions=[QueryDimension(field="id")], metrics=[_m("sum(amount)", "status")],
+        population="orders", dimensions=[QueryDimension(field="orders.id")], metrics=[_m("sum(orders.amount)", "status")],
     ), [_orders()]), MetricNameCollidesWithFieldError, "metric 'status'", id="measure-collides-with-column"),
     pytest.param(lambda: (SlayerQuery(
-        population="orders", dimensions=[QueryDimension(field="status")], metrics=[_m("sum(amount)", "rev2")],
+        population="orders", dimensions=[QueryDimension(field="orders.status")], metrics=[_m("sum(orders.amount)", "rev2")],
     ), [_orders(extra_columns=(DatasetField(name="amount_sum", datatype=DataType.FLOAT),))]),
         CanonicalAliasShadowsFieldError, "metric 'rev2'", id="canonical-alias-shadows"),
     pytest.param(lambda: (SlayerQuery(
-        population="orders", dimensions=[QueryDimension(field="status")],
-        metrics=[_m("sum(revenue)", "profit_avg"), QueryMetric(metric="avg(profit)")],
+        population="orders", dimensions=[QueryDimension(field="orders.status")],
+        metrics=[_m("sum(orders.revenue)", "profit_avg"), _m("avg(orders.profit)", "profit_avg")],
     ), [_orders()]), DuplicateMetricNameError, "metric 'profit_avg'", id="duplicate-measure-name"),
 ])
 async def test_structured_name_collisions(case: Case, cls: type, location: str) -> None:
@@ -259,7 +259,7 @@ async def test_rest_answers_time_axis_violation_with_400(tmp_path) -> None:
     await storage.save_dataset(f1832.monthly_dataset(), _validate=False)
     body = {
         "population": "monthly",
-        "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
+        "time_dimensions": [{"field": "monthly.ordered_at", "granularity": "month"}],
         "metrics": [{"metric": _NO_AXIS, "alias": "m"}],
     }
     resp = TestClient(create_app(storage=storage)).post("/query", json=body)

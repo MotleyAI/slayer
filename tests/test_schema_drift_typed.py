@@ -91,7 +91,7 @@ class TestStageGraphBidirectional:
         ])])
         graph = _stage_scope(stage, _ext_datasets())
         assert _attribute_ref_to_base(
-            ref="buyer.name", base_name="customers", scope=graph,
+            ref="orders.buyer.name", base_name="customers", scope=graph,
         ) == "name"
 
     def test_parallel_extension_targets_unaddressable_by_bare_name(self) -> None:
@@ -103,7 +103,7 @@ class TestStageGraphBidirectional:
         ])])
         graph = _stage_scope(stage, _ext_datasets())
         assert _attribute_ref_to_base(
-            ref="seller.name", base_name="customers", scope=graph,
+            ref="orders.seller.name", base_name="customers", scope=graph,
         ) == "name"
         # The bare target token is ambiguous across the pair — no attribution.
         assert _attribute_ref_to_base(

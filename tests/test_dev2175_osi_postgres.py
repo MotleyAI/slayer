@@ -44,8 +44,8 @@ def _import(datasource: DatasourceConfig, *fields: dict[str, Any]) -> Conversion
 
 async def _by_id(datasource: DatasourceConfig, tmp_path: Path, datasets: list[SlayerDataset], name: str) -> list[Any]:
     async with pg_query_engine(datasource, base_dir=str(tmp_path / "store"), datasets=datasets) as engine:
-        out = (await engine.execute({"population": "orders", "dimensions": ["id", name],
-                                     "order": [{"field": "id"}]})).data
+        out = (await engine.execute({"population": "orders", "dimensions": ["orders.id", f"orders.{name}"],
+                                     "order": [{"field": "orders.id"}]})).data
     return [r[f"orders.{name}"] for r in out]
 
 

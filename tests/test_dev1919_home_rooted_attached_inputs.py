@@ -72,7 +72,7 @@ from tests._dev1919_fixtures import (
     windowed_param_by_month,
 )
 
-AMOUNT = QueryMetric(metric="sum(amount)", alias="a")
+AMOUNT = QueryMetric(metric="sum(orders.amount)", alias="a")
 
 
 def _m(expression: str) -> QueryMetric:
@@ -115,7 +115,7 @@ def _assert_no_mode_warnings(resp) -> None:
 
 
 async def _assert_broadcast_to_status(engine, expression: str, expected) -> None:
-    resp = await engine.execute(mode_q("broadcast", dimensions=["status"], metrics=[_m(expression)]))
+    resp = await engine.execute(mode_q("broadcast", dimensions=["orders.status"], metrics=[_m(expression)]))
     got = status_vals(resp)
     assert set(got) == {"ok", "new"}
     for value in got.values():
@@ -126,7 +126,7 @@ async def _assert_broadcast_to_status(engine, expression: str, expected) -> None
 
 
 async def _assert_error_mode_refuses_status(engine, expression: str) -> None:
-    q = mode_q("error", dimensions=["status"], metrics=[_m(expression)])
+    q = mode_q("error", dimensions=["orders.status"], metrics=[_m(expression)])
     with pytest.raises(SlayerError) as ei:
         await engine.execute(q)
     msg = str(ei.value)
@@ -204,7 +204,7 @@ class TestAttributableDimensionsNeedNoAssociation:
         _assert_no_mode_warnings(resp)
 
     async def test_keyless_home_associates_like_the_keyed_one(self, keyless_engine):
-        resp = await keyless_engine.execute(mode_q("associate", dimensions=["status"], metrics=[_m(HEADLINE)]))
+        resp = await keyless_engine.execute(mode_q("associate", dimensions=["orders.status"], metrics=[_m(HEADLINE)]))
         assert status_vals(resp) == pytest.approx(assoc_wavg_region_weight())
         assert associated_warnings(resp)
 
@@ -220,7 +220,7 @@ class TestPlanShape:
     producer (mirror of the association-arm plan pin)."""
 
     @pytest.mark.parametrize("mode, dims", [
-        ("broadcast", ["status"]), (None, ["customers.tier"]),
+        ("broadcast", ["orders.status"]), (None, ["customers.tier"]),
         ("error", ["customers.tier"]), ("associate", ["customers.tier"]),
     ])
     def test_plain_attach_nests_an_orders_rooted_producer(self, mode, dims):
@@ -232,15 +232,15 @@ class TestPlanShape:
 
     @pytest.mark.parametrize("formula", [HEADLINE, MIXED, RECURSIVE])
     async def test_scope_closed_and_no_placeholder_leak(self, formula):
-        sql = await gen(mode_q(None, dimensions=["status"], metrics=[_m(formula)]),
+        sql = await gen(mode_q(None, dimensions=["orders.status"], metrics=[_m(formula)]),
                         dialect="sqlite")
         assert "__regroup__" not in sql, sql
         assert_scope_closed(sql, dialect="sqlite")
 
     async def test_adding_the_measure_is_cardinality_neutral(self, orders_engine):
-        base = await orders_engine.execute(mode_q(None, dimensions=["status"], metrics=[AMOUNT]))
+        base = await orders_engine.execute(mode_q(None, dimensions=["orders.status"], metrics=[AMOUNT]))
         withp = await orders_engine.execute(
-            mode_q(None, dimensions=["status"], metrics=[AMOUNT, _m(HEADLINE)]))
+            mode_q(None, dimensions=["orders.status"], metrics=[AMOUNT, _m(HEADLINE)]))
         assert len(withp.data) == len(base.data)
         assert status_vals(withp, "a") == pytest.approx(status_vals(base, "a"))
 
@@ -263,8 +263,8 @@ class TestFilterAndOrderPositions:
         resp = await orders_engine.execute(mode_q(
             None, dimensions=["customers.tier"], metrics=[AMOUNT],
             order=[{"field": HEADLINE, "direction": "desc"}]))
-        tiers = [r["orders.customers.tier"] for r in resp.data
-                 if r["orders.customers.tier"] is not None]
+        tiers = [r["customers.tier"] for r in resp.data
+                 if r["customers.tier"] is not None]
         assert tiers == ["silver", "gold", "bronze"]
 
 
@@ -305,7 +305,7 @@ class TestWindowedOuter:
             filter=[f"{WINDOWED_PARAM} > 110"]))
         assert_cells(month_vals(pruned, "a"), {"2024-02": 55})
         for row in pruned.data:
-            assert set(row) == {"orders.a", "orders.customers.signup_at"}
+            assert set(row) == {"a", "customers.signup_at"}
 
         ordered = await orders_engine.execute(mode_q(
             None, time_dimensions=signup_month_td(), metrics=[AMOUNT],
@@ -314,7 +314,7 @@ class TestWindowedOuter:
         assert months == ["2024-02", "2024-03", "2024-01", "2024-04"]
         assert_cells(month_vals(ordered, "a"), base)
         for row in ordered.data:
-            assert set(row) == {"orders.a", "orders.customers.signup_at"}
+            assert set(row) == {"a", "customers.signup_at"}
 
     def test_windowed_parameter_reads_the_row_attach(self):
         """Plan pin: the trailing-window kernel's picked parameter is the nested
@@ -375,7 +375,7 @@ class TestFailClosedEveryMode:
     @pytest.mark.parametrize("mode", MODES)
     async def test_parameter_key_fanning_from_its_own_home(self, dev1900_engine, mode):
         """Scenario: Attached parameter whose own partition key fans from its own home fails closed."""
-        q = mode_q(mode, dimensions=["status"], metrics=[_m(OWN_FAN_BADPOP)])
+        q = mode_q(mode, dimensions=["orders.status"], metrics=[_m(OWN_FAN_BADPOP)])
         with pytest.raises(ValueError) as ei:
             await dev1900_engine.execute(q)
         msg = str(ei.value)
@@ -386,7 +386,7 @@ class TestFailClosedEveryMode:
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_host_keyed_parameter_refused_outside_associate(self, orders_engine, mode):
         """Scenario: Attached parameter keyed by a host column keeps the mode-aware rule."""
-        q = mode_q(mode, dimensions=["status"], metrics=[_m(OWN_FAN_STATUS)])
+        q = mode_q(mode, dimensions=["orders.status"], metrics=[_m(OWN_FAN_STATUS)])
         with pytest.raises(ValueError) as ei:
             await orders_engine.execute(q)
         msg = str(ei.value)
@@ -396,13 +396,13 @@ class TestFailClosedEveryMode:
     @pytest.mark.parametrize("mode", [None, "associate"])
     async def test_host_keyed_parameter_associates(self, orders_engine, mode):
         resp = await orders_engine.execute(
-            mode_q(mode, dimensions=["status"], metrics=[_m(OWN_FAN_STATUS)]))
+            mode_q(mode, dimensions=["orders.status"], metrics=[_m(OWN_FAN_STATUS)]))
         assert_cells(status_vals(resp), local_wavg_status_assoc_by_status())
 
     @pytest.mark.parametrize("mode, dims", [
-        (None, ["status"]), (None, ["customers.tier"]),
-        ("associate", ["customers.tier"]), ("associate", ["status"]),
-        ("error", ["customers.tier"]), ("error", ["status"]),
+        (None, ["orders.status"]), (None, ["customers.tier"]),
+        ("associate", ["customers.tier"]), ("associate", ["orders.status"]),
+        ("error", ["customers.tier"]), ("error", ["orders.status"]),
     ])
     async def test_undetermined_parameter_refused_in_every_mode(self, orders_engine, mode, dims):
         """Scenario: Undetermined attached parameter stays rejected (D2b) — the plain
@@ -425,7 +425,7 @@ class TestArgumentMessagePrecedence:
     Argument violation is reported ahead of a source violation (D5)."""
 
     @pytest.mark.parametrize("mode, dims", [
-        ("broadcast", ["status"]), ("error", ["status"]), ("associate", None),
+        ("broadcast", ["orders.status"]), ("error", ["orders.status"]), ("associate", None),
     ])
     async def test_host_ranking_key_names_column_root_and_hop(self, orders_engine, mode, dims):
         kw = {} if dims is None else {"dimensions": dims}

@@ -26,7 +26,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 def by_region(order: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"population": "orders", "dimensions": ["region"], "metrics": ["count(*)"], "order": order}
+    return {"population": "orders", "dimensions": ["orders.region"], "metrics": ["count(orders.*)"], "order": order}
 
 
 class TestOrderItemCoercion:
@@ -52,7 +52,8 @@ class TestOrderItemCoercion:
 
 class TestExecuted:
     async def test_expression_in_object_form(self, engine: SlayerQueryEngine) -> None:
-        resp = await assert_equivalent(engine, by_region([SUM_DESC_OBJECT]), by_region([SUM_DESC_STRING]), ordered=True,
+        canonical = by_region([{"field": "sum(orders.amount)", "direction": "desc"}])
+        resp = await assert_equivalent(engine, by_region([SUM_DESC_OBJECT]), canonical, ordered=True,
                                        deprecated=True)
         assert [r["orders.region"] for r in resp.data] == ["EU", "US", None]
 

@@ -15,7 +15,7 @@ from slayer.engine.compile.projection import free_metric_name
 
 from tests._engine_helpers import _engine_generate
 
-_COLLIDING = {"metric": "sum(credit)", "alias": "credit"}
+_COLLIDING = {"metric": "sum(customers.credit)", "alias": "credit"}
 
 
 def _customers(*extra_columns: str) -> SlayerDataset:
@@ -55,7 +55,7 @@ async def test_derived_name_taken_by_an_explicit_name() -> None:
 
 @pytest.mark.parametrize("unnamed_first", [False, True])
 async def test_derived_name_taken_by_another_measures_derived_name(unnamed_first: bool) -> None:
-    measures: list[Any] = ["sum(credit)", _COLLIDING] if unnamed_first else [_COLLIDING, "sum(credit)"]
+    measures: list[Any] = ["sum(customers.credit)", _COLLIDING] if unnamed_first else [_COLLIDING, "sum(customers.credit)"]
     assert _names(await _suggestion(measures), "credit_2")
 
 

@@ -23,7 +23,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import QueryMetric, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _dataset_where_text, _engine_generate
 
@@ -162,7 +162,7 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             population="m",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(m.amount)")],
         )
         # This once raised "Unknown filter function 'json_extract'" at enrichment
         # time; it renders — the Mode A dataset filter survives into the WHERE of
@@ -190,7 +190,7 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             population="m",
-            metrics=[QueryMetric(metric="sum(active_amount)")],
+            metrics=[QueryMetric(metric="sum(m.active_amount)")],
         )
         sql = await _engine_generate(query=query, dataset=model)
         # The DatasetField.filter goes onto the metric as a CASE WHEN wrapper
@@ -235,7 +235,7 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             population="m",
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(m.*)")],
         )
         sql = await _engine_generate(
             query=query, dataset=model, extra_datasets=[customers, regions],
@@ -325,23 +325,23 @@ class TestDslModeAcceptance:
     def test_query_filter_accepts_aggregation(self) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["sum(revenue) > 100"],
+            filter=["sum(orders.revenue) > 100"],
         )
-        assert q.filter == ["sum(revenue) > 100"]
+        assert q.filter == ["sum(orders.revenue) > 100"]
 
     def test_query_filter_accepts_transform_predicate(self) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["change(sum(revenue)) > 0"],
+            filter=["change(sum(orders.revenue)) > 0"],
         )
-        assert q.filter == ["change(sum(revenue)) > 0"]
+        assert q.filter == ["change(sum(orders.revenue)) > 0"]
 
     def test_query_filter_accepts_nested_transform(self) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["last(change(sum(revenue))) < 0"],
+            filter=["last(change(sum(orders.revenue))) < 0"],
         )
-        assert q.filter == ["last(change(sum(revenue))) < 0"]
+        assert q.filter == ["last(change(sum(orders.revenue))) < 0"]
 
     def test_query_filter_accepts_dotted_join_path(self) -> None:
         q = SlayerQuery(
@@ -353,10 +353,10 @@ class TestDslModeAcceptance:
     def test_query_filter_accepts_variable_placeholder(self) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["status = '{status_val}'"],
+            filter=["orders.status = '{status_val}'"],
             variables={"status_val": "active"},
         )
-        assert q.filter == ["status = '{status_val}'"]
+        assert q.filter == ["orders.status = '{status_val}'"]
 
     def test_model_measure_accepts_cross_model_dotted_ref(self) -> None:
         """Cross-dataset dotted refs in DatasetMetric expressions remain supported (per spec)."""
@@ -389,8 +389,8 @@ class TestDslModeRejection:
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=["id"],
-            filter=["initcap(data) = 'X'"],
+            dimensions=["orders.id"],
+            filter=["initcap(orders.data) = 'X'"],
         )
         with pytest.raises(Exception, match="(?i)function|initcap|raw SQL|unknown|transform"):
             await _engine_generate(query=query, dataset=model)
@@ -409,8 +409,8 @@ class TestDslModeRejection:
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=["id"],
-            filter=["customers__region = 'EU'"],
+            dimensions=["orders.id"],
+            filter=["orders.customers__region = 'EU'"],
         )
         with pytest.raises(Exception, match="(?i)customers__region|unknown|not a Column"):
             await _engine_generate(query=query, dataset=model)
@@ -436,8 +436,8 @@ class TestDslModeRejection:
         )
         query = SlayerQuery(
             population="m",
-            metrics=["bad"],
-            dimensions=["id"],
+            metrics=["m.bad"],
+            dimensions=["m.id"],
         )
         with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
             await _engine_generate(query=query, dataset=model)
@@ -462,8 +462,8 @@ class TestStrictResolution:
         )
         query = SlayerQuery(
             population="m",
-            dimensions=["id"],
-            filter=["unknown_col > 0"],
+            dimensions=[QueryDimension(field="m.id")],
+            filter=["m.unknown_col > 0"],
         )
         with pytest.raises(Exception, match="(?i)unknown_col|not.*column.*measure|undefined|unknown"):
             await _engine_generate(query=query, dataset=model)
@@ -480,10 +480,10 @@ class TestStrictResolution:
             data_source="test",
             fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
-        for typo in ("made_up_sum", "typo_count_distinct", "foo_avg"):
+        for typo in ("m.made_up_sum", "m.typo_count_distinct", "m.foo_avg"):
             query = SlayerQuery(
                 population="m",
-                dimensions=["id"],
+                dimensions=[QueryDimension(field="m.id")],
                 filter=[f"{typo} > 0"],
             )
             with pytest.raises(Exception, match=f"(?i){typo}|unknown|not a Column"):
@@ -508,8 +508,8 @@ class TestStrictResolution:
         )
         query = SlayerQuery(
             population="households",
-            dimensions=["housenum"],
-            filter=["transportation_assets.total_vehicles >= 3"],
+            dimensions=[QueryDimension(field="households.housenum")],
+            filter=["households.transportation_assets.total_vehicles >= 3"],
         )
         # An unreachable short form is route-aware-rejected (a ValueError) — still a loud raise, never silent unbound SQL.
         with pytest.raises(
@@ -538,8 +538,8 @@ class TestStrictResolution:
         )
         query = SlayerQuery(
             population="m",
-            dimensions=["id"],
-            filter=["status = 'active'"],
+            dimensions=[QueryDimension(field="m.id")],
+            filter=["m.status = 'active'"],
         )
         # Should not raise.
         await _engine_generate(query=query, dataset=model)
@@ -560,8 +560,8 @@ class TestPredicatePromotionRemoved:
         model = _make_planets_dataset(with_window_column=True)
         query = SlayerQuery(
             population="planets",
-            dimensions=["name"],
-            filter=["rn <= 3"],
+            dimensions=[QueryDimension(field="planets.name")],
+            filter=["planets.rn <= 3"],
         )
         with pytest.raises(Exception) as excinfo:
             await _engine_generate(query=query, dataset=model)
@@ -577,7 +577,7 @@ class TestPredicatePromotionRemoved:
         model = _make_planets_dataset(with_window_column=True)
         query = SlayerQuery(
             population="planets",
-            dimensions=["name", "rn"],
+            dimensions=["planets.name", "planets.rn"],
         )
         # Should render without error; only filter use is restricted.
         await _engine_generate(query=query, dataset=model)

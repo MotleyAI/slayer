@@ -4791,6 +4791,8 @@ def _emit_stage_schema(
     fields: List[StageField] = []
     alias_idx: Dict[str, int] = {}
     flat_by_sid: Dict[SlotId, str] = {}
+    key_by_flat: Dict[str, str] = {}
+    collision: Optional[Tuple[str, str, str]] = None
     for sid in projection.public_projection:
         slot = projection.registry.get(sid)
         if slot.hidden:
@@ -4799,10 +4801,13 @@ def _emit_stage_schema(
         rk = slot_result_key(slot=slot, alias=alias, source_relation=source_relation)
         # Downstream bind + CTE column name are the ``__``-flattened form; public_alias keeps the dotted result-key form.
         flat = flat_name(rk, strip_relation=source_relation)
-        # Two distinct public fields flattening to one downstream name would make the CTE column ambiguous.
-        check_stage_flatten_collision(
-            flat_name=flat, collides=any(c.name == flat for c in fields),
-        )
+        # Two public fields flattening to one downstream name make the column ambiguous to a stage reading it by name.
+        if flat in key_by_flat:
+            check_stage_flatten_collision(flat_name=flat, collides=stage_name is not None or key_by_flat[flat] == rk,
+                                          entries=(key_by_flat[flat], rk))
+            collision = collision or (flat, key_by_flat[flat], rk)
+            continue
+        key_by_flat[flat] = rk
         fields.append(_stage_field(
             slot=slot, alias=rk.removeprefix(f"{source_relation}."), flat=flat,
             source=_source_field(key=slot.key, root=root, datasets_by_name=datasets_by_name),
@@ -4814,13 +4819,14 @@ def _emit_stage_schema(
             if slot.phase == Phase.ROW else None,
         ))
         flat_by_sid.setdefault(sid, flat)
-    grain_names = None if grain is None else [flat_by_sid[sid] for sid in grain]
+    grain_names = None if grain is None else [flat_by_sid[sid] for sid in grain if sid in flat_by_sid]
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", fields=fields,
         grain=grain_names,
         default_time_dimension=_surviving_default(projection=projection, fields=fields, root=root),
         inherited_edges=inherited_edges(fields=fields, grain=grain_names, root=root, datasets_by_name=datasets_by_name),
         restricted=restricted,
+        flatten_collision=collision,
     )
 
 

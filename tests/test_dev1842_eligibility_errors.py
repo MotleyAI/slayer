@@ -47,14 +47,14 @@ class TestIneligiblePositions:
 
     async def test_plain_dimension_entry_errors(self) -> None:
         query = q(dimensions=["customers.aov"],
-                  metrics=[{"metric": "sum(amount)", "alias": "a"}])
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         _assert_names_saved_metric(str(ei.value))
 
     async def test_unselected_filter_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  metrics=[{"metric": "sum(amount)", "alias": "a"}],
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
                   filter=["customers.aov > 100"])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -62,7 +62,7 @@ class TestIneligiblePositions:
 
     async def test_order_by_formula_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  metrics=[{"metric": "sum(amount)", "alias": "a"}],
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
                   order=[{"field": "customers.aov", "direction": "desc"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -70,7 +70,7 @@ class TestIneligiblePositions:
 
     async def test_partition_by_member_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  metrics=[{"metric": "sum(amount, partition_by=customers.aov)",
+                  metrics=[{"metric": "sum(orders.amount, partition_by=customers.aov)",
                              "alias": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -80,7 +80,7 @@ class TestIneligiblePositions:
         """At least one ineligible-position error must say WHERE the reference is
         legal (metric expressions / computed dimensions)."""
         query = q(dimensions=["customers.aov"],
-                  metrics=[{"metric": "sum(amount)", "alias": "a"}])
+                  metrics=[{"metric": "sum(orders.amount)", "alias": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         low = str(ei.value).lower()
@@ -156,10 +156,10 @@ class TestSelectedMeasureAddressable:
             dimensions=["customers.tier"],
             metrics=[{"metric": "customers.aov"}],
             filter=["customers.aov > 100"]))
-        rows = [r for r in resp.data if r.get("orders.customers.aov") is not None]
+        rows = [r for r in resp.data if r.get("customers.aov") is not None]
         assert rows, "filter removed everything — it did not bind to the aov slot"
         for r in rows:
-            assert float(r["orders.customers.aov"]) > 100
+            assert float(r["customers.aov"]) > 100
 
     async def test_dotted_name_order_uses_selected_slot(self, exec_backend):
         _, engine = exec_backend
@@ -167,8 +167,8 @@ class TestSelectedMeasureAddressable:
             dimensions=["customers.tier"],
             metrics=[{"metric": "customers.aov"}],
             order=[{"field": "customers.aov", "direction": "desc"}]))
-        vals = [float(r["orders.customers.aov"]) for r in resp.data
-                if r.get("orders.customers.aov") is not None]
+        vals = [float(r["customers.aov"]) for r in resp.data
+                if r.get("customers.aov") is not None]
         assert vals == sorted(vals, reverse=True)
         assert len(vals) > 1
 
@@ -178,7 +178,7 @@ class TestSelectedMeasureAddressable:
             dimensions=["customers.tier"],
             metrics=[{"metric": "customers.aov", "alias": "myaov"}],
             filter=["myaov > 100"]))
-        rows = [r for r in resp.data if r.get("orders.myaov") is not None]
+        rows = [r for r in resp.data if r.get("myaov") is not None]
         assert rows
         for r in rows:
-            assert float(r["orders.myaov"]) > 100
+            assert float(r["myaov"]) > 100

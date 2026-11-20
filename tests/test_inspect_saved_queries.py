@@ -52,15 +52,15 @@ async def storage(tmp_path) -> YAMLStorage:
                 "population": "orders",
                 "extensions": [{"dataset": "orders",
                                 "metrics": [{"expression": "sum(amount * 2)", "name": "dbl"}]}],
-                "metrics": [{"metric": "dbl", "alias": "d"}],
+                "metrics": [{"metric": "orders.dbl", "alias": "d"}],
             }),
             ("rollup", [
-                {"name": "rollup", "population": "orders", "dimensions": ["region"], "metrics": [REVENUE]},
-                {"population": "rollup", "metrics": [{"metric": "sum(revenue)", "alias": "total"}]},
+                {"name": "rollup", "population": "orders", "dimensions": ["orders.region"], "metrics": [REVENUE]},
+                {"population": "rollup", "metrics": [{"metric": "sum(rollup.revenue)", "alias": "total"}]},
             ]),
-            ("target_totals", {"population": "targets", "dimensions": ["region"], "metrics": [REVENUE]}),
+            ("target_totals", {"population": "targets", "dimensions": ["targets.region"], "metrics": [REVENUE]}),
             ("monthly_rollup", {"population": "monthly_revenue",
-                                "metrics": [{"metric": "sum(revenue)", "alias": "total"}]}),
+                                "metrics": [{"metric": "sum(monthly_revenue.revenue)", "alias": "total"}]}),
         ):
             await engine.create_dataset_from_query(query=query, name=name, description=EXTRA_DESCRIPTIONS[name])
         await engine.save_dataset(SlayerDataset(

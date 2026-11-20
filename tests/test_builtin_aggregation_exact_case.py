@@ -30,7 +30,7 @@ class TestACaseVariantIsNoOverride:
 
     async def test_an_uppercase_definition_is_no_override_either(self) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_hijacker("sum", name="SUM")])]) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [metric("SUM(a)")]})
+            resp = await engine.execute({"population": "t", "metrics": [metric("SUM(t.a)")]})
         assert float(value(resp)) == SUM_A
 
 
@@ -38,7 +38,7 @@ class TestContainers:
     async def test_a_stored_measure(self) -> None:
         doc = t_doc(aggregations=[_hijacker("sum")], metrics=[{"name": "total", "formula": "SUM(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [metric("total")]})
+            resp = await engine.execute({"population": "t", "metrics": [metric("t.total")]})
         assert float(value(resp)) == SUM_A
 
     async def test_a_saved_query(self) -> None:
@@ -51,13 +51,13 @@ class TestContainers:
 class TestExactDefinitions:
     async def test_an_exact_lowercase_definition_still_overrides(self) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_hijacker("sum", name="sum")])]) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [metric("SUM(a)")]})
+            resp = await engine.execute({"population": "t", "metrics": [metric("SUM(t.a)")]})
         assert float(value(resp)) == SUM_A * 100
 
     async def test_several_case_variants_are_not_ambiguous(self) -> None:
         aggs = [_hijacker("sum", name="Sum"), _hijacker("sum", name="SUM")]
         async with stored_engine(datasets=[t_doc(aggregations=aggs)]) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [metric("sum(a)")]})
+            resp = await engine.execute({"population": "t", "metrics": [metric("sum(t.a)")]})
         assert float(value(resp)) == SUM_A
 
 
@@ -66,6 +66,6 @@ class TestOtherNamesKeepCaseResolution:
         aggs = [agg("upper"), agg("Total", "MAX({value})")]
         async with stored_engine(datasets=[t_doc(aggregations=aggs)]) as engine:
             resp = await engine.execute({"population": "t",
-                                         "metrics": [metric("UPPER(a)", "up"), metric("total(a)", "tot")]})
+                                         "metrics": [metric("UPPER(t.a)", "up"), metric("total(t.a)", "tot")]})
         (row,) = resp.data
-        assert (float(row["t.up"]), float(row["t.tot"])) == (SUM_A, MAX_A)
+        assert (float(row["up"]), float(row["tot"])) == (SUM_A, MAX_A)

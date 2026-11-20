@@ -882,7 +882,11 @@ _FramedRef = tuple[str | None, str]
 def _resolved(ref: str, *, scope: QueryScope, root: str | None) -> tuple[str, list[OrientedRelationship]] | None:
     """The dataset ``ref``'s hops reach from ``root`` (default: the stage source) and the edges walked, or None."""
     start = scope.datasets.get(root) if root is not None else scope.host
-    resolved = scope.resolve(ref.split(".")[:-1], root=start) if start is not None else None
+    hops = ref.split(".")[:-1]
+    if root is None:
+        resolved = scope.resolve_reference(hops)
+    else:
+        resolved = scope.resolve(hops, root=start) if start is not None else None
     if start is None or resolved is None:
         return None
     chain = resolved[1]

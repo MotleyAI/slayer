@@ -28,9 +28,9 @@ from tests._stored_upgrade_fixtures import (
 STAGE_RANK = "rank(rev:sum)"
 MEMORY_RANK = "rank(amount:sum)"
 #: The stored ranks as they load: descending, in the functional spelling.
-STAGE_RANK_LOADED = "rank(sum(rev), direction='desc')"
-MEMORY_RANK_LOADED = "rank(sum(amount), direction='desc')"
-TOP_QUERY = {"population": "top_status", "dimensions": ["status"], "metrics": ["sum(total)"]}
+STAGE_RANK_LOADED = "rank(sum(x.rev), direction='desc')"
+MEMORY_RANK_LOADED = "rank(sum(orders.amount), direction='desc')"
+TOP_QUERY = {"population": "top_status", "dimensions": ["top_status.status"], "metrics": ["sum(top_status.total)"]}
 
 
 def _stages(*, query_version: int | None = None) -> list[dict]:

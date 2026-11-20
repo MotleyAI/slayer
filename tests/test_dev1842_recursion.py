@@ -61,7 +61,7 @@ class TestHostMeasureContainingDottedRef:
         reference (``host_runs_dotted`` = ``cumsum(customers.aov)``) resolves
         recursively — identical SQL to writing the dotted form inline."""
         bare = q(dimensions=["customers.tier"],
-                 metrics=[{"metric": "host_runs_dotted", "alias": "x"}],
+                 metrics=[{"metric": "orders.host_runs_dotted", "alias": "x"}],
                  time_dimensions=month_td())
         inline = q(dimensions=["customers.tier"],
                    metrics=[{"metric": "cumsum(customers.aov)", "alias": "x"}],

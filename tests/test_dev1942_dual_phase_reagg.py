@@ -48,9 +48,9 @@ from slayer.engine.query_engine import SlayerResponse
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_X = "sum(amount, partition_by=[region, ordered_at])"
-REAGG_STANDALONE = f"min({_X}, partition_by=region)"      # combined phase
-HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"  # row phase
+_X = "sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+REAGG_STANDALONE = f"min({_X}, partition_by=monthly.region)"      # combined phase
+HANDWRITTEN_MIN = f"sum(monthly.amount * min({_X}, partition_by=monthly.region))"  # row phase
 
 # The dual-phase re-aggregation, per (region, month): the standalone min broadcast onto
 # every month cell, and the mixed per-cell amount × region-min summed.
@@ -66,10 +66,10 @@ B_BY_REGION_MONTH = {("North", "2024-01"): 100.0, ("North", "2024-02"): 200.0,
 # gold 95 ((160+30)/2), silver 115 ((150+80)/2); so sum(spend*avg) = gold 18050, silver
 # 26450 — never the fan-defect 27550 (c1's two ok orders double-counted).
 _OK = "orders.status = 'ok'"
-_OR_MIX = "tier = 'bronze' or orders.status = 'ok'"
-POP_MIXED = "sum(spend * avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier))"
-POP_AVG = "avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)"
-POP_MIN = "min(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)"
+_OR_MIX = "customers.tier = 'bronze' or orders.status = 'ok'"
+POP_MIXED = "sum(customers.spend * avg(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier))"
+POP_AVG = "avg(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier)"
+POP_MIN = "min(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier)"
 POP_MIXED_BY_TIER = {"gold": 18050.0, "silver": 26450.0}
 POP_AVG_BY_TIER = {"gold": 95.0, "silver": 115.0}
 # Under the OR-mix the population is c1/c2/c3/c5/c6 (an ok order) + c4 (bronze); c7
@@ -87,14 +87,14 @@ async def exec_backend(request):
 def _region_month(resp: SlayerResponse, name: str) -> dict:
     """``{(region, YYYY-MM): value}`` for metric ``name``, NULL-valued cells dropped."""
     mcol = next(c for c in resp.columns if "ordered_at" in c)
-    vcol = next(c for c in resp.columns if c.endswith("." + name))
+    vcol = next(c for c in resp.columns if c == name or c.endswith("." + name))
     return {(r["monthly.region"], month_key(r[mcol])): r[vcol]
             for r in resp.data if r[vcol] is not None}
 
 
 def _by_tier(resp, name: str) -> dict:
-    return {r["customers.tier"]: r["customers." + name] for r in resp.data
-            if r["customers." + name] is not None}
+    return {r["customers.tier"]: r[name] for r in resp.data
+            if r[name] is not None}
 
 
 def _cm_ctes(sql: str) -> list[str]:
@@ -112,10 +112,10 @@ def _monthly_bundle() -> ResolvedSourceBundle:
 
 def _dual_phase_query():
     return monthly_q(
-        dimensions=["region"],
+        dimensions=["monthly.region"],
         metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                   QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
-        time_dimensions=month_td())
+        time_dimensions=month_td("monthly"))
 
 
 # --------------------------------------------------------------------------- #
@@ -132,10 +132,10 @@ class TestDualPhaseExecution:
         # min>5 keeps North (10), prunes South (5) and West (NULL) — a metric-typed mask.
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
             filter=[f"{REAGG_STANDALONE} > 5"],
-            time_dimensions=month_td()))
+            time_dimensions=month_td("monthly")))
         assert {r["monthly.region"] for r in resp.data} == {"North"}
         assert _region_month(resp, "b") == pytest.approx(
             {k: v for k, v in B_BY_REGION_MONTH.items() if k[0] == "North"})
@@ -143,11 +143,11 @@ class TestDualPhaseExecution:
     async def test_standalone_in_order_beside_mixed(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
             order=[{"field": REAGG_STANDALONE, "direction": "desc"}],
-            time_dimensions=month_td()))
+            time_dimensions=month_td("monthly")))
         regions = [r["monthly.region"] for r in resp.data]
         north = [i for i, r in enumerate(regions) if r == "North"]
         south = [i for i, r in enumerate(regions) if r == "South"]
@@ -158,15 +158,15 @@ class TestDualPhaseExecution:
         # dual-phase metrics leaves the cumsum's own values unchanged.
         _, engine = exec_backend
         alone = await engine.execute(monthly_q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="cumsum(sum(amount))", alias="c")],
-            time_dimensions=month_td()))
+            dimensions=["monthly.region"],
+            metrics=[QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
+            time_dimensions=month_td("monthly")))
         resp = await engine.execute(monthly_q(
-            dimensions=["region"],
+            dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
-                      QueryMetric(metric="cumsum(sum(amount))", alias="c")],
-            time_dimensions=month_td()))
+                      QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
+            time_dimensions=month_td("monthly")))
         assert _region_month(resp, "a") == pytest.approx(A_BY_REGION_MONTH)
         assert _region_month(resp, "b") == pytest.approx(B_BY_REGION_MONTH)
         assert _region_month(resp, "c") == pytest.approx(_region_month(alone, "c"))
@@ -222,7 +222,7 @@ class TestPopulationRestriction:
     async def test_mixed_constituent_restricted_by_association(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"],
+            dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]))
         got = _by_tier(resp, "m")
@@ -233,7 +233,7 @@ class TestPopulationRestriction:
 
     async def test_mixed_constituent_sql_has_exists_and_no_orders_join(self) -> None:
         sql = await gen(cust_q(
-            dimensions=["tier"],
+            dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]), dialect="duckdb")
         # Every producer carries the population semi-join; none joins orders.
@@ -244,7 +244,7 @@ class TestPopulationRestriction:
     async def test_standalone_avg_beside_mixed_shares_one_producer(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"],
+            dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=POP_AVG, alias="a"),
                       QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]))
@@ -253,7 +253,7 @@ class TestPopulationRestriction:
         named = {i.metric for i in pushed_filter_infos(resp) if i.metric is not None}
         assert named == {"a", "m"}
         sql = await gen(cust_q(
-            dimensions=["tier"],
+            dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=POP_AVG, alias="a"),
                       QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]), dialect="duckdb")
@@ -264,7 +264,7 @@ class TestPopulationRestriction:
         # semi-join, exactly as a plain partitioned producer — never a silent drop.
         _, engine = exec_backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"],
+            dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=POP_MIN, alias="mn")],
             filter=[_OR_MIX]))
         assert _by_tier(resp, "mn") == pytest.approx(POP_MIN_OR_MIX_BY_TIER)
@@ -278,7 +278,7 @@ class TestPopulationRestriction:
         # The pushed conjunct lands in the carrier AND the outer producer (a dropped
         # conjunct would leave a producer without its EXISTS).
         sql = await gen(cust_q(
-            dimensions=["tier"],
+            dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=POP_MIN, alias="mn")],
             filter=[_OR_MIX]), dialect="duckdb")
         ctes = _cm_ctes(sql)

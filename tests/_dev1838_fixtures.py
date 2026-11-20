@@ -213,7 +213,7 @@ def q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "ordered_at") -> List[TimeDimension]:
+def month_td(column: str = "orders.ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
         field=column,
         granularity=TimeGranularity.MONTH,
@@ -221,7 +221,7 @@ def month_td(column: str = "ordered_at") -> List[TimeDimension]:
 
 
 #: Computed dimension banding the city totals at > 25 (row regroup attach).
-BAND25 = "CASE WHEN sum(amount, partition_by=city) > 25 THEN 1 ELSE 0 END"
+BAND25 = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 25 THEN 1 ELSE 0 END"
 BAND = {"field": BAND25, "alias": "band"}
 
 #: Cross-dataset banded dimension (customers-rooted producer, per-tier spend).

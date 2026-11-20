@@ -252,16 +252,16 @@ def test_multiline_lists_fragments_json_lines_and_comments() -> None:
 def test_every_query_field_is_read() -> None:
     query = {
         "population": "orders",
-        "metrics": ["count(*)", {"metric": "sum(amount)", "alias": "total"}, {"name": "revenue"}],
-        "dimensions": ["status", {"field": "upper(status)", "alias": "s"}, {"field": "status", "label": "S"}],
-        "time_dimensions": ["month(order_date)", {"field": "order_date", "granularity": "week"}],
-        "filter": ["amount > 10"],
-        "order": [{"field": "sum(amount)", "direction": "desc"}],
+        "metrics": ["count(orders.*)", {"metric": "sum(orders.amount)", "alias": "total"}, {"name": "revenue"}],
+        "dimensions": ["orders.status", {"field": "upper(orders.status)", "alias": "s"}, {"field": "orders.status", "label": "S"}],
+        "time_dimensions": ["month(orders.order_date)", {"field": "orders.order_date", "granularity": "week"}],
+        "filter": ["orders.amount > 10"],
+        "order": [{"field": "sum(orders.amount)", "direction": "desc"}],
         "variables": {"v": "x"},
     }
     assert mode_b_values(query) == [
-        "count(*)", "sum(amount)", "status", "upper(status)", "status", "month(order_date)", "order_date",
-        "amount > 10", "sum(amount)",
+        "count(orders.*)", "sum(orders.amount)", "orders.status", "upper(orders.status)", "orders.status",
+        "month(orders.order_date)", "orders.order_date", "orders.amount > 10", "sum(orders.amount)",
     ]
 
 
@@ -273,11 +273,12 @@ def test_time_dimension_column_alias_is_read() -> None:
 def test_stage_lists_and_refinements() -> None:
     stages = [
         {"name": "per_customer", "population": "orders", "dimensions": ["customers.name"],
-         "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
-        {"population": "per_customer", "metrics": ["avg(total)"], "filter": ["total > 100"]},
+         "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}]},
+        {"population": "per_customer", "metrics": ["avg(per_customer.total)"], "filter": ["per_customer.total > 100"]},
     ]
     call = {"query": "monthly_revenue", "refine": {"dimensions": ["region"], "filter": ["region = 'EU'"]}}
-    assert mode_b_values(stages) == ["customers.name", "sum(amount)", "avg(total)", "total > 100"]
+    assert mode_b_values(stages) == [
+        "customers.name", "sum(orders.amount)", "avg(per_customer.total)", "per_customer.total > 100"]
     assert mode_b_values(call) == ["region", "region = 'EU'"]
 
 
@@ -288,16 +289,16 @@ def test_datasets_keep_only_metric_expressions() -> None:
         "fields": [{"name": "net", "sql": "amount - tax", "filter": "status = 'paid'", "datatype": "Float"}],
         "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
         "aggregations": [{"name": "wavg", "expression": "SUM({value} * {weight}) / SUM({weight})"}],
-        "source_queries": [{"population": "raw", "filter": ["amount > 0"]}],
+        "source_queries": [{"population": "raw", "filter": ["raw.amount > 0"]}],
     }
-    assert mode_b_values(dataset) == ["sum(amount) / count(*)", "amount > 0"]
+    assert mode_b_values(dataset) == ["sum(amount) / count(*)", "raw.amount > 0"]
 
 
 def test_inline_extension_and_standalone_objects() -> None:
     query = {"population": "orders",
              "extensions": [{"dataset": "orders", "fields": [{"name": "big", "sql": "amount > 100"}]}],
-             "metrics": ["count(*)"]}
-    assert mode_b_values(query) == ["count(*)"]
+             "metrics": ["count(orders.*)"]}
+    assert mode_b_values(query) == ["count(orders.*)"]
     assert mode_b_values({"expression": "cumsum(sum(revenue))"}) == ["cumsum(sum(revenue))"]
     assert mode_b_values({"field": "created_at", "granularity": "month", "date_range": "2025"}) == ["created_at"]
     assert mode_b_values({"name": "wavg", "expression": "SUM({value})", "params": [{"name": "w", "sql": "1"}]}) == []

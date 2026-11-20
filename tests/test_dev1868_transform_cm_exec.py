@@ -22,8 +22,8 @@ from tests._dev1868_fixtures import (
     keyed_by_month,
 )
 
-TIER = "orders.customers.tier"
-REGION = "orders.customers.regions.name"
+TIER = "customers.tier"
+REGION = "customers.regions.name"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -41,7 +41,7 @@ class TestCumsumOverCrossModelPartitioned:
         by = keyed_by_month(resp, TIER)
         assert set(by) == set(CUMSUM_PART_BY_TIER_MONTH)
         for key, expected in CUMSUM_PART_BY_TIER_MONTH.items():
-            cell = by[key]["orders.c"]
+            cell = by[key]["c"]
             if expected is None:
                 assert cell is None
             else:
@@ -60,13 +60,13 @@ class TestChangeOverCrossModelRanked:
         by = keyed_by_month(resp, REGION)
         assert set(by) == set(CHANGE_LAST_BY_REGION_MONTH)
         for (region, month), expected in CHANGE_LAST_BY_REGION_MONTH.items():
-            cell = by[(region, month)]["orders.ch"]
+            cell = by[(region, month)]["ch"]
             if expected is None:
                 assert cell is None
             else:
                 assert float(cell) == pytest.approx(expected)
             # The inner attached value stays position-parity correct.
-            assert float(by[(region, month)]["orders.l"]) == pytest.approx(
+            assert float(by[(region, month)]["l"]) == pytest.approx(
                 LAST_SPEND_BY_REGION[region])
 
 
@@ -75,19 +75,19 @@ class TestTransformFilterAndOrderPositions:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=[f"cumsum({CM_PART_TIER}) > 200"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = keyed_by_month(resp, TIER)
         # Only gold's running total clears 200, from February on.
         assert set(by) == {("gold", "2024-02"), ("gold", "2024-03")}
         for key in by:
-            assert float(by[key]["orders.s"]) == pytest.approx(5.0)
+            assert float(by[key]["s"]) == pytest.approx(5.0)
 
     async def test_transform_as_order_target(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=["customers.tier is not null"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{"field": f"cumsum({CM_PART_TIER})", "direction": "desc"}],
         ))
         by = keyed_by_month(resp, TIER)
@@ -110,4 +110,4 @@ class TestSharedInnerAcrossConsumers:
                     if k[0] in ("gold", "silver")}  # per-tier totals > 100
         assert set(by) == set(expected)
         for key, value in expected.items():
-            assert float(by[key]["orders.c"]) == pytest.approx(value)
+            assert float(by[key]["c"]) == pytest.approx(value)

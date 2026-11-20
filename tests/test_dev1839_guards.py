@@ -44,9 +44,9 @@ class TestMixedWindowedRankedDeferred:
             "sum(amount, partition_by=city), direction='desc')"
         )
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "x"}],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # Lifted: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
@@ -58,8 +58,8 @@ class TestMixedWindowedRankedDeferred:
             "sum(amount, partition_by=city), direction='desc')"
         )
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "x"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # Lifted: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
@@ -75,8 +75,8 @@ class TestTransformKwargAgainstUnion:
             "sum(amount, partition_by=city), partition_by=channel, direction='desc')"
         )
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "x"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -91,8 +91,8 @@ class TestUnchangedGuards:
             "sum(amount, partition_by=city), direction='desc')"
         )
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "x"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             to_many_handling="broadcast",
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
@@ -101,10 +101,10 @@ class TestUnchangedGuards:
         assert "__regroup__" not in str(ei.value)
 
     async def test_bare_inner_aggregate_still_rejected(self) -> None:
-        band = "rank(sum(amount) - sum(amount, partition_by=city), direction='desc')"
+        band = "rank(sum(orders.amount) - sum(orders.amount, partition_by=orders.city), direction='desc')"
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "x"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -122,11 +122,11 @@ class TestTemporalAxisContainment:
     async def test_single_grain_missing_time_axis_fails_cleanly(
         self, transform: str,
     ) -> None:
-        band = transform.format("sum(amount, partition_by=[region, city])")
+        band = transform.format("sum(orders.amount, partition_by=[orders.region, orders.city])")
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "cs"}],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "cs"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -134,11 +134,11 @@ class TestTemporalAxisContainment:
         assert "partition_by" in str(ei.value)
 
     async def test_mixed_grain_missing_time_axis_fails_cleanly(self) -> None:
-        band = "cumsum(sum(amount, partition_by=region) - sum(amount, partition_by=city))"
+        band = "cumsum(sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city))"
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "cs"}],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "cs"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -147,16 +147,16 @@ class TestTemporalAxisContainment:
 
     async def test_time_axis_inside_grain_stays_legal(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        band = "cumsum(sum(amount, partition_by=[region, ordered_at]))"
+        band = "cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at]))"
         query = q(
-            dimensions=["region", {"field": band, "alias": "cs"}],
+            dimensions=["orders.region", {"field": band, "alias": "cs"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"])):
-                (float(r["orders.cs"]), float(r["orders.s"]))
+                (float(r["cs"]), float(r["s"]))
             for r in resp.data
         }
         assert set(got) == set(REGION_MONTH_TOTAL)
@@ -178,16 +178,16 @@ class TestSameGrainMultiAggregateLocking:
     async def test_rank_over_two_same_grain_aggregates(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", {"field": SAMEGRAIN_RANK, "alias": "gr"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", {"field": SAMEGRAIN_RANK, "alias": "gr"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")
         assert len(resp.data) == len(SAMEGRAIN_RANK_OF)
-        got = {key[0]: int(r["orders.gr"]) for key, r in by.items()}
+        got = {key[0]: int(r["gr"]) for key, r in by.items()}
         assert got == SAMEGRAIN_RANK_OF
         for key, r in by.items():
-            assert float(r["orders.s"]) == pytest.approx(REGION_TOTAL[key[0]])
+            assert float(r["s"]) == pytest.approx(REGION_TOTAL[key[0]])
         dry = await engine.execute(query, dry_run=True)
         assert "__regroup__" not in dry.sql
         assert_scope_closed(dry.sql, dialect=dialect)

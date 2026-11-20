@@ -22,7 +22,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1832_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(field="ordered_at",
+_MONTH_TD = [TimeDimension(field="monthly.ordered_at",
                            granularity=TimeGranularity.MONTH)]
 
 
@@ -31,8 +31,8 @@ def _cases() -> dict:
         # lifted/* — a v1 boundary today (records a raise); SQL after the change.
         "lifted/host_homed_arith": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"],
-                   "metrics": [{"metric": "sum(amount - customers.discount)",
+            "kw": {"dimensions": ["orders.status"],
+                   "metrics": [{"metric": "sum(orders.amount - customers.discount)",
                                  "alias": "m"}]}},
         "lifted/target_homed": {
             "source": "orders", "mode": None,
@@ -41,30 +41,30 @@ def _cases() -> dict:
                  "alias": "m"}]}},
         "lifted/two_branch": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "metrics": [
+            "kw": {"dimensions": ["orders.status"], "metrics": [
                 {"metric": "sum(customers.spend - stores.rent)", "alias": "m"}]}},
         "lifted/cross_model_partition": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "metrics": [
-                {"metric": "sum(amount - customers.discount, partition_by=status)",
+            "kw": {"dimensions": ["orders.status"], "metrics": [
+                {"metric": "sum(orders.amount - customers.discount, partition_by=orders.status)",
                  "alias": "m"}]}},
         "lifted/filtered_operand": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"],
-                   "metrics": [{"metric": "sum(q_amount - 1)", "alias": "m"}]}},
+            "kw": {"dimensions": ["sales.region"],
+                   "metrics": [{"metric": "sum(sales.q_amount - 1)", "alias": "m"}]}},
         "lifted/filtered_leaf_joined": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "metrics": [
-                {"metric": "sum(amount - customers.north_spend)", "alias": "m"}]}},
+            "kw": {"dimensions": ["orders.status"], "metrics": [
+                {"metric": "sum(orders.amount - customers.north_spend)", "alias": "m"}]}},
         "lifted/transform_constituent": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":
-                "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)",
+                "sum(cumsum(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])) - 1)",
                 "alias": "m"}]}},
         "lifted/mixed_transform": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [{"metric":
-                "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))",
+            "kw": {"dimensions": ["sales.region"], "metrics": [{"metric":
+                "sum(sales.quantity * rank(avg(sales.unit_price, partition_by=sales.product), direction='desc'))",
                 "alias": "m"}]}},
         # DEV-1928 — re-aggregation constituents in a mixed source; windowed inner.
         "lifted/mixed_reagg": {
@@ -75,26 +75,26 @@ def _cases() -> dict:
         "lifted/mixed_collapse": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":
-                "sum(amount * last(sum(amount, partition_by=[region, ordered_at])))",
+                "sum(monthly.amount * last(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])))",
                 "alias": "m"}]}},
         "lifted/windowed_inner": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":
-                "sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))",
+                "sum(rank(sum(monthly.amount, window='90d', partition_by=monthly.region), direction='desc'))",
                 "alias": "m"}]}},
         # positive/* — already supported; byte-identical SQL through the change.
         "positive/same_model_arith": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"],
-                   "metrics": [{"metric": "sum(amount - cost)", "alias": "m"}]}},
+            "kw": {"dimensions": ["orders.status"],
+                   "metrics": [{"metric": "sum(orders.amount - orders.cost)", "alias": "m"}]}},
         "positive/reaggregation": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [{"metric":
-                "avg(sum(amount, partition_by=[city, region]))", "alias": "m"}]}},
+            "kw": {"dimensions": ["sales.region"], "metrics": [{"metric":
+                "avg(sum(sales.amount, partition_by=[sales.city, sales.region]))", "alias": "m"}]}},
         "positive/mixed_row_attached": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [{"metric":
-                "sum(quantity * avg(unit_price, partition_by=product))", "alias": "m"}]}},
+            "kw": {"dimensions": ["sales.region"], "metrics": [{"metric":
+                "sum(sales.quantity * avg(sales.unit_price, partition_by=sales.product))", "alias": "m"}]}},
     }
 
 

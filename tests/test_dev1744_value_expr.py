@@ -1068,9 +1068,9 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="count(*)")],
-                filter=["ifnull(disc, 0) > 1"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
+                filter=["ifnull(orders.disc, 0) > 1"],
             )
         )
         assert len(resp.data) == 1
@@ -1083,11 +1083,11 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="ifnull(sum(amount), 0)", alias="m")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="ifnull(sum(orders.amount), 0)", alias="m")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.m"] for r in resp.data}
+        by_status = {r["orders.status"]: r["m"] for r in resp.data}
         assert by_status == {"new": 30.0, "old": 30.0}
 
     async def test_arithmetic_composite_of_two_aggregates(self, e2e) -> None:
@@ -1096,13 +1096,13 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric="sum(amount) - sum(qty)", alias="d"),
+                    QueryMetric(metric="sum(orders.amount) - sum(orders.qty)", alias="d"),
                 ],
             )
         )
-        by_status = {r["orders.status"]: r["orders.d"] for r in resp.data}
+        by_status = {r["orders.status"]: r["d"] for r in resp.data}
         assert by_status == {"new": 24.0, "old": 29.0}
 
     async def test_custom_formula_aggregation_still_dispatches(
@@ -1114,11 +1114,11 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum_sq(amount)", alias="ss")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum_sq(orders.amount)", alias="ss")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.ss"] for r in resp.data}
+        by_status = {r["orders.status"]: r["ss"] for r in resp.data}
         assert by_status == {"new": 500.0, "old": 900.0}
 
     async def test_having_filter_over_an_aggregate_executes(self, e2e) -> None:
@@ -1126,13 +1126,13 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(qty)", alias="q")],
-                filter=["sum(qty) > 5"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.qty)", alias="q")],
+                filter=["sum(orders.qty) > 5"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.q"] == 6.0
+        assert resp.data[0]["q"] == 6.0
 
     async def test_first_last_composite_call_site_executes(self, e2e) -> None:
         """R5's SECOND production call site (``_build_first_last_base_select``,
@@ -1143,11 +1143,11 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="last(amount)", alias="la")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="last(orders.amount)", alias="la")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
+        by_status = {r["orders.status"]: r["la"] for r in resp.data}
         assert by_status == {"new": 20.0, "old": 30.0}
 
     async def test_scalar_call_inside_a_first_last_composite(self, e2e) -> None:
@@ -1156,13 +1156,13 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric="ifnull(last(amount), 0)", alias="la"),
+                    QueryMetric(metric="ifnull(last(orders.amount), 0)", alias="la"),
                 ],
             )
         )
-        by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
+        by_status = {r["orders.status"]: r["la"] for r in resp.data}
         assert by_status == {"new": 20.0, "old": 30.0}
 
 
@@ -1254,13 +1254,13 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
-                filter=["sum(gold_amount) > 100"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["sum(orders.gold_amount) > 100"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.g"] == 300.0
+        assert resp.data[0]["g"] == 300.0
 
     async def test_outer_wrapper_filter_carrying_a_scalar_call(self, tmp_path) -> None:
         """B5 on R4's route specifically — the patched scalar branch. Wrapping
@@ -1270,13 +1270,13 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
-                filter=["ifnull(sum(gold_amount), 0) > 100"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["ifnull(sum(orders.gold_amount), 0) > 100"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.g"] == 300.0
+        assert resp.data[0]["g"] == 300.0
 
     async def test_outer_wrapper_scalar_call_is_transpiled_on_postgres(
         self, tmp_path,
@@ -1296,9 +1296,9 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
-                filter=["ifnull(sum(gold_amount), 0) > 100"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["ifnull(sum(orders.gold_amount), 0) > 100"],
             ),
             dry_run=True,
         )
@@ -1319,26 +1319,26 @@ class TestOuterWrapperAndShiftedCteFamilies:
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount)", alias="amt"),
+                    QueryMetric(metric="sum(orders.amount)", alias="amt"),
                     QueryMetric(
-                        metric="time_shift(sum(amount), -1, 'month')",
+                        metric="time_shift(sum(orders.amount), -1, 'month')",
                         alias="prev",
                     ),
                 ],
-                filter=["status = 'new'"],
+                filter=["orders.status = 'new'"],
             )
         )
         rows = sorted(resp.data, key=lambda r: str(r["orders.created_at"]))
         assert len(rows) == 2, rows
-        assert rows[0]["orders.amt"] == 100.0
-        assert rows[1]["orders.amt"] == 200.0
+        assert rows[0]["amt"] == 100.0
+        assert rows[1]["amt"] == 200.0
         # February's shifted value is January's filtered total.
-        assert rows[1]["orders.prev"] == 100.0
+        assert rows[1]["prev"] == 100.0
 
 
 # ===========================================================================
@@ -1793,11 +1793,11 @@ class TestNewlyAdmittedScalars:
     @pytest.mark.parametrize(
         "predicate,expected_fragment",
         [
-            ("ceiling(amount) > 25", "CEIL("),
-            ("sign(amount) > 0", "SIGN("),
-            ("ltrim(status) = 'new'", "LTRIM("),
-            ("rtrim(status) = 'new'", "RTRIM("),
-            ("substring(status, 1, 3) = 'new'", "SUBSTRING("),
+            ("ceiling(orders.amount) > 25", "CEIL("),
+            ("sign(orders.amount) > 0", "SIGN("),
+            ("ltrim(orders.status) = 'new'", "LTRIM("),
+            ("rtrim(orders.status) = 'new'", "RTRIM("),
+            ("substring(orders.status, 1, 3) = 'new'", "SUBSTRING("),
         ],
     )
     async def test_binds_renders_and_executes(
@@ -1807,7 +1807,7 @@ class TestNewlyAdmittedScalars:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
                 filter=[predicate],
             ),
         )
@@ -1883,20 +1883,20 @@ class TestArityIsRejectedAtBindTime:
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
             filter=[predicate],
         )
 
     async def test_round_with_three_args_is_rejected(self, e2e) -> None:
-        query = self._query("round(amount, 2, 99) > 1")
+        query = self._query("round(orders.amount, 2, 99) > 1")
         with pytest.raises(ValueError, match="round"):
             await e2e.execute(query, dry_run=True)
 
     async def test_length_with_two_args_is_rejected(self, e2e) -> None:
         """Previously emitted ``LENGTH(a, b)`` — invalid SQL the backend
         rejected with its own, less useful error."""
-        query = self._query("length(status, status) > 1")
+        query = self._query("length(orders.status, orders.status) > 1")
         with pytest.raises(ValueError, match="length"):
             await e2e.execute(query, dry_run=True)
 
@@ -1904,9 +1904,9 @@ class TestArityIsRejectedAtBindTime:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
-                filter=["round(amount, 2) > 1"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["round(orders.amount, 2) > 1"],
             ),
             dry_run=True,
         )
@@ -2001,21 +2001,21 @@ class TestIifDirectRender:
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
             filter=[predicate],
         )
 
     async def test_bind_time_rejects_null_in_list(self, e2e) -> None:
         """The user-facing half: caught at bind, with a message pointing at
         ``is null`` rather than at three-valued logic in the abstract."""
-        query = self._query("status in ('new', None)")
+        query = self._query("orders.status in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
             await e2e.execute(query, dry_run=True)
 
     async def test_bind_time_rejects_null_in_negated_list(self, e2e) -> None:
         """The dangerous one: this previously returned zero rows in silence."""
-        query = self._query("status not in ('new', None)")
+        query = self._query("orders.status not in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
             await e2e.execute(query, dry_run=True)
 
@@ -2023,9 +2023,9 @@ class TestIifDirectRender:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
-                filter=["status in ('new', 'missing')"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["orders.status in ('new', 'missing')"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]

@@ -213,8 +213,8 @@ class TestQueryBackedCache:
             engine = await _seeded_engine("sqlite", tmp)
             model = await engine.create_dataset_from_query(
                 query={"population": "orders",
-                       "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-                       "time_dimensions": [{"field": "created_at", "granularity": "month"}]},
+                       "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+                       "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]},
                 name="monthly",
             )
             assert _col(model, "created_at").granularity == TG.MONTH
@@ -228,20 +228,20 @@ class TestQueryBackedCache:
         with tempfile.TemporaryDirectory() as tmp:
             engine = await _seeded_engine("sqlite", tmp)
             plain = await engine.create_dataset_from_query(
-                query={"population": "orders", "dimensions": ["created_at"],
-                       "metrics": [{"metric": "sum(amount)", "alias": "rev"}]},
+                query={"population": "orders", "dimensions": ["orders.created_at"],
+                       "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]},
                 name="raw_ts",
             )
             assert all(c.granularity is None for c in plain.fields)
             # A time dimension over the unbucketed cached field still binds.
             await engine.execute(query=SlayerQuery.model_validate({
                 "population": "raw_ts",
-                "time_dimensions": [{"field": "created_at", "granularity": "day"}],
-                "metrics": [{"metric": "sum(rev)"}],
+                "time_dimensions": [{"field": "raw_ts.created_at", "granularity": "day"}],
+                "metrics": [{"metric": "sum(raw_ts.rev)"}],
             }), dry_run=True)
             maxed = await engine.create_dataset_from_query(
-                query={"population": "orders", "dimensions": ["region"],
-                       "metrics": [{"metric": "max(created_at)"}]},
+                query={"population": "orders", "dimensions": ["orders.region"],
+                       "metrics": [{"metric": "max(orders.created_at)"}]},
                 name="maxed",
             )
             assert all(c.granularity is None for c in maxed.fields)
@@ -249,15 +249,15 @@ class TestQueryBackedCache:
             agg_col = next(c.name for c in maxed.fields if c.name != "region")
             await engine.execute(query=SlayerQuery.model_validate({
                 "population": "maxed",
-                "time_dimensions": [{"field": agg_col, "granularity": "day"}],
-                "metrics": [{"metric": "count(*)"}],
+                "time_dimensions": [{"field": f"maxed.{agg_col}", "granularity": "day"}],
+                "metrics": [{"metric": "count(maxed.*)"}],
             }), dry_run=True)
             # A computed dimension is cached without a granularity.
-            band = "CASE WHEN sum(amount, partition_by=region) > 100 THEN 'big' ELSE 'small' END"
+            band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 100 THEN 'big' ELSE 'small' END"
             banded = await engine.create_dataset_from_query(
                 query={"population": "orders",
                        "dimensions": [{"field": band, "alias": "size_band"}],
-                       "metrics": [{"metric": "sum(amount)", "alias": "rev"}]},
+                       "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]},
                 name="banded",
             )
             assert all(c.granularity is None for c in banded.fields)
@@ -267,21 +267,21 @@ class TestQueryBackedCache:
             engine = await _seeded_engine("sqlite", tmp)
             await engine.create_dataset_from_query(
                 query={"population": "orders",
-                       "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-                       "time_dimensions": [{"field": "created_at", "granularity": "month"}]},
+                       "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+                       "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]},
                 name="monthly",
             )
             yearly = await engine.create_dataset_from_query(
                 query={"population": "monthly",
-                       "metrics": [{"metric": "sum(rev)"}],
-                       "time_dimensions": [{"field": "created_at", "granularity": "year"}]},
+                       "metrics": [{"metric": "sum(monthly.rev)"}],
+                       "time_dimensions": [{"field": "monthly.created_at", "granularity": "year"}]},
                 name="yearly",
             )
             assert _col(yearly, "created_at").granularity == TG.YEAR
             finer = SlayerQuery.model_validate({
                 "population": "yearly",
-                "time_dimensions": [{"field": "created_at", "granularity": "day"}],
-                "metrics": [{"metric": "sum(rev_sum)"}],
+                "time_dimensions": [{"field": "yearly.created_at", "granularity": "day"}],
+                "metrics": [{"metric": "sum(yearly.rev_sum)"}],
             })
             with pytest.raises(TimeDimensionFieldError):
                 await engine.execute(query=finer, dry_run=True)
@@ -296,8 +296,8 @@ class TestQueryBackedExecuted:
         engine = await _seeded_engine(backend, tmp)
         await engine.create_dataset_from_query(
             query={"population": "orders",
-                   "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-                   "time_dimensions": [{"field": "created_at", "granularity": "month"}]},
+                   "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+                   "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]},
             name="monthly",
         )
         return engine
@@ -307,8 +307,8 @@ class TestQueryBackedExecuted:
             engine = await self._monthly_engine(backend, tmp)
             finer = SlayerQuery.model_validate({
                 "population": "monthly",
-                "time_dimensions": [{"field": "created_at", "granularity": "day"}],
-                "metrics": [{"metric": "sum(rev)"}],
+                "time_dimensions": [{"field": "monthly.created_at", "granularity": "day"}],
+                "metrics": [{"metric": "sum(monthly.rev)"}],
             })
             with pytest.raises(TimeDimensionFieldError):
                 await engine.execute(query=finer)
@@ -318,8 +318,8 @@ class TestQueryBackedExecuted:
             engine = await self._monthly_engine(backend, tmp)
             resp = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "monthly",
-                "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-                "metrics": [{"metric": "sum(rev)"}],
+                "time_dimensions": [{"field": "monthly.created_at", "granularity": "month"}],
+                "metrics": [{"metric": "sum(monthly.rev)"}],
             }))
             assert _by_bucket(resp.data) == _MONTH_SUMS
 
@@ -328,8 +328,8 @@ class TestQueryBackedExecuted:
             engine = await self._monthly_engine(backend, tmp)
             resp = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "monthly",
-                "time_dimensions": [{"field": "created_at", "granularity": "year"}],
-                "metrics": [{"metric": "sum(rev)"}],
+                "time_dimensions": [{"field": "monthly.created_at", "granularity": "year"}],
+                "metrics": [{"metric": "sum(monthly.rev)"}],
             }))
             assert _by_bucket(resp.data) == _YEAR_SUMS
 
@@ -344,21 +344,21 @@ class TestHandSetExecuted:
             engine = await _seeded_engine(backend, tmp, gran=TG.DAY)
             finer = SlayerQuery.model_validate({
                 "population": "orders",
-                "time_dimensions": [{"field": "created_at", "granularity": "hour"}],
-                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+                "time_dimensions": [{"field": "orders.created_at", "granularity": "hour"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             })
             with pytest.raises(TimeDimensionFieldError):
                 await engine.execute(query=finer, dry_run=True)
             day = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "orders",
-                "time_dimensions": [{"field": "created_at", "granularity": "day"}],
-                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+                "time_dimensions": [{"field": "orders.created_at", "granularity": "day"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             }))
             assert len(day.data) == len(_SEED)
             month = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "orders",
-                "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+                "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             }))
             assert _by_bucket(month.data) == _MONTH_SUMS
 
@@ -384,14 +384,14 @@ class TestHandSetJoinPath:
         finer = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [{"field": "customers.signup_at", "granularity": "day"}],
-            "metrics": [{"metric": "count(*)", "alias": "n"}],
+            "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
         })
         with pytest.raises(TimeDimensionFieldError):
             await engine.execute(query=finer, dry_run=True)
         await engine.execute(query=SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [{"field": "customers.signup_at", "granularity": "year"}],
-            "metrics": [{"metric": "count(*)", "alias": "n"}],
+            "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
         }), dry_run=True)
 
 
@@ -442,34 +442,34 @@ class TestSiblingStandIns:
         with tempfile.TemporaryDirectory() as tmp:
             engine = await _seeded_engine("sqlite", tmp)
             s1 = {"name": "s1", "population": "orders",
-                  "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-                  "metrics": [{"metric": "sum(amount)", "alias": "rev"}]}
+                  "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+                  "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]}
             finer = {"population": "s1", "extensions": [{"dataset": "s1"}],
-                     "time_dimensions": [{"field": "created_at", "granularity": "day"}],
-                     "metrics": [{"metric": "sum(rev)"}]}
+                     "time_dimensions": [{"field": "s1.created_at", "granularity": "day"}],
+                     "metrics": [{"metric": "sum(s1.rev)"}]}
             with pytest.raises(TimeDimensionFieldError):
                 await engine.execute(query=[s1, finer], dry_run=True)
             coarser = {"population": "s1", "extensions": [{"dataset": "s1"}],
-                       "time_dimensions": [{"field": "created_at", "granularity": "year"}],
-                       "metrics": [{"metric": "sum(rev)"}]}
+                       "time_dimensions": [{"field": "s1.created_at", "granularity": "year"}],
+                       "metrics": [{"metric": "sum(s1.rev)"}]}
             resp = await engine.execute(query=[s1, coarser])
             assert _by_bucket(resp.data) == _YEAR_SUMS
 
     async def test_stage_join_to_bucketed_sibling(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             engine = await _seeded_engine("sqlite", tmp)
-            s1 = {"name": "s1", "population": "orders", "dimensions": ["id"],
-                  "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-                  "metrics": [{"metric": "sum(amount)", "alias": "rev"}]}
+            s1 = {"name": "s1", "population": "orders", "dimensions": ["orders.id"],
+                  "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+                  "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]}
 
             def outer(gran: str) -> dict:
                 return {
                     "population": "orders",
                     "extensions": [{"dataset": "orders",
                                     "relationships": [{"to": "s1", "from_columns": ["id"], "to_columns": ["id"]}]}],
-                    "dimensions": ["id"],
+                    "dimensions": ["orders.id"],
                     "time_dimensions": [{"field": "s1.created_at", "granularity": gran}],
-                    "metrics": [{"metric": "sum(amount)", "alias": "x"}],
+                    "metrics": [{"metric": "sum(orders.amount)", "alias": "x"}],
                 }
             finer = outer("day")
             with pytest.raises(TimeDimensionFieldError):
@@ -484,24 +484,24 @@ class TestUnifiedMessage:
     async def test_stage_and_model_columns_share_one_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             engine = await _seeded_engine("sqlite", tmp)
-            s1 = {"name": "s1", "population": "orders",
-                  "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-                  "metrics": [{"metric": "sum(amount)", "alias": "rev"}]}
-            stage_outer = {"population": "s1",
-                           "time_dimensions": [{"field": "created_at", "granularity": "day"}],
-                           "metrics": [{"metric": "sum(rev)"}]}
+            s1 = {"name": "monthly", "population": "orders",
+                  "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+                  "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]}
+            stage_outer = {"population": "monthly",
+                           "time_dimensions": [{"field": "monthly.created_at", "granularity": "day"}],
+                           "metrics": [{"metric": "sum(monthly.rev)"}]}
             with pytest.raises(TimeDimensionFieldError) as stage_exc:
                 await engine.execute(query=[s1, stage_outer], dry_run=True)
             await engine.create_dataset_from_query(
                 query={"population": "orders",
-                       "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-                       "time_dimensions": [{"field": "created_at", "granularity": "month"}]},
+                       "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+                       "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]},
                 name="monthly",
             )
             model_finer = SlayerQuery.model_validate({
                 "population": "monthly",
-                "time_dimensions": [{"field": "created_at", "granularity": "day"}],
-                "metrics": [{"metric": "sum(rev)"}]})
+                "time_dimensions": [{"field": "monthly.created_at", "granularity": "day"}],
+                "metrics": [{"metric": "sum(monthly.rev)"}]})
             with pytest.raises(TimeDimensionFieldError) as model_exc:
                 await engine.execute(query=model_finer, dry_run=True)
             assert str(stage_exc.value) == str(model_exc.value)

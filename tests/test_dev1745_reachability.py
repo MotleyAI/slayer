@@ -406,9 +406,9 @@ class TestInlineScalarsAreNotReferences:
         planned = plan_query(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "amount", "alias": "amount"}],
-                "metrics": [{"metric": "percentile(amount, p=0.9)", "alias": "p90"}],
-                "filter": ["percentile(amount, p=0.9) > 100"],
+                "dimensions": [{"field": "orders.amount", "alias": "amount"}],
+                "metrics": [{"metric": "percentile(orders.amount, p=0.9)", "alias": "p90"}],
+                "filter": ["percentile(orders.amount, p=0.9) > 100"],
             }),
             bundle=_bundle(),
         )
@@ -464,9 +464,9 @@ class TestCoordinateSystemInvariant:
         planned = plan_query(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "amount", "alias": "amount"}],
-                "metrics": [{"metric": "sum(eu_amount)", "alias": "eu"}],
-                "filter": ["sum(eu_amount) > 100"],
+                "dimensions": [{"field": "orders.amount", "alias": "amount"}],
+                "metrics": [{"metric": "sum(orders.eu_amount)", "alias": "eu"}],
+                "filter": ["sum(orders.eu_amount) > 100"],
             }),
             bundle=bundle,
         )

@@ -143,6 +143,8 @@ class StageSchema(BaseModel):
     restricted: bool = False
     # Why inherited edges could not be derived (inspect only); ``None`` when they were.
     inherited_edges_error: Optional[str] = None
+    #: Two public fields flattening to one name ``(flat name, first key, second key)``: refused once the stage is read.
+    flatten_collision: Optional[Tuple[str, str, str]] = None
 
     @property
     def display_name(self) -> str:
@@ -204,11 +206,23 @@ class DatasetScope(BaseModel):
     """
 
     population: Optional[SlayerDataset] = None
+    #: A query's own scope: each reference is anchored at its first segment (``queries/references``); otherwise
+    #: references read from ``population`` (a stored definition's dataset-local mode).
+    anchored: bool = False
 
 
 def root_spelling(scope: DatasetScope) -> Optional[str]:
     """The name a reference writes for the scope's root: its dataset's spelling."""
     return scope.population.spelling if scope.population is not None else None
+
+
+def anchored_scope(scope: DatasetScope) -> DatasetScope:
+    """``scope`` as a query's own scope, its references anchored at their first segment."""
+    return scope if scope.anchored else scope.model_copy(update={"anchored": True})
+
+
+def is_anchored(scope: DatasetScope) -> bool:
+    return scope.anchored
 
 
 def host_dataset_name(scope: DatasetScope) -> str:

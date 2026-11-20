@@ -113,7 +113,7 @@ def query_backed_dataset() -> SlayerDataset:
     """``done_orders_qb``: a query-backed dataset over ``orders``, filtered to done orders."""
     return SlayerDataset(
         name="done_orders_qb", data_source="test", filters=["status = 'done'"],
-        source_queries=[SlayerQuery.model_validate({"population": "orders", "dimensions": ["id", "status"]})],
+        source_queries=[SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.id", "orders.status"]})],
     )
 
 
@@ -167,6 +167,7 @@ def ids(resp: SlayerResponse, source: str) -> set[int]:
 
 
 def by_id(resp: SlayerResponse, source: str, column: str) -> dict[int, Any]:
-    got = {int(row[f"{source}.id"]): row[f"{source}.{column}"] for row in resp.data}
+    key = column if "." in column else f"{source}.{column}"
+    got = {int(row[f"{source}.id"]): row[key] for row in resp.data}
     assert len(got) == len(resp.data), f"duplicate {source}.id rows: {resp.data}"
     return got

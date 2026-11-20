@@ -702,11 +702,11 @@ class TestHavingValidationWiring:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["_count > 1 and status == 'completed'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["orders._count > 1 and orders.status == 'completed'"],
         )
         sql = await _engine_generate(query=query, dataset=_status_orders_dataset())
         assert "HAVING" in sql
@@ -717,11 +717,11 @@ class TestHavingValidationWiring:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["_count > 1 or status == 'completed'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["orders._count > 1 or orders.status == 'completed'"],
         )
         model = _status_orders_dataset()
         with pytest.raises(ValueError, match="neither a field nor a metric"):
@@ -730,9 +730,9 @@ class TestHavingValidationWiring:
     async def test_grouped_column_in_having_still_accepted(self) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["_count > 1 and status == 'completed'"],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["orders._count > 1 and orders.status == 'completed'"],
         )
         sql = await _engine_generate(query=query, dataset=_status_orders_dataset())
         assert "HAVING" in sql

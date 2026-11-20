@@ -43,8 +43,8 @@ def _ledger(*, data_source: str = "ds", db_type: str = "money") -> SlayerDataset
     ])
 
 
-_SUM_QUERY = SlayerQuery.model_validate({"population": "ledger", "metrics": ["sum(amount)"]})
-_DOUBLED_QUERY = SlayerQuery.model_validate({"population": "ledger", "dimensions": ["id", "doubled"]})
+_SUM_QUERY = SlayerQuery.model_validate({"population": "ledger", "metrics": ["sum(ledger.amount)"]})
+_DOUBLED_QUERY = SlayerQuery.model_validate({"population": "ledger", "dimensions": ["ledger.id", "ledger.doubled"]})
 
 
 class TestRawNames:

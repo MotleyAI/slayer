@@ -46,7 +46,7 @@ from tests._dev1908_fixtures import (
 
 def _cells(resp) -> dict:
     """`{dimension-value tuple: metric value}` over a response's rows."""
-    return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"): r["orders.w"]
+    return {tuple(v for k, v in sorted(r.items()) if k != "w"): r["w"]
             for r in resp.data}
 
 
@@ -105,8 +105,8 @@ class TestHomePaths:
         assert _home_path("wsum_cust_plan_fee(customers.regions.pop)") == ("customers",)
 
     def test_owner_at_root_self_name_homes_at_root_pin(self):
-        assert _home_path("wself(amount)") == ()
-        assert _home_path("wself_expr(amount)") == ()
+        assert _home_path("wself(orders.amount)") == ()
+        assert _home_path("wself_expr(orders.amount)") == ()
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -118,7 +118,7 @@ async def engine(request):
 async def _value(engine, expression: str) -> float:
     resp = await engine.execute(
         orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
-    return float(resp.data[0]["orders.w"])
+    return float(resp.data[0]["w"])
 
 
 class TestExecutedValues:
@@ -179,9 +179,9 @@ class TestExecutedValues:
 
     async def test_owner_at_root_self_name_pin(self, engine):
         for agg in ("wself", "wself_expr"):
-            explicit = await _value(engine, f"{agg}(amount, weight=cost)")
+            explicit = await _value(engine, f"{agg}(orders.amount, weight=orders.cost)")
             assert explicit == pytest.approx(SELF)
-            default = await _value(engine, f"{agg}(amount)")
+            default = await _value(engine, f"{agg}(orders.amount)")
             assert default == pytest.approx(explicit)
 
 
@@ -202,12 +202,12 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
             resp = await e.execute(query)
             dry = await e.execute(query, dry_run=True)
             assert dry.sql is not None
-            return float(resp.data[0]["orders.w"]), dry.sql
+            return float(resp.data[0]["w"]), dry.sql
 
     ev, explicit_sql = await run(
-        "wsum_region_pop(ship_region.countries.gdp, weight=ship_region.pop)")
+        "wsum_region_pop(orders.ship_region.countries.gdp, weight=orders.ship_region.pop)")
     assert ev == pytest.approx(SINGLE_CANCEL)
-    dv, default_sql = await run("wsum_region_pop(ship_region.countries.gdp)")
+    dv, default_sql = await run("wsum_region_pop(orders.ship_region.countries.gdp)")
     assert dv == pytest.approx(ev)
     # Spelling survives: the default reads pop through the ship_region-joined
     # regions, never a second `regions` join (which the current fan renders).
@@ -223,10 +223,10 @@ class TestKernelExpressionDefaults:
         # engine's current state, so a later execute would otherwise mask it).
         base = "wsum_region_pop_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
-            dimensions=["status"], to_many_handling="associate",
+            dimensions=["orders.status"], to_many_handling="associate",
             metrics=[QueryMetric(metric=base, alias="w")])))
         explicit = _cells(await engine.execute(orders_q(
-            dimensions=["status"], to_many_handling="associate",
+            dimensions=["orders.status"], to_many_handling="associate",
             metrics=[QueryMetric(metric=f"{base[:-1]}, weight=customers.regions.pop)",
                                    alias="w")])))
         assert default == explicit
@@ -247,7 +247,7 @@ class TestKernelExpressionDefaults:
         assert months == WINDOW_EXPR
 
     async def test_second_order_root_frame_expression_default_pin(self, engine):
-        inner = "sum(amount, partition_by=customers.regions.id)"
+        inner = "sum(orders.amount, partition_by=customers.regions.id)"
         default = await _value(engine, f"wavg_pop_expr({inner})")
         explicit = await _value(
             engine, f"wavg_pop_expr({inner}, weight=customers.regions.pop)")
@@ -259,10 +259,10 @@ class TestStageQueryUnaffected:
     async def test_two_stage_query_has_no_model_host(self, engine):
         """A later stage aggregating a stage's output resolves no definition
         default (a stage has no dataset host) — executes exactly as before."""
-        stage1 = orders_q(name="stage1", dimensions=["status"],
-                          metrics=[QueryMetric(metric="sum(amount)", alias="amount_sum")])
-        root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="status")],
-                           metrics=[QueryMetric(metric="max(amount_sum)", alias="mx")])
+        stage1 = orders_q(name="stage1", dimensions=["orders.status"],
+                          metrics=[QueryMetric(metric="sum(orders.amount)", alias="amount_sum")])
+        root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="stage1.status")],
+                           metrics=[QueryMetric(metric="max(stage1.amount_sum)", alias="mx")])
         resp = await engine.execute([stage1, root])
         vals = sorted(float(next(v for k, v in r.items() if "mx" in k))
                       for r in resp.data)
@@ -307,7 +307,7 @@ class TestFailClosed:
 
     async def test_second_order_nowhere_default_raises_unresolvable(self):
         with pytest.raises(UnresolvableDimensionRelationshipError, match="(?i)nowhere"):
-            await _gen("wnowhere(sum(amount, partition_by=status))")
+            await _gen("wnowhere(sum(orders.amount, partition_by=orders.status))")
 
     async def test_query_typed_revisit_raises_circular_join(self):
         # test_dev1952_derived_revisit owns the dataset-SQL derived-field revisit; only the query-typed

@@ -165,7 +165,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(total_amount)"}],
+            "metrics": [{"metric": "sum(claim_amount.total_amount)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -177,7 +177,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(paid_amount)"}],
+            "metrics": [{"metric": "sum(claim_amount.paid_amount)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -189,7 +189,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(loss_payment_amt)"}],
+            "metrics": [{"metric": "sum(claim_amount.loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -211,8 +211,8 @@ class TestCrossModelPlannerTriggerPredicate:
         )
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(eu_amount)"}],
-            "dimensions": ["id"],
+            "metrics": [{"metric": "sum(orders.eu_amount)"}],
+            "dimensions": ["orders.id"],
         })
         planned = plan_query(query=q, bundle=bundle)
         attaches = [
@@ -274,7 +274,7 @@ class TestCrossModelPlannerTriggerPredicate:
         q = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "sum(customers.premium_rev)"}],
-            "dimensions": ["id"],
+            "dimensions": ["orders.id"],
         })
         planned = plan_query(query=q, bundle=bundle)
         assert len(planned.regroup_attach_plans) == 1
@@ -292,7 +292,7 @@ class TestProducerMode:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(loss_payment_amt)"}],
+            "metrics": [{"metric": "sum(claim_amount.loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -339,8 +339,8 @@ class TestHostModelFiltersInteractions:
         )
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(loss_payment_amt)"}],
-            "dimensions": ["id"],
+            "metrics": [{"metric": "sum(claim_amount.loss_payment_amt)"}],
+            "dimensions": ["claim_amount.id"],
         })
         planned = plan_query(query=q, bundle=bundle)
         assert [a for a in planned.regroup_attach_plans if a.attach_phase == "combined"]
@@ -387,11 +387,11 @@ class TestFirstLastNoNestedCmaPlans:
         host = _claim_amount(with_time=True, with_filter_first=True)
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "last(latest_payment)"}],
+            "metrics": [{"metric": "last(claim_amount.latest_payment)"}],
             "dimensions": ["claim.claim_number"],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="claim_amount.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -544,11 +544,11 @@ class TestCrossingFirstLastStaysRanked:
     ordering subsumes crossing): one flat ranked host plan. Only the ranking TIME arg surfaces the crossed hop."""
 
     def test_derived_source_first_last_stays_ranked(self):
-        planned, _ = _s5_plans("last(region_pay, orders.created_at)")
+        planned, _ = _s5_plans("last(orders.region_pay, orders.created_at)")
         _assert_single_ranked_host(planned)
 
     def test_structural_time_arg_stays_ranked(self):
-        planned, _ = _s5_plans("last(amount, customers.signup_at)")
+        planned, _ = _s5_plans("last(orders.amount, customers.signup_at)")
         attach = _assert_single_ranked_host(planned)
         # The ranking key reaches through the customers relationship (path () if non-crossing).
         assert isinstance(attach.kernel, RankedProducerKernel)
@@ -556,7 +556,7 @@ class TestCrossingFirstLastStaysRanked:
         assert attach.kernel.ranking_time_key.path == ("customers",)
 
     def test_derived_time_arg_stays_ranked(self):
-        planned, _ = _s5_plans("last(amount, cross_time)")
+        planned, _ = _s5_plans("last(orders.amount, orders.cross_time)")
         _assert_single_ranked_host(planned)
 
 
@@ -565,41 +565,41 @@ class TestWidenedLaw3TriggerCrossingInputs:
     source ``DatasetField.sql``, positional/time args, kwargs. Filter crossing is pinned above."""
 
     def test_derived_source_path_alias_triggers(self):
-        _, plans = _s5_plans("sum(region_pay)")
+        _, plans = _s5_plans("sum(orders.region_pay)")
         _assert_single_host_rooted(plans)
 
     def test_derived_source_single_dot_triggers(self):
-        _, plans = _s5_plans("sum(cust_weight_d)")
+        _, plans = _s5_plans("sum(orders.cust_weight_d)")
         _assert_single_host_rooted(plans)
 
     def test_sibling_derived_chain_triggers(self):
         # doubled_pop -> pop_helper -> crossing; sibling derived refs expand first.
-        _, plans = _s5_plans("sum(doubled_pop)")
+        _, plans = _s5_plans("sum(orders.doubled_pop)")
         _assert_single_host_rooted(plans)
 
     def test_structural_kwarg_triggers(self):
-        _, plans = _s5_plans("weighted_avg(amount, weight=customers.weight)")
+        _, plans = _s5_plans("weighted_avg(orders.amount, weight=customers.weight)")
         _assert_single_host_rooted(plans)
 
     def test_derived_kwarg_triggers(self):
-        _, plans = _s5_plans("weighted_avg(amount, weight=region_pay)")
+        _, plans = _s5_plans("weighted_avg(orders.amount, weight=orders.region_pay)")
         _assert_single_host_rooted(plans)
 
     def test_user_template_fragment_kwarg_crossing_triggers(self):
         _, plans = _s5_plans(
-            "scaled_sum(amount, scale='customers.regions.weight')",
+            "scaled_sum(orders.amount, scale='customers.regions.weight')",
         )
         _assert_single_host_rooted(plans)
 
     def test_model_default_fragment_kwarg_crossing_triggers(self):
         # Crossing input is the dataset-default AggregationParam sql fragment.
-        _, plans = _s5_plans("wscaled_sum(amount)")
+        _, plans = _s5_plans("wscaled_sum(orders.amount)")
         _assert_single_host_rooted(plans)
 
     def test_composite_crossing_leaf_isolates_individually(self):
         # `sum(region_pay) + sum(amount)`: only the crossing LEAF isolates (one
         # hidden host-rooted plan); the local leaf stays in the base — exactly one.
-        planned, plans = _s5_plans("sum(region_pay) + sum(amount)")
+        planned, plans = _s5_plans("sum(orders.region_pay) + sum(orders.amount)")
         attach = _assert_single_host_rooted(plans)
         (sub,) = attach.substitutions
         ph_slot = next(
@@ -612,28 +612,28 @@ class TestWidenedLaw3TriggerCrossingInputs:
         )
 
     def test_local_derived_source_does_not_trigger(self):
-        _, plans = _s5_plans("sum(local_double)")
+        _, plans = _s5_plans("sum(orders.local_double)")
         assert plans == []
 
     def test_literal_kwarg_does_not_trigger(self):
-        _, plans = _s5_plans("percentile(amount, p=0.5)")
+        _, plans = _s5_plans("percentile(orders.amount, p=0.5)")
         assert plans == []
 
     def test_local_template_fragment_does_not_trigger(self):
-        _, plans = _s5_plans("scaled_sum(amount, scale='amount * 2')")
+        _, plans = _s5_plans("scaled_sum(orders.amount, scale='orders.amount * 2')")
         assert plans == []
 
     def test_unparseable_template_fragment_fails_at_binding(self):
         with pytest.raises(UnanalyzableAggregationParameterError, match="scale"):
-            _s5_plans("scaled_sum(amount, scale='%% !! ((')")
+            _s5_plans("scaled_sum(orders.amount, scale='%% !! ((')")
 
     def test_crossing_dimension_only_does_not_trigger(self):
         # A joined dimension is Law-1 (base-pull); only aggregate inputs trigger Law-3.
-        _, plans = _s5_plans("sum(amount)", dimensions=["customers.region_id"])
+        _, plans = _s5_plans("sum(orders.amount)", dimensions=["customers.region_id"])
         assert plans == []
 
     def test_local_time_arg_does_not_trigger(self):
-        _, plans = _s5_plans("last(amount, orders.created_at)")
+        _, plans = _s5_plans("last(orders.amount, orders.created_at)")
         assert plans == []
 
     def test_source_path_still_target_rooted(self):
@@ -661,8 +661,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "sum(region_pay)"},
-                {"metric": "sum(region_pay) + sum(amount)", "alias": "combo"},
+                {"metric": "sum(orders.region_pay)"},
+                {"metric": "sum(orders.region_pay) + sum(orders.amount)", "alias": "combo"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -679,8 +679,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "sum(region_pay)"},
-                {"metric": "sum(cust_weight_d)"},
+                {"metric": "sum(orders.region_pay)"},
+                {"metric": "sum(orders.cust_weight_d)"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -699,8 +699,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # A host ROW filter must propagate into the sub-plan's filters.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(region_pay)"}],
-            "filter": ["amount > 50"],
+            "metrics": [{"metric": "sum(orders.region_pay)"}],
+            "filter": ["orders.amount > 50"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())
         (attach,) = [
@@ -718,7 +718,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # the host, so it too propagates into the sub-plan.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(region_pay)"}],
+            "metrics": [{"metric": "sum(orders.region_pay)"}],
             "filter": ["customers.weight > 1"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())

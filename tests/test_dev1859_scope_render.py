@@ -31,7 +31,7 @@ from tests._dev1847_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-_CROSS_MIXED = ("sum(region_id * sum(corders.amount, partition_by=region_id))")
+_CROSS_MIXED = ("sum(customers.region_id * sum(corders.amount, partition_by=customers.region_id))")
 
 
 def _join_count_to(sql: str, table: str) -> int:
@@ -55,7 +55,7 @@ def _derived_ref_datasets():
 class TestJoinEmittedOnce:
     async def test_cross_model_constituent_producer_emitted_once(self):
         sql = await gen(SlayerQuery(
-            population="customers", dimensions=[QueryDimension(field="region_id")],
+            population="customers", dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[QueryMetric(metric=_CROSS_MIXED, alias="xm")]))
         producers = [n for n in re.findall(r"(_cm_\w+) AS \(", sql)
                      if "amount" in n]
@@ -73,7 +73,7 @@ class TestJoinEmittedOnce:
             query=SlayerQuery(
                 population="corders",
                 metrics=[QueryMetric(
-                    metric="sum(amount * avg(cust_rid, partition_by=customer_id))",
+                    metric="sum(corders.amount * avg(corders.cust_rid, partition_by=corders.customer_id))",
                     alias="m")]),
             dataset=models[0], extra_datasets=models[1:],
             dialect="postgres", validate=False)

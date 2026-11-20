@@ -185,11 +185,11 @@ class TestKeptAsWritten:
 @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
 async def test_behaviour_follows_the_old_kind(backend: str) -> None:
     queries = [
-        {"population": "orders", "dimensions": ["status"], "metrics": ["sum(amount)", "avg(amount)", "max(amount)"]},
-        {"population": "orders", "metrics": ["count(*)"], "time_dimensions": [
-            {"field": "created_at", "granularity": "month", "date_range": ["2024-03-01", "2024-06-30"]}]},
-        {"population": "orders", "dimensions": ["raw_dt"], "metrics": ["count(*)"]},
-        {"population": "orders", "metrics": ["count(*)"], "filter": "created_at >= '2024-06-01'"},
+        {"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)", "avg(orders.amount)", "max(orders.amount)"]},
+        {"population": "orders", "metrics": ["count(orders.*)"], "time_dimensions": [
+            {"field": "orders.created_at", "granularity": "month", "date_range": ["2024-03-01", "2024-06-30"]}]},
+        {"population": "orders", "dimensions": ["orders.raw_dt"], "metrics": ["count(orders.*)"]},
+        {"population": "orders", "metrics": ["count(orders.*)"], "filter": "orders.created_at >= '2024-06-01'"},
     ]
     async with typed_engine(backend, {"amount": "Decimal", "created_at": "DateTimeTz", "raw_dt": "Time"}) as engine:
         ossie = [await outcome(engine, q) for q in queries]

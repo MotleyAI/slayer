@@ -259,7 +259,7 @@ REAGG_BAD = QueryMetric(
 
 def bad_pop_vals(resp, metric: str) -> dict:
     """``{bad_pop value: metric value}`` over ``resp.data`` (bad_pop cell key)."""
-    return {k[0]: v[metric] for k, v in rows_by(resp, "orders." + BAD_POP).items()}
+    return {k[0]: v[metric] for k, v in rows_by(resp, BAD_POP).items()}
 
 
 # --------------------------------------------------------------------------- #

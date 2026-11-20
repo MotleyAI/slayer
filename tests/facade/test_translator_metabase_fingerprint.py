@@ -294,8 +294,7 @@ def test_metabase_fingerprint_orders_corpus_17() -> None:
 
 
 def test_aggregate_over_three_part_qualified_column() -> None:
-    """SUM("public"."orders"."total") resolves to the `sum(total)` metric on the orders dataset, not to a
-    bogus `sum(public.orders.total)` lookup."""
+    """SUM("public"."orders"."total") resolves to `sum(orders.total)`, not a bogus `sum(public.orders.total)`."""
     sql = (
         'SELECT SUM("public"."orders"."total") AS "total_sum" '
         'FROM "public"."orders"'
@@ -307,7 +306,7 @@ def test_aggregate_over_three_part_qualified_column() -> None:
     def _formula(m: QueryMetric | dict[str, str]) -> str:
         return m["metric"] if isinstance(m, dict) else m.metric
     measure_formulas = [_formula(m) for m in (result.query.metrics or [])]
-    assert "sum(total)" in measure_formulas
+    assert "sum(orders.total)" in measure_formulas
 
 
 def test_order_by_three_part_qualified_column() -> None:
@@ -322,11 +321,7 @@ def test_order_by_three_part_qualified_column() -> None:
 
 
 def test_where_filter_on_three_part_qualified_column_passes_through() -> None:
-    """WHERE filters on 3-part-qualified columns are normalised via
-    strip_prefix before they land in SlayerQuery.filter, because the
-    engine's Mode-B DSL only accepts single-dot paths. Pin the resulting
-    filter so a regression where the unstripped 3-part form leaks
-    through would fail loudly."""
+    """WHERE filters on 3-part-qualified columns land in SlayerQuery.filter as `dataset.field`, schema stripped."""
     sql = (
         'SELECT "public"."orders"."customer_id" AS "customer_id" '
         'FROM "public"."orders" WHERE "public"."orders"."total" > 0'
@@ -334,13 +329,9 @@ def test_where_filter_on_three_part_qualified_column_passes_through() -> None:
     result = _translate(sql)
     assert isinstance(result, QueryResult)
     filters = result.query.filter or []
-    # The serialised filter must NOT carry the 3-part-qualified column
-    # ref; the leading public.orders prefix is stripped.
     assert filters
     assert all("public" not in f for f in filters)
-    assert all("orders.total" not in f for f in filters)
-    # The bare column name survives.
-    assert any("total" in f for f in filters)
+    assert any("orders.total" in f for f in filters)
 
 
 def test_hygiene_wrapper_around_bare_column_rejected() -> None:
@@ -365,7 +356,7 @@ def test_hygiene_wrapper_around_two_part_column_rejected() -> None:
 def test_metabase_gui_question_count_orders_corpus_20() -> None:
     """Corpus #20 — Metabase's compiled GUI question (`COUNT of orders`):
     ``SELECT COUNT(*) AS "count" FROM "public"."orders"``.  This rides on
-    the aggregate-SQL → metric mapping (`COUNT(*)` → `count(*)`) plus
+    the aggregate-SQL → metric mapping (`COUNT(*)` → `count(orders.*)`) plus
     the 3-part / 2-part qualified `"public"."orders"` table reference."""
     sql = (
         '-- Metabase:: userID: 1 queryType: MBQL queryHash: a54de39466cbf3e8\n'
@@ -376,10 +367,7 @@ def test_metabase_gui_question_count_orders_corpus_20() -> None:
     aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["count"]
     assert result.query.population == "orders"
-    # Underlying engine metric is `count(*)` (the canonical count-all form).
-    # The metrics list carries pydantic QueryMetric-shaped entries; accept
-    # both dict and attribute access.
     def _formula(m: QueryMetric | dict[str, str]) -> str:
         return m["metric"] if isinstance(m, dict) else m.metric
     measure_formulas = [_formula(m) for m in (result.query.metrics or [])]
-    assert "count(*)" in measure_formulas
+    assert "count(orders.*)" in measure_formulas

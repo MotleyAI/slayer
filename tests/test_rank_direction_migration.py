@@ -33,8 +33,8 @@ from tests._dev1847_fixtures import _seed_sqlite, rows_by, sales_dataset
 from tests._rank_direction_fixtures import RANK_DESC
 
 DESC = ", direction='desc'"
-BARE = "rank(sum(amount))"
-FILLED = "rank(sum(amount), direction='desc')"
+BARE = "rank(sum(sales.amount))"
+FILLED = "rank(sum(sales.amount), direction='desc')"
 
 
 def _model_dict(*, measures: list[dict], version: Any = 12, **extra) -> dict:
@@ -176,14 +176,14 @@ def _query_dict(version: Any = 4) -> dict:
     alias = "name" if k.query_metric_text == "formula" else "alias"
     data: dict = {
         k.population: "sales",
-        "dimensions": ["region", {k.dimension_text: "rank(sum(amount, partition_by=region))", alias: "rk"}],
+        "dimensions": ["sales.region", {k.dimension_text: "rank(sum(amount, partition_by=region))", alias: "rk"}],
         k.query_metrics: [
             "rank(sum(amount)) + 1",
             {k.query_metric_text: "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", alias: "top"},
         ],
         k.query_filter: ["rank(sum(amount, partition_by=region)) <= 3 and city <> 'rank('"],
         "order": [{k.order_field: "abs(rank(sum(amount)))", "direction": "asc"}],
-        "main_time_dimension": "rank(sum(amount))",
+        "main_time_dimension": "rank(sum(sales.amount))",
     }
     if version is not None:
         data["version"] = version
@@ -341,12 +341,12 @@ class TestStorageLoad:
         assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert raw["metrics"][0]["expression"] == FILLED
         resp = await _execute(storage, SlayerQuery.model_validate(
-            {"population": "sales", "dimensions": ["region"], "metrics": ["r"]}))
+            {"population": "sales", "dimensions": ["sales.region"], "metrics": ["sales.r"]}))
         assert {k[0]: v["sales.r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC
 
     async def test_unversioned_model_with_unversioned_nested_query(self, seed: Seeder):
         qb = {"name": "qb", "data_source": "test",
-              "source_queries": [{"source_model": "sales", "dimensions": ["region"],
+              "source_queries": [{"source_model": "sales", "dimensions": ["sales.region"],
                                   "measures": [{"formula": BARE, "name": "r"}]}]}
         storage = await seed(models=[_model_dict(measures=[]), qb])
         model = await storage.get_dataset("qb", data_source="test")
@@ -355,7 +355,7 @@ class TestStorageLoad:
         assert (q.metrics or [])[0].metric == FILLED
 
     async def test_unversioned_memory_and_query(self, seed: Seeder):
-        storage = await seed(memories=[{
+        storage = await seed(models=[_model_dict(measures=[])], memories=[{
             "id": "m1", "learning": "top regions",
             "query": {"source_model": "sales", "measures": [BARE], "filters": [f"{BARE} <= 2"]},
         }])
@@ -365,7 +365,7 @@ class TestStorageLoad:
         assert mem.query.filter == [f"{FILLED} <= 2"]
 
     async def test_versioned_legacy_memory(self, seed: Seeder):
-        storage = await seed(memories=[{
+        storage = await seed(models=[_model_dict(measures=[])], memories=[{
             "version": 2, "id": "m2", "learning": "top regions",
             "query": {"version": 4, "source_model": "sales", "measures": [BARE]},
         }])
@@ -393,7 +393,7 @@ class TestStorageLoad:
     @pytest.mark.parametrize("version", [None, "current"])
     async def test_fresh_or_current_query_with_bare_rank_fails(self, seed: Seeder, version):
         storage = await seed(models=[_model_dict(measures=[])])
-        payload: dict = {"population": "sales", "dimensions": ["region"], "metrics": [BARE]}
+        payload: dict = {"population": "sales", "dimensions": ["sales.region"], "metrics": [BARE]}
         if version == "current":
             payload["version"] = mig.CURRENT_VERSIONS["SlayerQuery"]
         query = SlayerQuery.model_validate(payload)
@@ -405,9 +405,9 @@ class TestStorageLoad:
     async def test_explicit_old_query_executes_descending(self, seed: Seeder):
         storage = await seed(models=[_model_dict(measures=[])])
         resp = await _execute(storage, SlayerQuery.model_validate(
-            {"version": 4, "source_model": "sales", "dimensions": ["region"],
+            {"version": 4, "source_model": "sales", "dimensions": ["sales.region"],
              "measures": [{"formula": BARE, "name": "r"}]}))
-        assert {k[0]: v["sales.r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC
+        assert {k[0]: v["r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC
 
 
 # --------------------------------------------------------------------------- #
@@ -430,7 +430,7 @@ def served_storage():
 
 def test_rest_fresh_payload_fails(served_storage):
     client = TestClient(create_app(storage=served_storage))
-    resp = client.post("/query", json={"population": "sales", "dimensions": ["region"],
+    resp = client.post("/query", json={"population": "sales", "dimensions": ["sales.region"],
                                        "metrics": [{"metric": BARE}]})
     assert 400 <= resp.status_code < 500
     assert "direction='desc'" in resp.text
@@ -441,7 +441,7 @@ async def test_mcp_fresh_payload_fails(served_storage):
     server = create_mcp_server(storage=served_storage)
     try:
         text = str(await server.call_tool(name="query", arguments={"query": {
-            "population": "sales", "dimensions": ["region"], "metrics": [BARE]}}))
+            "population": "sales", "dimensions": ["sales.region"], "metrics": [BARE]}}))
     except Exception as exc:  # noqa: BLE001 — a ToolError carries the message too
         text = str(exc)
     assert "direction='desc'" in text

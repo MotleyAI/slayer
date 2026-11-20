@@ -116,7 +116,7 @@ class TestArrayFunctions:
         result = import_osi(flat([orders(LIST_FIELDS)], metrics=[m("notes", "ARRAY_AGG(DISTINCT orders.note)")]),
                             db=db)
         out = await rows(datasets=result.datasets, db=db, payload={
-            "population": "orders", "dimensions": ["id"], "metrics": ["notes"], "order": [{"field": "id"}]})
+            "population": "orders", "dimensions": ["orders.id"], "metrics": ["orders.notes"], "order": [{"field": "orders.id"}]})
         assert [r["orders.notes"] for r in out] == [["O'Brien\\x"], [], ["plain"]]
 
     @pytest.mark.parametrize(("sql", "expected"), [

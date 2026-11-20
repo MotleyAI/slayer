@@ -41,13 +41,13 @@ EXTENSION: dict[str, Any] = {
     "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}],
 }
 TWO_STAGES: list[dict[str, Any]] = [
-    {"name": "per_customer", "population": "orders", "dimensions": ["customer_id", "buyer.name"],
-     "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-     "metrics": [{"metric": "sum(amount)", "alias": "total"}, "aov"],
-     "filter": ["amount > 5"], "order": [{"field": "total", "direction": "desc"}],
+    {"name": "per_customer", "population": "orders", "dimensions": ["orders.customer_id", "buyer.name"],
+     "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+     "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}, "orders.aov"],
+     "filter": ["orders.amount > 5"], "order": [{"field": "total", "direction": "desc"}],
      "extensions": [EXTENSION]},
-    {"population": "per_customer", "metrics": [{"metric": "avg(total)", "alias": "avg_total"}],
-     "filter": ["total > 0"], "order": [{"field": "avg_total"}]},
+    {"population": "per_customer", "metrics": [{"metric": "avg(per_customer.total)", "alias": "avg_total"}],
+     "filter": ["per_customer.total > 0"], "order": [{"field": "avg_total"}]},
 ]
 
 
@@ -77,15 +77,15 @@ class TestDump:
         dumped = [s.model_dump(mode="json") for s in stages]
         for stage in dumped:
             assert_ossie_stage(stage)
-        assert dumped[0]["time_dimensions"][0]["field"] == "created_at"
+        assert dumped[0]["time_dimensions"][0]["field"] == "orders.created_at"
         [ext] = dumped[0]["extensions"]
         assert {"dataset", "metrics", "relationships"} <= ext.keys()
         assert ext["relationships"][0]["to"] == "customers"
         assert ext["metrics"][0]["expression"] == "sum(amount) / count(*)"
-        assert dumped[0]["metrics"][0]["metric"] == "sum(amount)"
+        assert dumped[0]["metrics"][0]["metric"] == "sum(orders.amount)"
 
     def test_a_field_reference_names_its_dataset(self) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"],
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"],
                                             "dimensions": [{"field": "customers.name"}]})
         [dim] = query.dimensions or []
         assert isinstance(dim, QueryDimension)
@@ -103,7 +103,7 @@ class TestDump:
     def test_a_refinement_dumps_in_ossie_keys(self) -> None:
         with recorded() as caught:
             refinement = QueryRefinement.model_validate(
-                {"metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["amount > 5"]})
+                {"metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filter": ["amount > 5"]})
         assert deprecations(caught) == []
         dumped = refinement.model_dump(mode="json", exclude_none=True)
         assert {"metrics", "filter"} <= dumped.keys()
@@ -114,7 +114,7 @@ class TestDump:
             request = QueryRequest.model_validate(fresh(TWO_STAGES[0]))
         assert deprecations(caught) == []
         assert request.population == "orders"
-        assert request.filter == ["amount > 5"]
+        assert request.filter == ["orders.amount > 5"]
         assert request.metrics is not None
         assert len(request.metrics) == 2
 
@@ -126,7 +126,7 @@ async def test_a_nested_query_is_stored_in_ossie_keys(backend: str, tmp_path: Pa
     await storage.save_dataset(SlayerDataset.model_validate(shop_orders()))
     saved = SlayerDataset.model_validate({"name": "by_region", "data_source": "shop", "source_queries": [
         {"population": "orders", "dimensions": ["customers.region"],
-         "metrics": [{"metric": "sum(amount)", "alias": "total"}], "filter": ["amount > 0"],
+         "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}], "filter": ["orders.amount > 0"],
          "order": [{"field": "total"}]}]})
     await storage.save_dataset(saved)
     doc = stored_document(backend=backend, base=str(tmp_path), name="by_region")
@@ -136,14 +136,14 @@ async def test_a_nested_query_is_stored_in_ossie_keys(backend: str, tmp_path: Pa
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_refinement_in_ossie_keys_applies_as_before(backend: str) -> None:
-    refine = {"metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["region = 'US'"]}
+    refine = {"metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filter": ["orders.region = 'US'"]}
     async with refine_vocab_engine(backend) as engine:
         with recorded() as caught:
             refined = await engine.execute(SAVED_QUERY, refine=fresh(refine))
         expected = await engine.execute({
-            "population": "orders", "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "revenue"}, {"metric": "count(*)", "alias": "n"}],
-            "filter": ["status = 'paid'", "region = 'US'"],
+            "population": "orders", "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}, {"metric": "count(orders.*)", "alias": "n"}],
+            "filter": ["orders.status = 'paid'", "orders.region = 'US'"],
         })
     assert deprecations(caught) == []
     assert normal(refined)["rows"] == normal(expected)["rows"]
@@ -156,7 +156,7 @@ async def test_rest_runs_a_query_in_ossie_keys(tmp_path: Path) -> None:
     await storage.save_dataset(SlayerDataset.model_validate(shop_orders()))
     resp = TestClient(create_app(storage=storage)).post("/query", json={
         "population": "orders", "dimensions": ["customers.region"],
-        "metrics": [{"metric": "sum(amount)", "alias": "total"}], "filter": ["amount > 0"],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}], "filter": ["orders.amount > 0"],
         "order": [{"field": "total", "direction": "desc"}],
     })
     assert resp.status_code == 200, resp.text

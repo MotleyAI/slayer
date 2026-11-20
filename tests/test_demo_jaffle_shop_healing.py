@@ -47,8 +47,8 @@ EXPECTED_EDGES = {
 
 README_QUERY = {
     "population": "orders",
-    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
-    "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
+    "metrics": ["sum(orders.order_total)", "change_pct(sum(orders.order_total))"],
+    "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"],
 }
 
 # The bundled schema as shipped in 1.4.1: money stored as DOUBLE.
@@ -287,8 +287,8 @@ class TestDemoMoneyIsExact:
         _setup(storage, store_dir)
         rows = _run(storage, {
             "population": "orders",
-            "metrics": ["sum(order_total)"],
-            "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
+            "metrics": ["sum(orders.order_total)"],
+            "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"],
         })
         assert rows
         value_key = next(k for k in rows[0] if "order_total" in k)

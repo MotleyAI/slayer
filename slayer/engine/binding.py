@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Final, List, Mapping, Optional, Tuple, T
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    AmbiguousRelationshipPathError,
     ScalarArgumentError,
     ScalarOperandTypeError,
     AggregationArgumentError,
@@ -65,6 +66,8 @@ from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
 from slayer.core.keys import FieldTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.relationship_walker import (
+    canonical_token,
+    resolve_hop,
     resolved_terminal,
     aggregation_owner,
     canonical_path,
@@ -74,7 +77,7 @@ from slayer.core.relationship_walker import (
     walk_miss,
     walk_terminal,
 )
-from slayer.core.names import match_name, match_path
+from slayer.core.names import match_name, match_path, spelled_name
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
     Aggregation,
@@ -86,13 +89,23 @@ from slayer.core.models import (
     shadows_library_function,
     source_reader,
 )
-from slayer.core.warnings import LibraryNameShadowWarning
+from slayer.core.deprecation import scheduled_notice
+from slayer.core.warnings import ChangedReferenceWarning, LibraryNameShadowWarning
 from slayer.engine.population import dimension_routing
+from slayer.engine.population.anchors import (
+    anchor_route,
+    edge_first_refusal,
+    find_anchor,
+    unknown_dataset,
+    unknown_metric,
+    unqualified_count,
+)
 from slayer.engine.key_metadata import bundle_dialect, scope_field_type
 from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
 from slayer.core.query import TimeDimension
-from slayer.core.scope import DatasetScope, peek_dataset_field, resolve_generated_field, root_spelling
+from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
+from slayer.core.time_spine import TIME_SPINE_DATASET
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
     AggCall,
@@ -161,6 +174,7 @@ class BindRecords(BaseModel):
 
     metrics: Dict[Tuple[str, str], None] = {}
     shadows: Dict[Tuple[str, str, str], LibraryNameShadowWarning] = {}
+    notices: Dict[str, ChangedReferenceWarning] = {}
 
 
 _bind_records: ContextVar[Optional[BindRecords]] = ContextVar("slayer_bind_records", default=None)
@@ -538,7 +552,7 @@ def _bind_leaf(
     if isinstance(parsed, TemporalLiteral):
         return LiteralKey(value=_temporal_literal_value(parsed))
     if isinstance(parsed, StarSource):
-        return StarKey()
+        return _bare_star(scope=scope)
     if not isinstance(parsed, (Ref, DottedRef)):
         return None
     try:
@@ -778,6 +792,8 @@ def _resolve_ref(
     alias = match_name(name=name, declared=alias_map, quoted=quoted) if alias_map else None
     if alias_map and alias is not None:
         return alias_map[alias]
+    if is_anchored(scope):
+        raise unknown_metric(name, datasets=_visible_datasets(scope=scope, bundle=bundle))
 
     if scope.population is None:
         raise UnknownReferenceError(
@@ -810,6 +826,59 @@ def _resolve_ref(
     )
 
 
+def _visible_datasets(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> List[SlayerDataset]:
+    """The datasets a bare name's suggestions may name: the bundle's, the reading dataset included."""
+    found = dict(bundle.datasets_by_name)
+    if scope.population is not None:
+        found.setdefault(scope.population.name, scope.population)
+    return [d for d in found.values() if d.name != TIME_SPINE_DATASET]
+
+
+def _anchored_parts(
+    parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
+) -> Tuple[Tuple[str, ...], Tuple[bool, ...]]:
+    """``parts`` as a path from the reading dataset: its anchor replaced by the route reaching it."""
+    host = scope.population
+    assert host is not None
+    datasets = bundle.datasets_by_name
+    anchor = find_anchor(parts[0], quoted=quoted[0], reader=host, datasets_by_name=datasets)
+    if anchor is None:
+        raise edge_first_refusal(parts, datasets_by_name={**datasets, host.name: host}) or unknown_dataset(parts)
+    reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=datasets, rest=parts[1:])
+    if anchor.name != host.name:
+        _announce_changed_reference(parts, host=host, anchor=anchor, route=reached.route, datasets=datasets,
+                                    quoted=quoted[0])
+    return (*reached.route, *parts[1:]), (*(False,) * len(reached.route), *quoted[1:])
+
+
+def _announce_changed_reference(
+    parts: Tuple[str, ...], *, host: SlayerDataset, anchor: SlayerDataset, route: Tuple[str, ...],
+    datasets: Dict[str, SlayerDataset], quoted: bool,
+) -> None:
+    """Record the notice of a dataset-first reference whose direct relationship from ``host`` is not its path."""
+    records = _bind_records.get()
+    if records is None:
+        return
+    try:
+        direct = resolve_hop(current=host, token=parts[0], datasets_by_name={**datasets, host.name: host},
+                             quoted=quoted)
+    except AmbiguousRelationshipPathError:
+        return
+    if direct is None or direct.to != anchor.name or route == (canonical_token(direct),):
+        return
+    reference = ".".join(parts)
+    path = " → ".join((host.spelling, *route))
+    spelling = ".".join((host.spelling, canonical_token(direct), *parts[1:]))
+    message = scheduled_notice(
+        f"`{reference}` reads {anchor.spelling!r} along {path}, its only to-one path; before 2.0 it read the direct "
+        f"relationship, which `{spelling}` names.",
+        removal="3.0",
+    )
+    records.notices.setdefault(message, ChangedReferenceWarning(
+        reference=reference, path=path, spelling=spelling, message=message,
+    ))
+
+
 def _dataset_label(dataset: SlayerDataset, *, bundle: ResolvedSourceBundle) -> str:
     """How messages name ``dataset``: a stage by its user spelling, else the dataset."""
     display = bundle.stage_displays.get(dataset.name)
@@ -826,6 +895,8 @@ def _walk_relationship_chain(
     original_parts: Optional[Tuple[str, ...]] = None,
     quoted: Tuple[bool, ...] = (),
     original_quoted: Tuple[bool, ...] = (),
+    routes_short_form: bool = True,
+    anchor: Optional[Tuple[str, int]] = None,
 ):
     """Walk ``hop_path`` relationship hops from ``host`` through the shared bidirectional
     walker; returns ``(terminal_dataset, canonical effective_hop_path)``. Each token
@@ -851,7 +922,7 @@ def _walk_relationship_chain(
     )
     refusal = partial(
         _flat_spelling_refusal, host=host, hop_path=hop_path, leaf=leaf, spelled=spelled,
-        written=written, quoted=quoted, datasets_by_name=datasets_by_name,
+        written=written, quoted=quoted, datasets_by_name=datasets_by_name, anchor=anchor,
     )
     try:
         walked = walk_terminal(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted)
@@ -869,7 +940,7 @@ def _walk_relationship_chain(
         assert miss.target is not None
         match_name(name=miss.target, declared=datasets_by_name, quoted=False)  # raises when several match by case
         raise _target_not_in_bundle(parts=parts, target=miss.target)
-    broken = len(hop_path) != 1
+    broken = len(hop_path) != 1 or not routes_short_form
     flat = refusal() if broken else None
     if flat is not None:
         raise flat
@@ -911,9 +982,11 @@ def _flat_spelling_refusal(
     written: Tuple[str, ...],
     quoted: Tuple[bool, ...],
     datasets_by_name: Dict[str, SlayerDataset],
+    anchor: Optional[Tuple[str, int]] = None,
 ) -> Optional[UnknownReferenceError]:
     """The refusal of a failed walk whose remaining tokens, joined with ``__``, name a field of a dataset on its walked
-    prefix (nearest the root first); ``written`` is the dropped root qualifier, if any."""
+    prefix (nearest the root first); ``written`` is the dropped root qualifier, if any; ``anchor`` is an anchored
+    reference's written anchor and the number of route hops before it, which the hint spells as written."""
     tokens = (*hop_path, leaf)
     for k in range(len(hop_path)):
         try:
@@ -926,7 +999,11 @@ def _flat_spelling_refusal(
         exact = any(quoted[k:])
         col = peek_dataset_field(dataset=dataset, name="__".join(tokens[k:]), quoted=exact)
         if col is not None:
-            prefix = (*written, *(_quoted_segment(t, quoted=q) for t, q in zip(hop_path[:k], quoted)))
+            segments = tuple(_quoted_segment(t, quoted=q) for t, q in zip(hop_path[:k], quoted))
+            if anchor is None:
+                prefix = (*written, *segments)
+            else:
+                prefix = (anchor[0], *segments[anchor[1]:]) if k >= anchor[1] else (spelled_name(dataset.spelling),)
             flat = ".".join((*prefix, _quoted_segment(col.name, quoted=exact)))
             reference = ".".join(spelled)
             return UnknownReferenceError(
@@ -1042,12 +1119,17 @@ def _resolve_dotted(
     """Resolve a dotted ref against the scope; ``quoted`` flags each double-quoted segment, matched exactly.
 
     Resolution order: the ``source`` qualifier's source column → root qualifier dropped → declared alias (dotted text)
-    → relationship walk → leaf field → saved metric (re-anchored into host coords, eligible position)."""
-    source_key = _source_column_key(parts, scope=scope, quoted=quoted)
-    if source_key is not None:
-        return source_key
+    → relationship walk → leaf field → saved metric (re-anchored into host coords, eligible position). An anchored
+    scope reads the first segment as the reference's anchor instead (``queries/references``)."""
     original_parts = parts
     original_quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
+    if is_anchored(scope):
+        return _resolve_anchored(
+            parts, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx, quoted=original_quoted,
+        )
+    source_key = _source_column_key(parts, scope=scope, quoted=original_quoted)
+    if source_key is not None:
+        return source_key
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=original_quoted)
     quoted = original_quoted[len(original_parts) - len(parts):]
     if alias_map:
@@ -1088,6 +1170,48 @@ def _resolve_dotted(
     )
 
 
+def _resolve_anchored(
+    parts: Tuple[str, ...],
+    *,
+    scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]],
+    metric_ctx: Optional[MetricResolutionCtx],
+    quoted: Tuple[bool, ...],
+) -> ValueKey:
+    """A query's dotted reference: an alias by its text, else anchored at its first segment."""
+    if alias_map:
+        alias = match_path(parts=parts, declared=alias_map, quoted=quoted)
+        if alias is not None:
+            return alias_map[alias]
+    if scope.population is None:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="DatasetScope", scope_summary=_NO_ANCHOR_SCOPE_SUMMARY, suggestion=None,
+        )
+    host = scope.population
+    path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+    if not path[:-1]:
+        return _resolve_terminal_leaf(
+            current=host, leaf=path[-1], hop_path=(), original_parts=parts, scope=scope, bundle=bundle,
+            metric_ctx=metric_ctx, quoted=flags[-1],
+        )
+    current, effective_hop_path = _walk_relationship_chain(
+        hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
+        routes_short_form=False,
+        anchor=(_quoted_segment(parts[0], quoted=quoted[0]), len(path) - len(parts) + 1),
+    )
+    if TIME_SPINE_DATASET in effective_hop_path[len(path) - len(parts) + 1:]:  # hops after the anchor's route
+        raise UnresolvableDimensionRelationshipError(
+            reference=".".join(parts), root_dataset=host.spelling,
+            reason=f"a route never crosses {TIME_SPINE_DATASET!r}, which is read only as an anchor.",
+            suggested_path=f"{TIME_SPINE_DATASET}.{path[-1]}",
+        )
+    return _resolve_terminal_leaf(
+        current=current, leaf=path[-1], hop_path=effective_hop_path, original_parts=parts, scope=scope,
+        bundle=bundle, metric_ctx=metric_ctx, quoted=flags[-1],
+    )
+
+
 def _resolve_terminal_leaf(
     *,
     current: SlayerDataset,
@@ -1117,7 +1241,7 @@ def _resolve_terminal_leaf(
             metric_ctx=metric_ctx, ref_text=".".join(original_parts),
             host_path=tuple(hop_path),
         )
-    raise _unresolved_dotted_error(parts=original_parts, terminal_dataset=current)
+    raise _unresolved_dotted_error(parts=original_parts, terminal_dataset=current, bundle=bundle)
 
 
 _METRIC_LEGAL_POSITIONS = (
@@ -1143,7 +1267,7 @@ def _ineligible_saved_metric_error(
 
 
 def _unresolved_dotted_error(
-    *, parts: Tuple[str, ...], terminal_dataset: SlayerDataset,
+    *, parts: Tuple[str, ...], terminal_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
 ) -> UnknownReferenceError:
     """Error: a dotted leaf matching neither field nor saved metric; names
     both namespaces and offers close matches."""
@@ -1162,7 +1286,8 @@ def _unresolved_dotted_error(
     return UnknownReferenceError(
         name=dotted,
         scope_kind="DatasetScope",
-        scope_summary=f"dataset {label!r}",
+        scope_summary=(f"dataset {label!r}" if terminal_dataset.list_of is not None
+                       else _dataset_label(terminal_dataset, bundle=bundle)),
         suggestion=detail,
     )
 
@@ -1219,6 +1344,8 @@ def _resolve_saved_metric(
         terminal_dataset = terminal_dataset.definition_view()
         if scope.population is not None:
             scope = DatasetScope(population=scope.population.definition_view())
+    elif scope.anchored:
+        scope = DatasetScope(population=scope.population)
     if not host_path:
         # Bare/local: metric lives on the host; bind inline at this scope.
         return _bind(
@@ -1246,6 +1373,8 @@ def _resolve_dotted_star(
     """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
+    if is_anchored(scope):
+        return _resolve_anchored_star(parts, scope=scope, bundle=bundle, quoted=quoted)
     original_parts = parts
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=quoted)
     quoted = quoted[len(original_parts) - len(parts):]
@@ -1266,6 +1395,32 @@ def _resolve_dotted_star(
         hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*", quoted=quoted,
     )
     return StarKey(path=tuple(effective_hop_path))
+
+
+def _resolve_anchored_star(
+    parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
+) -> StarKey:
+    """A query's ``<anchor>[.<route>].*``."""
+    quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
+    host = scope.population
+    if host is None:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="DatasetScope", scope_summary=_NO_ANCHOR_SCOPE_SUMMARY, suggestion=None,
+        )
+    path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+    if len(path) == 1:
+        return StarKey()
+    _, effective_hop_path = _walk_relationship_chain(
+        hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf="*", quoted=flags, routes_short_form=False,
+    )
+    return StarKey(path=tuple(effective_hop_path))
+
+
+def _bare_star(*, scope: DatasetScope) -> StarKey:
+    """A bare ``*``: refused in a query's own scope, where a row count names its dataset."""
+    if is_anchored(scope):
+        raise unqualified_count(root_spelling(scope))
+    return StarKey()
 
 
 def _bind_partition_keys(
@@ -1470,7 +1625,7 @@ def _filter_error(reason: str) -> AggregationFilterError:
     return AggregationFilterError(
         summary=f"{_FILTER_CLAUSE} {reason}",
         location=_FILTER_CLAUSE,
-        suggestion="filter on fields of the aggregated rows, e.g. sum(amount) FILTER (WHERE status = 'paid').",
+        suggestion="filter on fields of the aggregated rows, e.g. sum(orders.amount) FILTER (WHERE orders.status = 'paid').",
     )
 
 
@@ -1583,7 +1738,7 @@ def _bind_agg_source(
             raise _not_an_aggregation_source(bound, agg=parsed.agg)
         return bound
     if isinstance(parsed.source, StarSource):
-        return StarKey()
+        return _bare_star(scope=scope)
     if (
         isinstance(parsed.source, DottedRef)
         and parsed.source.parts

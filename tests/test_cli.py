@@ -149,7 +149,7 @@ class TestRunQueryRefine:
         return json.loads(result.stdout)
 
     def _assert_by_region(self, rows: list) -> None:
-        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in rows} == (
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["revenue"] for r in rows} == (
             BY_REGION_MONTH
         )
 

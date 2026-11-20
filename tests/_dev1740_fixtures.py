@@ -222,14 +222,14 @@ def two_stage_banding() -> list:
     row-level CASE band over that total, regrouped by (region, band)."""
     stage1 = SlayerQuery(
         name="per_city", population="orders",
-        dimensions=["city", "region"],
-        metrics=[QueryMetric(metric="sum(amount)", alias="city_total")],
+        dimensions=["orders.city", "orders.region"],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="city_total")],
     )
     stage2 = SlayerQuery(
         population="per_city",
-        dimensions=[QueryDimension(field="region"),
-                    QueryDimension(field="CASE WHEN city_total > 5000 THEN 1 ELSE 0 END", alias="band")],
-        metrics=[QueryMetric(metric="sum(city_total)", alias="band_total")],
+        dimensions=[QueryDimension(field="per_city.region"),
+                    QueryDimension(field="CASE WHEN per_city.city_total > 5000 THEN 1 ELSE 0 END", alias="band")],
+        metrics=[QueryMetric(metric="sum(per_city.city_total)", alias="band_total")],
     )
     return [stage1, stage2]
 

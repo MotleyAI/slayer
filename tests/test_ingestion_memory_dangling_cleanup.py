@@ -139,7 +139,7 @@ class TestIngestDanglingRefCleanup:
         # drop the field to make the query stale.
         attached = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         await storage.save_memory(
             learning="x",
@@ -176,4 +176,4 @@ class TestIngestDanglingRefCleanup:
         assert reloaded.query is not None
         assert reloaded.query.population == "orders"
         assert reloaded.query.metrics is not None
-        assert reloaded.query.metrics[0].metric == "sum(amount)"
+        assert reloaded.query.metrics[0].metric == "sum(orders.amount)"

@@ -1238,7 +1238,7 @@ class TestVisibilitySurfaces:
         resp = await engine.execute(
             SlayerQuery.model_validate({
                 "population": "_dlt_loads",
-                "metrics": [{"metric": "count(*)", "alias": "n"}],
+                "metrics": [{"metric": "count(_dlt_loads.*)", "alias": "n"}],
             })
         )
         assert resp.row_count == 1
@@ -1278,17 +1278,17 @@ class TestJoinsIntoHiddenModels:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["_dlt_loads.schema_name"],
-                "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
             })
         )
         # The hidden dataset's name in the result key is evidence the relationship resolved.
         assert resp.row_count == 2
         assert set(resp.data[0]) == {
-            "orders._dlt_loads.schema_name",
-            "orders.total",
+            "_dlt_loads.schema_name",
+            "total",
         }
         assert {
-            row["orders._dlt_loads.schema_name"]: row["orders.total"]
+            row["_dlt_loads.schema_name"]: row["total"]
             for row in resp.data
         } == {"openfda": 30.0, "other": 5.0}
 

@@ -26,16 +26,16 @@ _JOIN = (
     "LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id"
 )
 CROSSING_GRAIN_CTE = (
-    'SELECT _val_0 AS "customers_v2.deep_pop",',
-    'THEN _val_1 END) AS DOUBLE PRECISION) AS "customers_v2.lifetime_value_first"',
+    'SELECT _val_0 AS "deep_pop",',
+    'THEN _val_1 END) AS DOUBLE PRECISION) AS "lifetime_value_first"',
     "FROM ( SELECT regions.population AS _val_0, customers_v2.lifetime_value AS _val_1,",
     _JOIN,
     ") AS _ranked_src GROUP BY _val_0",
 )
 
 CROSSING_VALUE_CTE = (
-    'SELECT _val_0 AS "customers_v2.status",',
-    'THEN _val_1 END) AS DOUBLE PRECISION) AS "customers_v2.deep_weight_first"',
+    'SELECT _val_0 AS "status",',
+    'THEN _val_1 END) AS DOUBLE PRECISION) AS "deep_weight_first"',
     "FROM ( SELECT customers_v2.status AS _val_0, regions.weight AS _val_1,",
     _JOIN,
     ") AS _ranked_src GROUP BY _val_0",
@@ -274,8 +274,8 @@ class TestRankedPathUsesTheOneMaterialiser:
     def _query(self) -> SlayerQuery:
         return SlayerQuery(
             population="orders_x",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="first(cust_ltv)", alias="f")],
+            dimensions=[QueryDimension(field="orders_x.status")],
+            metrics=[QueryMetric(metric="first(orders_x.cust_ltv)", alias="f")],
         )
 
     async def test_local_first_last_still_materialises_correctly(self) -> None:

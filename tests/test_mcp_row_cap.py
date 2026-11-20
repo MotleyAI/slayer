@@ -61,13 +61,13 @@ async def _seed_storage(workspace: Path) -> YAMLStorage:
     await storage.save_dataset(SlayerDataset(
         name="qb_over", data_source="lite",
         source_queries=[SlayerQuery(
-            population="nums", dimensions=["id"], filter=["id <= 25"],
+            population="nums", dimensions=["nums.id"], filter=["nums.id <= 25"],
         )],
     ))
     await storage.save_dataset(SlayerDataset(
         name="qb_at_cap", data_source="lite",
         source_queries=[SlayerQuery(
-            population="nums", dimensions=["id"], filter=["id <= 20"],
+            population="nums", dimensions=["nums.id"], filter=["nums.id <= 20"],
         )],
     ))
     return storage
@@ -135,14 +135,14 @@ class TestDefaultCap:
     async def test_uncapped_query_over_large_result(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]}, "format": "json",
+            "query": {"population": "nums", "dimensions": ["nums.id"]}, "format": "json",
         })
         _assert_truncated(_json_payload(result))
 
     async def test_result_exactly_at_cap(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"], "filter": ["id <= 20"]},
+            "query": {"population": "nums", "dimensions": ["nums.id"], "filter": ["nums.id <= 20"]},
             "format": "json",
         })
         _assert_untruncated(_json_payload(result), rows=20)
@@ -150,7 +150,7 @@ class TestDefaultCap:
     async def test_result_one_past_cap(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"], "filter": ["id <= 21"]},
+            "query": {"population": "nums", "dimensions": ["nums.id"], "filter": ["nums.id <= 21"]},
             "format": "json",
         })
         _assert_truncated(_json_payload(result))
@@ -162,7 +162,7 @@ class TestExplicitLimitTrusted:
     async def test_explicit_limit_honored(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"], "limit": 25},
+            "query": {"population": "nums", "dimensions": ["nums.id"], "limit": 25},
             "format": "json",
         })
         _assert_untruncated(_json_payload(result), rows=25)
@@ -170,7 +170,7 @@ class TestExplicitLimitTrusted:
     async def test_explicit_small_limit(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"], "limit": 5},
+            "query": {"population": "nums", "dimensions": ["nums.id"], "limit": 5},
             "format": "json",
         })
         _assert_untruncated(_json_payload(result), rows=5)
@@ -182,7 +182,7 @@ class TestExplicitLimitTrusted:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=lambda: _canned_response(30))
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"], "limit": 5},
+            "query": {"population": "nums", "dimensions": ["nums.id"], "limit": 5},
             "format": "json",
         })
         _assert_untruncated(_json_payload(result), rows=30)
@@ -193,7 +193,7 @@ class TestExplicitLimitTrusted:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=lambda: _canned_response(25))
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"], "limit": 5},
+            "query": {"population": "nums", "dimensions": ["nums.id"], "limit": 5},
             "explain": True, "format": "json",
         })
         _assert_untruncated(_json_after_plan(result), rows=25)
@@ -205,7 +205,7 @@ class TestPushDown:
     async def test_dry_run_sql_carries_limit_21(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]}, "dry_run": True,
+            "query": {"population": "nums", "dimensions": ["nums.id"]}, "dry_run": True,
         })
         assert "LIMIT 21" in result
         assert "LIMIT 20" not in result
@@ -213,7 +213,7 @@ class TestPushDown:
     async def test_show_sql_carries_limit_21(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]},
+            "query": {"population": "nums", "dimensions": ["nums.id"]},
             "show_sql": True, "format": "json",
         })
         assert "LIMIT 21" in result
@@ -251,7 +251,7 @@ class TestRunByNameCap:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
             "query": "qb_over",
-            "refine": {"filter": ["id >= 2"], "order": [{"field": "id", "direction": "asc"}]},
+            "refine": {"filter": ["nums.id >= 2"], "order": [{"field": "nums.id", "direction": "asc"}]},
             "format": "json",
         })
         payload = _json_payload(result)
@@ -261,14 +261,14 @@ class TestRunByNameCap:
     async def test_refined_query_under_cap(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": "qb_over", "refine": {"filter": ["id >= 10"]}, "format": "json",
+            "query": "qb_over", "refine": {"filter": ["nums.id >= 10"]}, "format": "json",
         })
         _assert_untruncated(_json_payload(result), rows=16)
 
     async def test_refined_sql_gets_no_pushed_limit(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": "qb_over", "refine": {"filter": ["id >= 2"]}, "dry_run": True,
+            "query": "qb_over", "refine": {"filter": ["nums.id >= 2"]}, "dry_run": True,
         })
         assert "SQL:" in result
         assert ">= 2" in result
@@ -281,7 +281,7 @@ class TestMultiStageCap:
     async def test_root_without_limit_capped(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": [{"population": "nums", "dimensions": ["id"]}],
+            "query": [{"population": "nums", "dimensions": ["nums.id"]}],
             "format": "json",
         })
         warning = _assert_truncated(_json_payload(result))
@@ -293,8 +293,8 @@ class TestMultiStageCap:
         result = await _call(server, name="query", arguments={
             "query": [
                 {"name": "base", "population": "nums",
-                 "dimensions": ["id"], "limit": 30},
-                {"population": "base", "dimensions": ["id"]},
+                 "dimensions": ["nums.id"], "limit": 30},
+                {"population": "base", "dimensions": ["base.id"]},
             ],
             "format": "json",
         })
@@ -304,7 +304,7 @@ class TestMultiStageCap:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
             "query": [
-                {"population": "nums", "dimensions": ["id"], "limit": 25},
+                {"population": "nums", "dimensions": ["nums.id"], "limit": 25},
             ],
             "format": "json",
         })
@@ -317,7 +317,7 @@ class TestMultiStageCap:
         _patch_execute(monkeypatch, make_response=lambda: _canned_response(30))
         result = await _call(server, name="query", arguments={
             "query": [
-                {"population": "nums", "dimensions": ["id"], "limit": 5},
+                {"population": "nums", "dimensions": ["nums.id"], "limit": 5},
             ],
             "format": "json",
         })
@@ -326,7 +326,7 @@ class TestMultiStageCap:
     async def test_root_dry_run_sql_carries_limit_21(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": [{"population": "nums", "dimensions": ["id"]}],
+            "query": [{"population": "nums", "dimensions": ["nums.id"]}],
             "dry_run": True,
         })
         assert "LIMIT 21" in result
@@ -337,7 +337,7 @@ class TestMultiStageCap:
         server = await _make_server(tmp_path)
         # Direct closure call: the wire path would copy the dicts anyway.
         fn = server._tool_manager.get_tool("query").fn
-        stages = [{"population": "nums", "dimensions": ["id"]}]
+        stages = [{"population": "nums", "dimensions": ["nums.id"]}]
         snapshot = copy.deepcopy(stages)
         await fn(query=stages, format="json")
         assert stages == snapshot
@@ -349,7 +349,7 @@ class TestNoticeRendering:
     async def test_markdown_notice(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]},
+            "query": {"population": "nums", "dimensions": ["nums.id"]},
         })
         assert "Warnings:" in result
         assert NOTICE in result
@@ -363,7 +363,7 @@ class TestNoticeRendering:
     async def test_csv_notice(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id", "v"]}, "format": "csv",
+            "query": {"population": "nums", "dimensions": ["nums.id", "nums.v"]}, "format": "csv",
         })
         lines = result.splitlines()
         assert lines[0].startswith("#")
@@ -376,7 +376,7 @@ class TestNoticeRendering:
     async def test_json_notice(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]}, "format": "json",
+            "query": {"population": "nums", "dimensions": ["nums.id"]}, "format": "json",
         })
         warning = _assert_truncated(_json_payload(result))
         assert "limit" in warning["hint"]
@@ -393,7 +393,7 @@ class TestNoticeRendering:
             make_response=lambda: _canned_response(25, warnings=[norm]),
         )
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]}, "format": "json",
+            "query": {"population": "nums", "dimensions": ["nums.id"]}, "format": "json",
         })
         payload = _json_payload(result)
         _assert_truncated(payload)
@@ -401,14 +401,14 @@ class TestNoticeRendering:
         assert kinds == ["normalization", "truncated"]
 
         md = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]},
+            "query": {"population": "nums", "dimensions": ["nums.id"]},
         })
         assert "[R1]" in md
         assert NOTICE in md
         assert md.index("[R1]") < md.index(NOTICE)
 
         csv_out = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]}, "format": "csv",
+            "query": {"population": "nums", "dimensions": ["nums.id"]}, "format": "csv",
         })
         comment_lines = [ln for ln in csv_out.splitlines() if ln.startswith("#")]
         assert len(comment_lines) == 2
@@ -430,7 +430,7 @@ class TestNoticeRendering:
             ),
         )
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]},
+            "query": {"population": "nums", "dimensions": ["nums.id"]},
         })
         assert "Dimension attributes:" in result
         assert result.index("Dimension attributes:") < result.index("Warnings:")
@@ -475,7 +475,7 @@ class TestAttributesMachineSafe:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=self._with_attributes)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]}, "format": "json",
+            "query": {"population": "nums", "dimensions": ["nums.id"]}, "format": "json",
         })
         payload = json.loads(result)  # strict: raises if attributes trail the payload
         assert isinstance(payload, dict)
@@ -489,7 +489,7 @@ class TestAttributesMachineSafe:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=self._with_attributes)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]}, "format": "csv",
+            "query": {"population": "nums", "dimensions": ["nums.id"]}, "format": "csv",
         })
         lines = result.splitlines()
         comment_lines = [ln for ln in lines if ln.startswith("#")]
@@ -550,7 +550,7 @@ class TestAttributesMachineSafe:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=lambda: _canned_response(3))
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"], "limit": 5},
+            "query": {"population": "nums", "dimensions": ["nums.id"], "limit": 5},
             "format": "json",
         })
         assert isinstance(json.loads(result), list)
@@ -565,7 +565,7 @@ class TestExplainDryRun:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=lambda: _canned_response(25))
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]},
+            "query": {"population": "nums", "dimensions": ["nums.id"]},
             "explain": True, "format": "json",
         })
         _assert_truncated(_json_after_plan(result))
@@ -573,7 +573,7 @@ class TestExplainDryRun:
     async def test_dry_run_never_truncates(self, tmp_path: Path) -> None:
         server = await _make_server(tmp_path)
         result = await _call(server, name="query", arguments={
-            "query": {"population": "nums", "dimensions": ["id"]}, "dry_run": True,
+            "query": {"population": "nums", "dimensions": ["nums.id"]}, "dry_run": True,
         })
         assert "SQL:" in result
         assert "truncated" not in result

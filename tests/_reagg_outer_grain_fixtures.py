@@ -46,9 +46,9 @@ SNAPSHOT_ROWS = [
 JAN, FEB = "2024-01", "2024-02"
 
 #: Inner grain with the joined month bucket.
-P = "partition_by=[account_snapshots.account_id, id, account_snapshots.snapshot_date]"
+P = "partition_by=[account_snapshots.account_id, customers.id, account_snapshots.snapshot_date]"
 #: Inner grain without it.
-Q = "partition_by=[account_snapshots.account_id, id]"
+Q = "partition_by=[account_snapshots.account_id, customers.id]"
 MAX_Q = f"max(account_snapshots.balance, {Q})"
 
 #: ``sum(<inner>(balance, P))`` by (name, month).

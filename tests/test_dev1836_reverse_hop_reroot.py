@@ -98,8 +98,8 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
         )
 
 
-CM = QueryMetric(metric="sum(policy_amount.policy_amount)", alias="cm")
-MONTH = [TimeDimension(field="created_at",
+CM = QueryMetric(metric="sum(policy.policy_amount.policy_amount)", alias="cm")
+MONTH = [TimeDimension(field="policy.created_at",
                        granularity=TimeGranularity.MONTH)]
 
 
@@ -113,8 +113,8 @@ class TestTimeTruncGrainReroots:
         assert resp.sql is not None
         assert_scope_closed(resp.sql, dialect="sqlite")
         by_month = {r["policy.created_at"][:7]: r for r in resp.data}
-        assert by_month["2024-01"]["policy.cm"] == pytest.approx(300.0)
-        assert by_month["2024-02"]["policy.cm"] == pytest.approx(700.0)
+        assert by_month["2024-01"]["cm"] == pytest.approx(300.0)
+        assert by_month["2024-02"]["cm"] == pytest.approx(700.0)
 
     async def test_windowed_cross_model_buckets_by_rerooted_host_td(self, engine) -> None:
         """The windowed producer's synthesized bucket is the re-rooted host TD
@@ -122,7 +122,7 @@ class TestTimeTruncGrainReroots:
         resp = await engine.execute(SlayerQuery(
             population="policy", time_dimensions=list(MONTH),
             metrics=[QueryMetric(
-                metric="sum(policy_amount.policy_amount, window='20d')", alias="w",
+                metric="sum(policy.policy_amount.policy_amount, window='20d')", alias="w",
             )],
         ))
         assert resp.sql is not None
@@ -132,8 +132,8 @@ class TestTimeTruncGrainReroots:
         # dates/amounts — cross-dataset must match local window semantics. The
         # 20-day February window starts on Feb 10 inclusive, so POL-2's two
         # amounts are in.
-        assert by_month["2024-01"]["policy.w"] == pytest.approx(300.0)
-        assert by_month["2024-02"]["policy.w"] == pytest.approx(700.0)
+        assert by_month["2024-01"]["w"] == pytest.approx(300.0)
+        assert by_month["2024-02"]["w"] == pytest.approx(700.0)
 
 
 class TestSiblingFilterBindsTheHostInstance:
@@ -144,13 +144,13 @@ class TestSiblingFilterBindsTheHostInstance:
         opposite rows here."""
         resp = await engine.execute(SlayerQuery(
             population="policy",
-            dimensions=[QueryDimension(field="policy_number")],
+            dimensions=[QueryDimension(field="policy.policy_number")],
             metrics=[CM],
             filter=["party.code = 'X'"],
         ))
         rows = {r["policy.policy_number"]: r for r in resp.data}
         assert set(rows) == {"POL-1"}, rows
-        assert rows["POL-1"]["policy.cm"] == pytest.approx(300.0), (
+        assert rows["POL-1"]["cm"] == pytest.approx(300.0), (
             "the producer bound the root's own party relationship (party_b) instead of "
             "the host's instance"
         )

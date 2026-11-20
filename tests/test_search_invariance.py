@@ -194,7 +194,7 @@ async def _seed_invariance_corpus(storage: StorageBackend) -> None:
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount_paid)")],
+                metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
             ),
         )
 

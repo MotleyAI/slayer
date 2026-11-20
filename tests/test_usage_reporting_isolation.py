@@ -32,7 +32,7 @@ from tests._usage_reporting_helpers import (
     usage,
 )
 
-_QUERY = {"population": "orders", "metrics": ["sum(amount)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(orders.amount)"]}
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def _commands(store: str) -> list[list[str]]:
     return [
         ["datasets", "--storage", store, "list"],
         ["query", json.dumps(_QUERY), "--storage", store],
-        ["query", json.dumps({"population": "no_such_model", "metrics": ["count(*)"]}), "--storage", store],
+        ["query", json.dumps({"population": "no_such_model", "metrics": ["count(no_such_model.*)"]}), "--storage", store],
         ["datasets", "--storage", store, "show", "no_such_model"],
     ]
 

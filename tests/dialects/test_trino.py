@@ -303,14 +303,14 @@ def test_percentile_is_approx_percentile(dialect) -> None:
 _DATE_QUERY = SlayerQuery.model_validate({
     "population": "dt",
     "dimensions": [
-        "id",
-        {"field": "date_add(d1, 1, 'month')", "alias": "a"},
-        {"field": "date_add(d1, 2, 'hour')", "alias": "b"},
-        {"field": "date_add(t1, n, 'day')", "alias": "c"},
-        {"field": "date_diff('day', d1, d2)", "alias": "e"},
-        {"field": "date_diff('second', t1, t2)", "alias": "f"},
-        {"field": "date_part('iso_year', d1)", "alias": "g"},
-        {"field": "date_part('day_of_week', t1)", "alias": "h"},
+        "dt.id",
+        {"field": "date_add(dt.d1, 1, 'month')", "alias": "a"},
+        {"field": "date_add(dt.d1, 2, 'hour')", "alias": "b"},
+        {"field": "date_add(dt.t1, dt.n, 'day')", "alias": "c"},
+        {"field": "date_diff('day', dt.d1, dt.d2)", "alias": "e"},
+        {"field": "date_diff('second', dt.t1, dt.t2)", "alias": "f"},
+        {"field": "date_part('iso_year', dt.d1)", "alias": "g"},
+        {"field": "date_part('day_of_week', dt.t1)", "alias": "h"},
     ],
 })
 

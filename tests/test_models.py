@@ -3,6 +3,8 @@
 import datetime
 
 import pytest
+import sqlglot
+from sqlglot import exp
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
@@ -176,10 +178,10 @@ class TestOrderShorthandHealing:
         assert q.order[0].direction == "desc"
 
     def test_shorthand_formula_key_equals_canonical(self) -> None:
-        shorthand = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
+        shorthand = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(orders.revenue)": "desc"}]})
         canonical = SlayerQuery.model_validate({
             "population": "orders",
-            "order": [{"field": "sum(revenue)", "direction": "desc"}],
+            "order": [{"field": "sum(orders.revenue)", "direction": "desc"}],
         })
         assert shorthand.order == canonical.order
 
@@ -238,7 +240,7 @@ class TestOrderShorthandHealing:
         # Pre-existing latent bug: SQL generator compares ``direction == "asc"`` strictly,
         # so a stored "ASCENDING"/"ASC" used to silently emit DESC. Now normalized.
         q = SlayerQuery.model_validate({
-            "population": "orders", "order": [{"field": "status", "direction": "ASCENDING"}]
+            "population": "orders", "order": [{"field": "orders.status", "direction": "ASCENDING"}]
         })
         assert q.order[0].direction == "asc"
 
@@ -266,16 +268,16 @@ class TestOrderShorthandHealing:
 
     def test_invalid_direction_value_canonical_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "direction": "sideways"}]})
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "direction": "sideways"}]})
 
     def test_mixed_canonical_and_stray_direction_key_raises(self) -> None:
         # extra='forbid' rejects the stray 'b' rather than silently dropping it.
         with pytest.raises(ValidationError):
-            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "b": "asc"}]})
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "b": "asc"}]})
 
     def test_mixed_canonical_and_stray_nondirection_key_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "b": "downward"}]})
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "b": "downward"}]})
 
     def test_direction_only_key_raises(self) -> None:
         # {"direction": "desc"} is a malformed canonical item (no field), not shorthand.
@@ -293,7 +295,7 @@ class TestOrderShorthandHealing:
 
     def test_non_wrappable_scalar_string_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
-            SlayerQuery(population="orders", order="status")
+            SlayerQuery(population="orders", order="orders.status")
 
     def test_non_wrappable_int_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
@@ -351,7 +353,7 @@ class TestOrderShorthandHealing:
         assert q.order[1].direction == "asc"
 
     def test_list_orderitem_passthrough(self) -> None:
-        item = OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})
+        item = OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})
         q = SlayerQuery(population="orders", order=[item])
         assert q.order is not None
         assert len(q.order) == 1
@@ -361,18 +363,18 @@ class TestOrderShorthandHealing:
     # --- OrderItem-level direction validation + extra=forbid ---
 
     def test_orderitem_direction_synonym_normalized(self) -> None:
-        assert OrderItem(field="status", direction="DESCENDING").direction == "desc"
+        assert OrderItem(field="orders.status", direction="DESCENDING").direction == "desc"
 
     def test_orderitem_direction_default_asc(self) -> None:
-        assert OrderItem(field="status").direction == "asc"
+        assert OrderItem(field="orders.status").direction == "asc"
 
     def test_orderitem_invalid_direction_raises(self) -> None:
         with pytest.raises(ValidationError):
-            OrderItem(field="status", direction="sideways")
+            OrderItem(field="orders.status", direction="sideways")
 
     def test_orderitem_extra_key_forbidden(self) -> None:
         with pytest.raises(ValidationError):
-            OrderItem(field="status", direction="asc", bogus="x")
+            OrderItem(field="orders.status", direction="asc", bogus="x")
 
 
 class TestSlayerModel:
@@ -1425,10 +1427,10 @@ class TestStringCoercion:
     """Plain strings are accepted in fields and dimensions lists."""
 
     def test_fields_plain_strings(self) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)", "sum(revenue)"]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)", "sum(orders.revenue)"]})
         assert len(query.metrics) == 2
-        assert query.metrics[0] == QueryMetric(metric="count(*)")
-        assert query.metrics[1] == QueryMetric(metric="sum(revenue)")
+        assert query.metrics[0] == QueryMetric(metric="count(orders.*)")
+        assert query.metrics[1] == QueryMetric(metric="sum(orders.revenue)")
 
     def test_dimensions_plain_strings(self) -> None:
         query = SlayerQuery(population="orders", dimensions=["status", "customers.name"])
@@ -1440,11 +1442,11 @@ class TestStringCoercion:
     def test_fields_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": ["count(*)", {"metric": "sum(revenue) / count(*)", "alias": "aov"}],
+            "metrics": ["count(orders.*)", {"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"}],
         })
         assert len(query.metrics) == 2
-        assert query.metrics[0] == QueryMetric(metric="count(*)")
-        assert query.metrics[1] == QueryMetric(metric="sum(revenue) / count(*)", alias="aov")
+        assert query.metrics[0] == QueryMetric(metric="count(orders.*)")
+        assert query.metrics[1] == QueryMetric(metric="sum(orders.revenue) / count(orders.*)", alias="aov")
 
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery.model_validate({
@@ -1526,7 +1528,7 @@ class TestCoerceFieldsAndDimensions:
 
     def test_dimensions_scalar_string_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
-            SlayerQuery(population="orders", dimensions="status")
+            SlayerQuery(population="orders", dimensions="orders.status")
 
     def test_fields_list_of_strings_coerced(self) -> None:
         q = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)", "sum(revenue)"]})
@@ -1703,7 +1705,7 @@ class TestSubstituteVariables:
         """Variables field is accepted on SlayerQuery."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": ["count(*)"],
+            "metrics": ["count(orders.*)"],
             "filter": ["status = '{val}'"],
             "variables": {"val": "completed"},
         })
@@ -1745,11 +1747,21 @@ async def _prefix_sql(query: dict) -> str:
     return await _engine_generate(query=SlayerQuery.model_validate(query), dataset=model, extra_datasets=extra)
 
 
+def _unaliased(sql: str) -> str:
+    """``sql`` with each outer result alias replaced by its position."""
+    tree = sqlglot.parse_one(sql)
+    assert isinstance(tree, exp.Query)
+    for i, name in enumerate(tree.named_selects):
+        sql = sql.replace(f'"{name}"', f'"_c{i}"')
+    return sql
+
+
 _MONTH = {"field": "created_at", "granularity": "month"}
 
+_ANCHORED_KEYS = {"joined-dimension", "joined-formula", "multihop-dimension"}
 # (root-qualified, bare) spellings of one query.
 _ROOT_QUALIFIED = {
-    "dimension": ({"dimensions": ["orders.status"]}, {"dimensions": ["status"]}),
+    "dimension": ({"dimensions": ["status"]}, {"dimensions": ["orders.status"]}),
     "joined-dimension": ({"dimensions": ["orders.customers.name"]}, {"dimensions": ["customers.name"]}),
     "multihop-dimension": ({"dimensions": ["orders.customers.regions.name"]}, {"dimensions": ["customers.regions.name"]}),
     "dimension-label": ({"dimensions": [{"name": "orders.status", "label": "Status"}]},
@@ -1760,9 +1772,9 @@ _ROOT_QUALIFIED = {
         {"time_dimensions": [{"field": "created_at", "granularity": "month",
                               "date_range": ["2024-01-01", "2024-12-31"], "label": "Month"}]},
     ),
-    "formula": ({"metrics": ["sum(orders.revenue)"]}, {"metrics": ["sum(revenue)"]}),
-    "star-count": ({"metrics": ["count(orders.*)"]}, {"metrics": ["count(*)"]}),
-    "arithmetic": ({"metrics": ["sum(orders.revenue) / count(orders.*)"]}, {"metrics": ["sum(revenue) / count(*)"]}),
+    "formula": ({"metrics": ["sum(revenue)"]}, {"metrics": ["sum(revenue)"]}),
+    "star-count": ({"metrics": ["count(*)"]}, {"metrics": ["count(orders.*)"]}),
+    "arithmetic": ({"metrics": ["sum(revenue) / count(*)"]}, {"metrics": ["sum(orders.revenue) / count(orders.*)"]}),
     "transform": ({"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(orders.revenue))"]},
                   {"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(revenue))"]}),
     "joined-formula": ({"metrics": ["avg(orders.customers.score)"]}, {"metrics": ["avg(customers.score)"]}),
@@ -1795,8 +1807,11 @@ class TestRootQualifier:
     @pytest.mark.parametrize("case", sorted(_ROOT_QUALIFIED))
     async def test_root_qualified_equals_bare(self, case: str) -> None:
         qualified, bare = _ROOT_QUALIFIED[case]
-        assert await _prefix_sql({"population": "orders", **qualified}) == await _prefix_sql(
-            {"population": "orders", **bare})
+        got = await _prefix_sql({"population": "orders", **qualified})
+        expected = await _prefix_sql({"population": "orders", **bare})
+        if case in _ANCHORED_KEYS:  # different anchors are different result keys
+            got, expected = _unaliased(got), _unaliased(expected)
+        assert got == expected
 
     @pytest.mark.parametrize("source", [
         {"population": "orders", "extensions": [{"dataset": "orders"}]},
@@ -1804,19 +1819,19 @@ class TestRootQualifier:
     ], ids=["extension-dict", "extension-object"])
     async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
         assert await _prefix_sql({**source, "dimensions": ["orders.status"]}) == await _prefix_sql(
-            {**source, "dimensions": ["status"]})
+            {**source, "dimensions": ["orders.status"]})
 
     @pytest.mark.parametrize("query", [
         {"metrics": ["count(customers.orders.id)"]},
-        {"metrics": ["count(*)"], "filter": ["customers.orders.status = 'paid'"]},
+        {"metrics": ["count(orders.*)"], "filter": ["customers.orders.status = 'paid'"]},
     ], ids=["formula", "filter"])
     async def test_an_inner_hop_named_like_the_root_is_still_refused(self, query: dict) -> None:
         with pytest.raises(Exception, match="customers"):
             await _prefix_sql({"population": "orders", **query})
 
     @pytest.mark.parametrize("query", [
-        {"metrics": ["count(*)"], "filter": ["reorders.status = 'active'"]},
-        {"metrics": ["sum(reorders.revenue)"]},
+        {"metrics": ["count(orders.*)"], "filter": ["orders.reorders.status = 'active'"]},
+        {"metrics": ["sum(orders.reorders.revenue)"]},
     ], ids=["filter", "formula"])
     async def test_a_longer_model_name_is_no_root_qualifier(self, query: dict) -> None:
         with pytest.raises(Exception, match="reorders"):

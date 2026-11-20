@@ -102,20 +102,20 @@ class TestOracleConsistency:
 class TestSeededDataset:
     async def test_channel_grain_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city", "channel"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", "orders.channel"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city", "orders.channel")
         assert set(by) == set(RCC_TOTAL)
         for key, total in RCC_TOTAL.items():
-            assert float(by[key]["orders.s"]) == pytest.approx(total)
+            assert float(by[key]["s"]) == pytest.approx(total)
 
     async def test_ok_region_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(ok_amount)", alias="s")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.ok_amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region")
-        assert {k[0]: float(r["orders.s"]) for k, r in by.items()} == pytest.approx(
+        assert {k[0]: float(r["s"]) for k, r in by.items()} == pytest.approx(
             OK_REGION_TOTAL
         )

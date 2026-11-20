@@ -133,6 +133,6 @@ async def test_a_column_whitelist_does_not_stop_its_range(dialect: str, monkeypa
     async with seeded_exec_engine(dialect=dialect, seed=_seed, datasets=[_restricted_dataset()]) as (engine, _db):
         sampled, _ = await _profile(_Run(engine=engine, dialect=dialect), monkeypatch)
         assert {k: sampled[k] for k in _EXPECTED} == _EXPECTED
-        authored = SlayerQuery.model_validate({"population": "t", "metrics": ["min(amount)"]})
+        authored = SlayerQuery.model_validate({"population": "t", "metrics": ["min(t.amount)"]})
         with pytest.raises(AggregationNotAllowedError):
             await engine.execute(query=authored)

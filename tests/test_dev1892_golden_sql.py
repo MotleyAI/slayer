@@ -36,21 +36,21 @@ def _cases() -> dict:
     return {
         "assoc/wavg_by_status": {
             "models": "orders", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["status"], "metrics": [
+            "kw": {"dimensions": ["orders.status"], "metrics": [
                 {"metric": "weighted_avg(customers.spend, weight=customers.spend)",
                  "alias": "w"}]}},
         "assoc/wsum_default": {
             "models": "orders_coldef", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["status"],
+            "kw": {"dimensions": ["orders.status"],
                    "metrics": [{"metric": "wsum(customers.spend)", "alias": "w"}]}},
         "reagg/wavg_by_region": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
+            "kw": {"dimensions": ["sales.region"], "metrics": [
                 {"metric": f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})",
                  "alias": "w"}]}},
         "reagg/degenerate_wavg": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
+            "kw": {"dimensions": ["sales.region"], "metrics": [
                 {"metric": ("weighted_avg(sum(amount, partition_by=region), "
                              "weight=count(id, partition_by=region))"),
                  "alias": "w"}]}},
@@ -61,12 +61,12 @@ def _cases() -> dict:
                              "weight=customers.region_id)"), "alias": "w"}]}},
         "assoc/wsum6_expr_default": {
             "models": "orders_wsum6", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["status"],
+            "kw": {"dimensions": ["orders.status"],
                    "metrics": [{"metric": "wsum6(customers.spend)", "alias": "w"}]}},
         "reagg/corders_expr_default": {
             "models": "sales_cwavg", "source": "corders", "mode": None,
             "kw": {"metrics": [
-                {"metric": "cwavg(sum(amount, partition_by=customer_id))",
+                {"metric": "cwavg(sum(corders.amount, partition_by=corders.customer_id))",
                  "alias": "w"}]}},
     }
 

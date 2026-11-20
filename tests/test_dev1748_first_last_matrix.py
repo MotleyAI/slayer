@@ -95,14 +95,14 @@ class TestGroupedAndUngrouped:
         group is what rules that out: its newer row is the SMALLER value, so
         ``last`` there is 5.0 while ``max`` would be 61.0."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "first(amount)", "alias": "f"},
-                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "first(orders.amount)", "alias": "f"},
+                {"metric": "last(orders.amount)", "alias": "l"},
             ],
         )
-        first = by_group(rows, key="orders.status", value="orders.f")
-        last = by_group(rows, key="orders.status", value="orders.l")
+        first = by_group(rows, key="orders.status", value="f")
+        last = by_group(rows, key="orders.status", value="l")
 
         assert first["paid"] == PAID_FIRST
         assert last["paid"] == PAID_LAST
@@ -115,8 +115,8 @@ class TestGroupedAndUngrouped:
     ) -> None:
         """No dimensions at all: one partition, one answer. Order 16 is the
         newest row in the table."""
-        rows = await _rows(engine, metrics=[{"metric": "last(amount)", "alias": "l"}])
-        assert rows == [{"orders.l": FAN_LAST}]
+        rows = await _rows(engine, metrics=[{"metric": "last(orders.amount)", "alias": "l"}])
+        assert rows == [{"l": FAN_LAST}]
 
     async def test_a_null_grain_member_gets_its_own_group_and_a_real_value(
         self, engine: SlayerQueryEngine,
@@ -124,14 +124,14 @@ class TestGroupedAndUngrouped:
         """The NULL-status group must survive the grain join-back with its own
         first/last, not collapse or come back NULL (P-I)."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "first(amount)", "alias": "f"},
-                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "first(orders.amount)", "alias": "f"},
+                {"metric": "last(orders.amount)", "alias": "l"},
             ],
         )
-        first = by_group(rows, key="orders.status", value="orders.f")
-        last = by_group(rows, key="orders.status", value="orders.l")
+        first = by_group(rows, key="orders.status", value="f")
+        last = by_group(rows, key="orders.status", value="l")
 
         assert None in last, f"the NULL-status group vanished: {rows}"
         assert first[None] == NULL_STATUS_FIRST
@@ -145,10 +145,10 @@ class TestGroupedAndUngrouped:
         February's ``last`` is its amount — not the table-wide newest."""
         rows = await _rows(
             engine,
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
-            metrics=[{"metric": "last(amount)", "alias": "l"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+            metrics=[{"metric": "last(orders.amount)", "alias": "l"}],
         )
-        by_month = by_group(rows, key="orders.created_at", value="orders.l")
+        by_month = by_group(rows, key="orders.created_at", value="l")
 
         assert by_month["2024-02-01"] == FILT_NEWER_NONMATCHING
         assert by_month["2024-03-01"] == FAN_LAST
@@ -163,10 +163,10 @@ class TestGroupedAndUngrouped:
         customer-100 order, whose newest is order 2."""
         rows = await _rows(
             engine, dimensions=["customers.regions.name"],
-            metrics=[{"metric": "last(amount)", "alias": "l"}],
+            metrics=[{"metric": "last(orders.amount)", "alias": "l"}],
         )
         by_region = by_group(
-            rows, key="orders.customers.regions.name", value="orders.l",
+            rows, key="customers.regions.name", value="l",
         )
         assert by_region["Alpha"] == PAID_LAST
         # Region 2's name is NULL — a joined nullable grain member.
@@ -187,17 +187,17 @@ class TestNulls:
         implementation aggregated over the group instead of selecting a row,
         which is the single most likely way to get first/last subtly wrong."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "first(amount)", "alias": "f"},
-                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "first(orders.amount)", "alias": "f"},
+                {"metric": "last(orders.amount)", "alias": "l"},
             ],
         )
-        assert by_group(rows, key="orders.status", value="orders.l")["nullval"] is None
+        assert by_group(rows, key="orders.status", value="l")["nullval"] is None
         # ...and the OTHER end of the same group is a real value, so the NULL
         # above is the winner's value and not a group-wide failure.
         assert by_group(
-            rows, key="orders.status", value="orders.f",
+            rows, key="orders.status", value="f",
         )["nullval"] == NULLVAL_OLDER
 
     async def test_a_null_ranking_timestamp_is_skipped_in_both_directions(
@@ -207,17 +207,17 @@ class TestNulls:
         A NULL ranking key is never picked, whatever the dialect's native NULL
         ordering, so the dated row wins both ``first`` and ``last``."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "first(amount)", "alias": "f"},
-                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "first(orders.amount)", "alias": "f"},
+                {"metric": "last(orders.amount)", "alias": "l"},
             ],
         )
         assert by_group(
-            rows, key="orders.status", value="orders.l",
+            rows, key="orders.status", value="l",
         )["nulltime"] == NULLTIME_DATED_ROW_AMOUNT
         assert by_group(
-            rows, key="orders.status", value="orders.f",
+            rows, key="orders.status", value="f",
         )["nulltime"] == NULLTIME_DATED_ROW_AMOUNT
 
     async def test_an_explicit_time_arg_with_its_own_nulls_ranks_by_that_column(
@@ -228,11 +228,11 @@ class TestNulls:
         ranking by the explicit arg gives the OTHER answer than the default. A
         query that ignored the explicit arg would return 32.0 here."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount, shipped_at)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount, orders.shipped_at)", "alias": "l"}],
         )
         assert by_group(
-            rows, key="orders.status", value="orders.l",
+            rows, key="orders.status", value="l",
         )["nulltime"] == NULLTIME_NULL_ROW_AMOUNT
 
 
@@ -254,14 +254,14 @@ class TestTiesAreNondeterministic:
         the answer is one of the tied rows' values, never a blend, a NULL, or a
         value from another group."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "first(amount)", "alias": "f"},
-                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "first(orders.amount)", "alias": "f"},
+                {"metric": "last(orders.amount)", "alias": "l"},
             ],
         )
-        first = by_group(rows, key="orders.status", value="orders.f")["tie"]
-        last = by_group(rows, key="orders.status", value="orders.l")["tie"]
+        first = by_group(rows, key="orders.status", value="f")["tie"]
+        last = by_group(rows, key="orders.status", value="l")["tie"]
 
         assert first in TIE_CANDIDATES
         assert last in TIE_CANDIDATES
@@ -274,11 +274,11 @@ class TestTiesAreNondeterministic:
         what makes the nondeterminism above a property of the DATA, not of the
         implementation."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount, shipped_at)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount, orders.shipped_at)", "alias": "l"}],
         )
         assert by_group(
-            rows, key="orders.status", value="orders.l",
+            rows, key="orders.status", value="l",
         )["tie"] == TIE_CANDIDATES[1]
 
 
@@ -299,11 +299,11 @@ class TestFilteredFirstLast:
         (ranking never sees the filter; a row-restricting WHERE belongs in the
         query, not the field)."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(big_amount)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.big_amount)", "alias": "l"}],
         )
         assert by_group(
-            rows, key="orders.status", value="orders.l",
+            rows, key="orders.status", value="l",
         )["filt"] is None
 
     async def test_a_group_with_no_matching_row_survives_carrying_null(
@@ -316,10 +316,10 @@ class TestFilteredFirstLast:
         vanish there; the grain join-back restores the group) from one that
         drops the group entirely."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(big_amount)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.big_amount)", "alias": "l"}],
         )
-        by_status = by_group(rows, key="orders.status", value="orders.l")
+        by_status = by_group(rows, key="orders.status", value="l")
 
         assert "nomatch" in by_status, f"the group was dropped entirely: {rows}"
         assert by_status["nomatch"] is None
@@ -330,12 +330,12 @@ class TestFilteredFirstLast:
         """The stronger form of the case above, stated over the whole result:
         a filtered metric must not change WHICH groups the query returns."""
         unfiltered = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount)", "alias": "l"}],
         )
         filtered = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(big_amount)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.big_amount)", "alias": "l"}],
         )
         assert (
             {row["orders.status"] for row in filtered}
@@ -350,10 +350,10 @@ class TestFilteredFirstLast:
         customers' orders come back NULL and customer-100 groups rank normally.
         """
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(gold_amount)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.gold_amount)", "alias": "l"}],
         )
-        by_status = by_group(rows, key="orders.status", value="orders.l")
+        by_status = by_group(rows, key="orders.status", value="l")
 
         assert by_status["paid"] == PAID_LAST          # customer 100
         assert by_status["nulltime"] == NULLTIME_DATED_ROW_AMOUNT
@@ -369,17 +369,17 @@ class TestFilteredFirstLast:
         bind would not. Both mask ``filt``'s newest row (5.0 → 10 ≤ 40) to NULL
         (the filter never restricts the ranking)."""
         derived = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(doubled_big)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.doubled_big)", "alias": "l"}],
         )
         plain = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(big_amount)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.big_amount)", "alias": "l"}],
         )
-        derived_by_status = by_group(derived, key="orders.status", value="orders.l")
+        derived_by_status = by_group(derived, key="orders.status", value="l")
         assert (
             derived_by_status
-            == by_group(plain, key="orders.status", value="orders.l")
+            == by_group(plain, key="orders.status", value="l")
         )
         # A direct oracle as well as the comparison, so the two paths cannot
         # agree by being wrong together — the masked value at ``filt``'s newest
@@ -399,9 +399,9 @@ class TestFilteredFirstLast:
         entirely."""
         rows = await _rows(
             engine, population="empty_orders",
-            metrics=[{"metric": "last(big_amount)", "alias": "l"}],
+            metrics=[{"metric": "last(empty_orders.big_amount)", "alias": "l"}],
         )
-        assert rows == [{"empty_orders.l": None}]
+        assert rows == [{"l": None}]
 
 
 # --------------------------------------------------------------------------- #
@@ -417,9 +417,9 @@ class TestEmptySource:
         Zero rows would be a different answer to a different question."""
         rows = await _rows(
             engine, population="empty_orders",
-            metrics=[{"metric": "last(amount)", "alias": "l"}],
+            metrics=[{"metric": "last(empty_orders.amount)", "alias": "l"}],
         )
-        assert rows == [{"empty_orders.l": None}]
+        assert rows == [{"l": None}]
 
     async def test_ungrouped_first_last_matches_ungrouped_sum_over_no_rows(
         self, engine: SlayerQueryEngine,
@@ -428,15 +428,15 @@ class TestEmptySource:
         aggregate family and not the other."""
         ranked = await _rows(
             engine, population="empty_orders",
-            metrics=[{"metric": "last(amount)", "alias": "m"}],
+            metrics=[{"metric": "last(empty_orders.amount)", "alias": "m"}],
         )
         summed = await _rows(
             engine, population="empty_orders",
-            metrics=[{"metric": "sum(amount)", "alias": "m"}],
+            metrics=[{"metric": "sum(empty_orders.amount)", "alias": "m"}],
         )
         assert len(ranked) == len(summed) == 1
-        assert ranked[0]["empty_orders.m"] is None
-        assert summed[0]["empty_orders.m"] is None
+        assert ranked[0]["m"] is None
+        assert summed[0]["m"] is None
 
     async def test_grouped_over_an_empty_table_returns_no_rows(
         self, engine: SlayerQueryEngine,
@@ -445,8 +445,8 @@ class TestEmptySource:
         with the ungrouped case above is the point: it is the ABSENCE of a grain
         that forces the single-row answer."""
         rows = await _rows(
-            engine, population="empty_orders", dimensions=["status"],
-            metrics=[{"metric": "last(amount)", "alias": "l"}],
+            engine, population="empty_orders", dimensions=["empty_orders.status"],
+            metrics=[{"metric": "last(empty_orders.amount)", "alias": "l"}],
         )
         assert rows == []
 
@@ -464,11 +464,11 @@ class TestExplicitTimeArgs:
         default ``created_at`` can, because only ``shipped_at`` distinguishes
         them."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount, shipped_at)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount, orders.shipped_at)", "alias": "l"}],
         )
         assert by_group(
-            rows, key="orders.status", value="orders.l",
+            rows, key="orders.status", value="l",
         )["tie"] == TIE_CANDIDATES[1]
 
     async def test_two_measures_with_different_time_args_rank_independently(
@@ -479,14 +479,14 @@ class TestExplicitTimeArgs:
         where the two rankings disagree, so a shared ranking column would
         collapse them onto one wrong answer."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount, created_at)", "alias": "a"},
-                {"metric": "last(amount, shipped_at)", "alias": "b"},
+                {"metric": "last(orders.amount, orders.created_at)", "alias": "a"},
+                {"metric": "last(orders.amount, orders.shipped_at)", "alias": "b"},
             ],
         )
-        by_created = by_group(rows, key="orders.status", value="orders.a")
-        by_shipped = by_group(rows, key="orders.status", value="orders.b")
+        by_created = by_group(rows, key="orders.status", value="a")
+        by_shipped = by_group(rows, key="orders.status", value="b")
 
         assert by_created["nulltime"] == NULLTIME_DATED_ROW_AMOUNT
         assert by_shipped["nulltime"] == NULLTIME_NULL_ROW_AMOUNT
@@ -498,17 +498,17 @@ class TestExplicitTimeArgs:
         """``created_alias`` is ``DatasetField.sql = "created_at"``, so ranking by it
         must equal ranking by ``created_at``."""
         derived = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount, created_alias)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount, orders.created_alias)", "alias": "l"}],
         )
         plain = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount, created_at)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount, orders.created_at)", "alias": "l"}],
         )
-        derived_by_status = by_group(derived, key="orders.status", value="orders.l")
+        derived_by_status = by_group(derived, key="orders.status", value="l")
         assert (
             derived_by_status
-            == by_group(plain, key="orders.status", value="orders.l")
+            == by_group(plain, key="orders.status", value="l")
         )
         # A direct oracle too — two paths agreeing proves nothing on its own.
         assert derived_by_status["paid"] == PAID_LAST
@@ -534,10 +534,10 @@ class TestExplicitTimeArgs:
         NOT choose. An implementation that silently fell back to the default
         ranking field returns ``PAID_LAST`` and fails here."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount, customers.signup_alias)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount, customers.signup_alias)", "alias": "l"}],
         )
-        by_status = by_group(rows, key="orders.status", value="orders.l")
+        by_status = by_group(rows, key="orders.status", value="l")
         assert by_status["paid"] == PAID_BY_JOINED_SIGNUP
         assert by_status["paid"] != PAID_LAST
 
@@ -561,7 +561,7 @@ class TestCrossModel:
                 {"metric": "last(customers.spend)", "alias": "l"},
             ],
         )
-        assert rows == [{"orders.f": CUSTOMER_SPEND_FIRST, "orders.l": CUSTOMER_SPEND_LAST}]
+        assert rows == [{"f": CUSTOMER_SPEND_FIRST, "l": CUSTOMER_SPEND_LAST}]
 
     async def test_an_explicit_target_time_arg_gives_the_same_answer(
         self, engine: SlayerQueryEngine,
@@ -574,7 +574,7 @@ class TestCrossModel:
                 {"metric": "last(customers.spend, customers.signup_at)", "alias": "l"},
             ],
         )
-        assert rows == [{"orders.l": CUSTOMER_SPEND_LAST}]
+        assert rows == [{"l": CUSTOMER_SPEND_LAST}]
 
     async def test_a_derived_time_arg_on_the_target_gives_the_same_answer(
         self, engine: SlayerQueryEngine,
@@ -587,7 +587,7 @@ class TestCrossModel:
                 {"metric": "last(customers.spend, customers.signup_alias)", "alias": "l"},
             ],
         )
-        assert rows == [{"orders.l": CUSTOMER_SPEND_LAST}]
+        assert rows == [{"l": CUSTOMER_SPEND_LAST}]
 
     async def test_a_target_time_arg_whose_sql_crosses_a_further_join_works(
         self, engine: SlayerQueryEngine,
@@ -603,7 +603,7 @@ class TestCrossModel:
                 {"metric": "last(customers.spend, customers.deep_opened)", "alias": "l"},
             ],
         )
-        assert rows[0]["orders.l"] in (CUSTOMER_SPEND_LAST, 75.0)
+        assert rows[0]["l"] in (CUSTOMER_SPEND_LAST, 75.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -620,10 +620,10 @@ class TestCrossingInputsAndFanout:
         region ``Alpha``; customer-101/102 groups sit in the NULL-named region.
         """
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(cust_region)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.cust_region)", "alias": "l"}],
         )
-        by_status = by_group(rows, key="orders.status", value="orders.l")
+        by_status = by_group(rows, key="orders.status", value="l")
         assert by_status["paid"] == "Alpha"
         assert by_status["fan"] is None
 
@@ -635,18 +635,18 @@ class TestCrossingInputsAndFanout:
         against the SAME query without the first/last, so this holds the line
         both today and after the rewrite moves the ranking into its own CTE."""
         with_ranked = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount)", "alias": "l"},
-                {"metric": "sum(amount)", "alias": "s"},
+                {"metric": "last(orders.amount)", "alias": "l"},
+                {"metric": "sum(orders.amount)", "alias": "s"},
             ],
         )
         without = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         )
-        sums = by_group(with_ranked, key="orders.status", value="orders.s")
-        assert sums == by_group(without, key="orders.status", value="orders.s")
+        sums = by_group(with_ranked, key="orders.status", value="s")
+        assert sums == by_group(without, key="orders.status", value="s")
         # ...and an oracle, so "both wrong together" is not a way to pass.
         assert sums["paid"] == PAID_FIRST + PAID_LAST
         assert sums["fan"] == FAN_FIRST + FAN_LAST
@@ -657,18 +657,18 @@ class TestCrossingInputsAndFanout:
         """``count(*)`` has no source field, so it takes a different render path
         than ``sum(amount)`` and needs its own containment pin."""
         with_ranked = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount)", "alias": "l"},
-                {"metric": "count(*)", "alias": "n"},
+                {"metric": "last(orders.amount)", "alias": "l"},
+                {"metric": "count(orders.*)", "alias": "n"},
             ],
         )
         without = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "count(*)", "alias": "n"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "count(orders.*)", "alias": "n"}],
         )
-        counts = by_group(with_ranked, key="orders.status", value="orders.n")
-        assert counts == by_group(without, key="orders.status", value="orders.n")
+        counts = by_group(with_ranked, key="orders.status", value="n")
+        assert counts == by_group(without, key="orders.status", value="n")
         # Every seeded group holds exactly two rows, so the oracle is uniform.
         assert set(counts.values()) == {2}
 
@@ -681,15 +681,15 @@ class TestCrossingInputsAndFanout:
         ``last(amount)`` does not move either, because duplicating a row cannot
         change which row is newest."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             filter=["order_tags.name == 'rush'"],
             metrics=[
-                {"metric": "last(amount)", "alias": "l"},
-                {"metric": "sum(amount)", "alias": "s"},
+                {"metric": "last(orders.amount)", "alias": "l"},
+                {"metric": "sum(orders.amount)", "alias": "s"},
             ],
         )
-        last = by_group(rows, key="orders.status", value="orders.l")
-        summed = by_group(rows, key="orders.status", value="orders.s")
+        last = by_group(rows, key="orders.status", value="l")
+        summed = by_group(rows, key="orders.status", value="s")
 
         assert summed["fan"] == FAN_RUSH_ASSOC_SUM
         assert last["fan"] == FAN_LAST
@@ -701,9 +701,9 @@ class TestCrossingInputsAndFanout:
         in three tag groups. Each ranks over the rows that reached it."""
         rows = await _rows(
             engine, dimensions=["order_tags.name"],
-            metrics=[{"metric": "last(amount)", "alias": "l"}],
+            metrics=[{"metric": "last(orders.amount)", "alias": "l"}],
         )
-        by_tag = by_group(rows, key="orders.order_tags.name", value="orders.l")
+        by_tag = by_group(rows, key="order_tags.name", value="l")
 
         assert by_tag["gift"] == FAN_FIRST
         assert by_tag["fragile"] == FAN_FIRST
@@ -723,14 +723,14 @@ class TestComposition:
         — one ranked scope today, two CTEs after the rewrite. The answers must
         not depend on which."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "first(amount)", "alias": "f"},
-                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "first(orders.amount)", "alias": "f"},
+                {"metric": "last(orders.amount)", "alias": "l"},
             ],
         )
-        assert by_group(rows, key="orders.status", value="orders.f")["paid"] == PAID_FIRST
-        assert by_group(rows, key="orders.status", value="orders.l")["paid"] == PAID_LAST
+        assert by_group(rows, key="orders.status", value="f")["paid"] == PAID_FIRST
+        assert by_group(rows, key="orders.status", value="l")["paid"] == PAID_LAST
 
     async def test_the_same_ranked_measure_under_two_names(
         self, engine: SlayerQueryEngine,
@@ -739,16 +739,16 @@ class TestComposition:
         emitted and must agree — a shared CTE must not collapse them to one
         column, and two names must not become two different answers."""
         rows = await _rows(
-            engine, dimensions=["status"],
+            engine, dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount)", "alias": "l1"},
-                {"metric": "last(amount)", "alias": "l2"},
+                {"metric": "last(orders.amount)", "alias": "l1"},
+                {"metric": "last(orders.amount)", "alias": "l2"},
             ],
         )
-        assert by_group(rows, key="orders.status", value="orders.l1") == by_group(
-            rows, key="orders.status", value="orders.l2",
+        assert by_group(rows, key="orders.status", value="l1") == by_group(
+            rows, key="orders.status", value="l2",
         )
-        assert by_group(rows, key="orders.status", value="orders.l1")["paid"] == PAID_LAST
+        assert by_group(rows, key="orders.status", value="l1")["paid"] == PAID_LAST
 
     async def test_an_arithmetic_composite_of_two_ranked_operands(
         self, engine: SlayerQueryEngine,
@@ -758,10 +758,10 @@ class TestComposition:
         discriminator: its difference is NEGATIVE, so an implementation that
         swapped the operands would be caught."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount) - first(amount)", "alias": "d"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount) - first(orders.amount)", "alias": "d"}],
         )
-        by_status = by_group(rows, key="orders.status", value="orders.d")
+        by_status = by_group(rows, key="orders.status", value="d")
 
         assert by_status["paid"] == PAID_LAST - PAID_FIRST
         assert by_status["filt"] == FILT_NEWER_NONMATCHING - FILT_MATCHING
@@ -776,8 +776,8 @@ class TestComposition:
         chain can read."""
         rows = await _rows(
             engine,
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
-            metrics=[{"metric": "cumsum(last(amount))", "alias": "c"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+            metrics=[{"metric": "cumsum(last(orders.amount))", "alias": "c"}],
         )
         # The WHOLE ordered sequence, not two sampled points: a running total
         # can land on the right final value while every step before it is
@@ -787,7 +787,7 @@ class TestComposition:
         january = FAN_FIRST
         february = january + FILT_NEWER_NONMATCHING
         assert [
-            (row["orders.created_at"], row["orders.c"]) for row in rows
+            (row["orders.created_at"], row["c"]) for row in rows
         ] == [
             ("2024-01-01", pytest.approx(january)),
             ("2024-02-01", pytest.approx(february)),
@@ -810,11 +810,11 @@ class TestFilteringAndOrderingOnARankedMeasure:
         outer WHERE. The ROW SET must not change: exactly the groups whose last
         exceeds 30, and a group whose last is NULL is not one of them."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount)", "alias": "l"}],
-            filter=[f"last(amount) > {BIG_AMOUNT_THRESHOLD + 10}"],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount)", "alias": "l"}],
+            filter=[f"last(orders.amount) > {BIG_AMOUNT_THRESHOLD + 10}"],
         )
-        assert by_group(rows, key="orders.status", value="orders.l") == {
+        assert by_group(rows, key="orders.status", value="l") == {
             None: NULL_STATUS_LAST,
             "fan": FAN_LAST,
             "nulltime": NULLTIME_DATED_ROW_AMOUNT,
@@ -826,11 +826,11 @@ class TestFilteringAndOrderingOnARankedMeasure:
         """Descending by the ranked value. NULLs sort last by SLayer policy, so
         the ``nullval`` group is at the end rather than at the front."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "last(amount)", "alias": "l"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount)", "alias": "l"}],
             order=[{"field": "l", "direction": "desc"}],
         )
-        values = [row["orders.l"] for row in rows]
+        values = [row["l"] for row in rows]
         # The ``tie`` group's value is arbitrary between the two candidates, so
         # its POSITION is pinned but not which of the two lands there — both sit
         # between 32.0 and 13.0, so the surrounding order is unaffected either
@@ -849,11 +849,11 @@ class TestFilteringAndOrderingOnARankedMeasure:
         from the projection, so it must still exist somewhere to sort by. The
         emitted columns are exactly the declared ones, in declaration order."""
         rows = await _rows(
-            engine, dimensions=["status"],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
-            order=[{"field": "last(amount)", "direction": "desc"}],
+            engine, dimensions=["orders.status"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
+            order=[{"field": "last(orders.amount)", "direction": "desc"}],
         )
-        assert list(rows[0]) == ["orders.status", "orders.s"]
+        assert list(rows[0]) == ["orders.status", "s"]
         assert [row["orders.status"] for row in rows] == [
             "fan", None, "nulltime", "tie", "paid", "filt", "nomatch", "nullval",
         ]

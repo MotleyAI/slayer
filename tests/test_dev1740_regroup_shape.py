@@ -18,7 +18,7 @@ def _q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _count_isolated_ctes(sql: str) -> int:
@@ -29,9 +29,9 @@ def _count_isolated_ctes(sql: str) -> int:
 class TestFilterRoutingAcrossStageBoundary:
     async def test_base_row_filter_pushed_computed_predicate_not(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", {"field": BAND, "alias": "band"}],
-            filter=["band == 1", "status == 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="band_total")],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
+            filter=["band == 1", "orders.status == 'ok'"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="band_total")],
         ))
         cte = cm_cte_bodies(sql)
         # The base-row predicate reaches the partition CTE (DEV-1739 rule)...
@@ -46,8 +46,8 @@ class TestOneStagePerDistinctPartitionSet:
         band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
                 "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
         sql = await gen(_q(
-            dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 2
 
@@ -57,7 +57,7 @@ class TestOneStagePerDistinctPartitionSet:
         band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
                 "THEN sum(amount, partition_by=city) ELSE 0 END")
         sql = await gen(_q(
-            dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 1

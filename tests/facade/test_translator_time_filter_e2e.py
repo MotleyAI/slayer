@@ -65,7 +65,7 @@ async def _execute_facade_sql(tmp_path, sql: str):
 
 def _by_month(resp) -> dict[str, float]:
     return {
-        str(row["orders.ordered_at"])[:7]: row["orders.revenue_sum"]
+        str(row["orders.ordered_at"])[:7]: row["revenue_sum"]
         for row in resp.data
     }
 

@@ -24,7 +24,7 @@ from tests._usage_reporting_helpers import (
 )
 
 _NOTICE_URL = "docs.motley.ai/slayer/reference/usage-reporting"
-_QUERY = {"population": "orders", "metrics": ["sum(amount)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(orders.amount)"]}
 
 _LIBRARY_SCRIPT = """
 import asyncio

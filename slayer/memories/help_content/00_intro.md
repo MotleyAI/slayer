@@ -19,9 +19,10 @@ aggregates of joined datasets and aggregates of aggregates. The syntax is on the
 2. **Check a field before trusting it.** `inspect` it with `compact=false` and read `Description:` and
    `Sample values:` — if the sampled values are all NULL or not what the name
    suggests, it's the wrong field.
-3. **Count rows with `count(*)`**, never by counting a primary-key field.
-4. **Never write joins yourself.** Reference joined data by dotted path
-   (`customers.regions.name`) and let the engine route it.
+3. **Count rows with `count(<dataset>.*)`** (`count(orders.*)`), never by counting a primary-key field.
+4. **Start every reference at its dataset and never write joins yourself.**
+   `orders.amount`, `orders.revenue` (a saved metric), `customers.regions.name`: the
+   engine routes each to the population. A bare name is an alias of the query.
 
 ## Deep dives
 

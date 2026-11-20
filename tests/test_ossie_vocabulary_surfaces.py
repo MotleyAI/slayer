@@ -132,10 +132,10 @@ class TestMcpArguments:
     async def test_old_query_keys_convert_in_the_query_tool(self, tmp_path: Path) -> None:
         storage = await seeded(tmp_path)
         new = mcp_payload(await mcp_text(
-            storage, "query", query={"population": "orders", "metrics": ["sum(amount)"]}, format="json"))
+            storage, "query", query={"population": "orders", "metrics": ["sum(orders.amount)"]}, format="json"))
         with recorded():
             old = mcp_payload(await mcp_text(
-                storage, "query", query={"source_model": "orders", "measures": ["sum(amount)"]}, format="json"))
+                storage, "query", query={"source_model": "orders", "measures": ["sum(orders.amount)"]}, format="json"))
         assert old["data"] == new["data"]
         assert sorted((w["old"], w["new"]) for w in deprecated_in(old["warnings"])) == [
             ("measures", "metrics"), ("source_model", "population")]

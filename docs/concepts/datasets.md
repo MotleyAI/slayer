@@ -16,7 +16,7 @@ metrics:
   - {name: aov, expression: "sum(revenue) / count(*)"}
 ```
 
-A query then asks for `sum(revenue)` (aggregate the `revenue` field), `aov` (the saved expression), or `status` (group by it). Same dataset, different roles per query.
+A query then asks for `sum(orders.revenue)` (aggregate the `revenue` field), `orders.aov` (the saved expression), or `orders.status` (group by it). Same dataset, different roles per query.
 
 ## Fields at a glance
 
@@ -29,7 +29,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` field), `aov` (the
 | `source_kind` | string | No | What kind of object `sql_table` names: `table`, `view`, or `materialized_view`. Set by auto-ingestion; `null` means unknown |
 | `data_source` | string | Yes | Datasource name |
 | `fields` | list[DatasetField] | No | Field definitions. For query-backed datasets this is an engine-managed cache |
-| `metrics` | list[DatasetMetric] | No | Named expression library — referenced by bare name in queries |
+| `metrics` | list[DatasetMetric] | No | Named expression library — referenced as `<dataset>.<metric>` in queries |
 | `aggregations` | list[Aggregation] | No | Custom aggregation operators |
 | `relationships` | list[DatasetRelationship] | No | LEFT JOIN relationships to other datasets |
 | `filters` | list[str] | No | Dataset-level WHERE filters (always applied) |
@@ -151,9 +151,9 @@ fields:
     filter: "status = 'completed'"
 ```
 
-`sum(active_revenue)` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
+`sum(orders.active_revenue)` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
 
-A bare name in a filter reads the source column and a path (`orders.status`, `categories.type`) reads a field. Filtered and unfiltered fields coexist freely in the same query and combine cleanly in arithmetic expressions (e.g. `"sum(active_revenue) / sum(total_revenue)"`).
+A bare name in a filter reads the source column and a path (`orders.status`, `categories.type`) reads a field. Filtered and unfiltered fields coexist freely in the same query and combine cleanly in arithmetic expressions (e.g. `"sum(orders.active_revenue) / sum(orders.total_revenue)"`).
 
 ### Field expressions
 
@@ -207,7 +207,7 @@ Cycles in the reference graph (e.g., `c1: "orders.c2 + 1"` and `c2: "orders.c1 -
 
 A field's expression may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The field behaves like any other field when used in `dimensions` / SELECT.
 
-> **Filtering on a windowed field is rejected.** A query filter naming a field whose expression contains a window function (e.g. `{"filter": ["rn <= 3"]}` against a field defined as `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [expressions.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
+> **Filtering on a windowed field is rejected.** A query filter naming a field whose expression contains a window function (e.g. `{"filter": ["orders.rn <= 3"]}` against a field defined as `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [expressions.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
 
 ### SQLite JSON extraction
 
@@ -231,8 +231,8 @@ If you specifically want SQLite's JSON-scalar operator, write `->>` (`exp.JSONEx
 
 SLayer has two lists on a dataset that both relate to metrics, and the names don't make the difference obvious. The split is real and load-bearing:
 
-- **`metrics`** is a library of named **expressions** — saved expressions like `aov = sum(revenue) / count(*)`. Queries reference them by bare name and the expression expands inline. Think *what to compute*, at the metric level.
-- **`aggregations`** is a registry of custom **operators** — definitions like `trimmed_mean(p)` or `weighted_avg(weight=…)`. Once defined, they become usable inside any expression: `trimmed_mean(revenue, p=0.1)`. Think *how to aggregate*, at the operator level.
+- **`metrics`** is a library of named **expressions** — saved expressions like `aov = sum(revenue) / count(*)`. Queries reference them by qualified name (`orders.aov`) and the expression expands inline. Think *what to compute*, at the metric level.
+- **`aggregations`** is a registry of custom **operators** — definitions like `trimmed_mean(p)` or `weighted_avg(weight=…)`. Once defined, they become usable inside any expression: `trimmed_mean(orders.revenue, p=0.1)`. Think *how to aggregate*, at the operator level.
 
 A typical dataset uses zero or a few entries in each. They compose:
 
@@ -253,7 +253,7 @@ A metric is a saved expression. Its shape is identical to an inline `SlayerQuery
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `expression` | string | Yes | e.g. `"sum(revenue) / count(*)"`, `"cumsum(sum(revenue))"` |
-| `name` | string | No | Queries reference this by bare name (auto-derived if omitted) |
+| `name` | string | No | Queries reference this as `<dataset>.<name>` (auto-derived if omitted) |
 | `label` | string | No | Display name |
 | `description` | string | No | Explanatory text |
 | `datatype` | DataType | No | Declares the expression's result type (drives outer CAST) |
@@ -269,13 +269,13 @@ database's exact aggregate type instead of being coerced through floating point
 An explicit metric `"datatype": "Float"` still requests a floating-point cast.
 Other type casts, including declared derived-field types, are unchanged.
 
-Field and metric names share a namespace within a dataset — you can't have a field `aov` *and* a metric `aov`. A metric can use any other metric by bare name, including inside transforms and arithmetic:
+Field and metric names share a namespace within a dataset — you can't have a field `aov` *and* a metric `aov`. A metric can use any other metric of its dataset by bare name, and a query by its qualified name, including inside transforms and arithmetic:
 
 ```json
 "metrics": [
-  "aov",
-  "cumsum(aov)",
-  {"metric": "aov * 1.1", "alias": "aov_with_markup"}
+  "orders.aov",
+  "cumsum(orders.aov)",
+  {"metric": "orders.aov * 1.1", "alias": "aov_with_markup"}
 ]
 ```
 
@@ -295,23 +295,23 @@ Aggregations are the operators that turn a field expression into a value: `sum`,
 
 | Aggregation | Syntax | SQL |
 |-------------|--------------|-----|
-| `count` | `count(*)` | `COUNT(*)` — counts all rows |
+| `count` | `count(orders.*)` | `COUNT(*)` — counts all rows |
 | `count` | `count(col)` | `COUNT(col)` — counts non-null values |
 | `count_distinct` | `count_distinct(col)` | `COUNT(DISTINCT col)` |
-| `sum` | `sum(revenue)` | `SUM(revenue)` |
-| `avg` | `avg(revenue)` | `AVG(revenue)` |
-| `min` / `max` | `min(revenue)` | `MIN(revenue)` / `MAX(revenue)` |
+| `sum` | `sum(orders.revenue)` | `SUM(revenue)` |
+| `avg` | `avg(orders.revenue)` | `AVG(revenue)` |
+| `min` / `max` | `min(orders.revenue)` | `MIN(revenue)` / `MAX(revenue)` |
 | `first` / `last` | `first(col, time_col)` | Earliest / latest record's value, time-ordered |
-| `weighted_avg` | `weighted_avg(price, weight=quantity)` | `SUM(price * quantity) / SUM(quantity)` |
-| `median` | `median(revenue)` | Median value |
-| `percentile` | `percentile(revenue, p=0.95)` | 95th percentile |
-| `stddev_samp` / `stddev_pop` | `stddev_samp(latency)` | Sample / population standard deviation |
-| `var_samp` / `var_pop` | `var_samp(latency)` | Sample / population variance |
-| `corr` | `corr(price, other=quantity)` | Pearson correlation between two fields |
-| `covar_samp` / `covar_pop` | `covar_samp(price, other=quantity)` | Sample / population covariance |
-| `collect` | `collect(name)` | The values as a list, see [list fields](queries.md#list-fields) |
+| `weighted_avg` | `weighted_avg(orders.price, weight=orders.quantity)` | `SUM(price * quantity) / SUM(quantity)` |
+| `median` | `median(orders.revenue)` | Median value |
+| `percentile` | `percentile(orders.revenue, p=0.95)` | 95th percentile |
+| `stddev_samp` / `stddev_pop` | `stddev_samp(orders.latency)` | Sample / population standard deviation |
+| `var_samp` / `var_pop` | `var_samp(orders.latency)` | Sample / population variance |
+| `corr` | `corr(orders.price, other=orders.quantity)` | Pearson correlation between two fields |
+| `covar_samp` / `covar_pop` | `covar_samp(orders.price, other=orders.quantity)` | Sample / population covariance |
+| `collect` | `collect(customers.name)` | The values as a list, see [list fields](queries.md#list-fields) |
 
-`count(*)` is always available with no metric definition. `*` means "all rows" and is **only** valid with `count` — `sum(*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
+`count(orders.*)` is always available with no metric definition. `*` means "all rows" and is **only** valid with `count` — `sum(orders.*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 
 ### The `first` and `last` aggregations
 
@@ -322,7 +322,7 @@ fields:
   - {name: balance, datatype: Float}
 ```
 
-`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time field is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated field or expression → the dataset's `default_time_dimension` (its only DATE / TIMESTAMP field when unset). Whichever field wins is an input of the aggregation: if it, or a derived definition it names, crosses a relationship hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
+`last(accounts.balance, accounts.updated_at)` gives the most recent balance per group; `first(accounts.balance, accounts.updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time field is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated field or expression → the dataset's `default_time_dimension` (its only DATE / TIMESTAMP field when unset). Whichever field wins is an input of the aggregation: if it, or a derived definition it names, crosses a relationship hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(orders.amount - customers.discount)`, `last(accounts.balance, coalesce(accounts.updated_at, accounts.created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
 
 Not to be confused with the [`last()` expression function](expressions.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
@@ -338,7 +338,7 @@ aggregations:
     expression: "avg(CASE WHEN {value} BETWEEN {low} AND {high} THEN {value} END)"
 ```
 
-Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` an `expression`, which then replaces its SQL. Like fields and metrics, aggregations accept an optional `meta` dict for caller bookkeeping. An expression that does not parse as SQL is rejected when the dataset is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated field) or `window` (the trailing-window argument), or that the expression never references; a query argument the aggregation does not accept is rejected, listing the accepted names. A built-in aggregation's name, in any case, resolves only to an aggregation named exactly that built-in's lowercase name.
+Use at query time: `weighted_avg(orders.price, weight=orders.quantity)`, `trimmed_mean(orders.revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` an `expression`, which then replaces its SQL. Like fields and metrics, aggregations accept an optional `meta` dict for caller bookkeeping. An expression that does not parse as SQL is rejected when the dataset is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated field) or `window` (the trailing-window argument), or that the expression never references; a query argument the aggregation does not accept is rejected, listing the accepted names. A built-in aggregation's name, in any case, resolves only to an aggregation named exactly that built-in's lowercase name.
 
 An aggregation may take the name of a library function or function spelling (`reverse`, `left`, `strpos`, …): inside its own dataset every call over that dataset's fields — `reverse(a)`, `t.reverse(a)`, in any letter case — is the aggregation, the library function stays reachable everywhere else (another dataset's fields, a literal argument), and saving, loading and every query response that resolves through it carry a `library_name_shadow` warning; transform, date-part and granularity names stay reserved.
 
@@ -390,9 +390,9 @@ relationships:
     name: shipping_customer
 ```
 
-Now `billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `sum(billing_customer.amount)` traverses the same edge in reverse. Validation rejects an edge name that collides with a dataset name or another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable.
+Now `orders.billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `sum(customers.billing_customer.amount)` traverses the same edge in reverse. Validation rejects an edge name that collides with a dataset name or another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable.
 
-Revisits are judged per spelling: a derived field or saved metric is resolved from its own dataset, so from `orders`, `customer.last_amount` (with `last_amount` defined on `customers` as `last_order.amount`) joins a second occurrence of `orders`, while typing `customer.last_order.amount` directly is refused as circular.
+Revisits are judged per spelling: a derived field or saved metric is resolved from its own dataset, so from `orders`, `orders.customer.last_amount` (with `last_amount` defined on `customers` as `last_order.amount`) joins a second occurrence of `orders`, while typing `orders.customer.last_order.amount` directly is refused as circular.
 
 ### Relationship cardinality
 
@@ -456,9 +456,9 @@ A query-backed dataset is a queryable relation whose rows are the final-stage re
 await engine.create_dataset_from_query(
     query={
         "population": "orders",
-        "metrics": ["sum(amount)"],
-        "dimensions": ["region"],
-        "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
+        "metrics": ["sum(orders.amount)"],
+        "dimensions": ["orders.region"],
+        "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
     },
     name="monthly_revenue",
     description="Monthly revenue by region",
@@ -481,7 +481,7 @@ await engine.execute("monthly_revenue", variables={"region": "US"})
 Run it by name with extra clauses merged into its final stage (see [Refining a saved query](queries.md#refining-a-saved-query)):
 
 ```python
-await engine.execute("monthly_revenue", refine={"dimensions": ["region"]})
+await engine.execute("monthly_revenue", refine={"dimensions": ["orders.region"]})
 ```
 
 Or use the saved result as a dataset in another query:
@@ -489,8 +489,8 @@ Or use the saved result as a dataset in another query:
 ```json
 {
   "population": "monthly_revenue",
-  "metrics": ["avg(amount_sum)"],
-  "dimensions": ["region"]
+  "metrics": ["avg(monthly_revenue.amount_sum)"],
+  "dimensions": ["monthly_revenue.region"]
 }
 ```
 
@@ -580,12 +580,12 @@ A query result is a self-contained table — it no longer has the relationships 
 |----------------------|--------------------------|
 | `stores.name` | `stores__name` |
 | `customers.regions.name` | `customers__regions__name` |
-| `customer_id` | `customer_id` |
-| `count(*)` (metric) | `count` |
-| `sum(revenue)` (metric) | `revenue_sum` |
-| `{"metric": "sum(revenue)", "alias": "rev"}` | `rev` |
+| `orders.customer_id` | `customer_id` |
+| `count(orders.*)` (metric) | `_count` |
+| `sum(orders.revenue)` (metric) | `revenue_sum` |
+| `{"metric": "sum(orders.revenue)", "alias": "rev"}` | `rev` |
 
-This uses the same `__` convention as the SQL-level path aliases. When referencing these fields in an outer query, use the `__` name directly (e.g., `"stores__name"`), not dot syntax — dots would imply a relationship to a dataset that doesn't exist on the virtual table.
+This uses the same `__` convention as the SQL-level path aliases. When referencing these fields in an outer query, qualify the `__` name by the dataset or stage name (e.g., `"monthly_revenue.stores__name"`) — a further dotted path would imply a relationship to a dataset that doesn't exist on the virtual table.
 
 An explicit `name` on a metric spec **overrides** the canonical naming above, for both arithmetic/transform expressions and simple aggregations. This is what lets multi-stage `source_queries` rename inner-stage outputs cleanly:
 
@@ -595,12 +595,12 @@ An explicit `name` on a metric spec **overrides** the canonical naming above, fo
     {
       "name": "raw",
       "population": "orders",
-      "dimensions": ["region"],
-      "metrics": [{"metric": "sum(amount)", "alias": "rev"}]
+      "dimensions": ["orders.region"],
+      "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]
     },
     {
       "population": "raw",
-      "metrics": ["sum(rev)"]
+      "metrics": ["sum(raw.rev)"]
     }
   ]
 }
@@ -610,11 +610,11 @@ The inner stage emits a column named `rev` (not `amount_sum`), and the outer sta
 
 ## Result column format
 
-Query results use `dataset_name.field_name` keys. Aggregations map to keys: `sum(revenue)` becomes `orders.revenue_sum`; `count(*)` becomes `orders._count` (leading underscore so the alias never collides with a user field literally named `count`). Multi-hop joined dimensions keep their full path:
+Query results key each reference by its path as written, never by the population. Aggregations map to keys: `sum(orders.revenue)` becomes `orders.revenue_sum`; `count(orders.*)` becomes `orders._count` (leading underscore so the alias never collides with a user field literally named `count`). Multi-hop joined dimensions keep their full path:
 
 ```json
 {"orders.status": "completed", "orders._count": 42, "orders.revenue_sum": 1500}
-{"orders.customers.regions.name": "US", "orders._count": 3}
+{"customers.regions.name": "US", "orders._count": 3}
 ```
 
 ## Schema versioning

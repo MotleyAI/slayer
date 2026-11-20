@@ -58,7 +58,7 @@ async def test_apply_skips_findings_and_reports_none_as_residual(engine: SlayerQ
 
 async def test_mcp_edit_reports_newly_narrowed_readers(store: AccessStore, engine: SlayerQueryEngine) -> None:
     await engine.create_dataset_from_query(
-        query={"population": "pub", "metrics": [{"metric": "count(*)", "alias": "n"}]}, name="pub_count",
+        query={"population": "pub", "metrics": [{"metric": "count(pub.*)", "alias": "n"}]}, name="pub_count",
     )
     reply = json.loads(await mcp_text(store.storage, "edit_dataset", dataset_name="pub", access_tags=["ops"]))
     assert any("narrowed" in w and "pub_count" in w for w in reply["warnings"])
@@ -76,8 +76,8 @@ async def test_mcp_edit_under_warnings_as_errors_reports_the_save(store: AccessS
 
 async def test_order_on_a_measure_alias_is_not_an_entity(store: AccessStore) -> None:
     query = SlayerQuery.model_validate({
-        "population": "fin", "metrics": [{"metric": "sum(amount)", "alias": "spend"}],
-        "order": [{"field": "spend", "direction": "desc"}, {"field": "staff_id", "direction": "asc"}],
+        "population": "fin", "metrics": [{"metric": "sum(fin.amount)", "alias": "spend"}],
+        "order": [{"field": "spend", "direction": "desc"}, {"field": "fin.staff_id", "direction": "asc"}],
     })
     resolution = await extract_entities_from_query(query, storage=store.storage)
     assert set(resolution.canonical_forms) == {f"{DS}.fin", f"{DS}.fin.amount", f"{DS}.fin.staff_id"}
@@ -85,7 +85,7 @@ async def test_order_on_a_measure_alias_is_not_an_entity(store: AccessStore) -> 
 
 async def test_computed_dimension_entities(store: AccessStore) -> None:
     query = SlayerQuery.model_validate({
-        "population": "fin", "dimensions": [{"field": "amount * 2", "alias": "dbl"}],
+        "population": "fin", "dimensions": [{"field": "fin.amount * 2", "alias": "dbl"}],
     })
     resolution = await extract_entities_from_query(query, storage=store.storage)
     assert f"{DS}.fin.amount" in resolution.canonical_forms

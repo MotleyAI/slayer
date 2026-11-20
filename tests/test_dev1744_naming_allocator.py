@@ -169,7 +169,7 @@ async def _isolated_then_combined(
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field=dimension)],
+                dimensions=[QueryDimension(field=f"orders.{dimension}")],
                 metrics=[m],
             )
         )
@@ -183,7 +183,7 @@ async def _isolated_then_combined(
     resp = await engine.execute(
         SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field=dimension)],
+            dimensions=[QueryDimension(field=f"orders.{dimension}")],
             metrics=metrics,
         )
     )
@@ -222,7 +222,7 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="sum(customers.Rev)", alias="upper"),
                     QueryMetric(metric="sum(customers.rev)", alias="lower"),
@@ -249,7 +249,7 @@ class TestCrossModelCteNameAllocation:
             engine,
             metrics=[
                 QueryMetric(metric="sum(customers.revenue)", alias="xmodel"),
-                QueryMetric(metric="sum(customers__revenue)", alias="local"),
+                QueryMetric(metric="sum(orders.customers__revenue)", alias="local"),
             ],
         )
 
@@ -259,8 +259,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="unfiltered"),
-                QueryMetric(metric="sum(customers__revenue)", alias="filtered"),
+                QueryMetric(metric="sum(orders.amount)", alias="unfiltered"),
+                QueryMetric(metric="sum(orders.customers__revenue)", alias="filtered"),
             ],
         )
 
@@ -270,18 +270,18 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="sum(customers.revenue)"),
                     QueryMetric(metric="sum(customers.Rev)"),
                 ],
             )
         )
-        assert "orders.customers.revenue_sum" in resp.columns, resp.columns
-        assert "orders.customers.Rev_sum" in resp.columns, resp.columns
+        assert "customers.revenue_sum" in resp.columns, resp.columns
+        assert "customers.Rev_sum" in resp.columns, resp.columns
         row = resp.data[0]
         # revenue -> 600, Rev (revx) -> 24; equal values would mean a shared CTE column.
-        assert row["orders.customers.revenue_sum"] != row["orders.customers.Rev_sum"]
+        assert row["customers.revenue_sum"] != row["customers.Rev_sum"]
 
     async def test_hidden_cross_model_agg_under_a_transform_keeps_its_alias(
         self, engine,
@@ -293,7 +293,7 @@ class TestCrossModelCteNameAllocation:
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
@@ -328,11 +328,21 @@ class TestCrossModelCteNameAllocation:
         all_aliases = Counter(re.findall(r'AS "([^"]+)"', resp.sql))
         assert "customers.revenue_sum" in all_aliases, all_aliases
 
+    async def test_an_alias_named_like_a_hidden_aggregate_column_executes(self, engine) -> None:
+        resp = await engine.execute(SlayerQuery(
+            population="orders",
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            metrics=[QueryMetric(metric="cumsum(sum(customers.revenue))", alias="run"),
+                     QueryMetric(metric="sum(customers.Rev)", alias="revenue_sum")],
+            to_many_handling="broadcast",
+        ))
+        assert resp.columns == ["orders.created_at", "run", "revenue_sum"]
+
     async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="sum(customers.revenue)", alias="a"),
                     QueryMetric(metric="sum(customers.revenue)", alias="b"),
@@ -349,7 +359,7 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="sum(customers.revenue)", alias="a"),
                     QueryMetric(metric="sum(customers.revenue)", alias="b"),
@@ -357,9 +367,9 @@ class TestCrossModelCteNameAllocation:
             )
         )
         row = resp.data[0]
-        assert "orders.a" in row, list(row)
-        assert "orders.b" in row, list(row)
-        assert row["orders.a"] == row["orders.b"]
+        assert "a" in row, list(row)
+        assert "b" in row, list(row)
+        assert row["a"] == row["b"]
 
 
 class TestDedupIdentityIsStructural:
@@ -421,13 +431,13 @@ class TestAllocatorRouting:
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount, window='90d')", alias="Wm"),
-                    QueryMetric(metric="sum(amount, window='30d')", alias="wm2"),
+                    QueryMetric(metric="sum(orders.amount, window='90d')", alias="Wm"),
+                    QueryMetric(metric="sum(orders.amount, window='30d')", alias="wm2"),
                 ],
             ),
             dry_run=True,
@@ -540,15 +550,15 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric=f"sum({column})", alias="hostile_sum"),
-                    QueryMetric(metric="sum(amount)", alias="amt"),
+                    QueryMetric(metric=f"sum(orders.{column})", alias="hostile_sum"),
+                    QueryMetric(metric="sum(orders.amount)", alias="amt"),
                 ],
             )
         )
         by_status = {
-            r["orders.status"]: (r["orders.hostile_sum"], r["orders.amt"])
+            r["orders.status"]: (r["hostile_sum"], r["amt"])
             for r in resp.data
         }
         # Column seeded 1/2/3 vs amounts 10/20/30; a shadowing bug makes the two agree.
@@ -565,8 +575,8 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field=column)],
-                metrics=[QueryMetric(metric="sum(amount)", alias="amt")],
+                dimensions=[QueryDimension(field=f"orders.{column}")],
+                metrics=[QueryMetric(metric="sum(orders.amount)", alias="amt")],
             )
         )
         assert {r[f"orders.{column}"] for r in resp.data} == {1.0, 2.0, 3.0}
@@ -582,11 +592,11 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="last(amount)", alias="lastamt")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="last(orders.amount)", alias="lastamt")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.lastamt"] for r in resp.data}
+        by_status = {r["orders.status"]: r["lastamt"] for r in resp.data}
         assert by_status == {"a": 20.0, "b": 30.0}
 
     @pytest.mark.parametrize(
@@ -602,17 +612,17 @@ class TestInternalNamesDoNotCollideWithUserColumns:
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                    QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
                 ],
             )
         )
         assert resp.data, "windowed query returned no rows"
-        assert all(r["orders.w"] is not None for r in resp.data), resp.data
+        assert all(r["w"] is not None for r in resp.data), resp.data
 
 
 # Naming constants — one owner for the structural aliases.

@@ -136,14 +136,14 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQu
 
     # Result-key contract: renamed cross-dataset metric surfaces as the
     # user name under the host prefix.
-    assert alias.columns == ["orders.customers.region", "orders.rev"]
+    assert alias.columns == ["customers.region", "rev"]
     assert dotted.columns == alias.columns
     # Both filter forms reference the SAME slot → identical results.
     assert _rowset(alias.data) == _rowset(dotted.data)
     # The surviving rows: NA keeps 150; the failing EU group is dropped.
     assert _rowset(alias.data) == _rowset(
         [
-            {"orders.customers.region": "NA", "orders.rev": 150.0},
+            {"customers.region": "NA", "rev": 150.0},
         ]
     )
 
@@ -172,8 +172,8 @@ async def test_dev1445_filter_actually_applies(engine: Tuple[SlayerQueryEngine, 
 
     assert _rowset(unfiltered.data) == _rowset(
         [
-            {"orders.customers.region": "NA", "orders.rev": 150.0},
-            {"orders.customers.region": "EU", "orders.rev": 70.0},
+            {"customers.region": "NA", "rev": 150.0},
+            {"customers.region": "EU", "rev": 70.0},
         ]
     )
     assert _rowset(filtered.data) != _rowset(unfiltered.data)
@@ -199,7 +199,7 @@ async def test_dev1445_both_filter_forms_share_one_cte(engine: Tuple[SlayerQuery
     both = await eng.execute(query)
     assert _rowset(both.data) == _rowset(
         [
-            {"orders.customers.region": "NA", "orders.rev": 150.0},
+            {"customers.region": "NA", "rev": 150.0},
         ]
     )
     # Structural: one shared cross-dataset CTE, one outer-WHERE predicate.

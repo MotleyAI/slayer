@@ -38,55 +38,55 @@ WORKING_PREFIX = "lift/"
 
 
 def _cases() -> dict:
-    s = QueryMetric(metric="sum(amount)", alias="s")
+    s = QueryMetric(metric="sum(orders.amount)", alias="s")
     return {
         "lift/dim_mixed_rank": q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
             metrics=[s],
         ),
         "lift/dim_keyless_share": q(
-            dimensions=["region", {"field": KEYLESS_RANK, "alias": "kr"}],
+            dimensions=["orders.region", {"field": KEYLESS_RANK, "alias": "kr"}],
             metrics=[s],
         ),
         "lift/dim_subset_rank": q(
-            dimensions=["region", "city", {"field": SUBSET_RANK, "alias": "sr"}],
+            dimensions=["orders.region", "orders.city", {"field": SUBSET_RANK, "alias": "sr"}],
             metrics=[s],
         ),
         "lift/dim_nested_cumsum": q(
-            dimensions=["region", "city", {"field": NESTED_RANK, "alias": "nr"}],
+            dimensions=["orders.region", "orders.city", {"field": NESTED_RANK, "alias": "nr"}],
             time_dimensions=month_td(),
             metrics=[s],
         ),
         "lift/dim_explicit_partition": q(
             dimensions=[
-                "region", "city", {"field": EXPLICIT_PART_RANK, "alias": "er"},
+                "orders.region", "orders.city", {"field": EXPLICIT_PART_RANK, "alias": "er"},
             ],
             metrics=[s],
         ),
         "lift/dual_role": q(
             dimensions=[
-                "region", "city", "channel",
+                "orders.region", "orders.city", "orders.channel",
                 {"field": MIXED_RANK, "alias": "rr"},
             ],
             metrics=[QueryMetric(metric=MIXED_RANK, alias="rm"), s],
         ),
         "lift/measure_mixed_arithmetic": q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(metric=MEASURE_DIFF, alias="d"), s],
         ),
         "lift/measure_same_grain_arithmetic": q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(metric=SAMEGRAIN_DIFF, alias="d")],
         ),
         "lift/dim_same_grain_rank": q(
-            dimensions=["region", {"field": SAMEGRAIN_RANK, "alias": "gr"}],
+            dimensions=["orders.region", {"field": SAMEGRAIN_RANK, "alias": "gr"}],
             metrics=[s],
         ),
         # DEV-1835 stage-2 lifts the windowed / first-last mixed-grain union
         # (design D9): these render now instead of raising the residual guard.
         "lift/dim_mixed_windowed": q(
             dimensions=[
-                "region", "city",
+                "orders.region", "orders.city",
                 {"field": "rank(sum(amount, window='90d', partition_by=region)"
                                " - sum(amount, partition_by=city), direction='desc')", "alias": "x"},
             ],
@@ -95,7 +95,7 @@ def _cases() -> dict:
         ),
         "lift/dim_mixed_first_last": q(
             dimensions=[
-                "region", "city",
+                "orders.region", "orders.city",
                 {"field": "rank(last(amount, partition_by=region) - "
                                "sum(amount, partition_by=city), direction='desc')", "alias": "x"},
             ],
@@ -103,8 +103,8 @@ def _cases() -> dict:
         ),
         "guard/dim_temporal_axis_missing": q(
             dimensions=[
-                "region", "city",
-                {"field": "cumsum(sum(amount, partition_by=[region, city]))",
+                "orders.region", "orders.city",
+                {"field": "cumsum(sum(orders.amount, partition_by=[orders.region, orders.city]))",
                  "alias": "cs"},
             ],
             time_dimensions=month_td(),
@@ -112,7 +112,7 @@ def _cases() -> dict:
         ),
         "guard/dim_kwarg_outside_union": q(
             dimensions=[
-                "region", "city",
+                "orders.region", "orders.city",
                 {"field": "rank(sum(amount, partition_by=region) - "
                                "sum(amount, partition_by=city), "
                                "partition_by=channel, direction='desc')", "alias": "x"},

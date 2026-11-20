@@ -40,27 +40,27 @@ POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 MED = QueryMetric(metric="median(customers.spend)", alias="med")
 RENT = QueryMetric(metric="sum(stores.rent)", alias="rent")
 GS = QueryMetric(metric="sum(customers.gold_spend)", alias="gs")
-PART = QueryMetric(metric="sum(customers.spend, partition_by=status)", alias="cm")
+PART = QueryMetric(metric="sum(customers.spend, partition_by=orders.status)", alias="cm")
 
 
 def _cases() -> dict:
     return {
         "assoc/spend_by_status": {"models": "default", "mode": "associate",
-                                  "kw": {"dimensions": ["status"], "metrics": [CM]}},
+                                  "kw": {"dimensions": ["orders.status"], "metrics": [CM]}},
         "assoc/count_by_status": {"models": "default", "mode": "associate",
-                                  "kw": {"dimensions": ["status"], "metrics": [NC]}},
+                                  "kw": {"dimensions": ["orders.status"], "metrics": [NC]}},
         "assoc/pop_by_status": {"models": "default", "mode": "associate",
-                                "kw": {"dimensions": ["status"], "metrics": [POP]}},
+                                "kw": {"dimensions": ["orders.status"], "metrics": [POP]}},
         "assoc/median_by_status": {"models": "default", "mode": "associate",
-                                   "kw": {"dimensions": ["status"], "metrics": [MED]}},
+                                   "kw": {"dimensions": ["orders.status"], "metrics": [MED]}},
         "assoc/rent_composite_key": {"models": "default", "mode": "associate",
-                                     "kw": {"dimensions": ["status"], "metrics": [RENT]}},
+                                     "kw": {"dimensions": ["orders.status"], "metrics": [RENT]}},
         "assoc/measure_local_filter": {"models": "ext", "mode": "associate",
-                                       "kw": {"dimensions": ["status"], "metrics": [GS]}},
+                                       "kw": {"dimensions": ["orders.status"], "metrics": [GS]}},
         "assoc/explicit_partition": {"models": "default", "mode": "associate",
-                                     "kw": {"dimensions": ["status"], "metrics": [PART]}},
+                                     "kw": {"dimensions": ["orders.status"], "metrics": [PART]}},
         "bcast/spend_by_status": {"models": "default", "mode": "broadcast",
-                                  "kw": {"dimensions": ["status"], "metrics": [CM]}},
+                                  "kw": {"dimensions": ["orders.status"], "metrics": [CM]}},
         "bcast/attributable_tier": {"models": "default", "mode": None,
                                     "kw": {"dimensions": ["customers.tier"], "metrics": [CM]}},
     }

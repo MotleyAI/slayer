@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType, NUMERIC_DATATYPES, TEMPORAL_DATATYPES
 from slayer.core.models import DatasetField, SlayerDataset, is_identifier
+from slayer.core.names import qualified_reference
 from slayer.core.query import SlayerQuery
 from slayer.engine.binding import range_read
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -118,9 +119,10 @@ def _profile_type(field: DatasetField) -> DataType | None:
     return field.element_type if field.datatype is DataType.ARRAY else field.datatype
 
 
-def _values_ref(field: DatasetField) -> str:
+def _values_ref(field: DatasetField, *, dataset: SlayerDataset) -> str:
     """The reference whose values profile ``field``: a list's ``<field>.value``."""
-    return f"{field.name}.value" if field.datatype is DataType.ARRAY else field.name
+    parts = (dataset.name, field.name, "value") if field.datatype is DataType.ARRAY else (dataset.name, field.name)
+    return qualified_reference(*parts)
 
 
 def _is_sample_cached(field: DatasetField, *, dataset: SlayerDataset) -> bool:
@@ -150,8 +152,9 @@ async def _profile_categorical(
     *, dataset: SlayerDataset, field: DatasetField, engine: SlayerQueryEngine,
 ) -> _Sample:
     """Top values (a list's elements) by frequency (value asc tie-break) in one scan; raises on query failure."""
-    ref = _values_ref(field)
-    counted = f"count({field.name}.*)" if field.datatype is DataType.ARRAY else "count(*)"
+    ref = _values_ref(field, dataset=dataset)
+    owner = (dataset.name, field.name) if field.datatype is DataType.ARRAY else (dataset.name,)
+    counted = f"count({qualified_reference(*owner)}.*)"
     q = SlayerQuery.model_validate({
         "population": dataset.name,
         "dimensions": [ref],
@@ -164,8 +167,9 @@ async def _profile_categorical(
         "limit": _MAX_CATEGORICAL_VALUES + 2,
     })
     r = await engine.execute(query=q, data_source=dataset.data_source or None)
-    value_key = f"{dataset.name}.{ref}"
-    count_key = f"{dataset.name}.{_COUNT}"
+    value_key = ".".join((dataset.name, field.name, "value") if field.datatype is DataType.ARRAY
+                         else (dataset.name, field.name))
+    count_key = _COUNT
     pairs = [(row.get(value_key), row.get(count_key)) for row in r.data if row.get(value_key) is not None]
     pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
     values = [str(v) for v, _ in pairs]
@@ -186,7 +190,7 @@ async def _profile_numeric_temporal(
 ) -> list[_Sample]:
     """One batched min/max query (a list's over its elements); raises on query failure."""
     metrics = [
-        {"metric": f"{agg}({_values_ref(c)})", "alias": f"_slayer_range_{c.name}_{agg}"}
+        {"metric": f"{agg}({_values_ref(c, dataset=dataset)})", "alias": f"_slayer_range_{c.name}_{agg}"}
         for c in fields for agg in ("min", "max")
     ]
     q = SlayerQuery.model_validate({"population": dataset.name, "metrics": metrics})
@@ -195,15 +199,16 @@ async def _profile_numeric_temporal(
     row = r.data[0] if r.data else {}
     out: list[_Sample] = []
     for c in fields:
-        mn = row.get(f"{dataset.name}._slayer_range_{c.name}_min")
-        mx = row.get(f"{dataset.name}._slayer_range_{c.name}_max")
+        mn = row.get(f"_slayer_range_{c.name}_min")
+        mx = row.get(f"_slayer_range_{c.name}_max")
         out.append(_Sample(sampled=_ALL_NULL if mn is None and mx is None else f"{mn} .. {mx}"))
     return out
 
 
 async def _probe(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> Exception | None:
     """Row-count the dataset; the exception when it fails, else ``None``."""
-    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": ["count(*)"]})
+    q = SlayerQuery.model_validate({"population": dataset.name,
+                                    "metrics": [f"count({qualified_reference(dataset.name)}.*)"]})
     try:
         await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception as exc:  # NOSONAR(S112) — the probe's failure IS the classification

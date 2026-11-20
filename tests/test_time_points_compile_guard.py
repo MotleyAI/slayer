@@ -13,8 +13,8 @@ from tests._time_points_fixtures import tp_engine
 async def test_unresolved_time_point_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bind_inputs, "resolve_time_points", lambda vk, **_: vk)
     query = SlayerQuery.model_validate({
-        "population": "ev", "metrics": [{"metric": "count(*)", "alias": "n"}],
-        "filter": ["ts >= 'last month'"],
+        "population": "ev", "metrics": [{"metric": "count(ev.*)", "alias": "n"}],
+        "filter": ["ev.ts >= 'last month'"],
     })
     async with tp_engine("sqlite") as engine:
         with pytest.raises(RuntimeError, match="unresolved time-point"):

@@ -37,7 +37,7 @@ directly onto an `edit_dataset` or `delete_dataset` call.
 ## 3. Try a query that touches the drifted column
 
 ```bash
-slayer query '{"population": "products", "dimensions": ["sku"]}'
+slayer query '{"population": "products", "dimensions": ["products.sku"]}'
 ```
 
 The engine catches the DBAPI error, checks the datasets the failed query

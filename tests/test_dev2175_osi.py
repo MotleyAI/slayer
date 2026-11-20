@@ -117,19 +117,19 @@ class TestTranslated:
         assert expression["dialects"][0] == _entry("BIGQUERY", "amount * 5")
         assert [e["dialect"] for e in expression["dialects"]] == ["BIGQUERY", "DUCKDB"]
         assert mentions(result, "BIGQUERY", severity="info")
-        assert await scalar(result=result, db=db, dataset="orders", expression="sum(pick)") == 110
+        assert await scalar(result=result, db=db, dataset="orders", expression="sum(orders.pick)") == 110
 
     async def test_override_first(self, db: Path) -> None:
         result = _import(db, f_dialects("pick", ("SNOWFLAKE", "amount * 2"), ("BIGQUERY", "amount * 3")),
                          dialect="SNOWFLAKE")
         assert "2" in _duckdb_entry(_expression(result, "pick"))
-        assert await scalar(result=result, db=db, dataset="orders", expression="sum(pick)") == 44
+        assert await scalar(result=result, db=db, dataset="orders", expression="sum(orders.pick)") == 44
 
     async def test_unreadable_override_falls_through(self, db: Path) -> None:
         result = _import(db, f_dialects("pick", ("MDX", "[Measures].[x]"), ("ANSI_SQL", "amount * 3")),
                          dialect="MDX")
         assert "3" in _duckdb_entry(_expression(result, "pick"))
-        assert await scalar(result=result, db=db, dataset="orders", expression="sum(pick)") == 66
+        assert await scalar(result=result, db=db, dataset="orders", expression="sum(orders.pick)") == 66
 
     async def test_portable_sql_slayer_cannot_read(self, db: Path) -> None:
         result = _import(db, f("zeroed", "ZEROIFNULL(amount)"))
@@ -137,7 +137,7 @@ class TestTranslated:
         assert expression["sql"] == "ZEROIFNULL(amount)"
         assert "amount IS NULL" in _duckdb_entry(expression)
         assert mentions(result, "zeroed")
-        assert await scalar(result=result, db=db, dataset="orders", expression="sum(zeroed)") == 22
+        assert await scalar(result=result, db=db, dataset="orders", expression="sum(orders.zeroed)") == 22
 
 
 # ── import: a metric's entry for the target's dialect ────────────────────
@@ -148,14 +148,14 @@ class TestMetricTargetEntry:
         result = _import(db, metrics=[total])
         assert "DUCKDB" not in json.dumps(_metric_dump(result, "total")).upper()
         assert [e for e in mentions(result, "total") if "DUCKDB" in e.message]
-        assert await scalar(result=result, db=db, dataset="orders", expression="total") == 22
+        assert await scalar(result=result, db=db, dataset="orders", expression="orders.total") == 22
 
     async def test_translated_when_it_is_the_only_form(self, db: Path) -> None:
         total = {"name": "total", "expression": {"dialects": [_entry("DUCKDB", "sum(amount)")]}}
         result = _import(db, metrics=[total])
         assert "DUCKDB" not in json.dumps(_metric_dump(result, "total")).upper()
         assert [e for e in result.entries if "DUCKDB" in e.message]
-        assert await scalar(result=result, db=db, dataset="orders", expression="total") == 22
+        assert await scalar(result=result, db=db, dataset="orders", expression="orders.total") == 22
 
 
 # ── export ────────────────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ class TestExportForms:
             {"name": "completed_amount", "expression": "amount", "filter": "status = 'completed'"},
             {"name": "legal_type", "expression": '"LegalType"'},
             {"name": "per_unit", "expression": {"dialects": [_entry("DUCKDB", "amount / quantity")]}}))
-        query = {"population": "orders", "dimensions": ["id", "gross", "completed_amount", "legal_type", "per_unit"]}
+        query = {"population": "orders", "dimensions": ["orders.id", "orders.gross", "orders.completed_amount", "orders.legal_type", "orders.per_unit"]}
         before = normalized(await rows(env, query))
         target, _ = await reimport(env, (await export(env)).document)
         assert normalized(await rows(target, query)) == before
@@ -241,6 +241,6 @@ async def test_a_v2_export_still_imports(tmp_path: Path) -> None:
     orders = (await stored(target, "orders")).model_dump(mode="json", exclude_none=True)
     (amount_x2,) = [x for x in orders["fields"] if x["name"] == "amount_x2"]
     assert amount_x2["expression"] == {"dialects": [_entry("DUCKDB", "amount * 2")]}
-    out = await rows(target, {"population": "orders", "dimensions": ["id", "amount", "amount_x2"],
-                              "order": [{"field": "id"}]})
+    out = await rows(target, {"population": "orders", "dimensions": ["orders.id", "orders.amount", "orders.amount_x2"],
+                              "order": [{"field": "orders.id"}]})
     assert [r["orders.amount_x2"] for r in out] == [2 * r["orders.amount"] for r in out]

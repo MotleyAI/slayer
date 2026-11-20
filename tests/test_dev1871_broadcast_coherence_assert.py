@@ -28,13 +28,13 @@ def _bundle() -> ResolvedSourceBundle:
 def _query(expression: str) -> SlayerQuery:
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status"), QueryDimension(field="tier")],
+        dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.tier")],
         metrics=[QueryMetric(metric=expression, alias="mix")],
     )
 
 
-_TWO_ATTACHED = "sum(amount, partition_by=status) + sum(amount, partition_by=tier)"
-_INLINE_PLUS_ATTACHED = "sum(amount) + sum(amount, partition_by=status)"
+_TWO_ATTACHED = "sum(orders.amount, partition_by=orders.status) + sum(orders.amount, partition_by=orders.tier)"
+_INLINE_PLUS_ATTACHED = "sum(orders.amount) + sum(orders.amount, partition_by=orders.status)"
 
 
 @pytest.mark.parametrize("formula", [_TWO_ATTACHED, _INLINE_PLUS_ATTACHED])

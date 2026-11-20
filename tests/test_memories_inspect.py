@@ -157,7 +157,7 @@ class TestInspectModelLearningsSection:
             entities=["mydb.orders.amount"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount)")],
+                metrics=[QueryMetric(metric="sum(orders.amount)")],
             ),
         )
         result = await _call(

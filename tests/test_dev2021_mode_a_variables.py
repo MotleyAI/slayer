@@ -95,7 +95,7 @@ class _Env:
 
     async def value(self, dataset: SlayerDataset, query: SlayerQuery) -> Any:
         resp = await self.run(dataset, query)
-        return resp.data[0][f"{dataset.name}.v"]
+        return resp.data[0]["v"]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -144,12 +144,12 @@ _FLAGGED = DatasetField(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0
 
 #: (dataset, expression, variables) — one hostile value per Mode-A surface.
 _HOSTILE = {
-    "column-sql": (lambda: _table_dataset(extra=(_SCALED,)), "sum(scaled)", {"k": _HOSTILE_SCALAR}),
-    "column-filter": (lambda: _table_dataset(extra=(_FLOORED,)), "sum(big)", {"floor": _HOSTILE_PREDICATE}),
+    "column-sql": (lambda: _table_dataset(extra=(_SCALED,)), "sum(orders.scaled)", {"k": _HOSTILE_SCALAR}),
+    "column-filter": (lambda: _table_dataset(extra=(_FLOORED,)), "sum(orders.big)", {"floor": _HOSTILE_PREDICATE}),
     "model-filter": (lambda: _table_dataset(filters=["amount >= {floor}"]), "sum(amount)", {"floor": _HOSTILE_PREDICATE}),
     "model-sql": (lambda: _sql_dataset("SELECT * FROM orders WHERE amount >= {floor}"), "sum(amount)",
                   {"floor": _HOSTILE_PREDICATE}),
-    "string-in-bare-slot": (lambda: _table_dataset(extra=(_SCALED,)), "sum(scaled)", {"k": "abc"}),
+    "string-in-bare-slot": (lambda: _table_dataset(extra=(_SCALED,)), "sum(orders.scaled)", {"k": "abc"}),
 }
 
 
@@ -167,7 +167,7 @@ class TestHostileValuesAreRefused:
     async def test_a_model_default_is_bound_as_a_literal_too(self, env: _Env, executed: list[str]) -> None:
         model = _table_dataset(extra=(_SCALED,)).model_copy(update={"query_variables": {"k": _HOSTILE_SCALAR}})
         await env.storage.save_dataset(model)
-        query = _query("orders", "sum(scaled)")
+        query = _query("orders", "sum(orders.scaled)")
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await env.engine.execute(query)
         assert not any("users" in sql for sql in executed)
@@ -184,7 +184,7 @@ class TestLiteralValuesBind:
             "model-filter": _table_dataset(filters=["amount >= {floor}"]),
             "model-sql": _sql_dataset("SELECT * FROM orders WHERE amount >= {floor}"),
         }[surface]
-        formula = "sum(big)" if surface == "column-filter" else "sum(amount)"
+        formula = "sum(orders.big)" if surface == "column-filter" else "sum(amount)"
         assert await env.value(model, _query(model.name, formula, variables={"floor": "25"})) == 70
 
     async def test_a_whole_in_list(self, env: _Env) -> None:
@@ -193,7 +193,7 @@ class TestLiteralValuesBind:
 
     async def test_a_quote_inside_a_string_literal(self, env: _Env) -> None:
         resp = await env.run(_table_dataset(extra=(_TAGGED,)), SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["id", "tagged"], "filter": ["id = 1"],
+            "population": "orders", "dimensions": ["orders.id", "orders.tagged"], "filter": ["orders.id = 1"],
             "variables": {"suffix": "O'Brien"},
         }))
         assert [r["orders.tagged"] for r in resp.data] == ["AnnO'Brien"]
@@ -230,7 +230,7 @@ class TestNonLiteralPositionsAreRefused:
         assert await env.storage.get_dataset(model.name, data_source=DS) is None
 
     @pytest.mark.parametrize(("model", "formula", "variables"), [
-        pytest.param(_BARE_SLOT, "sum(c)", {"col": "amount"}, id="identifier"),
+        pytest.param(_BARE_SLOT, "sum(orders.c)", {"col": "amount"}, id="identifier"),
         pytest.param(_NON_LITERAL["column-partial-in-list"], "count(*)", {"s": "ok"}, id="partial-in-list"),
         pytest.param(_NON_LITERAL["model-sql-table"], "count(*)", {"table": "users"}, id="table-name"),
     ])
@@ -263,7 +263,7 @@ class TestOptionalBlocks:
     async def test_escaped_braces_render_one_brace(self, env: _Env) -> None:
         tag = DatasetField(name="tag", sql="'{{x}}' || '{suffix}'", datatype=DataType.STRING)
         resp = await env.run(_table_dataset(extra=(tag,)), SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["tag"], "variables": {"suffix": "!"},
+            "population": "orders", "dimensions": ["orders.tag"], "variables": {"suffix": "!"},
         }))
         assert {r["orders.tag"] for r in resp.data} == {"{x}!"}
 
@@ -272,16 +272,16 @@ class TestPostgres:
     async def test_literal_values_bind(self, pg_env: _Env) -> None:
         model = _table_dataset(filters=["status IN ({statuses})", "amount >= {floor}"], extra=(_SCALED, _TAGGED))
         resp = await pg_env.run(model, SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["tagged"], "metrics": [{"metric": "sum(scaled)", "alias": "v"}],
+            "population": "orders", "dimensions": ["orders.tagged"], "metrics": [{"metric": "sum(orders.scaled)", "alias": "v"}],
             "variables": {"statuses": ["ok", "new"], "floor": "15", "k": 2, "suffix": "O'Brien"},
         }))
-        assert {r["orders.tagged"]: float(r["orders.v"]) for r in resp.data} == {
+        assert {r["orders.tagged"]: float(r["v"]) for r in resp.data} == {
             "O'BrienO'Brien": 40.0, "BobO'Brien": 60.0,
         }
 
     async def test_a_hostile_value_is_refused(self, pg_env: _Env, executed: list[str]) -> None:
         await pg_env.storage.save_dataset(_table_dataset(extra=(_SCALED,)))
-        query = _query("orders", "sum(scaled)", variables={"k": _HOSTILE_SCALAR})
+        query = _query("orders", "sum(orders.scaled)", variables={"k": _HOSTILE_SCALAR})
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await pg_env.engine.execute(query)
         assert not any("users" in sql for sql in executed)

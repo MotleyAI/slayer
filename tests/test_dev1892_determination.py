@@ -32,10 +32,10 @@ async def exec_engine(request):
 
 class TestNestedPathKeySeed:
     @pytest.mark.parametrize("dim, col, oracle", [
-        ("customers.region_id", "corders.customers.region_id",
+        ("customers.region_id", "customers.region_id",
          SEEDED_AVG_BY_REGION_ID),
         # a further to-one hop off the seeded key: regions.name.
-        ("customers.regions.name", "corders.customers.regions.name",
+        ("customers.regions.name", "customers.regions.name",
          {"North": 35.0, "South": 100.0}),
     ])
     async def test_joined_key_seeds_attribution(self, exec_engine, dim, col, oracle):
@@ -46,10 +46,10 @@ class TestNestedPathKeySeed:
         resp = await exec_engine.execute(chain_q(
             dimensions=[dim],
             metrics=[QueryMetric(
-                metric="avg(sum(amount, partition_by=customers.id))", alias="a")]))
+                metric="avg(sum(corders.amount, partition_by=customers.id))", alias="a")]))
         by = rows_by(resp, col)
         for key, expected in oracle.items():
-            assert float(by[(key,)]["corders.a"]) == pytest.approx(expected)
+            assert float(by[(key,)]["a"]) == pytest.approx(expected)
         assert broadcast_warnings(resp) == []
 
 
@@ -61,11 +61,11 @@ class TestForeignKeySeedsToOneTarget:
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
             metrics=[QueryMetric(
-                metric="avg(sum(amount, partition_by=customers.region_id))",
+                metric="avg(sum(corders.amount, partition_by=customers.region_id))",
                 alias="a")]))
-        by = rows_by(resp, "corders.customers.regions.name")
+        by = rows_by(resp, "customers.regions.name")
         for name, expected in FK_SEED_AVG_BY_REGION_NAME.items():
-            assert float(by[(name,)]["corders.a"]) == pytest.approx(expected)
+            assert float(by[(name,)]["a"]) == pytest.approx(expected)
         assert broadcast_warnings(resp) == []
 
 
@@ -79,7 +79,7 @@ class TestNestedPathNonKeyDoesNotSeed:
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.id"],
             metrics=[QueryMetric(
-                metric="avg(sum(amount, partition_by=customers.region_id))",
+                metric="avg(sum(corders.amount, partition_by=customers.region_id))",
                 alias="a")],
             to_many_handling="broadcast"))
         assert broadcast_warnings(resp)

@@ -41,14 +41,14 @@ SPINE_MONTHS = [{"field": "time_spine.timestamp", "granularity": "month",
 
 # A Mode-B surface holding the boolean text ``t``.
 SURFACES: dict[str, Callable[[str], dict[str, Any]]] = {
-    "filter": lambda t: {"filter": [t], "metrics": ["count(*)"]},
+    "filter": lambda t: {"filter": [t], "metrics": ["count(orders.*)"]},
     "measure": lambda t: {"metrics": [{"metric": f"sum(iif({t}, amount, 0))", "alias": "m"}]},
     "computed-dimension": lambda t: {
-        "dimensions": [{"field": f"iif({t}, 'y', 'n')", "alias": "flag"}], "metrics": ["count(*)"]},
+        "dimensions": [{"field": f"iif({t}, 'y', 'n')", "alias": "flag"}], "metrics": ["count(orders.*)"]},
     "time-dimension": lambda t: {
         "time_dimensions": [{"field": f"iif({t}, created_at, shipped_at)", "granularity": "month", "alias": "d"}],
-        "metrics": ["count(*)"]},
-    "order": lambda t: {"dimensions": ["note"], "metrics": ["count(*)"], "order": [{"field": f"iif({t}, 0, 1)"}]},
+        "metrics": ["count(orders.*)"]},
+    "order": lambda t: {"dimensions": ["orders.note"], "metrics": ["count(orders.*)"], "order": [{"field": f"iif({t}, 0, 1)"}]},
 }
 
 
@@ -57,23 +57,23 @@ SURFACES: dict[str, Callable[[str], dict[str, Any]]] = {
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("surface", sorted(SURFACES))
 async def test_a_literal_naming_the_root_reaches_the_database_verbatim(engine: SlayerQueryEngine, surface: str) -> None:
-    resp = await engine.execute(_orders(**SURFACES[surface]("note = 'see orders.x'")), dry_run=True)
+    resp = await engine.execute(_orders(**SURFACES[surface]("orders.note = 'see orders.x'")), dry_run=True)
     assert "'see orders.x'" in (resp.sql or "")
 
 
 async def test_a_literal_naming_the_root_filters_on_its_text(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(dimensions=["id"], filter=["note = 'see orders.x'"]))
+    resp = await engine.execute(_orders(dimensions=["orders.id"], filter=["orders.note = 'see orders.x'"]))
     assert [r["orders.id"] for r in resp.data] == [1]
 
 
 async def test_a_literal_naming_the_root_inside_a_measure(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(metrics=[{"metric": "sum(iif(note = 'see orders.x', amount, 0))", "alias": "m"}]))
-    assert float(resp.data[0]["orders.m"]) == 10.0
+    resp = await engine.execute(_orders(metrics=[{"metric": "sum(iif(orders.note = 'see orders.x', orders.amount, 0))", "alias": "m"}]))
+    assert float(resp.data[0]["m"]) == 10.0
 
 
 async def test_a_literal_naming_the_root_inside_an_order_expression(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(_orders(
-        dimensions=["note"], metrics=["count(*)"], order=[{"field": "iif(note = 'see orders.x', 0, 1)"}],
+        dimensions=["orders.note"], metrics=["count(orders.*)"], order=[{"field": "iif(orders.note = 'see orders.x', 0, 1)"}],
     ))
     assert resp.data[0]["orders.note"] == "see orders.x"
 
@@ -82,10 +82,10 @@ async def test_a_literal_naming_the_root_inside_an_order_expression(engine: Slay
 # A quoted identifier names exactly what it spells
 # --------------------------------------------------------------------------- #
 QUOTED_ROOT_SURFACES = {
-    "filter": {"filter": ['"orders.x" = 1'], "metrics": ["count(*)"]},
-    "measure": {"metrics": ['sum("orders.x")']},
-    "computed-dimension": {"dimensions": [{"field": '"orders.x" + 1', "alias": "q"}], "metrics": ["count(*)"]},
-    "order": {"dimensions": ["status"], "metrics": ["count(*)"], "order": [{"field": '"orders.x" + 1'}]},
+    "filter": {"filter": ['orders."orders.x" = 1'], "metrics": ["count(orders.*)"]},
+    "measure": {"metrics": ['sum(orders."orders.x")']},
+    "computed-dimension": {"dimensions": [{"field": 'orders."orders.x" + 1', "alias": "q"}], "metrics": ["count(orders.*)"]},
+    "order": {"dimensions": ["orders.status"], "metrics": ["count(orders.*)"], "order": [{"field": 'orders."orders.x" + 1'}]},
 }
 
 
@@ -98,31 +98,31 @@ async def test_a_quoted_identifier_naming_the_root_is_one_identifier(engine: Sla
 
 
 @pytest.mark.parametrize(("quoted", "bare"), [
-    ({"filter": ['"status" = \'paid\''], "metrics": ["count(*)"]}, {"filter": ["status = 'paid'"], "metrics": ["count(*)"]}),
-    ({"metrics": ['sum("amount")']}, {"metrics": ["sum(amount)"]}),
+    ({"filter": ['orders."status" = \'paid\''], "metrics": ["count(orders.*)"]}, {"filter": ["orders.status = 'paid'"], "metrics": ["count(orders.*)"]}),
+    ({"metrics": ['sum(orders."amount")']}, {"metrics": ["sum(orders.amount)"]}),
 ], ids=["filter", "measure"])
 async def test_a_quoted_identifier_names_its_column(engine: SlayerQueryEngine, quoted: dict, bare: dict) -> None:
     await assert_same(engine, _orders(**quoted), _orders(**bare))
 
 
 async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
-    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', \"created_at\")"], metrics=["count(*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], metrics=["count(*)"]))
+    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', orders.\"created_at\")"], metrics=["count(orders.*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"]))
     assert quoted.columns == bare.columns
     assert canonical_rows(quoted) == canonical_rows(bare)
 
 
 MAIN_TIME = {"time_dimensions": ["date_trunc('month', created_at)", "date_trunc('month', shipped_at)"],
-             "metrics": [{"metric": "change(count(*))", "alias": "c"}]}
+             "metrics": [{"metric": "change(count(orders.*))", "alias": "c"}]}
 
 
 async def test_a_quoted_main_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
-    await assert_same(engine, _orders(**MAIN_TIME, main_time_dimension='"created_at"'),
-                      _orders(**MAIN_TIME, main_time_dimension="created_at"))
+    await assert_same(engine, _orders(**MAIN_TIME, main_time_dimension='orders."created_at"'),
+                      _orders(**MAIN_TIME, main_time_dimension="orders.created_at"))
 
 
 async def test_a_quoted_main_time_dimension_naming_the_root_is_one_identifier(engine: SlayerQueryEngine) -> None:
-    body = _orders(**MAIN_TIME, main_time_dimension='"orders.created_at"')
+    body = _orders(**MAIN_TIME, main_time_dimension='orders."orders.created_at"')
     with pytest.raises(SlayerError) as info:
         await engine.execute(body, dry_run=True)
     assert "orders.created_at" in str(info.value)
@@ -132,17 +132,17 @@ async def test_a_quoted_main_time_dimension_naming_the_root_is_one_identifier(en
 # A literal naming the spine is not a spine query
 # --------------------------------------------------------------------------- #
 SPINE_LITERAL = {
-    "filter": {"filter": ["note = 'time_spine.x'"]},
-    "computed-dimension": {"dimensions": [{"field": "iif(note = 'time_spine.x', 'y', 'n')", "alias": "flag"}]},
+    "filter": {"filter": ["orders.note = 'time_spine.x'"]},
+    "computed-dimension": {"dimensions": [{"field": "iif(orders.note = 'time_spine.x', 'y', 'n')", "alias": "flag"}]},
     "time-dimension": {"time_dimensions": [
-        _month(), {"field": "iif(note = 'time_spine.x', created_at, shipped_at)", "granularity": "year", "alias": "y"},
+        _month(), {"field": "iif(orders.note = 'time_spine.x', orders.created_at, orders.shipped_at)", "granularity": "year", "alias": "y"},
     ]},
 }
 
 
 async def test_a_literal_naming_the_spine_is_not_a_spine_query(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(time_dimensions=[_month()], metrics=["count(*)"],
-                                        filter=["note = 'time_spine.x'"]))
+    resp = await engine.execute(_orders(time_dimensions=[_month()], metrics=["count(orders.*)"],
+                                        filter=["orders.note = 'time_spine.x'"]))
     assert [(str(r["orders.created_at"])[:10], str(r["orders._count"])) for r in resp.data] == [("2025-02-01", "1")]
 
 
@@ -162,7 +162,7 @@ async def test_a_spine_filter_reads_as_the_template_binding_parses(
 
 @pytest.mark.parametrize("surface", sorted(SPINE_LITERAL))
 async def test_spine_literals_leave_the_population_alone(engine: SlayerQueryEngine, surface: str) -> None:
-    body = {"time_dimensions": [_month()], "metrics": ["count(*)"], **SPINE_LITERAL[surface]}
+    body = {"time_dimensions": [_month()], "metrics": ["count(orders.*)"], **SPINE_LITERAL[surface]}
     resp = await engine.execute(_orders(**body))
     assert {str(r["orders.created_at"])[:7] for r in resp.data} <= {"2025-01", "2025-02", "2025-03"}
     assert "time_spine" not in (resp.sql or "").replace("'time_spine.x'", "")
@@ -212,7 +212,7 @@ async def test_a_filter_literal_naming_a_query_backed_model_splices_nothing(
 
 
 async def test_a_query_backed_root_is_spliced(engine: SlayerQueryEngine, spliced: list[str]) -> None:
-    await engine.execute({"population": "qb", "metrics": ["sum(tot)"]}, dry_run=True)
+    await engine.execute({"population": "qb", "metrics": ["sum(qb.tot)"]}, dry_run=True)
     assert spliced == ["qb"]
 
 
@@ -220,12 +220,12 @@ async def test_a_query_backed_root_is_spliced(engine: SlayerQueryEngine, spliced
 # Reported variable demand equals binding's lookups
 # --------------------------------------------------------------------------- #
 DEMANDS: dict[str, set[str]] = {
-    "note = '{x}'": {"x"},
-    "amount > {x}": {"x"},
-    "note = '{x}' AND amount > {y}": {"x", "y"},
-    "note = '{{x}}'": set(),
-    "regexp_like(note, '[0-9]{3}')": set(),
-    "note = '{1, 2}'": set(),
+    "orders.note = '{x}'": {"x"},
+    "orders.amount > {x}": {"x"},
+    "orders.note = '{x}' AND orders.amount > {y}": {"x", "y"},
+    "orders.note = '{{x}}'": set(),
+    "regexp_like(orders.note, '[0-9]{3}')": set(),
+    "orders.note = '{1, 2}'": set(),
 }
 
 
@@ -258,12 +258,12 @@ async def test_a_quoted_identifier_placeholder_is_refused_and_never_demanded(
 
 def _backing(filter_text: str) -> SlayerDataset:
     return SlayerDataset(name="qbv", data_source="test", source_queries=[SlayerQuery.model_validate(
-        {"population": "orders", "metrics": ["count(*)"], "filter": [filter_text]})])
+        {"population": "orders", "metrics": ["count(orders.*)"], "filter": [filter_text]})])
 
 
 @pytest.mark.parametrize(("filter_text", "required"), [
     ("status = '{s}' AND amount > {min}", ["min", "s"]),
-    ("status = '{{s}}' OR regexp_like(status, '[0-9]{3}')", []),
+    ("orders.status = '{{s}}' OR regexp_like(orders.status, '[0-9]{3}')", []),
     ('"{x}" = 1', []),
 ], ids=["looked-up", "not-looked-up", "quoted-identifier"])
 async def test_inspection_reports_the_looked_up_variables(
@@ -275,20 +275,20 @@ async def test_inspection_reports_the_looked_up_variables(
 
 
 async def test_text_binding_does_not_look_up_runs_without_variables(engine: SlayerQueryEngine) -> None:
-    await engine.storage.save_dataset(_backing("status = '{{s}}' OR regexp_like(status, '[0-9]{3}')"))
-    resp = await engine.execute({"population": "qbv", "metrics": ["count(*)"]})
+    await engine.storage.save_dataset(_backing("orders.status = '{{s}}' OR regexp_like(orders.status, '[0-9]{3}')"))
+    resp = await engine.execute({"population": "qbv", "metrics": ["count(qbv.*)"]})
     assert resp.data
 
 
 @pytest.mark.parametrize(("filter_text", "needed"), [
-    ("note = '{x}'", {"x"}),
-    ("note = '{{x}}'", set()),
+    ("orders.note = '{x}'", {"x"}),
+    ("orders.note = '{{x}}'", set()),
 ], ids=["looked-up", "doubled-brace"])
 async def test_a_spliced_backing_query_looks_up_what_it_reports(
     engine: SlayerQueryEngine, filter_text: str, needed: set[str],
 ) -> None:
     await engine.storage.save_dataset(_backing(filter_text))
-    body = {"population": "qbv", "metrics": ["count(*)"]}
+    body = {"population": "qbv", "metrics": ["count(qbv.*)"]}
     await engine.execute(body, variables=dict.fromkeys(needed, "a"), dry_run=True)
     for name in needed:
         with pytest.raises(VariableError, match=f"'{name}'"):
@@ -296,9 +296,9 @@ async def test_a_spliced_backing_query_looks_up_what_it_reports(
 
 
 @pytest.mark.parametrize(("formula", "required"), [
-    ("sum(iif(note = '{x}', amount, 0))", ["x"]),
-    ("sum(iif(note = '{{x}}', amount, 0))", []),
-    ("sum(iif(regexp_like(note, '[0-9]{3}'), amount, 0))", []),
+    ("sum(iif(orders.note = '{x}', orders.amount, 0))", ["x"]),
+    ("sum(iif(orders.note = '{{x}}', orders.amount, 0))", []),
+    ("sum(iif(regexp_like(orders.note, '[0-9]{3}'), orders.amount, 0))", []),
     ('sum(iif("{x}" = 1, amount, 0))', []),
 ], ids=["looked-up", "doubled-brace", "digit-braces", "quoted-identifier"])
 def test_saved_measure_formula_demand(formula: str, required: list[str]) -> None:
@@ -317,9 +317,9 @@ ORDER_PINS: dict[str, tuple[Optional[str], Optional[str]]] = {
     "sum(revenue)": (None, "sum(revenue)"),
     "my_agg(price)": (None, "my_agg(price)"),
     "month(created_at)": (None, "month(created_at)"),
-    "count(*)": (None, "count(*)"),
+    "count(orders.*)": (None, "count(orders.*)"),
     "sum(orders.amount)": (None, "sum(orders.amount)"),
-    'sum("amount")': (None, 'sum("amount")'),
+    'sum(orders."amount")': (None, 'sum(orders."amount")'),
     "change(sum(revenue))": (None, "change(sum(revenue))"),
     "rev / cnt": (None, "rev / cnt"),
     "amount::int": (None, "amount::int"),
@@ -327,7 +327,7 @@ ORDER_PINS: dict[str, tuple[Optional[str], Optional[str]]] = {
 }
 
 ORDER_LITERALS = [
-    "status || 'a:b'", "iif(note = 'x:y', 1, 0)", "coalesce(note, 'a)b')", "coalesce(note, 'a(b')",
+    "orders.status || 'a:b'", "iif(note = 'x:y', 1, 0)", "coalesce(note, 'a)b')", "coalesce(note, 'a(b')",
     "'a:b'", "upper(note) || ':'",
 ]
 
@@ -347,13 +347,13 @@ def test_an_order_literal_is_one_whole_expression(entry: str) -> None:
 
 
 @pytest.mark.parametrize(("entry", "expected"), [
-    ("status || 'a:b'", ["paid", "open"]),
-    ("iif(status || ':' = 'open:', 1, 0)", ["open", "paid"]),
+    ("orders.status || 'a:b'", ["paid", "open"]),
+    ("iif(orders.status || ':' = 'open:', 1, 0)", ["open", "paid"]),
 ], ids=["concat", "call"])
 async def test_an_order_literal_sorts_by_the_whole_expression(
     engine: SlayerQueryEngine, entry: str, expected: list[str],
 ) -> None:
-    resp = await engine.execute(_orders(dimensions=["status"], metrics=["count(*)"],
+    resp = await engine.execute(_orders(dimensions=["orders.status"], metrics=["count(orders.*)"],
                                         order=[{"field": entry, "direction": "desc"}]))
     assert [r["orders.status"] for r in resp.data] == expected
 
@@ -404,9 +404,9 @@ def test_a_non_granularity_call_stays_a_dimension() -> None:
 
 
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:
-    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', iif(note = 'a)b', created_at, created_at))"],
-                                          metrics=["count(*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], metrics=["count(*)"]))
+    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', iif(orders.note = 'a)b', orders.created_at, orders.created_at))"],
+                                          metrics=["count(orders.*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"]))
     assert sorted(tuple(map(str, r.values())) for r in quoted.data) == sorted(
         tuple(map(str, r.values())) for r in bare.data)
 
@@ -419,11 +419,11 @@ def _misplaced(resp: Any) -> list[str]:
 
 
 async def test_a_bare_column_measure_moves_to_dimensions(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(metrics=["status", "count(*)"]))
+    resp = await engine.execute(_orders(metrics=["status", "count(orders.*)"]))
     assert _misplaced(resp) == ["status"]
     assert "orders.status" in resp.columns
 
 
-@pytest.mark.parametrize("measures", [["revenue"], ["sum(amount)"]], ids=["saved", "call"])
+@pytest.mark.parametrize("measures", [["revenue"], ["sum(orders.amount)"]], ids=["saved", "call"])
 async def test_a_measure_stays_a_measure(engine: SlayerQueryEngine, measures: list[str]) -> None:
     assert _misplaced(await engine.execute(_orders(metrics=measures))) == []

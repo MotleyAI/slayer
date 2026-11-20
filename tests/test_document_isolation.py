@@ -351,7 +351,7 @@ class TestEnumerationSurfaces:
         engine = SlayerQueryEngine(storage=bad_store)
         try:
             resp = await engine.execute(
-                SlayerQuery.model_validate({"population": "customers", "dimensions": ["name"]}))
+                SlayerQuery.model_validate({"population": "customers", "dimensions": ["customers.name"]}))
         finally:
             engine.close()
         assert {r["customers.name"] for r in resp.data} == {"Ann", "Bob"}
