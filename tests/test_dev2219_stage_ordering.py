@@ -181,7 +181,7 @@ class TestEdgeAwareExtractor:
         sibling = q(name="ship_region", population="customers", metrics=[m("count(customers.*)", "nc")])
         z = q(name="z", population="orders", dimensions=["ship_region.name"], metrics=[m("count(orders.*)", "n")])
         assert stage_sibling_reads(query=z, siblings={"ship_region", "z"}) == {"ship_region"}
-        queries = [sibling, z, q(population="z", metrics=[m("sum(z.n)", "t")])]
+        queries: list[SlayerQuery | dict] = [sibling, z, q(population="z", metrics=[m("sum(z.n)", "t")])]
         async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
             with pytest.raises(UnknownReferenceError, match="ship_region.name"):
                 await engine.execute(queries, dry_run=True)
