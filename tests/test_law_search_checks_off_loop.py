@@ -108,19 +108,30 @@ def _comprehension_parts(
     """A comprehension's subexpressions in evaluation order, each seeing only the targets bound before it."""
     parts: list[tuple[ast.AST, frozenset[str]]] = []
     for gen in comp.generators:
-        parts.append((gen.iter, shadow))
+        parts.extend([(gen.iter, shadow), (gen.target, shadow)])
         shadow = shadow | {n.id for n in ast.walk(gen.target) if isinstance(n, ast.Name)}
         parts.extend((cond, shadow) for cond in gen.ifs)
     results = [comp.key, comp.value] if isinstance(comp, ast.DictComp) else [comp.elt]
     return parts + [(expr, shadow) for expr in results]
 
 
+def _definition_time(node: ast.AST) -> list[ast.AST]:
+    """What a nested def, lambda or class evaluates when defined; a def's or lambda's body waits for a call."""
+    if isinstance(node, ast.ClassDef):
+        return [*node.decorator_list, *node.bases, *node.keywords, *node.body]
+    if isinstance(node, _FUNCTIONS):
+        decorators = [] if isinstance(node, ast.Lambda) else node.decorator_list
+        return [*decorators, *node.args.defaults, *filter(None, node.args.kw_defaults)]
+    return []
+
+
 def _calls(body: Iterable[ast.AST]) -> Iterator[tuple[ast.Call, frozenset[str]]]:
-    """Calls in one scope, each with the comprehension targets shadowing names at that point."""
+    """Calls one scope runs, each with the comprehension targets shadowing names at that point."""
     stack: list[tuple[ast.AST, frozenset[str]]] = [(node, frozenset()) for node in body]
     while stack:
         node, shadow = stack.pop()
         if isinstance(node, _SCOPES):
+            stack.extend((part, shadow) for part in _definition_time(node))
             continue
         if isinstance(node, _COMPREHENSIONS):
             stack.extend(_comprehension_parts(node, shadow))
@@ -267,6 +278,33 @@ def test_no_async_def_calls_a_lazily_importing_search_check() -> None:
                 check()
                 from slayer.database.client import is_available as check
         """, id="later-reimport-does-not-hide-earlier-binding"),
+        pytest.param("slayer.x", """
+            from slayer.search import graph
+            async def f(slots, xs):
+                return [None for slots[graph.is_available()] in xs]
+        """, id="comprehension-subscript-target"),
+        pytest.param("slayer.x", """
+            from slayer.search import graph
+            async def f():
+                def g(available=graph.is_available()):
+                    return available
+                return g
+        """, id="nested-def-default"),
+        pytest.param("slayer.x", """
+            from slayer.search import graph
+            async def f(deco):
+                @deco(graph.is_available())
+                def g():
+                    pass
+                return g
+        """, id="nested-def-decorator"),
+        pytest.param("slayer.x", """
+            from slayer.search import graph
+            async def f():
+                class C:
+                    ready = graph.is_available()
+                return C
+        """, id="nested-class-body"),
     ],
 )
 def test_law_flags(module: str, source: str) -> None:
