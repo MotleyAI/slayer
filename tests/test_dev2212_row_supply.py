@@ -46,7 +46,8 @@ async def test_a_dimension_value_no_metric_reaches_is_not_a_row(backend: str) ->
         returns = await run(eng, dimensions=[R], metrics=[RET])
     assert table(revenue, R, REV) == rows(("EAST", 350), ("WEST", 300))
     assert table(returns, R, RET) == rows(("EAST", 25), ("NORTH", 10))
-    assert revenue.population == "customers" and revenue.population_inferred is True
+    assert revenue.population == "customers"
+    assert revenue.population_inferred is True
 
 
 async def test_an_orphan_home_row_lands_in_the_null_tuple(backend: str) -> None:
@@ -298,4 +299,5 @@ async def test_a_named_population_keeps_its_rows(backend: str, query: dict, orph
         resp = await run(eng, **query)
     keys = [R, *([REV] if REV in query.get("metrics", []) else []), *([RET] if RET in query.get("metrics", []) else [])]
     assert table(resp, *keys) == rows(*expected)
-    assert resp.population == query["population"] and resp.population_inferred is False
+    assert resp.population == query["population"]
+    assert resp.population_inferred is False

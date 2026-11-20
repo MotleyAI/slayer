@@ -80,7 +80,8 @@ async def test_dimensionless_inferred_query_over_unrelated_homes(backend: str) -
         connected = await run(eng, metrics=["count(customers.*)", "count_distinct(customers.region)"])
     entries = kinds(disconnected, "unrelated_dataset")
     assert {w.dataset for w in entries} == {"customers", "tickets"}
-    assert len(entries) == 2 and all(w.population is None for w in entries)
+    assert len(entries) == 2
+    assert all(w.population is None for w in entries)
     assert not kinds(connected, "unrelated_dataset")
 
 

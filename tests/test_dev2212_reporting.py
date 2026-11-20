@@ -158,10 +158,14 @@ async def test_mcp_prints_row_sources_only_when_inferred() -> None:
         markdown = await _mcp(eng.storage, TWO, "markdown")
         csv = await _mcp(eng.storage, TWO, "csv")
         anchored_md = await _mcp(eng.storage, {"population": "customers", **TWO}, "markdown")
-    assert payload["row_sources"] == ["orders", "returns"] and payload["population"] == "customers"
+    assert payload["row_sources"] == ["orders", "returns"]
+    assert payload["population"] == "customers"
     assert unit["row_sources"] == ["unit"]
-    assert "row_sources" not in anchored and "population" not in anchored
+    assert "row_sources" not in anchored
+    assert "population" not in anchored
     row_lines = [line for line in markdown.splitlines() if "row sources" in line.lower()]
-    assert row_lines and "orders" in row_lines[0] and "returns" in row_lines[0]
+    assert row_lines
+    assert "orders" in row_lines[0]
+    assert "returns" in row_lines[0]
     assert any(line.startswith("#") and "row sources" in line.lower() for line in csv.splitlines())
     assert "row sources" not in anchored_md.lower()

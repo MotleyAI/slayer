@@ -58,7 +58,7 @@ class TestFailClosed:
         _assert_stable_prefix(err)
 
     async def test_unknown_cardinality_hop_counts_by_association(self, storage) -> None:
-        resp = await _dry_run(storage, SlayerQuery(dimensions=["hits.page", "sess.token"]))
+        resp = await _dry_run(storage, SlayerQuery.model_validate({"dimensions": ["hits.page", "sess.token"]}))
         assert (resp.population, resp.population_inferred) == ("hits", True)
 
     async def test_a_metrics_only_query_has_the_unit_as_its_anchor(self, storage) -> None:

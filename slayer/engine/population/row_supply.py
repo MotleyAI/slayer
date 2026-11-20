@@ -12,6 +12,7 @@ from typing import Any, Iterator, Optional
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.field_expression import portable_text
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, call_keywords, parse_template, walk_parsed_refs
 from slayer.core.models import SlayerDataset
@@ -85,9 +86,12 @@ def _top_aggregates(tree: Any, *, owner: Optional[str], datasets_by_name: dict[s
         key = f"{dataset.name}.{parts[-1]}" if dataset is not None else ""
         if metric is None or key in seen:
             continue
+        text = portable_text(metric.expression)
         try:
-            expanded = parse_template(metric.expression)
+            expanded = parse_template(text) if text is not None else None
         except Exception:  # noqa: BLE001 — an unparseable definition is refused where it binds
+            continue
+        if expanded is None:
             continue
         assert dataset is not None
         yield from _top_aggregates(expanded, owner=dataset.name, datasets_by_name=datasets_by_name,

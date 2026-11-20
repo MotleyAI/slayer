@@ -446,8 +446,9 @@ class TestInheritedRelationships:
         assert _route(self._detour(inherited=True), reader="orders", anchor="customers") == ("customers",)
 
     def test_the_same_detour_declared_is_ambiguous(self) -> None:
+        datasets = self._detour(inherited=False)
         with pytest.raises(UnresolvableDimensionRelationshipError, match="more than one path"):
-            _route(self._detour(inherited=False), reader="orders", anchor="customers")
+            _route(datasets, reader="orders", anchor="customers")
 
     def test_an_inherited_relationship_beside_a_declared_one_stays_parallel(self) -> None:
         datasets = _by_name(

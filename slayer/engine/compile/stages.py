@@ -23,6 +23,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TypeVar,
     cast,
 )
 
@@ -2114,6 +2115,9 @@ def _query_dim_display(prebound: PreboundQuery, key: ValueKey) -> str:
     return key_display(key)
 
 
+_KeyT = TypeVar("_KeyT", bound=ValueKey)
+
+
 class _UnattributableDim(NamedTuple):
     """A requested grain dimension not attributable from the aggregate's root: its host key, query name, broadcast
     reason and its key routed from the home."""
@@ -2230,7 +2234,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
                                      datasets_by_name=datasets_with_host),
     )
 
-    def routed(key: ValueKey) -> ValueKey:
+    def routed(key: _KeyT) -> _KeyT:
         return substitute_value_keys(key, home_routing) if home_routing else key
 
     base_filters_with_text = [

@@ -216,3 +216,6 @@ result = engine.execute(query=query)
 # result.row_count — number of rows
 # result.sql       — generated SQL string
 ```
+
+The response also carries `population`, `population_inferred` and `row_sources`: where its rows came from (see
+[Population](../concepts/queries.md#population)).

@@ -264,6 +264,9 @@ Query results are returned as a `SlayerResponse`:
 | `columns` | list[str] | Column names: each reference's qualified path (e.g., `"orders._count"`, `"customers.regions.name"` for multi-hop), or an entry's bare alias, **in the order you declared them** |
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
+| `population` | string \| null | The population: the named one, else the dimension anchor (see [Population](#population)) |
+| `population_inferred` | bool | Whether the rows were inferred (no `population` given, or a saved stage's pinned anchor) |
+| `row_sources` | list[str] | The datasets whose rows supplied the result; `["unit"]` with no dimensions |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.metrics`, each a dict of column alias → FieldMetadata (label, format) |
 | `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-dataset metric broadcast](#cross-dataset-metrics) (`"broadcast"` — `metric`, `location`, per-dimension `dimensions[].reason`, and `association_unsupported` when the default fell back to it), a distinct-entity attribution over an unattributable dimension (`"associated"` — `metric`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a dataset no relationship path reaches (`"unrelated_dataset"` — `dataset`, `population`, `metrics`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `metric` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `field`, `granularities`, `location`), a [list](#list-fields) read as its element set (`"whole_list"` — `operation`: `group` or `count_distinct`, `list`), and a deprecated input form that was converted (`"deprecated_input"` — `old`, `new`, `removal`; see [Upgrading to 2.0](../upgrading/2.0.md)) |
 
@@ -589,25 +592,34 @@ Adding a second granularity of a saved time field (`{"time_dimensions": ["date_t
 
 ## Population
 
-`population` declares the query's **population** — the dataset whose rows the result is quantified over (one result row per distinct combination of its dimensions). It is optional: omit it and the population is inferred as the smallest dataset (fewest relationship hops) that **determines every queried dimension** along provably to-one relationship paths, read from the dimensions and field-typed (aggregate-free) filters **only — never metrics**. Adding or removing a metric therefore never changes which rows come back.
+`population` names the query's **population**: the dataset whose rows the result is quantified over, one result row per distinct combination of the dimensions among its filtered rows. Metrics never change those rows. A metric's home row with no matching population row (an order whose customer is missing) lands in no row.
 
+Omit `population` and the rows are the **row supply**:
+
+- Each metric supplies the dimension values its home's filtered rows reach along the home's own relationship paths. A home row with no related row lands in the NULL value. The rows are the union over every metric.
+- A metric whose aggregates don't reach every dimension (`partition_by=`, an [unrelated dataset](#cross-dataset-metrics), a broadcast fallback) supplies the rows of the **dimension anchor** that agree with it.
+- With no metrics, the rows are the dimension anchor's: the smallest dataset that determines every dimension along to-one paths, read from the dimensions only, never from filters or metrics. Dimension groups no relationship path connects take the product of their anchors.
+- With no dimensions there is exactly one row, even when a filter matches nothing.
+- Filters restrict every home's rows (and the anchor's) before anything is counted. They never pick where rows come from, so adding a filter never adds a row or changes a result key.
+
+<!-- doc-check: not-a-query -->
 ```json
 {"dimensions": ["customers.region"], "metrics": ["sum(orders.amount)"]}
 ```
 
-infers population `customers` (one row per region present among customers, order totals attached, NULL where a region has no orders) — not "regions that happen to have orders". The Python client and REST responses always carry the effective population as `population` and whether it was inferred as `population_inferred`; MCP output reports them only when the population was inferred.
+returns one row per region some order reaches, and a NULL-region row for orders whose customer is missing. A region with no orders is absent: name `"population": "customers"` to list every customer region.
 
-Inference fails closed with a `PopulationInferenceError` naming the candidates when no single dataset determines everything, several minimal candidates tie, a dimension's relationship path is ambiguous, or the referenced datasets don't scope to exactly one datasource. Name `population` explicitly (any dataset — including a bridge that owns none of the queried items) to override inference.
+The response carries `population` (the dimension anchor; `a × b` for a product; `null` with no dimensions, or when the query never needs the anchor), `population_inferred`, and `row_sources`: the datasets whose rows supplied the result (`["unit"]` with no dimensions; the named population when one is given). MCP output prints them only when the rows are inferred.
 
-A time dimension on `time_spine.timestamp` makes the population `time_spine × P`, P inferred from the remaining dimensions and filters — see [Time spine](time.md#time-spine).
+A query that needs the dimension anchor fails closed with a `PopulationInferenceError` naming the candidates when several minimal candidates tie, connected dimension groups have no single determining dataset, a dimension's path is ambiguous, or the referenced datasets don't belong to exactly one datasource.
 
-Saving a query-backed dataset writes each inferred population into its stored stage as `population`, so later refinements and dataset edits never move it.
+A time dimension on `time_spine.timestamp` makes the population `time_spine × P`, P the anchor of the remaining dimensions — see [Time spine](time.md#time-spine).
 
-Inference is routing-aware: each candidate reaches a dimension's dataset (`regions` for `regions.name`) by the same only-to-one-path rule binding applies, so inference and binding take the same path — or fail closed with the same ambiguity.
+Saving a query-backed dataset writes each inferred stage's dimension anchor as its `population`, marked `population_inferred: true`: the anchor can no longer move, and the rows stay inferred. `population_inferred` without `population` is refused.
 
 ## Choosing a root dataset
 
-`recommend_population` is the explain surface for the population rule: give it the `dataset.field` / `dataset.metric` items you want (aggregation suffixes allowed) and it returns the population it would pick plus each item's relationship-qualified reference path from it — ready to paste into a query.
+`recommend_population` is the explain surface for the dimension anchor: give it the `dataset.field` / `dataset.metric` items you want (aggregation suffixes allowed) and it returns the population it would pick plus each item's relationship-qualified reference path from it — ready to paste into a query.
 
 ```python
 rec = engine.recommend_population_sync(["customers.name", "products.category"])
@@ -616,7 +628,7 @@ rec.population          # "orders"  (the only dataset that determines both to-on
 # {"customers.name": "customers.name", "products.category": "products.category"}
 ```
 
-A root is valid when it **determines** every requested field along provably to-one relationship paths; saved metrics and aggregation-suffixed items are attachments that only need to be reachable and never steer the choice (each `ItemPath` flags `attachment`). Among valid roots, the one with the fewest total relationship hops wins — the same rule as population inference, so the two surfaces cannot disagree, and a tie recommends no root. Items are qualified (`orders.status`, `sum(orders.revenue)`, `count(orders.*)` — a row count is an attachment on its dataset); a bare name or `count(*)` is refused with the qualified spellings. Each path is the item as written when a query rooted at the recommended root reads it along the chosen path, else its explicit route from the root (`orders.customers.region` when two to-one paths reach `customers`). With at least one field item, an attachment on a dataset no relationship path reaches never blocks a root: it comes back as written (`count(events.id)`) and flagged `unrelated`.
+A root is valid when it **determines** every requested field along provably to-one relationship paths; saved metrics and aggregation-suffixed items are attachments that only need to be reachable and never steer the choice (each `ItemPath` flags `attachment`). Among valid roots, the one with the fewest total relationship hops wins — the same rule as the dimension anchor, so the two surfaces cannot disagree, and a tie recommends no root. Items are qualified (`orders.status`, `sum(orders.revenue)`, `count(orders.*)` — a row count is an attachment on its dataset); a bare name or `count(*)` is refused with the qualified spellings. Each path is the item as written when a query rooted at the recommended root reads it along the chosen path, else its explicit route from the root (`orders.customers.region` when two to-one paths reach `customers`). With at least one field item, an attachment on a dataset no relationship path reaches never blocks a root: it comes back as written (`count(events.id)`) and flagged `unrelated`.
 
 When no single dataset reaches everything, `population` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](datasets.md#query-backed-datasets) query.
 
@@ -770,6 +782,10 @@ SLayer computes the joined metric in its own sub-query **rooted at the metric's
 dataset** (here `customers`) and LEFT JOINs it back to the main query — so the
 aggregate runs over the target's rows once, never through a 1:N join that would
 multiply them.
+
+It reads your dimensions and filters from that dataset by its own relationship
+paths ([references](references.md#identifier-resolution)), so how the
+population reaches it never changes a value.
 
 The method-call spelling `order_items.count(*)` or `order_items.sum(price * qty)` (further arguments literals only) means `count(order_items.*)` / `sum(order_items.price * order_items.qty)`.
 

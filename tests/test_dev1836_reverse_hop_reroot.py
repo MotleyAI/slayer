@@ -150,8 +150,9 @@ class TestSiblingFilterBindsTheHostInstance:
                 filter=[condition],
             )
 
+        unspelled = query("party.code = 'X'")
         with pytest.raises(UnresolvableDimensionRelationshipError) as err:
-            await engine.execute(query("party.code = 'X'"))
+            await engine.execute(unspelled)
         assert "policy_amount.party" in str(err.value)
         assert "policy_amount.policy.party" in str(err.value)
         resp = await engine.execute(query("policy.party.code = 'X'"))

@@ -37,7 +37,8 @@ async def test_a_measure_typed_filter_does_not_move_the_anchor(backend: str) -> 
 async def test_the_anchor_is_invariant_under_measures(backend: str, metrics: list[str]) -> None:
     async with seed_engine(backend) as eng:
         resp = await run(eng, dimensions=[R], **({"metrics": metrics} if metrics else {}))
-    assert resp.population == "customers" and resp.population_inferred is True
+    assert resp.population == "customers"
+    assert resp.population_inferred is True
 
 
 async def test_unconnected_dimension_groups_take_a_product(backend: str) -> None:
@@ -62,7 +63,8 @@ async def test_an_undefined_anchor_a_query_does_not_need(backend: str) -> None:
     async with cycle_engine(backend) as eng:
         resp = await run(eng, dimensions=CYCLE_DIMS, metrics=[{"metric": "count(x.*)", "alias": "n"}])
     assert table(resp, "x.v", "y.v", "z.v", "n") == rows(("x1", "y1", "z1", 1), ("x2", "y2", "z2", 1))
-    assert resp.population is None and resp.population_inferred is True
+    assert resp.population is None
+    assert resp.population_inferred is True
 
 
 async def test_a_metric_with_no_full_grain_operand_needs_the_anchor(backend: str) -> None:

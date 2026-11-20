@@ -38,7 +38,8 @@ async def test_raw_rows_of_the_anchor(backend: str) -> None:
         resp = await run(eng, dimensions=[R, SEG], distinct_dimension_values=False)
     assert table(resp, R, SEG) == rows(("EAST", "retail"), ("EAST", "corporate"), ("WEST", "retail"),
                                        ("NORTH", "retail"))
-    assert resp.population == "customers" and resp.population_inferred is True
+    assert resp.population == "customers"
+    assert resp.population_inferred is True
 
 
 async def test_a_finer_filter_restricts_the_anchor_rows_and_never_moves_it(backend: str) -> None:

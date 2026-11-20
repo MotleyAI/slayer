@@ -6422,8 +6422,9 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
             )
 
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
+            unspelled = query("agreement_party_role")
             with pytest.raises(UnresolvableDimensionRelationshipError) as err:
-                await engine.execute(query("agreement_party_role"), dry_run=True)
+                await engine.execute(unspelled, dry_run=True)
             assert "policy_amount.agreement_party_role" in str(err.value)
             assert "policy_amount.policy.agreement_party_role" in str(err.value)
             resp = await engine.execute(query("policy.policy_amount.agreement_party_role"), dry_run=True)
@@ -8123,7 +8124,8 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         assert "'active'" in _extract_cte_body(sql, r"_cm_\w*"), sql
         base_body = _extract_cte_body(sql, r"_base").upper()
-        assert "WHERE" not in base_body and "LIMIT" not in base_body, base_body
+        assert "WHERE" not in base_body, base_body
+        assert "LIMIT" not in base_body, base_body
         _assert_valid_sql(sql)
 
     async def test_no_dim_host_filter_referencing_joined_column_pulls_join(
@@ -8138,9 +8140,12 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_dataset, related_datasets, query)
         producer = _extract_cte_body(sql, r"_cm_\w*")
-        assert "Claim" in producer and "claim_number" in producer and "12345" in producer, producer
+        assert "Claim" in producer, producer
+        assert "claim_number" in producer, producer
+        assert "12345" in producer, producer
         base_body = _extract_cte_body(sql, r"_base").upper()
-        assert "WHERE" not in base_body and "LIMIT" not in base_body, base_body
+        assert "WHERE" not in base_body, base_body
+        assert "LIMIT" not in base_body, base_body
         _assert_valid_sql(sql)
 
     async def test_first_last_with_host_filter_not_reapplied_outside_ranked_subquery(

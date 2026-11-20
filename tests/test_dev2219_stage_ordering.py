@@ -137,9 +137,10 @@ class TestEdgeAwareExtractor:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_a_first_segment_naming_a_sibling_reads_the_sibling(self, dialect: str) -> None:
+        stages = self._ship_region_list("ship_region.name")
         async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
             with pytest.raises(ValueError, match=r"Cycle in query list: stages \['a', 'ship_region'\]"):
-                await engine.execute(self._ship_region_list("ship_region.name"))
+                await engine.execute(stages)
 
     @staticmethod
     def _ship_region_list(dimension: str) -> list[SlayerQuery | dict]:
@@ -180,9 +181,10 @@ class TestEdgeAwareExtractor:
         sibling = q(name="ship_region", population="customers", metrics=[m("count(customers.*)", "nc")])
         z = q(name="z", population="orders", dimensions=["ship_region.name"], metrics=[m("count(orders.*)", "n")])
         assert stage_sibling_reads(query=z, siblings={"ship_region", "z"}) == {"ship_region"}
+        stages: list[SlayerQuery | dict] = [sibling, z, q(population="z", metrics=[m("sum(z.n)", "t")])]
         async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
             with pytest.raises(UnknownReferenceError, match="ship_region.name"):
-                await engine.execute([sibling, z, q(population="z", metrics=[m("sum(z.n)", "t")])], dry_run=True)
+                await engine.execute(stages, dry_run=True)
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_a_relationship_path_is_never_a_sibling_reference(self, dialect: str) -> None:

@@ -187,14 +187,12 @@ class TestSelection:
 
     async def test_metric_anchors_scope_the_datasource(self, storage) -> None:
         """A metric homed in another datasource joins scoping: no datasource holds both, so it fails closed."""
+        query = SlayerQuery.model_validate({
+            "dimensions": ["customers.region"],
+            "metrics": [{"metric": "count(widgets.x)", "alias": "wc"}],
+        })
         with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(
-                query=SlayerQuery.model_validate({
-                    "dimensions": ["customers.region"],
-                    "metrics": [{"metric": "count(widgets.x)", "alias": "wc"}],
-                }),
-                storage=storage,
-            )
+            await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.NO_DATASOURCE
 
 

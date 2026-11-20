@@ -3991,7 +3991,7 @@ class SQLGenerator:
         names = {slots_by_id[sid].public_name or slots_by_id[sid].declared_name: sid for sid in dims}
         hoisted: List[CteEntry] = []
 
-        def cells(plan) -> Tuple[exp.Expression, Dict[str, str]]:
+        def cells(plan) -> Tuple[Expression, Dict[str, str]]:
             """``plan`` as a derived table, and its column per main dimension slot."""
             ctes, body = self._render_producer_split(producer=plan, bundle=plan.stage_bundle or bundle)
             hoisted.extend(ctes)
@@ -4031,7 +4031,7 @@ class SQLGenerator:
                     exp.Subquery(this=r_body, alias=exp.TableAlias(this=exp.to_identifier(r_alias))))
                 select = select.where(exp.Exists(this=exists.where(on) if on is not None else exists))
             branches.append(select)
-        union: exp.Expression = branches[0]
+        union: Expression = branches[0]
         for b in branches[1:]:
             union = exp.union(union, b, distinct=True)
         host, keys = allocator.allocate("_base_host"), allocator.allocate("_keys")
