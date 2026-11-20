@@ -753,7 +753,7 @@ async def test_hidden_model_excluded_from_graph() -> None:
         )
         await storage.save_dataset(
             SlayerDataset(
-                name="hidden_model",
+                name="hidden_dataset",
                 sql_table="hidden_table",
                 data_source="ds",
                 hidden=True,
@@ -764,7 +764,7 @@ async def test_hidden_model_excluded_from_graph() -> None:
         ids = await get_filtered_ids(
             "MATCH (m:Dataset) RETURN m.id AS id", storage
         )
-        assert "ds.hidden_model" not in ids
+        assert "ds.hidden_dataset" not in ids
         assert "ds.visible" in ids
 
 

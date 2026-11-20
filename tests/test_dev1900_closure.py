@@ -33,8 +33,8 @@ def _bundle(datasets):
     return by, ResolvedSourceBundle(dialect="postgres", population=by["orders"], referenced_datasets=referenced)
 
 
-def _regions_sqlkey(column_name: str) -> FieldSqlKey:
-    return FieldSqlKey(path=("regions",), dataset="regions", field_name=column_name)
+def _regions_sqlkey(field_name: str) -> FieldSqlKey:
+    return FieldSqlKey(path=("regions",), dataset="regions", field_name=field_name)
 
 
 class TestFragmentClosure:

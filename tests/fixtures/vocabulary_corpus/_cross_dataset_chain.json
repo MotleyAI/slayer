@@ -1,5 +1,5 @@
 {
- "source": "tests/_cross_model_chain.py",
+ "source": "tests/_cross_dataset_chain.py",
  "pairs": [
   {
    "kind": "relationship",

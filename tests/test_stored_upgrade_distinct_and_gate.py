@@ -17,7 +17,7 @@ from slayer.memories.models import Memory
 from slayer.database import engine_factory
 from slayer.storage.document_keys import dataset_in, keys_for
 from slayer.storage.migrations import CURRENT_VERSIONS
-from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, measure_total, raw_store, run
+from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, metric_total, raw_store, run
 
 _COLUMNS = [
     {"name": "order_id", "type": "INT", "primary_key": True},
@@ -128,7 +128,7 @@ class TestDistinctResults:
         assert model is not None
         assert [m.expression for m in model.metrics] == ['sum("distinct")']
         resp = await run(storage, {"population": "orders", "metrics": ["orders.total"]})
-        assert measure_total(resp, measure="total") == DISTINCT_TOTAL
+        assert metric_total(resp, metric="total") == DISTINCT_TOTAL
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_memory_query_sums_the_column(self, tmp_path: Path, distinct_ds: DatasourceConfig,
@@ -139,7 +139,7 @@ class TestDistinctResults:
                                   memories=[memory_v2(memory_id="m_d", version=6, query=query)])
         mem = await storage.get_memory("m_d")
         assert mem.query is not None
-        assert measure_total(await run(storage, mem.query), measure="d") == DISTINCT_TOTAL
+        assert metric_total(await run(storage, mem.query), metric="d") == DISTINCT_TOTAL
 
 
 @contextmanager

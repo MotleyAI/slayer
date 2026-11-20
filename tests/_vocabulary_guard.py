@@ -23,18 +23,10 @@ class CarveOut(BaseModel):
     reason: str = Field(min_length=1, pattern=r"\S")
 
 
-class Straggler(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    file: str
-
-
 class VocabularyAllowlist(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     carve_outs: list[CarveOut] = []
-    stragglers: list[Straggler] = []
 
 
 class IdentifierHit(BaseModel):
@@ -105,20 +97,13 @@ def scan_package(package_dir: Path, *, repo_root: Path) -> set[IdentifierHit]:
     })
 
 
-def guard_problems(
-    hits: set[IdentifierHit], *, allowlist: VocabularyAllowlist, ceiling: int,
-) -> list[str]:
-    """Unlisted hits, stale entries and a straggler count above ``ceiling``; empty iff green."""
-    entries = [("carve_outs", IdentifierHit(name=e.name, file=e.file)) for e in allowlist.carve_outs]
-    entries += [("stragglers", IdentifierHit(name=e.name, file=e.file)) for e in allowlist.stragglers]
-    listed = Counter(hit for _, hit in entries)
+def guard_problems(hits: set[IdentifierHit], *, allowlist: VocabularyAllowlist) -> list[str]:
+    """Unlisted hits, stale and duplicate carve-outs; empty iff green."""
+    entries = [IdentifierHit(name=e.name, file=e.file) for e in allowlist.carve_outs]
+    listed = Counter(entries)
     problems = [f"unlisted: {h.file}: {h.name}" for h in sorted(hits - listed.keys(), key=_order)]
-    problems += [f"stale {kind} entry: {h.file}: {h.name}" for kind, h in entries if h not in hits]
+    problems += [f"stale carve_outs entry: {h.file}: {h.name}" for h in entries if h not in hits]
     problems += [f"listed {n} times: {h.file}: {h.name}" for h, n in listed.items() if n > 1]
-    if len(allowlist.stragglers) > ceiling:
-        problems.append(
-            f"{len(allowlist.stragglers)} stragglers exceed the x-vocabulary-stragglers baseline {ceiling}",
-        )
     return problems
 
 

@@ -79,7 +79,7 @@ def mcp_server():
                 descriptions_max_chars: Any = None) -> str:
         if B["mcp"] == "inspect_hang":
             time.sleep(3600)
-        return json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["mcp_joins"]}})
+        return json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["mcp_relationships"]}})
 
     server.run()
 
@@ -103,7 +103,7 @@ def main():
         print({{"rows": json.dumps(ROWS), "empty": "[]", "non_json": "| a |\\n|---|\\n| 1 |",
                "object": json.dumps({{"rows": 1}})}}[B["cli_query"]])
     elif command == "inspect":
-        print(json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["cli_joins"]}}))
+        print(json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["cli_relationships"]}}))
     elif command == "mcp":
         mcp_server()
     return 0
@@ -119,9 +119,9 @@ class Behaviour(BaseModel):
     version: str = "9.9.9"
     ingest: str = "ok"
     cli_query: str = "rows"
-    cli_joins: list[str] = ["customers", "stores"]
+    cli_relationships: list[str] = ["customers", "stores"]
     mcp: str = "ok"
-    mcp_joins: list[str] = ["customers", "stores"]
+    mcp_relationships: list[str] = ["customers", "stores"]
 
 
 class Invocation(BaseModel):
@@ -285,14 +285,14 @@ def test_child_processes_get_a_clean_environment(tmp_path: Path, checkout: Path)
         pytest.param(Behaviour(cli_query="empty"), "cli query", id="cli-empty-rows"),
         pytest.param(Behaviour(cli_query="non_json"), "cli query", id="cli-non-json"),
         pytest.param(Behaviour(cli_query="object"), "cli query", id="cli-not-a-row-list"),
-        pytest.param(Behaviour(cli_joins=["customers"]), "cli joins", id="cli-joins-missing-stores"),
+        pytest.param(Behaviour(cli_relationships=["customers"]), "cli joins", id="cli-joins-missing-stores"),
         pytest.param(Behaviour(mcp="is_error"), "mcp query", id="mcp-is-error"),
         pytest.param(Behaviour(mcp="non_json"), "mcp query", id="mcp-non-json"),
         pytest.param(Behaviour(mcp="empty"), "mcp query", id="mcp-empty-list"),
         pytest.param(Behaviour(mcp="envelope_empty"), "mcp query", id="mcp-empty-envelope"),
         pytest.param(Behaviour(mcp="two_items"), "mcp query", id="mcp-two-content-items"),
         pytest.param(Behaviour(mcp="no_items"), "mcp query", id="mcp-no-content-items"),
-        pytest.param(Behaviour(mcp_joins=["customers"]), "mcp joins", id="mcp-joins-missing-stores"),
+        pytest.param(Behaviour(mcp_relationships=["customers"]), "mcp joins", id="mcp-joins-missing-stores"),
         pytest.param(Behaviour(version="0.0.1"), "provenance", id="version-mismatch"),
         pytest.param(Behaviour(version="9.9.9 (editable)"), "provenance", id="version-line-not-exact"),
     ],

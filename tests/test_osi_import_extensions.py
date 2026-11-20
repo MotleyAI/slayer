@@ -10,7 +10,7 @@ import pytest
 from slayer.core.enums import RelationshipCardinality, JoinType
 from slayer.core.models import DatasetRelationship, SlayerDataset
 from tests._osi_export_fixtures import (
-    BASIC_MEASURES, customers, slayer_metric, monthly_revenue, orders, rich_orders, to_customers,
+    BASIC_METRICS, customers, slayer_metric, monthly_revenue, orders, rich_orders, to_customers,
 )
 from tests._osi_export_helpers import (
     SLAYER, Env, convert_document, dataset, export_datasets, field, make_env, mentions, metric, normalized, reimport,
@@ -24,7 +24,7 @@ async def env(tmp_path: Path):
     return await make_env(tmp_path)
 
 
-def _join(dataset: SlayerDataset, target: str) -> DatasetRelationship:
+def _relationship(dataset: SlayerDataset, target: str) -> DatasetRelationship:
     [join] = [j for j in dataset.relationships if j.to == target]
     return join
 
@@ -41,14 +41,14 @@ def _without(document: dict[str, Any], name: str) -> dict[str, Any]:
 # ──────────────────────────────── metrics ─────────────────────────────────
 
 async def test_unedited_formula_restored(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS))
     aov = by_name(convert_document(env, result.document))["orders"].get_metric("aov")
     assert aov is not None
     assert aov.expression == "revenue / n"
 
 
 async def test_edited_metric_falls_back_to_its_sql(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS))
     aov_metric = metric(dataset(result.document, "orders"), "aov")
     assert aov_metric is not None
     aov_metric["expression"] = {"sql": "SUM(amount) / NULLIF(COUNT(*), 0)"}
@@ -105,7 +105,7 @@ async def test_edited_metric_attributes_stay_on_its_model(env) -> None:
 
 
 async def test_restored_measure_attributes(env) -> None:
-    model = orders(metrics=[*BASIC_MEASURES, slayer_metric("avg_amount", "avg(amount)", label="Average",
+    model = orders(metrics=[*BASIC_METRICS, slayer_metric("avg_amount", "avg(amount)", label="Average",
                                                       meta={"owner": "finance"})])
     result = await export_datasets(env, customers(), model)
     avg = by_name(convert_document(env, result.document))["orders"].get_metric("avg_amount")
@@ -117,9 +117,9 @@ async def test_restored_measure_attributes(env) -> None:
 # ───────────────────────────────── relationships ───────────────────────────────────
 
 async def test_inner_join_restored(env) -> None:
-    model = orders(metrics=BASIC_MEASURES, joins=[to_customers(join_type=JoinType.INNER, name="buyer")])
+    model = orders(metrics=BASIC_METRICS, relationships=[to_customers(join_type=JoinType.INNER, name="buyer")])
     result = await export_datasets(env, customers(), model)
-    join = _join(by_name(convert_document(env, result.document))["orders"], "customers")
+    join = _relationship(by_name(convert_document(env, result.document))["orders"], "customers")
     assert join.join_type is JoinType.INNER
     assert join.name == "buyer"
 
@@ -127,18 +127,18 @@ async def test_inner_join_restored(env) -> None:
 async def test_one_to_many_declaration_restored(env) -> None:
     to_orders = DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"],
                           cardinality=RelationshipCardinality.ONE_TO_MANY)
-    result = await export_datasets(env, customers(joins=[to_orders]), orders(metrics=BASIC_MEASURES, joins=[]))
+    result = await export_datasets(env, customers(relationships=[to_orders]), orders(metrics=BASIC_METRICS, relationships=[]))
     models = by_name(convert_document(env, result.document))
-    join = _join(models["customers"], "orders")
+    join = _relationship(models["customers"], "orders")
     assert join.cardinality is RelationshipCardinality.ONE_TO_MANY
     assert join.column_pairs == [("id", "customer_id")]
     assert models["orders"].relationships == []
 
 
 async def test_undetermined_cardinality_restored(env) -> None:
-    model = orders(metrics=BASIC_MEASURES, joins=[to_customers(cardinality=None)])
+    model = orders(metrics=BASIC_METRICS, relationships=[to_customers(cardinality=None)])
     result = await export_datasets(env, customers(), model)
-    assert _join(by_name(convert_document(env, result.document))["orders"], "customers").cardinality is None
+    assert _relationship(by_name(convert_document(env, result.document))["orders"], "customers").cardinality is None
 
 
 # ──────────────────────────── malformed payloads ───────────────────────────
@@ -150,7 +150,7 @@ def _newly_reported(env: Env, *, unedited: dict[str, Any], edited: dict[str, Any
 
 
 async def test_malformed_payload_is_reported_and_ignored(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, hidden=True))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS, hidden=True))
     edited = copy.deepcopy(result.document)
     [entry] = slayer_entries(dataset(edited, "orders"))
     del entry["data"]["kind"]
@@ -161,7 +161,7 @@ async def test_malformed_payload_is_reported_and_ignored(env) -> None:
 
 
 async def test_unknown_payload_version_is_reported_and_ignored(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, hidden=True))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS, hidden=True))
     edited = copy.deepcopy(result.document)
     [entry] = slayer_entries(dataset(edited, "orders"))
     entry["data"]["version"] = 999
@@ -170,7 +170,7 @@ async def test_unknown_payload_version_is_reported_and_ignored(env) -> None:
 
 
 async def test_payload_on_the_wrong_entity_is_reported_and_ignored(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, hidden=True))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS, hidden=True))
     edited = copy.deepcopy(result.document)
     orders_ds = dataset(edited, "orders")
     [entry] = slayer_entries(orders_ds)
@@ -207,7 +207,7 @@ async def test_restored_join_to_dropped_dataset(env) -> None:
     model = rich_orders()
     model.relationships = [to_customers(name="buyer", join_type=JoinType.INNER)]
     model.fields = [c for c in model.fields if c.name != "segment"]
-    model.metrics = BASIC_MEASURES
+    model.metrics = BASIC_METRICS
     result = await export_datasets(env, customers(), model)
     dataset(result.document, "customers")["source"] = "no_such_table"
     imported = convert_document(env, result.document)
@@ -238,8 +238,8 @@ async def test_carried_content_that_does_not_validate_is_skipped(env) -> None:
 # ─────────────────────────────── sources ───────────────────────────────────
 
 def _active_orders() -> SlayerDataset:
-    return orders(name="active_orders", joins=[], filters=["status <> 'test'", "region IS NOT NULL"],
-                  metrics=BASIC_MEASURES)
+    return orders(name="active_orders", relationships=[], filters=["status <> 'test'", "region IS NOT NULL"],
+                  metrics=BASIC_METRICS)
 
 
 async def test_filtered_model_restored(env) -> None:
@@ -262,7 +262,7 @@ async def test_edited_source_falls_back_to_the_source(env) -> None:
 
 
 async def test_query_backed_model_restored(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), monthly_revenue())
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS), monthly_revenue())
     imported, _ = await reimport(env, result.document)
     restored = await stored(imported, "monthly_revenue")
     original = monthly_revenue()
@@ -272,7 +272,7 @@ async def test_query_backed_model_restored(env) -> None:
 
 
 async def test_query_backed_model_whose_input_is_missing(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), monthly_revenue())
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS), monthly_revenue())
     imported, out = await reimport(env, _without(result.document, "orders"))
     restored = await stored(imported, "monthly_revenue")
     assert not restored.source_queries
@@ -284,7 +284,7 @@ async def test_query_backed_model_whose_input_is_missing(env) -> None:
 # ──────────────────────────── SLayer-only content ──────────────────────────
 
 async def test_transform_measure_restored(env) -> None:
-    model = orders(metrics=[*BASIC_MEASURES, slayer_metric("revenue_growth", "change_pct(revenue)")])
+    model = orders(metrics=[*BASIC_METRICS, slayer_metric("revenue_growth", "change_pct(revenue)")])
     imported, _ = await reimport(env, (await export_datasets(env, customers(), model)).document)
     restored = await stored(imported, "orders")
     assert {"revenue", "revenue_growth"} <= {m.name for m in restored.metrics}

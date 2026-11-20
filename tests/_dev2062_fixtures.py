@@ -98,9 +98,9 @@ def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDi
     )]
 
 
-def monthly_q(*measures: QueryMetric, **kw) -> SlayerQuery:
+def monthly_q(*metrics: QueryMetric, **kw) -> SlayerQuery:
     kw.setdefault("time_dimensions", month_td())
-    return orders_q(metrics=list(measures), **kw)
+    return orders_q(metrics=list(metrics), **kw)
 
 
 # --------------------------------------------------------------------------- #

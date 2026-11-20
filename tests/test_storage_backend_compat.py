@@ -236,20 +236,20 @@ class SelfBuildingBackend(_DictStore):
 
     def __init__(self) -> None:
         super().__init__()
-        self.raw_models: dict[tuple[str, str], dict] = {}
+        self.raw_datasets: dict[tuple[str, str], dict] = {}
         self.calls: list[str] = []
 
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         self.datasources[datasource.name] = datasource
 
     async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
-        self.raw_models[(dataset.data_source, dataset.name)] = dataset.model_dump(mode="json", exclude_none=True)
+        self.raw_datasets[(dataset.data_source, dataset.name)] = dataset.model_dump(mode="json", exclude_none=True)
 
     async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
-        return list(self.raw_models)
+        return list(self.raw_datasets)
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
-        for (ds, n), raw in self.raw_models.items():
+        for (ds, n), raw in self.raw_datasets.items():
             if n == name and data_source in (None, ds):
                 return await self._migrate_and_refine_on_load(name=n, data=raw, data_source=ds)
         return None
@@ -282,7 +282,7 @@ def _self_building_backend() -> SelfBuildingBackend:
     backend.datasources["shop"] = _valid()
     model = SlayerDataset.model_validate({"name": "orders", "data_source": "shop", "sql_table": "orders",
                                         "fields": [{"name": "id", "datatype": "Integer", "primary_key": True}]})
-    backend.raw_models[("shop", "orders")] = model.model_dump(mode="json", exclude_none=True)
+    backend.raw_datasets[("shop", "orders")] = model.model_dump(mode="json", exclude_none=True)
     memory = Memory.model_validate({"id": "1", "learning": "note", "entities": ["shop.orders"]})
     backend.memories["1"] = memory.model_dump(mode="json")
     return backend

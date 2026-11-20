@@ -53,8 +53,8 @@ COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)"
 
 
 
-def _dumps(models: list[SlayerDataset]) -> list[dict]:
-    return [m.model_dump(mode="json") for m in sorted(models, key=lambda m: m.name)]
+def _dumps(datasets: list[SlayerDataset]) -> list[dict]:
+    return [m.model_dump(mode="json") for m in sorted(datasets, key=lambda m: m.name)]
 
 
 @contextlib.contextmanager

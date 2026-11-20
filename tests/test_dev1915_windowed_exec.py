@@ -270,7 +270,7 @@ def _monthly_dataset() -> SlayerDataset:
     )
 
 
-_MONTHLY_MODEL_TABLE = {
+_MONTHLY_DATASET_TABLE = {
     "name": "monthly",
     "columns": [("month_ts", "TIMESTAMP"), ("rev", "DOUBLE")],
     "rows": [("2025-01-01", 100.0), ("2025-02-01", 200.0),
@@ -310,7 +310,7 @@ async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
         model_engine = await D71.make_engine(
             backend, base_dir=os.path.join(tmp, "model_store"),
             db_path=os.path.join(tmp, f"m.{backend}"),
-            tables=[_MONTHLY_MODEL_TABLE], datasets=[_monthly_dataset()],
+            tables=[_MONTHLY_DATASET_TABLE], datasets=[_monthly_dataset()],
         )
         model_resp = await model_engine.execute(model_query)
     stage = {str(r["s1.created_at"])[:7]: r["win"] for r in stage_resp.data}

@@ -7,6 +7,7 @@ import tempfile
 from typing import AsyncIterator, List
 
 import pytest
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.keys import TransformKey
@@ -18,7 +19,7 @@ from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope import ScopeFrame
 
-from tests._cross_model_chain import (
+from tests._cross_dataset_chain import (
     _countries,
     _customers_v2,
     _gen,
@@ -798,19 +799,19 @@ class TestB11JoinOrdering:
     ) -> None:
         """Whatever the host scope registers must end up in the FROM; a path in one list but not the other becomes a missing join (order is not pinned — B11 is execution-identical)."""
         registered: List[str] = []
-        original = ScopeFrame._register_join_paths
+        original = ScopeFrame._register_relationship_paths
 
-        def _wrapped(self_frame, parsed):
+        def _wrapped(self_frame: ScopeFrame, parsed: Expression) -> None:
             result = original(self_frame, parsed)
             # Only the HOST scope; throwaway frames' join_paths are intentionally discarded and need not appear in the FROM.
             if self_frame.root_relation == "orders_x":
                 registered.extend(
-                    "__".join(p) for p in self_frame.join_paths.as_list()
+                    "__".join(p) for p in self_frame.relationship_paths.as_list()
                 )
             return result
 
         monkeypatch.setattr(
-            ScopeFrame, "_register_join_paths", _wrapped, raising=True,
+            ScopeFrame, "_register_relationship_paths", _wrapped, raising=True,
         )
         query = SlayerQuery(
             population="orders_x",

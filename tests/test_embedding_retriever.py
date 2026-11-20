@@ -17,8 +17,10 @@ Storage is a real YAMLStorage in tempdir; ``embed_batch`` /
 
 from __future__ import annotations
 
+import builtins
+import logging
 import tempfile
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -27,6 +29,8 @@ from slayer.core.models import Aggregation, DatasetField, DatasetMetric, SlayerD
 from slayer.embeddings import client as embedding_client
 from slayer.memories.models import Memory
 from slayer.search.index import build_in_memory_corpus
+from slayer.search.retriever import RetrievalResult
+from slayer.search.retrievers import embeddings as retriever_module
 from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
@@ -580,3 +584,64 @@ async def test_availability_check_keeps_the_loop_free(
     monkeypatch.setattr(embedding_client, "is_available", check)
     await _call_hook(EmbeddingRetriever(storage=storage, model_name="openai/x"), hook)
     check.assert_loop_stayed_free()
+
+
+# ---------------------------------------------------------------------------
+# retrieve() imports nothing on the event loop
+# ---------------------------------------------------------------------------
+
+_RANKING_MODULES = frozenset({"numpy", "slayer.embeddings.ranker"})
+
+
+async def _seed_memory(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> Memory:
+    memory = Memory(id="1", learning="hello cents", entities=[])
+    await EmbeddingRetriever(storage=storage, model_name="openai/x").upsert_memory(memory)
+
+    async def fake_query_embed(question: str, *, model: str | None = None) -> list[float]:  # NOSONAR(S7503) — stub matches embed_query
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(embedding_client, "embed_query", fake_query_embed)
+    return memory
+
+
+async def _retrieve(storage: YAMLStorage, memory: Memory) -> RetrievalResult:
+    return await EmbeddingRetriever(storage=storage, model_name="openai/x").retrieve(
+        query_entities=[], question="cents", all_memories=[memory], valid_canonicals={"memory:1"},
+        corpus=build_in_memory_corpus(memories=[memory], datasets=[], datasources=[]),
+        datasource=None,
+    )
+
+
+async def test_retrieve_imports_no_ranking_module_on_the_loop(
+    storage: YAMLStorage,
+    stub_available: None,
+    recording_embed: _RecordingEmbedBatch,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = await _seed_memory(storage, monkeypatch)
+    real_import = builtins.__import__
+    stub = gated(fn=real_import)
+
+    def gated_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        return (stub if name in _RANKING_MODULES else real_import)(name, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(builtins, "__import__", gated_import)
+        result = await _retrieve(storage, memory)
+    assert stub.calls == 0
+    assert result.memory_ranking == ["1"]
+
+
+async def test_retrieve_without_numpy_skips_with_an_operator_warning(
+    storage: YAMLStorage,
+    stub_available: None,
+    recording_embed: _RecordingEmbedBatch,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    memory = await _seed_memory(storage, monkeypatch)
+    monkeypatch.setattr(retriever_module, "np", None)
+    with caplog.at_level(logging.WARNING, logger=retriever_module.__name__):
+        result = await _retrieve(storage, memory)
+    assert result == RetrievalResult()
+    assert any("numpy not installed" in r.getMessage() for r in caplog.records)

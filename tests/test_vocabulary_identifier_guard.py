@@ -1,4 +1,4 @@
-"""Old-word identifier guard: no unlisted old-word name is defined in ``slayer/``; stragglers only shrink."""
+"""Old-word identifier guard: every old-word name defined in ``slayer/`` is a listed carve-out."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from pydantic import BaseModel, ValidationError
 from tests._vocabulary_guard import (
     CarveOut,
     IdentifierHit,
-    Straggler,
     VocabularyAllowlist,
     binding_names,
     guard_problems,
@@ -23,26 +22,13 @@ from tests._vocabulary_guard import (
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ALLOWLIST = _ROOT / "tests" / "fixtures" / "vocabulary_identifier_allowlist.yaml"
-_INDEX_YAML = _ROOT / "architecture" / "index.yaml"
 
 
 # --------------------------------------------------------------------------- #
 # Real tree
 # --------------------------------------------------------------------------- #
-def _ceiling() -> int:
-    entry = yaml.safe_load(_INDEX_YAML.read_text()).get("x-vocabulary-stragglers")
-    missing = "architecture/index.yaml must declare `x-vocabulary-stragglers: {baseline: N}` (only ever lowered)"
-    assert isinstance(entry, dict), missing
-    assert "baseline" in entry, missing
-    return int(entry["baseline"])
-
-
 def _allowlist() -> VocabularyAllowlist:
     return VocabularyAllowlist.model_validate(yaml.safe_load(_ALLOWLIST.read_text()))
-
-
-def test_straggler_ceiling_is_declared() -> None:
-    assert _ceiling() >= 0
 
 
 def test_allowlist_parses() -> None:
@@ -51,7 +37,7 @@ def test_allowlist_parses() -> None:
 
 def test_every_old_word_identifier_in_slayer_is_allowlisted() -> None:
     hits = scan_package(_ROOT / "slayer", repo_root=_ROOT)
-    problems = guard_problems(hits, allowlist=_allowlist(), ceiling=_ceiling())
+    problems = guard_problems(hits, allowlist=_allowlist())
     assert problems == [], "vocabulary guard violations:\n" + "\n".join(problems)
 
 
@@ -194,44 +180,37 @@ def _carve(hit: IdentifierHit) -> CarveOut:
     return CarveOut(name=hit.name, file=hit.file, reason="physical database column")
 
 
-def _straggler(hit: IdentifierHit) -> Straggler:
-    return Straggler(name=hit.name, file=hit.file)
-
-
 def test_unlisted_hit_is_red() -> None:
-    problems = guard_problems({_HIT}, allowlist=VocabularyAllowlist(), ceiling=0)
+    problems = guard_problems({_HIT}, allowlist=VocabularyAllowlist())
     assert any("model_cache" in p and "a.py" in p for p in problems)
 
 
-def test_carve_out_and_straggler_are_green() -> None:
-    allowlist = VocabularyAllowlist(carve_outs=[_carve(_HIT)], stragglers=[_straggler(_OTHER)])
-    assert guard_problems({_HIT, _OTHER}, allowlist=allowlist, ceiling=1) == []
+def test_carve_outs_are_green() -> None:
+    allowlist = VocabularyAllowlist(carve_outs=[_carve(_HIT), _carve(_OTHER)])
+    assert guard_problems({_HIT, _OTHER}, allowlist=allowlist) == []
 
 
 def test_entry_matches_on_file_too() -> None:
     moved = IdentifierHit(name="model_cache", file="c.py")
     allowlist = VocabularyAllowlist(carve_outs=[_carve(_HIT)])
-    problems = guard_problems({_HIT, moved}, allowlist=allowlist, ceiling=0)
+    problems = guard_problems({_HIT, moved}, allowlist=allowlist)
     assert any("c.py" in p for p in problems)
 
 
 def test_stale_carve_out_is_red() -> None:
     allowlist = VocabularyAllowlist(carve_outs=[_carve(_HIT), _carve(_OTHER)])
-    problems = guard_problems({_HIT}, allowlist=allowlist, ceiling=0)
+    problems = guard_problems({_HIT}, allowlist=allowlist)
     assert any("column_map" in p and "b.py" in p for p in problems)
 
 
-def test_stale_straggler_is_red() -> None:
-    allowlist = VocabularyAllowlist(stragglers=[_straggler(_HIT), _straggler(_OTHER)])
-    problems = guard_problems({_HIT}, allowlist=allowlist, ceiling=2)
-    assert any("column_map" in p and "b.py" in p for p in problems)
+def test_duplicate_carve_out_is_red() -> None:
+    allowlist = VocabularyAllowlist(carve_outs=[_carve(_HIT), _carve(_HIT)])
+    problems = guard_problems({_HIT}, allowlist=allowlist)
+    assert any("listed 2 times" in p and "model_cache" in p for p in problems)
 
 
-@pytest.mark.parametrize(("ceiling", "green"), [(1, False), (2, True), (3, True)])
-def test_straggler_count_is_capped_by_the_ceiling(ceiling: int, green: bool) -> None:
-    allowlist = VocabularyAllowlist(stragglers=[_straggler(_HIT), _straggler(_OTHER)])
-    problems = guard_problems({_HIT, _OTHER}, allowlist=allowlist, ceiling=ceiling)
-    assert (problems == []) is green
+def test_empty_allowlist_parses() -> None:
+    assert VocabularyAllowlist.model_validate({}).carve_outs == []
 
 
 @pytest.mark.parametrize(
@@ -240,6 +219,7 @@ def test_straggler_count_is_capped_by_the_ceiling(ceiling: int, green: bool) -> 
         pytest.param({"carve_outs": [{"name": "x", "file": "a.py"}]}, id="missing-reason"),
         pytest.param({"carve_outs": [{"name": "x", "file": "a.py", "reason": "  "}]}, id="blank-reason"),
         pytest.param({"stragler": []}, id="unknown-key"),
+        pytest.param({"stragglers": []}, id="removed-stragglers-key"),
     ],
 )
 def test_malformed_allowlist_is_rejected(raw: dict) -> None:

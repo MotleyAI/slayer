@@ -816,7 +816,7 @@ class TestOpaqueElements:
 # --------------------------------------------------------------------------- #
 # Aggregation metadata: defaults, save time, re-ingest
 # --------------------------------------------------------------------------- #
-def _list_column(**kw: Any) -> dict[str, Any]:
+def _list_field(**kw: Any) -> dict[str, Any]:
     return {"name": "skills", "datatype": "Array", "element_type": "String", **kw}
 
 
@@ -827,12 +827,12 @@ class TestAllowedAggregations:
     @pytest.mark.parametrize("allowed", [["count", "count_distinct"], ["count_distinct"], ["count"]])
     def test_count_and_distinct_count_save(self, allowed: list[str]) -> None:
         SlayerDataset.model_validate({"name": "c", "sql_table": "c", "data_source": "test",
-                                    "fields": [_list_column(allowed_aggregations=allowed)]})
+                                    "fields": [_list_field(allowed_aggregations=allowed)]})
 
     @pytest.mark.parametrize("allowed", [["sum"], ["count", "count_distinct", "min"], ["count_distinct_approx"]])
     def test_other_aggregations_fail_to_save(self, allowed: list[str]) -> None:
         data = {"name": "c", "sql_table": "c", "data_source": "test",
-                "fields": [_list_column(allowed_aggregations=allowed)]}
+                "fields": [_list_field(allowed_aggregations=allowed)]}
         with pytest.raises(ValueError, match="skills"):
             SlayerDataset.model_validate(data)
 
@@ -840,7 +840,7 @@ class TestAllowedAggregations:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name="test", type="duckdb", database=":memory:"))
         model = SlayerDataset.model_validate({"name": "c", "sql_table": "c", "data_source": "test", "fields": [
-            _list_column(allowed_aggregations=["count", "count_distinct"])]})
+            _list_field(allowed_aggregations=["count", "count_distinct"])]})
         await storage.save_dataset(model)
         loaded = await storage.get_dataset("c", data_source="test")
         assert loaded is not None
@@ -890,11 +890,11 @@ def _list_set(source: Any) -> Any:
     return keys.ListSetKey(source=source)
 
 
-def _column_type(key: Any) -> Optional[DataType]:
+def _field_type(key: Any) -> Optional[DataType]:
     return DataType.ARRAY if isinstance(key, FieldKey) and key.leaf in _LISTS else None
 
 
-def _column_element(key: Any) -> Optional[DataType]:
+def _field_element(key: Any) -> Optional[DataType]:
     return DataType.STRING if isinstance(key, FieldKey) and key.leaf in ("skills", "required") else None
 
 
@@ -924,8 +924,8 @@ class TestKeyKind:
 
     def test_typed_as_the_sources_list(self) -> None:
         key = _list_set(SKILLS)
-        assert value_type(key, field_type=_column_type) is DataType.ARRAY
-        assert list_element_type(key, field_type=_column_type, field_element=_column_element) is DataType.STRING
+        assert value_type(key, field_type=_field_type) is DataType.ARRAY
+        assert list_element_type(key, field_type=_field_type, field_element=_field_element) is DataType.STRING
 
     def test_phase_is_the_sources(self) -> None:
         assert _list_set(SKILLS).phase is Phase.ROW

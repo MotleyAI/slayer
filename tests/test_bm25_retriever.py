@@ -95,11 +95,11 @@ async def test_stale_entity_tags_filtered_before_scoring() -> None:
     retriever = BM25Retriever()
     mems = [
         _mem("alive", "live tag", "mydb.orders.amount"),
-        _mem("stale", "stale tag only", "mydb.orders.removed_column"),
+        _mem("stale", "stale tag only", "mydb.orders.removed_field"),
     ]
     valid = {"mydb", "mydb.orders", "mydb.orders.amount"}
     result = await retriever.retrieve(
-        query_entities=["mydb.orders.removed_column"],
+        query_entities=["mydb.orders.removed_field"],
         question=None,
         all_memories=mems,
         valid_canonicals=valid,

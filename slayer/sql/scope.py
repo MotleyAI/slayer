@@ -6,7 +6,7 @@ expression enters a scope through :meth:`ScopeFrame.resolve`, which:
 * **Law 1 (anchored rendering):** expands derived refs (reserved-word
   identifiers prequoted; multi-term derived expansions parenthesised
  ), anchors every reference at the scope root or a ``__``-path join
-  alias, and REGISTERS each crossed relationship path into ``join_paths`` in the same
+  alias, and REGISTERS each crossed relationship path into ``relationship_paths`` in the same
   call. Discovery is a side effect of rendering — it can never be forgotten.
 * **Law 2 (projection boundaries):** when a ``consumer`` scope is named, the
   value is materialised as a ``_val_<n>`` projection in THIS (producing) scope
@@ -128,7 +128,7 @@ class ScopeFrame(BaseModel):
     bundle: ResolvedSourceBundle
     dialect: SqlDialect
     allocator: AliasAllocator
-    join_paths: _OrderedPathSet = Field(default_factory=_OrderedPathSet)
+    relationship_paths: _OrderedPathSet = Field(default_factory=_OrderedPathSet)
     materializations: List[Materialization] = Field(default_factory=list)
     # reserved-leaf placeholder → its rendered column on an attached
     # regroup producer CTE. Resolved by EXACT membership before ordinary column
@@ -155,7 +155,7 @@ class ScopeFrame(BaseModel):
     def _register_path_prefixes(self, path: Tuple[str, ...]) -> None:
         """Register every relationship-path prefix of ``path`` into this scope."""
         for i in range(1, len(path) + 1):
-            self.join_paths.add(path[:i])
+            self.relationship_paths.add(path[:i])
 
     # ---- The one Mode-A door (P-A) -----------------------------------------
     def enter_predicate(
@@ -204,7 +204,7 @@ class ScopeFrame(BaseModel):
         1. prequote reserved identifiers,
         2. parse the PREQUOTED text and scan it for crossed relationship paths,
         3. expand derived refs, parse the EXPANDED text and scan that too,
-        4. union both scans into ``join_paths``,
+        4. union both scans into ``relationship_paths``,
         5. Law 2 — materialise for a named ``consumer``, else return the AST.
 
         Both scans are load-bearing (the dual-scan contract): a dotted
@@ -259,7 +259,7 @@ class ScopeFrame(BaseModel):
         # inlining a derived field (the dual-discovery contract), now
         # collected STRUCTURALLY via ``crossed_paths`` rather than by re-scanning
         # the internal-alias output.
-        self._register_join_paths(
+        self._register_relationship_paths(
             raw_ast, owner_dataset=owner_dataset, owner_relation=alias_path,
             owner_path=owner_path,
         )
@@ -273,7 +273,7 @@ class ScopeFrame(BaseModel):
                 dialect=self.dialect.sqlglot_name,
                 owner_path=owner_path,
                 alias_resolver=self._alias_resolver(),
-                crossed_paths=self.join_paths,
+                crossed_paths=self.relationship_paths,
             )
         except UnreachableDefinitionError as exc:
             raise exc.labelled(f"definition {sql!r}") from None
@@ -338,7 +338,7 @@ class ScopeFrame(BaseModel):
             limit=self.dialect.max_identifier_bytes,
         )
 
-    def _register_join_paths(
+    def _register_relationship_paths(
         self, parsed: exp.Expression, *,  # pyright: ignore[reportPrivateImportUsage]
         owner_dataset: Optional[SlayerDataset] = None,
         owner_relation: Optional[str] = None,
@@ -354,7 +354,7 @@ class ScopeFrame(BaseModel):
             source_relation=owner_relation or self.root_relation,
             bundle=self.bundle,
         ):
-            self.join_paths.add(tuple(owner_path) + path)
+            self.relationship_paths.add(tuple(owner_path) + path)
 
     def materialize_for(
         self, template: exp.Expression, *, consumer: "ScopeFrame",
@@ -370,7 +370,7 @@ class ScopeFrame(BaseModel):
         Same table, same dedup key, same aliases as :meth:`resolve`: there is
         one materialisation mechanism per scope, which is the point.
         """
-        self._register_join_paths(template)
+        self._register_relationship_paths(template)
         return self._close(template, consumer=consumer)
 
     def _close(
@@ -379,7 +379,7 @@ class ScopeFrame(BaseModel):
         """Law 2: materialise for a named consumer, else hand back a copy so a
         caller attaching this into its tree can never corrupt a value the scope
         (or another caller) also holds (D-L / M1)."""
-        if consumer is not None and not self.may_inline(self.join_paths.as_list()):
+        if consumer is not None and not self.may_inline(self.relationship_paths.as_list()):
             return exp.column(self._materialize(template))
         return template.copy()
 
@@ -448,7 +448,7 @@ class ScopeFrame(BaseModel):
                     datasets_by_name=self._datasets_by_name(),
                     dialect=self.dialect.sqlglot_name, owner_path=owner_path,
                     alias_resolver=self._alias_resolver(),
-                    crossed_paths=self.join_paths,
+                    crossed_paths=self.relationship_paths,
                 )
                 return self._parse(expanded or ref.field_name)
             # A ``DatasetField.filter`` desugars to CASE WHEN here — the value
@@ -461,7 +461,7 @@ class ScopeFrame(BaseModel):
                 dialect=self.dialect.sqlglot_name,
                 owner_path=owner_path,
                 alias_resolver=self._alias_resolver(),
-                crossed_paths=self.join_paths,
+                crossed_paths=self.relationship_paths,
             )
             return self.dialect.read_column(self._parse(expanded), zoned=self.dialect.is_zoned_db_type(col.db_type))
         if isinstance(ref, SqlFragmentKey):
@@ -490,7 +490,7 @@ class ScopeFrame(BaseModel):
                 dialect=self.dialect.sqlglot_name,
                 owner_path=(),
                 alias_resolver=self._alias_resolver(),
-                crossed_paths=self.join_paths,
+                crossed_paths=self.relationship_paths,
             )
             return self._parse(expanded or prequoted)
         raise NotImplementedError(

@@ -23,7 +23,7 @@ from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
     by_dimension,
-    column_of,
+    field_of,
     customers_v10,
     orders_v10,
     raw_doc,
@@ -75,7 +75,7 @@ class TestSourceSide:
                                   models=[orders_v10(declare_fk=False), customers_v10()])
         orders = await storage.get_dataset("orders", data_source=DS)
         assert orders is not None
-        col = column_of(orders, "customer_id")
+        col = field_of(orders, "customer_id")
         assert col.hidden is True
         doc = await raw_doc(storage, "orders")
         assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
@@ -124,7 +124,7 @@ class TestTargetSide:
             models=[orders_v10(), customers_v10(declare_pk=False, version=target_version)])
         customers = await storage.get_dataset("customers", data_source=DS)
         assert customers is not None
-        col = column_of(customers, "id")
+        col = field_of(customers, "id")
         assert col.hidden is True
         assert _hidden(await raw_doc(storage, "customers"), "id")["datatype"] == "Integer"
         resp = await run(storage, REGION_QUERY)
@@ -173,7 +173,7 @@ class TestFirstOpenCost:
         storage._load_raw_dataset_dict = counted  # type: ignore[method-assign]
         loaded, failed = await storage.load_datasets(data_source=DS)
         assert (len(loaded), failed) == (n, [])
-        assert all(column_of(m, "fk").hidden for m in loaded)
+        assert all(field_of(m, "fk").hidden for m in loaded)
         assert len(reads) <= 3 * n
 
 

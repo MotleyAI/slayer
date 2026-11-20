@@ -79,13 +79,13 @@ def _ds2() -> DatasourceConfig:
     return DatasourceConfig(name="ds2", type="sqlite", database=":memory:")
 
 
-async def _engine(*extra_models: SlayerDataset) -> Tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+async def _engine(*extra_datasets: SlayerDataset) -> Tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build YAMLStorage with ``orders`` saved + extras, return engine + tmp."""
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
     await storage.save_dataset(_orders_dataset())
-    for m in extra_models:
+    for m in extra_datasets:
         await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
@@ -437,7 +437,7 @@ class TestVirtualModelColumns:
         try:
             await engine.storage.save_dataset(orders_with_int_measure)
             m = SlayerDataset(
-                name="qb_saved_measure_type",
+                name="qb_saved_metric_type",
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",

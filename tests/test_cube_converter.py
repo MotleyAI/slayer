@@ -20,7 +20,7 @@ from slayer.cube.models import (
 )
 from slayer.cube.report import CubeIssueCategory
 from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr
-from tests._cube_helpers import DS, column, convert, metric, meta
+from tests._cube_helpers import DS, field_of, convert, metric, meta
 
 
 def _metric_field(dataset: SlayerDataset, metric_name: str) -> DatasetField:
@@ -31,7 +31,7 @@ def _metric_field(dataset: SlayerDataset, metric_name: str) -> DatasetField:
     source = parsed.source
     assert isinstance(source, (Ref, DottedRef)), m.expression
     col_ref = ".".join(source.parts) if isinstance(source, DottedRef) else source.name
-    return column(dataset, col_ref)
+    return field_of(dataset, col_ref)
 
 
 # ── 4.1 cube → dataset ─────────────────────────────────────────────────────
@@ -46,8 +46,8 @@ def test_cube_becomes_table_backed_model():
     assert orders.sql_table == "public.orders"
     assert orders.data_source == DS
     assert orders.description == "Customer orders"
-    assert column(orders, "id").primary_key is True
-    assert column(orders, "id").datatype == DataType.FLOAT
+    assert field_of(orders, "id").primary_key is True
+    assert field_of(orders, "id").datatype == DataType.FLOAT
 
 
 def test_public_false_dimension_is_hidden():
@@ -59,8 +59,8 @@ def test_public_false_dimension_is_hidden():
         ],
     )])
     models, _ = convert(project)
-    assert column(models["orders"], "secret").hidden is True
-    assert column(models["orders"], "id").hidden is False
+    assert field_of(models["orders"], "secret").hidden is True
+    assert field_of(models["orders"], "id").hidden is False
 
 
 def test_public_false_cube_is_hidden_and_title_goes_to_meta():
@@ -216,7 +216,7 @@ def test_dimension_type_mapping(cube_type, expected):
         dimensions=[CubeDimension(name="d", sql="{CUBE}.d", type=cube_type)],
     )])
     models, _ = convert(project)
-    assert column(models["orders"], "d").datatype == expected
+    assert field_of(models["orders"], "d").datatype == expected
 
 
 def test_dimension_sql_omitted_when_just_cube_dot_name():
@@ -225,7 +225,7 @@ def test_dimension_sql_omitted_when_just_cube_dot_name():
         dimensions=[CubeDimension(name="status", sql="{CUBE}.status", type="string")],
     )])
     models, _ = convert(project)
-    assert column(models["orders"], "status").sql is None
+    assert field_of(models["orders"], "status").sql is None
 
 
 def test_case_dimension_becomes_case_when_column():
@@ -237,7 +237,7 @@ def test_case_dimension_becomes_case_when_column():
         })],
     )])
     models, _ = convert(project)
-    sql = column(models["orders"], "size_bucket").sql
+    sql = field_of(models["orders"], "size_bucket").sql
     assert sql is not None
     assert "CASE WHEN" in sql
     assert "'small'" in sql
@@ -254,7 +254,7 @@ def test_case_dimension_label_escapes_quotes():
         })],
     )])
     models, _ = convert(project)
-    sql = column(models["orders"], "owner").sql
+    sql = field_of(models["orders"], "owner").sql
     assert sql is not None
     assert "'Bob''s'" in sql  # apostrophe doubled, not a broken literal
 
@@ -293,7 +293,7 @@ def test_custom_granularities_emit_base_column_and_report():
                                                   "offset": "3 months"}])],
     )])
     models, report = convert(project)
-    assert column(models["orders"], "created_at").datatype == DataType.DATETIME
+    assert field_of(models["orders"], "created_at").datatype == DataType.DATETIME
     assert any(i.category == CubeIssueCategory.GRANULARITY_UNMAPPED for i in report.issues)
 
 
@@ -352,10 +352,10 @@ def test_segment_becomes_boolean_column():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    col = column(models["orders"], "completed")
+    col = field_of(models["orders"], "completed")
     assert col.datatype == DataType.BOOLEAN
     assert col.sql == "status = 'completed'"
-    assert any(i.category == CubeIssueCategory.SEGMENT_AS_COLUMN for i in report.issues)
+    assert any(i.category == CubeIssueCategory.SEGMENT_AS_FIELD for i in report.issues)
 
 
 # ── 7. unmapped infra ──────────────────────────────────────────────────────
@@ -465,7 +465,7 @@ def test_join_member_resolves_to_physical_column():
     ])
     models, _ = convert(project)
     assert models["orders"].relationships[0].column_pairs == [("customer_id", "id")]
-    pk = column(models["customers"], "id")
+    pk = field_of(models["customers"], "id")
     assert pk is not None
     assert pk.expression == "cust_pk"
 
@@ -575,7 +575,7 @@ def test_join_operand_naming_no_member_synthesises_hidden_column():
     models, _ = convert(project)
     assert models["orders"].relationships[0].column_pairs == [("customer_id", "legacy_id")]
     for model, key in ((models["orders"], "customer_id"), (models["customers"], "legacy_id")):
-        col = column(model, key)
+        col = field_of(model, key)
         assert col is not None
         assert col.hidden is True
         assert col.is_base

@@ -1738,7 +1738,7 @@ async def test_circular_query_reference_raises(integration_env):
         await engine.execute(query=[q1, q2, main])
 
 
-async def _mutual_join_engine(tmp_path, *, ab_name=None, ba_name=None):
+async def _mutual_relationship_engine(tmp_path, *, ab_name=None, ba_name=None):
     """Engine over datasets a/b with mutual declared relationships (optionally named)."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
@@ -1783,7 +1783,7 @@ def _b_a_unique_field_query(hop1: str, hop2: str) -> SlayerQuery:
 
 async def test_unnamed_parallel_edges_fail_closed(tmp_path):
     """Two unnamed edges between the same pair make the hop ambiguous."""
-    engine = await _mutual_join_engine(tmp_path)
+    engine = await _mutual_relationship_engine(tmp_path)
     query = _b_a_unique_field_query("b", "a")
     with pytest.raises(AmbiguousRelationshipPathError, match="2 edges"):
         await engine.execute(query)
@@ -1791,7 +1791,7 @@ async def test_unnamed_parallel_edges_fail_closed(tmp_path):
 
 async def test_circular_join_graph_raises(tmp_path):
     """A named-edge path that revisits a dataset is rejected as a circular relationship path."""
-    engine = await _mutual_join_engine(tmp_path, ab_name="fwd", ba_name="back")
+    engine = await _mutual_relationship_engine(tmp_path, ab_name="fwd", ba_name="back")
     # fwd.back walks a→b→a — a cycle.
     query = _b_a_unique_field_query("fwd", "back")
     with pytest.raises(ValueError, match="Circular relationship"):

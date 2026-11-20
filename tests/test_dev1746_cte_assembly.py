@@ -39,7 +39,7 @@ from slayer.sql import generator as generator_mod
 from slayer.sql.naming import assert_unique_cte_names
 from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain, cte_entry
 
-from tests._cross_model_chain import _gen
+from tests._cross_dataset_chain import _gen
 from tests._dev1746_fixtures import cte_names_in_order
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]

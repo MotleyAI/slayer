@@ -35,8 +35,8 @@ from tests._dev2006_fixtures import (
     AVG_LAST_BY_CUSTOMER,
     BALANCE_BY_BAND,
     COUNT_LAST_BY_CUSTOMER,
-    CROSS_MODEL_COUNT_BY_NAME,
-    CROSS_MODEL_SUM_BY_NAME,
+    CROSS_DATASET_COUNT_BY_NAME,
+    CROSS_DATASET_SUM_BY_NAME,
     CUMSUM_LAST_BY_CUSTOMER_MONTH,
     FEB,
     FIRST,
@@ -90,8 +90,8 @@ async def dev1841_engine(request):
         yield engine
 
 
-def _by_customer_q(*formulas: str, **kw):
-    return snap_q(dimensions=["account_snapshots.customer_id"], metrics=[m(f, f"v{i}" if i else "v") for i, f in enumerate(formulas)], **kw)
+def _by_customer_q(*expressions: str, **kw):
+    return snap_q(dimensions=["account_snapshots.customer_id"], metrics=[m(f, f"v{i}" if i else "v") for i, f in enumerate(expressions)], **kw)
 
 
 def _approx(actual: dict, expected: dict) -> None:
@@ -321,26 +321,26 @@ class TestCrossModelOperand:
         ))
         sums = {r["customers.name"]: num(r["v"]) for r in resp.data}
         counts = {r["customers.name"]: r["c"] for r in resp.data}
-        _approx(sums, CROSS_MODEL_SUM_BY_NAME)
-        assert counts == CROSS_MODEL_COUNT_BY_NAME
+        _approx(sums, CROSS_DATASET_SUM_BY_NAME)
+        assert counts == CROSS_DATASET_COUNT_BY_NAME
 
 
 class TestAttributabilityModes:
-    FORMULA = "sum(last(account_snapshots.balance, partition_by=[account_snapshots.account_id]))"
+    EXPRESSION = "sum(last(account_snapshots.balance, partition_by=[account_snapshots.account_id]))"
 
     async def test_broadcast_repeats_the_global_value(self, exec_engine):
-        resp = await exec_engine.execute(_by_customer_q(self.FORMULA, to_many_handling="broadcast"))
+        resp = await exec_engine.execute(_by_customer_q(self.EXPRESSION, to_many_handling="broadcast"))
         _approx(by_customer(resp), {100: GLOBAL_LAST_BY_ACCOUNT, 200: GLOBAL_LAST_BY_ACCOUNT})
         assert warnings_of(resp, "broadcast")
 
     @pytest.mark.parametrize("mode", [None, "associate"])
     async def test_associate_reconciles_per_customer(self, exec_engine, mode):
-        resp = await exec_engine.execute(_by_customer_q(self.FORMULA, to_many_handling=mode))
+        resp = await exec_engine.execute(_by_customer_q(self.EXPRESSION, to_many_handling=mode))
         _approx(by_customer(resp), LAST_BY_CUSTOMER)
         assert warnings_of(resp, "associated")
 
     async def test_error_mode_refuses_typed(self, exec_engine):
-        query = _by_customer_q(self.FORMULA, to_many_handling="error")
+        query = _by_customer_q(self.EXPRESSION, to_many_handling="error")
         with pytest.raises(ReaggregationError, match="customer_id"):
             await exec_engine.execute(query)
 

@@ -1,5 +1,5 @@
 {
- "source": "tests/_model_access_fixtures.py",
+ "source": "tests/_dataset_access_fixtures.py",
  "pairs": [
   {
    "kind": "metric",

@@ -195,21 +195,21 @@ def build_catalog(
     constrained (SLayer doesn't auto-mirror relationships across datasources).
     """
     schemas: list[FacadeSchema] = []
-    for datasource, models in datasets_by_datasource.items():
-        by_name: dict[str, SlayerDataset] = {m.name: m for m in models}
+    for datasource, datasets in datasets_by_datasource.items():
+        by_name: dict[str, SlayerDataset] = {m.name: m for m in datasets}
         for pair in unaddressable_pairs(datasets_by_name=by_name):
             logger.warning("Facade catalog (datasource %r): %s.", datasource, pair.describe())
         tables: list[FacadeTable] = []
-        for model in models:
-            if model.hidden:
+        for dataset in datasets:
+            if dataset.hidden:
                 continue
-            if not _field_types_supported(dataset=model):
+            if not _field_types_supported(dataset=dataset):
                 # _field_types_supported logs the warning; skip this dataset
                 # entirely so the rest of the catalog stays usable.
                 continue
             tables.append(
                 _build_table(
-                    dataset=model,
+                    dataset=dataset,
                     datasets_by_name=by_name,
                     bfs_depth=bfs_depth,
                 )
@@ -328,14 +328,14 @@ def _build_table(
     )
     metrics = _metric_expansion(dataset=dataset, reachable=reachable)
     dimensions = _dimension_expansion(dataset=dataset, reachable=reachable)
-    joins = _facade_relationships_for(dataset=dataset, datasets_by_name=datasets_by_name)
+    relationships = _facade_relationships_for(dataset=dataset, datasets_by_name=datasets_by_name)
     return FacadeTable(
         name=dataset.name,
         table_type=table_type,
         description=dataset.description,
         metrics=metrics,
         dimensions=dimensions,
-        relationships=joins,
+        relationships=relationships,
         dataset_ref=dataset,
     )
 
@@ -470,18 +470,18 @@ def _metric_expansion(
     # and then prefixed with the dotted relationship path; the prefix is the same
     # in both ``name`` (catalog-facing) and ``metric_expression`` (engine-
     # facing), matching SLayer's DSL convention end-to-end (§5.1.5).
-    for path, joined_model, _row_preserving in reachable:
+    for path, joined_dataset, _row_preserving in reachable:
         prefix = _path_dotted(path)
-        joined_local = _local_metrics_for(dataset=joined_model)
+        joined_local = _local_metrics_for(dataset=joined_dataset)
         for m in joined_local:
-            formula = metric_text_at_path(m.metric_expression, path=path)
+            expression = metric_text_at_path(m.metric_expression, path=path)
             out.append(
                 FacadeMetric(
                     name=f"{prefix}.{m.name}",
                     description=m.description,
                     label=m.label,
                     data_type=m.data_type,
-                    metric_expression=formula,
+                    metric_expression=expression,
                 )
             )
     return out
@@ -622,9 +622,9 @@ def _dimension_expansion(
                 dimension_ref=col.name,
             )
         )
-    for path, joined_model, row_preserving in reachable:
+    for path, joined_dataset, row_preserving in reachable:
         prefix = _path_dotted(path)
-        for col in joined_model.fields:
+        for col in joined_dataset.fields:
             if col.hidden:
                 continue
             ref = f"{prefix}.{col.name}"

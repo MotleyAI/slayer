@@ -69,7 +69,7 @@ from tests._dev1739_fixtures import (  # noqa: F401 — re-exported fixture surf
     rows_by,
 )
 
-dev1824_models = dev1739_datasets
+dev1824_datasets = dev1739_datasets
 
 REGION_TOTAL = {"North": 100.0, "South": 50.0, None: 60.0}
 CITY_TOTAL = {
@@ -128,7 +128,7 @@ __all__ = [
     "REGION_LAST_AT", "REGION_MONTH_LAST", "REGION_MONTH_TOTAL", "REGION_TOTAL",
     "SlayerQuery", "TRAILING_45D_REGION", "TRAILING_90D_REGION",
     "TimeDimension", "TimeGranularity",
-    "approx_sum", "cm_cte_bodies", "customers_dataset", "dev1824_models",
+    "approx_sum", "cm_cte_bodies", "customers_dataset", "dev1824_datasets",
     "dev1739_datasets", "gen", "make_exec_engine", "month_key", "month_td",
     "orders_dataset", "q", "regions_dataset", "rows_by",
 ]

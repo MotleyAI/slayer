@@ -37,10 +37,10 @@ def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
                                 referenced_datasets=[m for m in models if m is not root])
 
 
-def _plan(*formulas: str) -> PlannedQuery:
+def _plan(*expressions: str) -> PlannedQuery:
     return plan_query(query=monthly_q(
         dimensions=["monthly.region"], time_dimensions=month_td("monthly"),
-        metrics=[QueryMetric(metric=f, alias=f"t{i}") for i, f in enumerate(formulas)]),
+        metrics=[QueryMetric(metric=f, alias=f"t{i}") for i, f in enumerate(expressions)]),
         bundle=_bundle())
 
 

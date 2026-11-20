@@ -436,7 +436,7 @@ def _orders_joining_customers() -> SlayerDataset:
 def _chain_dataset(
     name: str,
     *,
-    joins: list[str] | None = None,
+    relationships: list[str] | None = None,
     aggs: list[str] | None = None,
     extra_cols: list[DatasetField] | None = None,
 ) -> SlayerDataset:
@@ -457,7 +457,7 @@ def _chain_dataset(
         ],
         relationships=[
             DatasetRelationship(to=t, from_columns=["id"], to_columns=["id"])
-            for t in (joins or [])
+            for t in (relationships or [])
         ],
     )
 
@@ -470,9 +470,9 @@ async def _save_4hop_chain(storage: StorageBackend) -> None:
         "e", aggs=["rolling_avg"],
         extra_cols=[DatasetField(name="score", datatype=DataType.FLOAT)],
     ))
-    await storage.save_dataset(_chain_dataset("d", joins=["e"]))
-    await storage.save_dataset(_chain_dataset("c", joins=["d"]))
-    await storage.save_dataset(_chain_dataset("b", joins=["c"]))
+    await storage.save_dataset(_chain_dataset("d", relationships=["e"]))
+    await storage.save_dataset(_chain_dataset("c", relationships=["d"]))
+    await storage.save_dataset(_chain_dataset("b", relationships=["c"]))
 
 
 async def _engine_with_prod():
@@ -593,7 +593,7 @@ class TestJoinedCustomAggFunctional:
         engine, storage, td = await _engine_with_prod()
         try:
             await _save_4hop_chain(storage)
-            await storage.save_dataset(_chain_dataset("a", joins=["b"]))
+            await storage.save_dataset(_chain_dataset("a", relationships=["b"]))
             q = SlayerQuery.model_validate({
                 "population": "a",
                 "metrics": [{"metric": "rolling_avg(b.c.d.e.score)"}],

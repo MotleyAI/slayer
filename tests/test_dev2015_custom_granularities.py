@@ -59,14 +59,14 @@ def _series(resp, *, column: str, width: int = 10) -> dict[str, float]:
     return {bucket_key(value(r, column), width=width): float(value(r, "s")) for r in resp.data}
 
 
-async def _grouped(engine, *, granularity: str, column: str = "ts", dataset: str = "events",
+async def _grouped(engine, *, granularity: str, field: str = "ts", dataset: str = "events",
                    series: str | None = None, width: int = 10) -> dict[str, float]:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": dataset, "metrics": [m(f"sum({dataset}.amount)", "s")],
-        "time_dimensions": [{"field": f"{dataset}.{column}", "granularity": granularity}],
+        "time_dimensions": [{"field": f"{dataset}.{field}", "granularity": granularity}],
         "filter": [f"{dataset}.series = '{series}'"] if series else [],
     }))
-    return _series(resp, column=column, width=width)
+    return _series(resp, column=field, width=width)
 
 
 # ---------------------------------------------------------------------------
@@ -139,16 +139,16 @@ def _weekday(origin: Any) -> int:
 
 class TestBucketing:
     async def test_fiscal_year(self, engine) -> None:
-        assert await _grouped(engine, granularity="fiscal_year", column="order_date", dataset="orders") == FY_ROWS
+        assert await _grouped(engine, granularity="fiscal_year", field="order_date", dataset="orders") == FY_ROWS
 
     @pytest.mark.parametrize("column", ["ts", "d"])
     async def test_mid_month_origin(self, engine, column) -> None:
-        got = await _grouped(engine, granularity="billing_month", column=column, series="bill")
+        got = await _grouped(engine, granularity="billing_month", field=column, series="bill")
         assert got == {"2025-02-15": 1.0, "2025-03-15": 1.0}
 
     @pytest.mark.parametrize("column", ["ts", "d"])
     async def test_before_the_origin_and_multi_week_steps(self, engine, column) -> None:
-        got = await _grouped(engine, granularity="sprint", column=column, series="sprint")
+        got = await _grouped(engine, granularity="sprint", field=column, series="sprint")
         assert got == {"2024-12-23": 1.0, "2025-01-06": 1.0, "2025-01-20": 1.0}
 
     async def test_sub_hour_buckets(self, engine) -> None:
@@ -273,8 +273,8 @@ async def _save(engine: SlayerQueryEngine, dataset: SlayerDataset) -> None:
 
 class TestNesting:
     async def test_month_nests_into_the_fiscal_year_week_does_not(self, engine) -> None:
-        await _save(engine, bucketed_dataset(name="o_month", source="orders", column="order_date", granularity="month"))
-        await _save(engine, bucketed_dataset(name="o_week", source="orders", column="order_date", granularity="week"))
+        await _save(engine, bucketed_dataset(name="o_month", source="orders", field="order_date", granularity="month"))
+        await _save(engine, bucketed_dataset(name="o_week", source="orders", field="order_date", granularity="week"))
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "o_month", "metrics": [m("sum(o_month.rev)", "s")],
             "time_dimensions": [{"field": "o_month.order_date", "granularity": "fiscal_year"}],
@@ -309,7 +309,7 @@ class TestNesting:
         ("hour", "quarter_hour", False),
     ])
     async def test_minute_multiples(self, engine, stored, requested, ok) -> None:
-        await _save(engine, bucketed_dataset(name="ev_b", source="events", column="ts", granularity=stored))
+        await _save(engine, bucketed_dataset(name="ev_b", source="events", field="ts", granularity=stored))
         query = SlayerQuery.model_validate({
             "population": "ev_b", "metrics": [m("sum(ev_b.rev)", "s")],
             "time_dimensions": [{"field": "ev_b.ts", "granularity": requested}],
@@ -372,7 +372,7 @@ class TestNesting:
         five_hours = {"name": "five_hours", "base": "hour", "multiple": 5}
         async with cg_engine(backend, datasource_fields={"granularities": [*GRANULARITIES, five_hours]}) as eng:
             for stored in ("five_hours", "quarter_hour"):
-                await _save(eng, bucketed_dataset(name=f"ev_{stored}", source="events", column="ts",
+                await _save(eng, bucketed_dataset(name=f"ev_{stored}", source="events", field="ts",
                                                 granularity=stored))
             ok = await eng.execute(SlayerQuery.model_validate({
                 "population": "ev_quarter_hour", "metrics": [m("sum(ev_quarter_hour.rev)", "s")],

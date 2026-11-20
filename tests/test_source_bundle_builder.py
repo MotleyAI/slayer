@@ -114,9 +114,9 @@ def _bare() -> SlayerDataset:
     )
 
 
-async def _storage(tmp_path, *models: SlayerDataset) -> YAMLStorage:
+async def _storage(tmp_path, *datasets: SlayerDataset) -> YAMLStorage:
     storage = YAMLStorage(base_dir=str(tmp_path))
-    for m in models:
+    for m in datasets:
         await storage.save_dataset(m)
     return storage
 
