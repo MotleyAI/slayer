@@ -252,6 +252,19 @@ _STATEMENT_WORDS = frozenset({
 })
 
 
+_NAME_TOKENS = frozenset({TokenType.VAR, TokenType.IDENTIFIER})
+
+
+def reads_own_source_only(text: str) -> bool:
+    """Whether SQL ``text`` reads no ``qualifier.name`` reference (only its own source's columns); unreadable is no."""
+    try:
+        tokens = Tokenizer().tokenize(text)
+    except (SqlglotError, ValueError):
+        return False
+    return not any(a.token_type in _NAME_TOKENS and b.token_type is TokenType.DOT
+                   for a, b in zip(tokens, tokens[1:]))
+
+
 def _check_one_expression(*, field: str, sql: str) -> None:
     """Refuse a statement, or several, as ``sql``; text the generic tokenizer cannot read is left to the dialect."""
     try:
@@ -458,6 +471,17 @@ class DatasetField(DatasetPart):
     def is_physical_reader(self) -> bool:
         """A base field without a ``filter``: relationship keys, drift and live typing read it as its source column."""
         return self.is_base and self.filter is None
+
+    @property
+    def reads_own_source(self) -> bool:
+        """Whether every form of the definition reads only its own dataset's source columns."""
+        texts = [self.definition_sql] if self.definition_known else self.native_texts
+        return all(t is None or reads_own_source_only(t) for t in texts)
+
+    @property
+    def key_name(self) -> str:
+        """A relationship key's emitted name: a base field's physical column, else its own name."""
+        return self.physical_name if self.is_base else self.name
 
     @property
     def physical_name(self) -> str:
@@ -1083,7 +1107,7 @@ class DatasetRelationship(DatasetPart):
 def relationship_key_error(
     *, dataset: str, target: str, key: str, side: str, fields: list[DatasetField],
 ) -> RelationshipKeyError | None:
-    """Why ``key`` is not a declared base field of ``side`` (whose ``fields`` are given)."""
+    """Why ``key`` is not an unfiltered declared field of ``side`` reading only its source (``fields`` given)."""
     head = f"relationship {dataset} → {target} key {key!r}"
     col = next((c for c in fields if c.name == key), None)
     if col is None:
@@ -1093,21 +1117,22 @@ def relationship_key_error(
                 else f"declare DatasetField(name={key!r}) on '{side}' (expression= its source column if renamed)")
         return RelationshipKeyError(summary=f"{head} is not a declared field of '{side}'",
                             suggestion=hint)
-    if not col.is_base:
+    if not col.is_base and not col.reads_own_source:
         return RelationshipKeyError(
-            summary=f"{head} is an expression field of '{side}' (expression={col.definition_sql!r})",
-            suggestion="key the relationship on a base field: expression unset or a single source column",
+            summary=f"{head} is an expression field of '{side}' reading beyond its source "
+                    f"(expression={col.definition_sql!r})",
+            suggestion=f"key the relationship on a field of '{side}' over its own source columns",
         )
     if col.filter is not None:
         return RelationshipKeyError(
             summary=f"{head} carries a filter on '{side}'",
-            suggestion="key the relationship on an unfiltered base field",
+            suggestion="key the relationship on an unfiltered field",
         )
     return None
 
 
 def _check_relationship_keys(*, dataset_name: str, fields: list[DatasetField], relationships: list[DatasetRelationship]) -> None:
-    """Every relationship's source-side key names a declared, unfiltered base field."""
+    """Every relationship's source-side key names a declared, unfiltered field over the dataset's own source."""
     for relationship in relationships:
         for src, _ in relationship.column_pairs:
             err = relationship_key_error(dataset=dataset_name, target=relationship.to, key=src,
@@ -1304,20 +1329,6 @@ class SlayerDataset(DatasetPart):
         # An unexpanded query-backed dataset has no fields yet; checked once populated.
         if not self.awaits_fields:
             _check_relationship_keys(dataset_name=self.name, fields=self.fields, relationships=self.relationships)
-        return self
-
-    @model_validator(mode="after")
-    def _reject_self_relationships(self) -> "SlayerDataset":
-        """Relationships resolve by target-dataset name, so a self-relationship is unaddressable."""
-        if any(j.to == self.name for j in self.relationships):
-            raise ValueError(
-                f"Dataset '{self.name}': relationship to '{self.name}' is the "
-                f"dataset itself. Self-relationships are not supported — dotted "
-                f"references resolve by dataset name, so a self-relationship can never "
-                f"be addressed from a query. Define the second role as a "
-                f"separate dataset over the same table (or a view) and declare a "
-                f"relationship to that."
-            )
         return self
 
     @model_validator(mode="after")

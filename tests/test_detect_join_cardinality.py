@@ -14,7 +14,7 @@ from slayer.core.errors import ForcedFilterError
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.cardinality.inference import CardinalityVerdict, RelationshipCardinalityReport
-from slayer.engine.query_engine import SlayerQueryEngine, _physical_keys
+from slayer.engine.query_engine import SlayerQueryEngine, _key_reads
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -499,7 +499,7 @@ class TestSideStatsSqlShape:
         model = SlayerDataset(name="orders", data_source="ds", sql_table="orders", fields=[
             DatasetField(name="customer_id", datatype=DataType.INTEGER), DatasetField(name="exact", expression='"exact_key"', datatype=DataType.INTEGER)])
         rows_sql, _ = _side_stats_sql(
-            table="orders", key_cols=_physical_keys(dataset=model, keys=["customer_id", "exact"]),
+            table="orders", key_cols=_key_reads(dataset=model, keys=["customer_id", "exact"], dialect="snowflake"),
             sqlglot_name="snowflake",
         )
         assert "FROM orders" in rows_sql

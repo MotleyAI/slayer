@@ -779,6 +779,32 @@ class AmbiguousReferenceError(SlayerError, ValueError):
         ))
 
 
+class AmbiguousHopError(AmbiguousReferenceError):
+    """A hop segment names an edge of its dataset and the target of a different edge of it."""
+
+    def __init__(self, *, dataset: str, segment: str, edge: str, other_edge: str) -> None:
+        self.dataset = dataset
+        self.segment = segment
+        super().__init__(
+            name=f"{dataset}.{segment}",
+            candidates=[f"edge {edge!r}", f"edge {other_edge!r} (into {segment!r})"],
+            suggestion=f"spell the hop into {segment!r} by its edge name {other_edge!r}",
+        )
+
+
+class SelfRelationshipTraversalError(SlayerError, ValueError):
+    """A reference spells a hop over a self-relationship."""
+
+    def __init__(self, *, dataset: str, relationship: str) -> None:
+        self.dataset = dataset
+        self.relationship = relationship
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{dataset}.{relationship} is a self-relationship of {dataset!r}; "
+                    f"self-relationships are not traversable.",
+        ))
+
+
 class AmbiguousAggregationError(SlayerError):
     """A call matches several of its dataset's aggregations case-insensitively and none exactly."""
 

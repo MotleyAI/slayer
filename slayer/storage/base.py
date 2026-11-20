@@ -306,24 +306,6 @@ def _checked_relationship_names(dataset: SlayerDataset) -> list[str]:
     return names
 
 
-def _checked_relationship_name_namespace(
-    *, dataset: SlayerDataset, names: list[str],
-    identities: Iterable[tuple[str, str]],
-) -> set[str]:
-    """Datasource dataset-name namespace; raises when an edge name collides."""
-    ds_dataset_names = {
-        n for ds, n in identities if ds == dataset.data_source
-    } | {dataset.name}
-    for n in names:
-        if n in ds_dataset_names:
-            raise ValueError(
-                f"Dataset '{dataset.name}': relationship name '{n}' collides with "
-                f"dataset '{n}' in datasource '{dataset.data_source}'. Edge "
-                f"names and dataset names share the path-segment namespace."
-            )
-    return ds_dataset_names
-
-
 def _check_edges_against_peers(
     *, dataset: SlayerDataset, peers: dict[str, SlayerDataset],
 ) -> None:
@@ -860,7 +842,7 @@ class StorageBackend(ABC):
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_dataset_filters(dataset=dataset, reachable=peers)
         check_evaluated_metrics(dataset=dataset, reachable=peers)
-        self._validate_relationship_edges(dataset, peers=peers, identities=identities)
+        self._validate_relationship_edges(dataset, peers=peers)
         await self._validate_aggregations(dataset)
         await self._validate_field_granularities(dataset)
         _validate_default_time_dimension(dataset)
@@ -917,23 +899,13 @@ class StorageBackend(ABC):
                 raise ReservedFunctionNameError(name=agg.name, where=f"Dataset '{dataset.name}', aggregation")
 
     @staticmethod
-    def _validate_relationship_edges(
-        dataset: SlayerDataset, *, peers: dict[str, SlayerDataset], identities: list[tuple[str, str]],
-    ) -> None:
-        """Save-time relationship validation against the loaded datasource ``peers``: reject duplicate incident edge names, edge/dataset name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
-        clash = next((n for n, p in sorted(peers.items()) if any(j.name == dataset.name for j in p.relationships)), None)
-        if clash is not None:
-            raise ValueError(
-                f"Dataset name '{dataset.name}' collides with the relationship name "
-                f"'{dataset.name}' declared on dataset '{clash}' in datasource "
-                f"'{dataset.data_source}'. Edge names and dataset names share "
-                f"the path-segment namespace."
-            )
+    def _validate_relationship_edges(dataset: SlayerDataset, *, peers: dict[str, SlayerDataset]) -> None:
+        """Save-time relationship validation against the loaded datasource ``peers``: reject duplicate incident edge
+        names and exact-inverse re-declarations; warn on unnamed parallel edges."""
         _check_list_hop_collisions(dataset=dataset, peers=peers)
         if not dataset.relationships:
             return
         names = _checked_relationship_names(dataset)
-        _checked_relationship_name_namespace(dataset=dataset, names=names, identities=identities)
         # Relationship targets always; every peer when a named edge must be checked against incident edges.
         if not names:
             targets = {j.to for j in dataset.relationships}

@@ -26,7 +26,7 @@ from slayer.core.keys import (
     _FrozenKey,
     walk_value_keys,
 )
-from slayer.core.models import EmptyValue, SlayerDataset
+from slayer.core.models import DatasetField, EmptyValue, SlayerDataset
 from slayer.core.scope import StageSchema, StaleSpelling
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
@@ -267,6 +267,8 @@ class SemiJoinHop(BaseModel):
     join_pairs: Tuple[Tuple[str, str], ...]
     #: Per pair, whether each key's stored SQL quotes its physical name (``DatasetField.physical_quoted``).
     quoted: Tuple[Tuple[bool, bool], ...] = ()
+    #: Per pair, each computed key's expression over its own source (``None``: a physical key).
+    computed: Tuple[Tuple[Optional[str], Optional[str]], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
     #: analysis's input (a declared-INNER hop is never null-extended).
@@ -280,6 +282,19 @@ class SemiJoinHop(BaseModel):
     @property
     def node_id(self) -> str:
         return "/".join(self.node_path)
+
+    @staticmethod
+    def key_args(keys: Sequence[Tuple[DatasetField, DatasetField]]) -> Dict[str, tuple]:
+        """``join_pairs``, ``quoted`` and ``computed`` of oriented key field pairs."""
+        return {
+            "join_pairs": tuple((s.key_name, t.key_name) for s, t in keys),
+            "quoted": tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
+            "computed": tuple((_computed_text(s), _computed_text(t)) for s, t in keys),
+        }
+
+
+def _computed_text(field: DatasetField) -> Optional[str]:
+    return None if field.is_base else field.definition_sql or field.name
 
 
 class SemiJoinFilter(BaseModel):

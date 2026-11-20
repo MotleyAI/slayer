@@ -3109,12 +3109,12 @@ class SlayerQueryEngine:
 
         src_side = await self._side_stats(
             client=client, table=dataset.sql_table,
-            key_cols=_physical_keys(dataset=dataset, keys=src_cols), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=dataset, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
-            key_cols=_physical_keys(dataset=target, keys=tgt_cols), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=target, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         # 0 == 0 reads as observed_unique, so an empty side would falsely detect
@@ -3163,7 +3163,7 @@ class SlayerQueryEngine:
         """(row-count, distinct-count) profiling statements reading the table and keys as SLayer reads them; NULL key
         rows excluded from both."""
         tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
-        cols = [exp.column(c) for c in key_cols]
+        cols = [exp.column(c) if isinstance(c, exp.Identifier) else c for c in key_cols]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
@@ -3174,7 +3174,8 @@ class SlayerQueryEngine:
         count_star = exp.func("COUNT", exp.Star()).as_("c")
         rows_q = exp.select(count_star).from_(tbl.copy()).where(predicate)
         inner = (
-            exp.select(*[c.copy() for c in cols])
+            exp.select(*[c.copy() if isinstance(c, exp.Column) else exp.alias_(c.copy(), f"k{i}")
+                         for i, c in enumerate(cols)])
             .from_(tbl.copy())
             .where(predicate.copy())
             .distinct()
@@ -3837,20 +3838,25 @@ def _detection_skip_reason(
             if err is not None:
                 return (
                     f"{str(err).splitlines()[0]}; cardinality profiling "
-                    f"supports declared base-field keys only"
+                    f"supports keys over each dataset's own source only"
                 )
     return None
 
 
-def _physical_keys(*, dataset: SlayerDataset, keys: List[str]) -> List[exp.Identifier]:
+def _key_reads(*, dataset: SlayerDataset, keys: List[str], dialect: str) -> List[Expr]:
+    """Each key as SLayer reads it from the dataset's table: its column, or a computed key's expression."""
     by_name = {c.name: c for c in dataset.fields}
-    return [key_identifier(by_name[k].physical_name, quoted=by_name[k].physical_quoted) for k in keys]
+    return [
+        exp.column(key_identifier(f.physical_name, quoted=f.physical_quoted)) if f.is_base
+        else exp.maybe_parse(f.definition_sql or f.name, dialect=dialect)
+        for f in (by_name[k] for k in keys)
+    ]
 
 
 def _validate_relationship_keys(
     *, dataset: SlayerDataset, loaded: Dict[str, Optional[SlayerDataset]],
 ) -> None:
-    """Every relationship's keys name declared base fields on both sides (source re-checked for a populated query-backed dataset)."""
+    """Every relationship's keys name valid key fields on both sides (source re-checked for a populated query-backed dataset)."""
     _check_relationship_keys(dataset_name=dataset.name, fields=dataset.fields, relationships=dataset.relationships)
     for relationship in dataset.relationships:
         target = loaded.get(relationship.to)
