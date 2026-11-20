@@ -29,8 +29,9 @@ from slayer.embeddings import client as embedding_client
 from slayer.embeddings.models import Embedding, EntityKind
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
-from slayer.osi import slayer_extension as ext
-from slayer.osi.models import OSIExpression
+from slayer.core import slayer_extension as ext
+from slayer.sql.ossie_dialects import expression_digest
+from slayer.core.ossie_expression import OSIExpression
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.base import StorageBackend
@@ -623,13 +624,13 @@ def metric_entry(*, core_sql: str, expression: str, entity: str = "total_revenue
                  home: str = "orders") -> dict[str, Any]:
     """A ``SLAYER`` metric entry recording ``expression``, fingerprinted against the core ``sql`` ``core_sql``."""
     payload = ext.MetricPayload(entity=entity, dataset=home, metric=DatasetMetric(name=entity, expression=expression))
-    return ext.encode(payload, ossie=ext.expression_digest(OSIExpression(sql=core_sql)))
+    return ext.encode(payload, ossie=expression_digest(OSIExpression(sql=core_sql)))
 
 
 def amount_entry() -> dict[str, Any]:
     """A valid ``SLAYER`` entry giving ``orders.amount`` a currency format."""
     payload = ext.FieldPayload(entity="amount", field=ext.FieldContent(datatype=DataType.FLOAT, format=AMOUNT_FORMAT))
-    return ext.encode(payload, ossie=ext.expression_digest(OSIExpression(sql="amount")))
+    return ext.encode(payload, ossie=expression_digest(OSIExpression(sql="amount")))
 
 
 def relationship_entry(*, src: str, to: str, columns: list[str], declared: DatasetRelationship,

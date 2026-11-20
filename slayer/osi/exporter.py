@@ -52,9 +52,10 @@ from slayer.core.models import (
 from slayer.engine.binding import bind_dataset_expression
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionReport, ConversionWarning
-from slayer.osi import slayer_extension as ext
-from slayer.osi.dialects import PORTABLE_READER, ossie_token
-from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, OSIExpression, explicit_description
+from slayer.core import slayer_extension as ext
+from slayer.sql.ossie_dialects import PORTABLE_READER, expression_digest, ossie_token, source_digest
+from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, explicit_description
+from slayer.core.ossie_expression import OSIExpression
 from slayer.sql.field_expansion import expand_field_definition_parts_sync, expand_derived_refs_sync
 from slayer.sql.root_scope import root_scope_field_ids
 from slayer.sql.dialects import dialect_for_ds_type
@@ -498,7 +499,7 @@ class _Exporter:
             allowed_aggregations=stored.allowed_aggregations, meta=_slayer_meta(stored.meta),
         ))
         self._extensions(osi_field, meta, payload=payload, dataset=ds.dataset.name,
-                         ossie=ext.expression_digest(OSIExpression.model_validate(osi_field["expression"])))
+                         ossie=expression_digest(OSIExpression.model_validate(osi_field["expression"])))
         return osi_field
 
     def _extensions(self, entity: dict[str, Any], meta: dict[str, Any], *, payload: Any, dataset: str,
@@ -823,7 +824,7 @@ class _Exporter:
         payload = ext.MetricPayload(entity=metric.name, dataset=metric.home, metric=slayer_metric.model_copy(
             update={"meta": _slayer_meta(slayer_metric.meta)}))
         self._extensions(entity, meta, payload=payload, dataset=metric.home,
-                         ossie=ext.expression_digest(OSIExpression.model_validate(expression)))
+                         ossie=expression_digest(OSIExpression.model_validate(expression)))
         if metric.scope == "dataset":
             self.osi_datasets[metric.dataset].metrics.append(entity)
             relocated = metric.dataset != metric.home
@@ -898,7 +899,7 @@ class _Exporter:
             metrics=ds.slayer_metrics,
         )
         self._extensions(entity, meta, payload=payload, dataset=dataset.name,
-                         ossie=ext.source_digest(ds.source, reader=self.target))
+                         ossie=source_digest(ds.source, reader=self.target))
         return entity
 
     def _relationship_entity(self, rel: _Relationship) -> dict[str, Any]:

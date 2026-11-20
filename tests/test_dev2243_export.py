@@ -18,7 +18,8 @@ from slayer.core.enums import DataType
 from slayer.core.field_expression import portable_text
 from slayer.core.models import DatasetField, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.osi import slayer_extension as ext
+from slayer.core import slayer_extension as ext
+from slayer.sql.ossie_dialects import source_digest
 from slayer.osi.exporter import export_osi
 from slayer.storage.base import StorageBackend
 from tests._cli_inprocess import run_cli_in_process
@@ -216,7 +217,7 @@ async def test_a_single_document_datasource_exports_verbatim(tmp_path: Path) -> 
 def _orders_slayer_entry() -> dict[str, Any]:
     """A valid ``SLAYER`` entry hiding ``orders``."""
     payload = ext.DatasetPayload(entity="orders", source=ext.SourceStructure(sql_table="orders"), hidden=True)
-    return ext.encode(payload, ossie=ext.source_digest("orders", reader="duckdb"))
+    return ext.encode(payload, ossie=source_digest("orders", reader="duckdb"))
 
 
 SLAYER_LINES = ["      - vendor_name: SLAYER\n", f"        data: {json.dumps(_orders_slayer_entry()['data'])}\n"]

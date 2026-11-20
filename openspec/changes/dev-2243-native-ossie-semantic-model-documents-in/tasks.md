@@ -24,7 +24,7 @@
 
 ## 2. Core and storage
 
-- [ ] 2.1 Move `slayer/osi/slayer_extension.py` into `slayer/core` with `dr-refactor` (dry run, review, `--apply`), leaving a moved-module stub; verify `la-typecheck` and `la-arch-check` pass
+- [x] 2.1 Move `slayer/osi/slayer_extension.py` into `slayer/core` with `dr-refactor` (dry run, review, `--apply`), leaving a moved-module stub; verify `la-typecheck` and `la-arch-check` pass
 - [ ] 2.2 Strict Pydantic Ossie document model in `slayer/core` (Ossie shape, `extra="forbid"`, `0.3.0.dev0` only) plus native semantic validity checks mirroring upstream `validate.py`; verify corpus validity agreement tests pass
 - [ ] 2.3 Move `ruamel-yaml` to runtime dependencies (`poetry`), and implement the round-trip loader/patcher that changes only edited nodes; verify the golden-diff tests pass
 - [ ] 2.4 Storage hooks on `StorageBackend` with typed-unsupported defaults; YAML (`semantic_models/<ds>/<name>.yaml`, per-document flock) and SQLite (`semantic_models` table via `sqlite_conn`, `BEGIN IMMEDIATE` patch) implementations; `graph_fingerprint` covers documents; verify custom-backend and concurrency tests pass

@@ -62,7 +62,9 @@ from slayer.sql.definitions import with_converted_sql
 from slayer.sql.root_scope import qualified_siblings
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.database.client import ResultColumnType, SqlClient
-from slayer.osi.dialects import PORTABLE_READER, Candidate, Selection, read, reader_for, render, select_expression
+from slayer.sql.ossie_dialects import (
+    PORTABLE_READER, Candidate, Selection, expression_digest, read, reader_for, render, select_expression, source_digest,
+)
 from slayer.osi.models import (
     OSSIE_DATATYPES,
     TEMPORAL_DATATYPES,
@@ -71,12 +73,12 @@ from slayer.osi.models import (
     OSIDocument,
     OSIField,
     OSIMetric,
-    OSINonportableExtension,
     OSIRelationship,
     ai_context_to_dict,
     render_description,
 )
-from slayer.osi import slayer_extension as ext
+from slayer.core.ossie_expression import OSINonportableExtension
+from slayer.core import slayer_extension as ext
 from slayer.osi.source import ParsedSource, parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
@@ -486,7 +488,7 @@ class OsiToSlayerConverter:
         """Restore ``metric``'s SLayer metric when its payload matches, else convert its SQL."""
         found = self._payload(metric.nonportable_extensions, kind="metric", entity=metric.name,
                               label=f"metric {metric.name!r}", dataset_name=home,
-                              ossie=ext.expression_digest(metric.expression))
+                              ossie=expression_digest(metric.expression))
         if found is not None and found[1]:
             payload = found[0]
             assert isinstance(payload, ext.MetricPayload)
@@ -582,7 +584,7 @@ class OsiToSlayerConverter:
         self._apply_dataset_metadata(base, ds, doc)
         self._datasets[ds.name] = base
         found = self._payload(ds.nonportable_extensions, kind="dataset", entity=ds.name, label=f"dataset {ds.name!r}",
-                              dataset_name=ds.name, ossie=ext.source_digest(ds.source, reader=self._target))
+                              dataset_name=ds.name, ossie=source_digest(ds.source, reader=self._target))
         if found is not None:
             payload, matched = found
             assert isinstance(payload, ext.DatasetPayload)
@@ -852,7 +854,7 @@ class OsiToSlayerConverter:
         self._apply_field_metadata(col=col, field=field)
         found = self._payload(field.nonportable_extensions, kind="field", entity=field.name,
                               label=f"field {field.name!r} of {ds.name!r}", dataset_name=ds.name,
-                              ossie=ext.expression_digest(field.expression))
+                              ossie=expression_digest(field.expression))
         if found is not None:
             payload, matched = found
             assert isinstance(payload, ext.FieldPayload)

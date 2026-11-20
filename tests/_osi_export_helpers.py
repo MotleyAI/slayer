@@ -20,9 +20,9 @@ from pydantic import BaseModel
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.osi.dialects import read, render, select_expression
+from slayer.sql.ossie_dialects import read, render, select_expression
 from slayer.osi.exporter import OsiExportResult, export_osi
-from slayer.osi.models import OSIExpression
+from slayer.core.ossie_expression import OSIExpression
 from slayer.osi.source import parse_source
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage

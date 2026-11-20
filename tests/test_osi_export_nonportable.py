@@ -12,7 +12,7 @@ from ruamel.yaml import YAML
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
-from slayer.osi import slayer_extension as ext
+from slayer.core import slayer_extension as ext
 from slayer.storage.document_keys import LEGACY_KEYS, dataset_in
 from tests._cli_inprocess import run_cli_in_process
 from tests._osi_export_fixtures import BASIC_MEASURES, col, customers, orders, orders_columns, rich_orders

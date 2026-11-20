@@ -3,7 +3,9 @@
 import pytest
 from pydantic import ValidationError
 
-from slayer.osi.models import OSIDataset, OSIDialectExpression, OSIDocument, OSIExpression, OSIField, OSIMetric
+from slayer.osi.models import OSIDataset, OSIDocument, OSIField, OSIMetric
+from slayer.core.ossie_expression import OSIExpression
+from slayer.core.ossie_expression import OSIDialectExpression
 from tests._osi_helpers import ds, f, flat, m
 
 

@@ -12,15 +12,15 @@ from pydantic import BaseModel
 from slayer.osi.models import (
     OSIAIContextObject,
     OSIDataset,
-    OSIDialectExpression,
     OSIDimension,
     OSIDocument,
-    OSIExpression,
     OSIField,
     OSIMetric,
-    OSINonportableExtension,
     OSIRelationship,
 )
+from slayer.core.ossie_expression import OSINonportableExtension
+from slayer.core.ossie_expression import OSIExpression
+from slayer.core.ossie_expression import OSIDialectExpression
 from tests._osi_helpers import FIXTURES, SCHEMA_PATH
 
 EXAMPLE_DIR = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_import"
