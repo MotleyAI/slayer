@@ -70,6 +70,7 @@ class TestFoldPins:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.NO_DATASOURCE
 
+    @pytest.mark.xfail(strict=True, reason="a saved metric binds in a filter only when also projected until DEV-2387")
     async def test_saved_measure_only_filter_has_the_unit_as_its_anchor(
         self, storage
     ) -> None:

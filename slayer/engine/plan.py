@@ -36,10 +36,12 @@ from slayer.engine.stage_ordering import (
     stage_sibling_reads,
     topologically_order_stages,
 )
-from slayer.ir.planned import PlannedQuery
+from slayer.ir.planned import PlannedQuery, PlannedRowBranch, PlannedRowSupply
 from slayer.ir.prebound import PreboundQuery
 from slayer.ir.source_bundle import (
+    ROOT_STAGE,
     ResolvedSourceBundle,
+    RowSupply,
     follow_sibling_chain,
     dataset_from_stage_schema,
     source_name_if_sibling,
@@ -210,9 +212,10 @@ class _StagePlanner:
     # -- stages ---------------------------------------------------------------
     def plan_stage(
         self, query: SlayerQuery, *, chain: Tuple[str, ...], stage_dataset: Optional[SlayerDataset],
-        single: bool = False, owner: Optional[str] = None,
+        single: bool = False, owner: Optional[str] = None, row_supply: Optional[RowSupply] = None,
     ) -> None:
-        """Plan ``query`` after every query-backed dataset it names or reads is spliced."""
+        """Plan ``query`` after every query-backed dataset it names or reads is spliced; an inferred stage's
+        ``row_supply`` rides its bundle, and each branch's cells are planned beside it."""
         for name in self._explicit_demands(query, chain=chain):
             self.ensure(name, chain=chain, explicit=True)
         for name in self._spine_demands(query):
@@ -220,6 +223,7 @@ class _StagePlanner:
         while True:
             planned, failure, seen, stamped = self._attempt(
                 query, stage_dataset=stage_dataset, single=single and not self.state.schemas,
+                row_supply=row_supply,
             )
             if self._splice_demand(seen, chain=chain):
                 continue
@@ -228,15 +232,19 @@ class _StagePlanner:
             if failure is not None:
                 self._raise_failure(failure, on_chain=on_chain, unspliceable=unspliceable, chain=chain)
             assert planned is not None
+            if row_supply is not None and row_supply.branches:
+                planned = planned.model_copy(update={"row_supply": self._plan_row_supply(row_supply)})
             self._record(query, planned=planned, stamped=stamped, seen=seen, chain=chain,
                          raw=[*on_chain, *unspliceable], owner=owner)
             return
 
     def _attempt(
         self, query: SlayerQuery, *, stage_dataset: Optional[SlayerDataset], single: bool,
+        row_supply: Optional[RowSupply] = None,
     ) -> "Tuple[Optional[PlannedQuery], Optional[Exception], Dict[str, bool], ResolvedSourceBundle]":
         """One planning attempt over the placeholders: its result or failure, and what it traversed."""
         scope, stamped = self._universe(query, stage_dataset=stage_dataset, single=single)
+        stamped = stamped.model_copy(update={"row_supply": row_supply})
         attempt = stamped.model_copy(update={"referenced_datasets": [
             *stamped.referenced_datasets, *self._placeholders(),
         ]})
@@ -248,6 +256,31 @@ class _StagePlanner:
             except Exception as exc:  # noqa: BLE001 — a miss may be a missing splice; retried by the caller
                 failure = exc
         return planned, failure, seen, stamped
+
+    def _plan_row_supply(self, supply: RowSupply) -> PlannedRowSupply:
+        """Each branch's cells (and restricting cells) planned as dimension-only queries over their sources."""
+        plans: Dict[int, PlannedQuery] = {}
+
+        def cells(query: SlayerQuery) -> PlannedQuery:
+            if id(query) not in plans:
+                plans[id(query)] = self._plan_cells(query)
+            return plans[id(query)]
+
+        return PlannedRowSupply(branches=[
+            PlannedRowBranch(cells=cells(b.cells), restrict=[cells(r) for r in b.restrict]) for b in supply.branches
+        ])
+
+    def _plan_cells(self, query: SlayerQuery) -> PlannedQuery:
+        """The cells ``query``'s population supplies; a product anchor's dimensions read across ``×``."""
+        base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
+        scope, stamped = _stage_scope_and_bundle(
+            query=query, bundle=base, stage_schemas=self.state.schemas, data_source=self.data_source,
+            stage_dataset=self.bundle.datasets_by_name.get(query.population_name or ""),
+            placeholders=self._placeholders(),
+        )
+        stamped = stamped.model_copy(update={"row_supply": RowSupply(product=True)})
+        planned = plan_query(query=query, bundle=stamped, scope=scope, stage_schemas=self.state.schemas)
+        return planned.model_copy(update={"stage_bundle": stamped})
 
     def _splice_demand(self, seen: Dict[str, bool], *, chain: Tuple[str, ...]) -> bool:
         """Splice every unspliced query-backed dataset an attempt touched; ``True`` if any was."""
@@ -529,5 +562,6 @@ def plan_stages(
             stage_dataset=(
                 bundle.stage_source_datasets.get(q.name) if q.name and q is not ordered[-1] else None
             ),
+            row_supply=bundle.row_supplies.get(q.name or ROOT_STAGE),
         )
     return planner.state.planned

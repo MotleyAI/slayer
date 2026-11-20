@@ -55,6 +55,27 @@ class InnerRestriction(BaseModel):
         return (self.dataset, self.token, self.key)
 
 
+class RowSupplyBranch(BaseModel):
+    """A row source's cells, kept where they agree with every ``restrict`` query's cells (semantics 12.3)."""
+
+    cells: SlayerQuery
+    restrict: Tuple[SlayerQuery, ...] = ()
+
+
+class RowSupply(BaseModel):
+    """An inferred stage's rows (semantics 12.4): the union of ``branches``' cells, else its population's."""
+
+    branches: Tuple[RowSupplyBranch, ...] = ()
+    #: No dimensions: exactly one row.
+    unit: bool = False
+    #: The population is one group of a product anchor; the other groups' dimensions read across ``×``.
+    product: bool = False
+
+
+#: ``ResolvedSourceBundle.row_supplies`` key of an unnamed stage.
+ROOT_STAGE = ""
+
+
 class ResolvedSourceBundle(BaseModel):
     """Eagerly resolved inputs to one query execution (P11)."""
 
@@ -92,6 +113,10 @@ class ResolvedSourceBundle(BaseModel):
     datasource_edge_names: FrozenSet[str] = frozenset()
     # The stage's query-declared INNER joins, read as population filters.
     inner_restrictions: Tuple[InnerRestriction, ...] = ()
+    # Each inferred stage's row supply, keyed by stage name (``ROOT_STAGE`` when unnamed).
+    row_supplies: Dict[str, RowSupply] = Field(default_factory=dict)
+    # The row supply of the stage being planned (its producers inherit it).
+    row_supply: Optional[RowSupply] = None
 
     def definition_view(self) -> "ResolvedSourceBundle":
         """This bundle as stored definitions see it: without anything a query extension added."""

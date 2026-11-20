@@ -4225,7 +4225,8 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         attach_plans=regroup_attach_plans,
     )
 
-    source_col_names = _source_field_names(scope)
+    # An inferred stage's host is the planner's choice, never a namespace the query's aliases live in.
+    source_col_names = frozenset() if bundle.row_supply is not None else _source_field_names(scope)
     host_name = host_dataset_name(scope)
 
     # Windowed-metric guards on the pre-projection trees; returns the cleanly-selected windowed AggregateKeys.
@@ -4502,6 +4503,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         order_entries=order_entries,
         masks=masks,
         host_gated=host_population_gated or _restricted_dataset(render_source_dataset, bundle=bundle),
+        dimensionless=not grain,
     )
 
     regroup_attach_plans = [*regroup_attach_plans, *_plan_shifted_attaches(
@@ -4619,8 +4621,9 @@ def _plan_empty_base_grain(
     masks: List[MaskEntry],
     regroup_combined_slot_ids: Optional[set] = None,
     host_gated: bool = False,
+    dimensionless: bool = False,
 ) -> "EmptyBaseGrainPlan | None":
-    """Decide the empty-base spine at plan time — the host base has nothing of its own exactly when every value asked for is an isolated aggregate. ``host_gated`` (D7) means a population semi-join or the host's own filters gate the spine even with no field mask."""
+    """Decide the empty-base spine at plan time — the host base has nothing of its own exactly when every value asked for is an isolated aggregate. ``host_gated`` (D7) means a population semi-join or the host's own filters gate the spine even with no field mask; a ``dimensionless`` stage is never gated (one row, semantics Law 10)."""
     isolated = set(windowed_slot_ids)
     isolated |= (regroup_combined_slot_ids or set())
     if not projection or any(sid not in isolated for sid in projection):
@@ -4629,6 +4632,8 @@ def _plan_empty_base_grain(
         return None  # a host-local aggregate would give _base a field of its own
     if any(entry.slot_id not in isolated for entry in order_entries):
         return None
+    if dimensionless:
+        return EmptyBaseGrainPlan()
     # Field masks gate the host spine; metric masks resolve after attachment.
     host_filter_ids = [m.slot_id for m in masks if m.typing == MaskTyping.FIELD]
     return EmptyBaseGrainPlan(host_filter_ids=host_filter_ids, host_gated=host_gated)

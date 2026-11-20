@@ -176,8 +176,8 @@ elaborate→compile and `query_engine.py` orchestrates.
 8. **Models persist verbatim**: `save_dataset` stores the author's spelling
    unchanged, a deprecated spelling excepted, which is stored as its canonical
    twin; normalization applies to queries at execute time only. The one
-   exception: a saved query stores each stage's inferred population as its
-   `population`. [review]
+   exception: a saved query stores each inferred stage's dimension anchor as its
+   `population`, marked `population_inferred`. [review]
 9. **The term-interface boundary**: `binding`, `bind_inputs`,
    `elaborate`, `elaborate_env` (THE checker), `compile` and `plan` are
    declared children with only the modeled arrows among them — the compiler

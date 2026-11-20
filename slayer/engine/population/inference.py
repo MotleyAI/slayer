@@ -1,17 +1,17 @@
-"""Dimension-determined population inference.
+"""The dimension anchor (semantics Axiom 12.2).
 
-The population of a rootless query is the dataset with the fewest routed relationship hops
-that determines every queried dimension along provably to-one paths, read from
-the dimensions and field-typed (aggregate-free) filters only — never metrics,
-so adding a metric can never re-quantify the rows. The same to-one determination
-core backs ``recommend_population``.
+The anchor of a root-less query is the dataset with the fewest routed relationship hops that
+determines every queried dimension, read from the dimensions only — never filters or metrics.
+An unproven hop counts by association (raw rows excepted); dimension groups no join path
+connects take the product of their anchors. The same determination core backs
+``recommend_population``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import JoinType
 from slayer.core.errors import (
@@ -37,6 +37,7 @@ from slayer.engine.population.anchors import (
     unknown_metric,
     unqualified_count,
 )
+from slayer.engine.cardinality.relationship_safety import provably_fans
 from slayer.engine.population.dimension_routing import safe_route_reachable
 from slayer.core.syntax import (
     AggCall,
@@ -68,6 +69,41 @@ class PopulationChoice(BaseModel):
 
     dataset_name: str
     data_source: str
+
+
+class DimensionAnchor(BaseModel):
+    """A query's dimension anchor: one dataset, a product of group anchors, the unit (no dimensions), or undefined
+    (``error``, raised only where the anchor is needed)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    datasets: tuple[str, ...] = ()
+    error: Optional[PopulationInferenceError] = None
+
+    @property
+    def unit(self) -> bool:
+        return not self.datasets and self.error is None
+
+    @property
+    def display(self) -> Optional[str]:
+        """How the anchor is reported: ``a`` or ``a × b``; ``None`` for the unit or an undefined anchor."""
+        return " × ".join(self.datasets) or None
+
+    def required(self) -> tuple[str, ...]:
+        """The anchor's datasets, raising its error when it is undefined."""
+        if self.error is not None:
+            raise self.error
+        return self.datasets
+
+
+class InferredRows(BaseModel):
+    """A root-less query's dimension anchor, resolved datasource and that datasource's datasets."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    anchor: DimensionAnchor
+    data_source: str
+    datasets_by_name: dict[str, SlayerDataset]
 
 
 # --------------------------------------------------------------------------- #
@@ -211,16 +247,9 @@ def determination_items(
     datasets_by_name: dict[str, SlayerDataset],
     dataset_scopes: list[dict[str, SlayerDataset]] | None = None,
 ) -> list[str]:
-    """The dimensions + time dimensions + field-typed filter refs that the population must determine.
-
-    Metrics, metric-typed filters, saved-metric refs, order entries, and
-    dataset-level filters contribute nothing. Deduped, preserving first occurrence.
-    Runtime variable values never participate — a filter's ``{var}`` is masked to a
-    neutral literal before parsing, so an injected value can't introduce a ref.
-    ``dataset_scopes`` widens saved-metric classification beyond ``datasets_by_name``
-    (the anchors-fold scopes), so items and anchors can't disagree.
-    """
-    scopes = dataset_scopes if dataset_scopes is not None else [datasets_by_name]
+    """The dimension + time dimension refs the anchor must determine; filters, metrics and order entries never
+    participate. Deduped, preserving first occurrence."""
+    del datasets_by_name, dataset_scopes
     items: list[str] = []
     seen: set[str] = set()
 
@@ -232,25 +261,30 @@ def determination_items(
             items.append(ref)
 
     for ref in _query_dimension_refs(query):
-        _add(ref)
-    for f in query.filter_conditions:
-        for ref in _filter_refs(f, root=query.population_name, dataset_scopes=scopes):
+        if not names_spine(ref):
             _add(ref)
-    for ref in _restriction_refs(query):
-        _add(ref)
     return items
 
 
 # --------------------------------------------------------------------------- #
 # Per-candidate determination probe (design §2).
 # --------------------------------------------------------------------------- #
+def _associates(edge: Any, *, datasets_by_name: dict[str, SlayerDataset]) -> bool:
+    """An unproven hop in its declared direction: it counts by association (semantics 12.2)."""
+    return (
+        edge.cardinality is None and edge.declaring_dataset == edge.source_dataset
+        and edge.product is None and edge.lateral is None
+        and not provably_fans(edge=edge, target_dataset=datasets_by_name[edge.to])
+    )
+
+
 def _walk_to_one(
-    *, start: SlayerDataset, tokens: list[str], datasets_by_name: dict[str, SlayerDataset]
+    *, start: SlayerDataset, tokens: list[str], datasets_by_name: dict[str, SlayerDataset], associate: bool = False,
 ) -> tuple[SlayerDataset | None, str, tuple[str, ...]]:
     """Walk ``tokens`` from ``start``; ``(terminal dataset, verdict, canonical path)``.
 
-    Every oriented hop must be provably to-one; ``_NO_EDGE`` distinguishes a path
-    that does not resolve from a resolved-but-unsafe (``_UNREACHABLE``) one.
+    Every oriented hop must be provably to-one, or with ``associate`` an unproven hop in its declared direction;
+    ``_NO_EDGE`` distinguishes a path that does not resolve from a resolved-but-unsafe (``_UNREACHABLE``) one.
     """
     try:
         chain = walk(root=start, path=tokens, datasets_by_name=datasets_by_name)
@@ -260,7 +294,8 @@ def _walk_to_one(
         return (None, _UNREACHABLE, ())
     if chain is None:
         return (None, _NO_EDGE, ())
-    if not all(provably_to_one(edge=e, target_dataset=datasets_by_name[e.to]) for e in chain):
+    if not all(provably_to_one(edge=e, target_dataset=datasets_by_name[e.to])
+               or (associate and _associates(e, datasets_by_name=datasets_by_name)) for e in chain):
         return (None, _UNREACHABLE, ())
     return (datasets_by_name[chain[-1].to] if chain else start, _OK, canonical_path(chain))
 
@@ -280,7 +315,9 @@ def _anchored_tokens(*, start: SlayerDataset, parts: list[str], datasets_by_name
     return [*reached.route, *parts[1:-1]], _OK
 
 
-def probe_item(*, root: str, item: str, datasets_by_name: dict[str, SlayerDataset]) -> tuple[str, tuple[str, ...]]:
+def probe_item(
+    *, root: str, item: str, datasets_by_name: dict[str, SlayerDataset], associate: bool = False,
+) -> tuple[str, tuple[str, ...]]:
     """Route ``item`` (``anchor[.route].leaf``) from ``root`` as binding does; ``(verdict, canonical path)`` — hops are
     its length.
 
@@ -297,7 +334,8 @@ def probe_item(*, root: str, item: str, datasets_by_name: dict[str, SlayerDatase
     tokens, verdict = _anchored_tokens(start=start, parts=parts, datasets_by_name=datasets_by_name)
     if tokens is None:
         return (verdict, ())
-    terminal, verdict, hops = _walk_to_one(start=start, tokens=tokens, datasets_by_name=datasets_by_name)
+    terminal, verdict, hops = _walk_to_one(start=start, tokens=tokens, datasets_by_name=datasets_by_name,
+                                           associate=associate)
     if terminal is None:
         return (_UNREACHABLE if verdict == _NO_EDGE else verdict, ())
     if terminal.get_field(leaf) is None:
@@ -362,12 +400,13 @@ class CandidateVerdict(BaseModel):
 
 
 def evaluate_candidates(
-    *, items: list[str], candidates: list[str], datasets_by_name: dict[str, SlayerDataset]
+    *, items: list[str], candidates: list[str], datasets_by_name: dict[str, SlayerDataset], associate: bool = False,
 ) -> list[CandidateVerdict]:
     """Probe every candidate over every determination item."""
     verdicts: list[CandidateVerdict] = []
     for name in candidates:
-        probes = {it: probe_item(root=name, item=it, datasets_by_name=datasets_by_name) for it in items}
+        probes = {it: probe_item(root=name, item=it, datasets_by_name=datasets_by_name, associate=associate)
+                  for it in items}
         statuses = [v for v, _ in probes.values()]
         reachable = [it for it in items if probes[it][0] == _OK]
         unreachable = [it for it in items if probes[it][0] != _OK]
@@ -417,18 +456,17 @@ def _saved_metric_in_every_scope(
     )
 
 
+def _dimension_anchor_names(query: SlayerQuery) -> set[str]:
+    """First segments of the dimensions' and time dimensions' references (the sibling-stage refusal reads these)."""
+    return {ref.split(".")[0] for ref in _query_dimension_refs(query) if "." in ref and not names_spine(ref)}
+
+
 def _anchor_names(
     query: SlayerQuery, *, dataset_scopes: list[dict[str, SlayerDataset]] | None = None
 ) -> set[str]:
-    """First segments of the dotted references that drive inference — dimensions,
-    time dimensions, and field-typed filters only.
-
-    Metrics are excluded (they must never influence the population, datasource
-    scoping, or sibling detection); references are read from the parser, so string
-    literals never surface as anchors. With ``dataset_scopes`` (phase 2 of the fold),
-    a filter reference resolving to a saved metric is excluded too — the same
-    classification :func:`determination_items` applies.
-    """
+    """First segments of the dotted references of the dimensions, time dimensions and field-typed filters, read
+    from the parser so string literals never surface. With ``dataset_scopes`` a filter reference resolving to a
+    saved metric is excluded."""
     refs = _query_dimension_refs(query)
     for f in query.filter_conditions:
         filter_refs, _ = _parsed_filter_refs(f, root=query.population_name)
@@ -518,7 +556,8 @@ def _qualified_refs(parsed) -> list[str]:
     return out
 
 
-def _metric_anchor_names(query: SlayerQuery) -> set[str]:
+def metric_anchor_names(query: SlayerQuery) -> set[str]:
+    """First segments of every dotted reference in ``query``'s metrics, aggregation sources included."""
     names: set[str] = set()
     for m in query.metrics or []:
         try:
@@ -536,9 +575,9 @@ async def infer_spine_population(
     data_source: str | None = None,
     sibling_stage_names: set[str] | None = None,
 ) -> PopulationChoice:
-    """P for a spine query: inferred from its non-spine items, else the unit (``time_spine``)."""
+    """P for a spine query: the anchor of its other dimensions, else the unit (``time_spine``)."""
     factor = spine_factor_out(query)
-    if factor.dimensions or factor.time_dimensions or factor.filter:
+    if factor.dimensions or factor.time_dimensions:
         return await infer_population(
             query=factor, storage=storage, data_source=data_source,
             sibling_stage_names=sibling_stage_names,
@@ -563,7 +602,7 @@ async def spine_datasource(
         return data_source
     anchors: set[str] = set()
     for q in queries:
-        anchors |= _anchor_names(q) | _metric_anchor_names(q) | {q.population_name or TIME_SPINE_DATASET}
+        anchors |= _anchor_names(q) | metric_anchor_names(q) | {q.population_name or TIME_SPINE_DATASET}
     anchors -= {TIME_SPINE_DATASET, *(sibling_stage_names or ())}
     if not anchors:
         datasources = await storage.list_datasources()
@@ -686,72 +725,34 @@ async def _would_infer(
 # --------------------------------------------------------------------------- #
 # Entry point.
 # --------------------------------------------------------------------------- #
-async def infer_population(
-    *,
-    query: SlayerQuery,
-    storage: StorageBackend,
-    data_source: str | None = None,
-    sibling_stage_names: set[str] | None = None,
-) -> PopulationChoice:
-    """Infer a rootless query's population, or raise :class:`PopulationInferenceError`."""
-    siblings = sibling_stage_names or set()
-    query = await _anchor_spellings(query, storage=storage, data_source=data_source, siblings=siblings)
+def _components(datasets_by_name: dict[str, SlayerDataset]) -> dict[str, str]:
+    """Each dataset's connected component (declared relationships, either direction), named by a representative."""
+    parent = {n: n for n in datasets_by_name}
 
-    # Nothing to infer from (e.g. a metrics-only query) — a dedicated error,
-    # checked before datasource resolution so it never masquerades as NO_DATASOURCE.
-    if not (query.dimensions or query.time_dimensions or query.filter):
-        raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
 
-    # Phase 1 — syntactic anchors only pick the dataset scopes to classify against;
-    # every verdict below re-runs on the dataset-aware classification.
-    syntactic = _anchor_names(query)
+    for dataset in datasets_by_name.values():
+        for rel in dataset.relationships:
+            if rel.to in parent:
+                parent[find(dataset.name)] = find(rel.to)
+    return {n: find(n) for n in parent}
 
-    # No dimensions and only aggregate-bearing filters ⇒ nothing to infer from;
-    # a dedicated error, not the NO_DATASOURCE that empty anchors would otherwise
-    # trigger at datasource resolution.
-    if not syntactic:
-        raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
 
-    scopes, ds_by_dataset = await _classification_scopes(
-        storage=storage, data_source=data_source, anchors=syntactic
-    )
-
-    # Phase 2 — anchors reclassified saved-metric-excluding, precedence re-run:
-    # EMPTY_DETERMINATION, then SIBLING_STAGE, then datasource resolution.
-    anchors = _anchor_names(query, dataset_scopes=list(scopes.values()))
-    if not anchors:
-        raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
-
-    anchored_siblings = anchors & set(siblings)
-    if anchored_siblings:
-        name = min(anchored_siblings)
-        raise PopulationInferenceError(
-            PopulationErrorReason.SIBLING_STAGE,
-            candidates=sorted(anchored_siblings),
-            detail=(
-                f"dimensions anchor at sibling stage {name!r}; name it as the "
-                f"stage's population"
-            ),
-        )
-
-    ds = _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=data_source, anchors=anchors)
-    datasets_by_name = scopes[ds]  # the winning datasource always holds a loaded anchor
-
-    items = determination_items(
-        query, datasets_by_name=datasets_by_name, dataset_scopes=list(scopes.values())
-    )
-    if not items:
-        raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
-
-    verdicts = evaluate_candidates(
-        items=items, candidates=sorted(datasets_by_name), datasets_by_name=datasets_by_name
-    )
+def _choose_anchor(
+    *, items: list[str], candidates: list[str], datasets_by_name: dict[str, SlayerDataset], associate: bool,
+) -> str:
+    """The unique fewest-hops candidate determining every item, or the reasoned refusal."""
+    verdicts = evaluate_candidates(items=items, candidates=candidates, datasets_by_name=datasets_by_name,
+                                   associate=associate)
     winner, tied = select_from_verdicts(verdicts)
     if winner is not None:
-        return PopulationChoice(dataset_name=winner, data_source=ds)
+        return winner
     if tied:
         raise PopulationInferenceError(PopulationErrorReason.TIE, candidates=tied)
-
     pairs = {
         p.describe(): None
         for v in verdicts for it in v.unreachable_items
@@ -770,6 +771,111 @@ async def infer_population(
             ]),
         )
     raise PopulationInferenceError(
-        PopulationErrorReason.NO_VIABLE_CANDIDATE, candidates=sorted(datasets_by_name),
+        PopulationErrorReason.NO_VIABLE_CANDIDATE, candidates=sorted(candidates),
         detail="; ".join(pairs) or None,
     )
+
+
+def dimension_anchor(
+    query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset], raw_rows: bool = False,
+) -> DimensionAnchor:
+    """``query``'s dimension anchor (semantics 12.2); raw rows probe provable determination only, with no product."""
+    items = determination_items(query, datasets_by_name=datasets_by_name)
+    if not items:
+        return DimensionAnchor()
+    component = _components(datasets_by_name)
+    groups: dict[str, list[str]] = {}
+    for item in items:
+        head = item.split(".")[0]
+        groups.setdefault(component.get(head, head), []).append(item)
+    if len(groups) > 1 and raw_rows:
+        return DimensionAnchor(error=PopulationInferenceError(
+            PopulationErrorReason.NO_VIABLE_CANDIDATE,
+            detail=f"no join path connects the dimensions {items}; raw rows need one dataset determining every "
+                   f"dimension",
+        ))
+    try:
+        return DimensionAnchor(datasets=tuple(
+            _choose_anchor(
+                items=group, datasets_by_name=datasets_by_name, associate=not raw_rows,
+                candidates=sorted(n for n, c in component.items() if c == key) if len(groups) > 1
+                else sorted(datasets_by_name),
+            )
+            for key, group in groups.items()
+        ))
+    except PopulationInferenceError as e:
+        return DimensionAnchor(error=e)
+
+
+def _filter_anchor_names(query: SlayerQuery) -> set[str]:
+    """First segments of every dotted reference in ``query``'s filters, aggregation sources included."""
+    names: set[str] = set()
+    for f in query.filter_conditions:
+        try:
+            parsed = _parse(f, root=None)
+        except Exception:  # noqa: BLE001 — an unparseable filter is refused where it binds
+            continue
+        names.update(ref.split(".")[0] for ref in _qualified_refs(parsed))
+    return names
+
+
+def _scoping_anchors(query: SlayerQuery) -> set[str]:
+    """The datasets that scope a root-less query's datasource: its dimensions', filters' and metrics' anchors."""
+    return _anchor_names(query) | metric_anchor_names(query)
+
+
+async def infer_rows(
+    *,
+    query: SlayerQuery,
+    storage: StorageBackend,
+    data_source: str | None = None,
+    sibling_stage_names: set[str] | None = None,
+    raw_rows: bool = False,
+) -> InferredRows:
+    """A root-less query's dimension anchor (undefined anchors carry their error) and datasource."""
+    siblings = sibling_stage_names or set()
+    query = await _anchor_spellings(query, storage=storage, data_source=data_source, siblings=siblings)
+    anchored_siblings = _dimension_anchor_names(query) & set(siblings)
+    if anchored_siblings:
+        name = min(anchored_siblings)
+        raise PopulationInferenceError(
+            PopulationErrorReason.SIBLING_STAGE,
+            candidates=sorted(anchored_siblings),
+            detail=f"dimensions anchor at sibling stage {name!r}; name it as the stage's population",
+        )
+    syntactic = _scoping_anchors(query) - siblings - {TIME_SPINE_DATASET}
+    scopes, ds_by_dataset = await _classification_scopes(storage=storage, data_source=data_source, anchors=syntactic)
+    # A saved-measure filter reference never steers scoping; measure filters alone scope a query with nothing else.
+    anchors = (_anchor_names(query, dataset_scopes=list(scopes.values())) | metric_anchor_names(query)) - siblings
+    anchors = (anchors or _filter_anchor_names(query) - siblings) - {TIME_SPINE_DATASET}
+    if anchors - syntactic:
+        scopes, ds_by_dataset = await _classification_scopes(storage=storage, data_source=data_source,
+                                                             anchors=anchors)
+    if not anchors and data_source is None:
+        datasources = await storage.list_datasources()
+        if len(datasources) == 1:
+            data_source = datasources[0]
+            scopes, ds_by_dataset = await _classification_scopes(storage=storage, data_source=data_source,
+                                                                 anchors=set())
+    ds = _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=data_source, anchors=anchors)
+    datasets_by_name = scopes[ds]
+    return InferredRows(
+        anchor=dimension_anchor(query, datasets_by_name=datasets_by_name, raw_rows=raw_rows),
+        data_source=ds, datasets_by_name=datasets_by_name,
+    )
+
+
+async def infer_population(
+    *,
+    query: SlayerQuery,
+    storage: StorageBackend,
+    data_source: str | None = None,
+    sibling_stage_names: set[str] | None = None,
+) -> PopulationChoice:
+    """A root-less query's dimension anchor as one dataset, or raise :class:`PopulationInferenceError`."""
+    rows = await infer_rows(query=query, storage=storage, data_source=data_source,
+                            sibling_stage_names=sibling_stage_names)
+    datasets = rows.anchor.required()
+    if not datasets:
+        raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
+    return PopulationChoice(dataset_name=" × ".join(datasets), data_source=rows.data_source)

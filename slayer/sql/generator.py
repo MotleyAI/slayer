@@ -57,7 +57,7 @@ from slayer.core.relationship_walker import (
     resolved_terminal,
 )
 from slayer.core.models import (
-    DatasetField, EmptyList, EmptyValue, aggregation_definition, rendered_expression,
+    DatasetField, EmptyList, EmptyValue, aggregation_definition, empty_value, rendered_expression,
 )
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
@@ -1383,7 +1383,7 @@ class SQLGenerator:
                 kernel=producer_kernel,
             )
 
-        if _combined_attaches:
+        if _combined_attaches or planned_query.row_supply is not None:
             return self._render_with_combined_attaches(
                 planned_query=planned_query, bundle=bundle, spine_mark=spine_mark,
             )
@@ -3802,18 +3802,24 @@ class SQLGenerator:
                 combined_select = combined_select.where(_grouped(rendered))
 
         spine_ctes = self._take_spine_ctes(since=spine_mark)
+        base_deps = [*[e.name for e in row_regroup_ctes], *reused_cm_ctes, *[e.name for e in spine_ctes]]
+        supply_ctes: List[CteEntry] = []
+        if planned_query.row_supply is not None:
+            base_select, supply_ctes, base_deps = self._row_supply_base(
+                planned_query=planned_query, base_select=base_select, aliases_by_slot_id=aliases_by_slot_id,
+                slots_by_id=slots_by_id, bundle=bundle, base_deps=base_deps,
+            )
         if planned_query.transform_layers:
             return self._render_steps_and_post(
                 prelude_nodes=[
                     *row_regroup_ctes,
                     *(Node(name=e.name, phase="base", query=e.query, depends_on=[], recursive=e.recursive)
                       for e in spine_ctes),
+                    *(Node(name=e.name, phase="base", query=e.query, depends_on=list(e.depends_on),
+                           recursive=e.recursive) for e in supply_ctes),
                     Node(
                         name="_base", phase="base", query=base_select,
-                        depends_on=[
-                            *[e.name for e in row_regroup_ctes], *reused_cm_ctes,
-                            *[e.name for e in spine_ctes],
-                        ],
+                        depends_on=base_deps,
                         schema_by_slot=dict(aliases_by_slot_id),
                     ),
                     *cm_regroup_ctes,
@@ -3843,13 +3849,8 @@ class SQLGenerator:
         # topological order with declaration order as tiebreak.
         cte_entries = [
             *spine_ctes,
-            CteEntry(
-                name="_base", query=base_select,
-                depends_on=[
-                    *[e.name for e in row_regroup_ctes], *reused_cm_ctes,
-                    *[e.name for e in spine_ctes],
-                ],
-            ),
+            *supply_ctes,
+            CteEntry(name="_base", query=base_select, depends_on=base_deps),
             *row_regroup_ctes,
         ]
         cte_entries += cm_regroup_ctes
@@ -3976,6 +3977,96 @@ class SQLGenerator:
         return assemble_with_chain(
             entries=entries, final=final, external_names=external_names,
         )
+
+    def _row_supply_base(
+        self, *, planned_query, base_select: exp.Select, aliases_by_slot_id: Dict[str, List[str]],
+        slots_by_id: Dict[str, ValueSlot], bundle: ResolvedSourceBundle, base_deps: List[str],
+    ) -> Tuple[exp.Select, List[CteEntry], List[str]]:
+        """``_base`` over an inferred stage's row supply: the null-safe union of its branches' cells (each cast to
+        its dimension's type, never chained FULL JOINs), left-joined to the host's own base, a local aggregate
+        absent from a cell reading its empty value (semantics 12.4, Axiom 4). Returns ``(base, ctes, base deps)``."""
+        allocator = self._gen_allocator or self._new_allocator()
+        dims = [sid for sid in planned_query.grain or [] if aliases_by_slot_id.get(sid)]
+        columns = {sid: aliases_by_slot_id[sid][0] for sid in dims}
+        names = {slots_by_id[sid].public_name or slots_by_id[sid].declared_name: sid for sid in dims}
+        hoisted: List[CteEntry] = []
+
+        def cells(plan) -> Tuple[exp.Expression, Dict[str, str]]:
+            """``plan`` as a derived table, and its column per main dimension slot."""
+            ctes, body = self._render_producer_split(producer=plan, bundle=plan.stage_bundle or bundle)
+            hoisted.extend(ctes)
+            plan_slots = {s.id: s for s in (*plan.row_slots, *plan.aggregate_slots, *plan.combined_expression_slots)}
+            outputs = [e.alias_or_name for e in body.expressions]
+            if len(outputs) != len(plan.projection):
+                raise ValueError("a row-source plan projects other columns than its dimensions")
+            public = {sid: plan_slots[sid].public_name or plan_slots[sid].declared_name for sid in plan.projection}
+            by_dim = {names[public[sid]]: col for sid, col in zip(plan.projection, outputs) if public[sid] in names}
+            return body, by_dim
+
+        branches: List[exp.Select] = []
+        for i, branch in enumerate(planned_query.row_supply.branches):
+            body, by_dim = cells(branch.cells)
+            if set(by_dim) != set(dims):
+                raise ValueError("a row-source plan does not project every dimension of its stage")
+            alias = f"_cells{i}"
+            select = exp.Select().select(*(
+                exp.Alias(
+                    this=_wrap_cast_for_type(
+                        dialect=self._dialect, expr=exp.column(by_dim[sid], table=alias, quoted=True),
+                        dt=self._dialect.declared_cast_type(slots_by_id[sid].type),
+                    ),
+                    alias=exp.to_identifier(columns[sid], quoted=True),
+                )
+                for sid in dims
+            )).from_(exp.Subquery(this=body, alias=exp.TableAlias(this=exp.to_identifier(alias))))
+            for j, restrict in enumerate(branch.restrict):
+                r_body, r_dim = cells(restrict)
+                r_alias = f"_agree{i}_{j}"
+                on = build_grain_joinback_condition(pairs=self._keyed_pairs([
+                    (exp.column(col, table=r_alias, quoted=True), exp.column(by_dim[sid], table=alias, quoted=True),
+                     slots_by_id[sid].key)
+                    for sid, col in r_dim.items()
+                ]), dialect=self._dialect)
+                exists = exp.Select().select(exp.Literal.number(1)).from_(
+                    exp.Subquery(this=r_body, alias=exp.TableAlias(this=exp.to_identifier(r_alias))))
+                select = select.where(exp.Exists(this=exists.where(on) if on is not None else exists))
+            branches.append(select)
+        union: exp.Expression = branches[0]
+        for b in branches[1:]:
+            union = exp.union(union, b, distinct=True)
+        host, keys = allocator.allocate("_base_host"), allocator.allocate("_keys")
+        local = [
+            (sid, alias) for sid, als in aliases_by_slot_id.items() if sid not in columns for alias in als
+        ]
+        on = build_grain_joinback_condition(pairs=self._keyed_pairs([
+            (exp.column(columns[sid], table=keys, quoted=True), exp.column(columns[sid], table=host, quoted=True),
+             slots_by_id[sid].key)
+            for sid in dims
+        ]), dialect=self._dialect)
+        wrapped = exp.Select().select(
+            *(exp.column(columns[sid], table=keys, quoted=True).as_(columns[sid], quoted=True) for sid in dims),
+            *(self._with_empty(exp.column(alias, table=host, quoted=True), slot=slots_by_id[sid], bundle=bundle)
+              .as_(alias, quoted=True) for sid, alias in local),
+        ).from_(keys)
+        wrapped = wrapped.join(host, on=on, join_type="LEFT") if on is not None else wrapped.join(host,
+                                                                                                    join_type="CROSS")
+        ctes = [
+            *hoisted,
+            CteEntry(name=host, query=base_select, depends_on=list(base_deps)),
+            CteEntry(name=keys, query=union, depends_on=[e.name for e in hoisted]),
+        ]
+        return wrapped, ctes, [host, keys]
+
+    def _with_empty(self, value: Expression, *, slot: ValueSlot, bundle: ResolvedSourceBundle) -> Expression:
+        """``value`` with a missing cell read as the slot's empty value (Axiom 4)."""
+        key = slot.key
+        if not isinstance(key, AggregateKey):
+            return value
+        owner = aggregation_owner(root=bundle.population, source=key.source, datasets_by_name=bundle.datasets_by_name)
+        empty = self._empty_value_expr(empty_value(
+            agg=key.agg, definition=aggregation_definition(owner=owner, agg=key.agg),
+        ))
+        return value if empty is None else exp.Coalesce(this=value, expressions=[empty])
 
     def _render_producer_split(
         self, *, producer, bundle, kernel=None,
@@ -4493,8 +4584,11 @@ class SQLGenerator:
         self, *, edge: OrientedRelationship, prev_dataset: SlayerDataset, next_dataset: SlayerDataset, current_alias: str,
         next_alias: str, bundle, distinct_lists: bool = False,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
-        """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop fails closed."""
+        """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop is crossed only under a
+        product anchor (semantics 12.2), else fails closed."""
         if is_unrelated_edge(edge):
+            if bundle.row_supply is not None and bundle.row_supply.product:
+                return self._emit_relation(dataset=next_dataset, alias=next_alias, bundle=bundle), None, "CROSS"
             raise ValueError(f"The product hop {edge.source_dataset} × {edge.to} cannot be joined.")
         if edge.lateral is not None:
             if next_dataset.list_of is None:

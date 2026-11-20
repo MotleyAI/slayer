@@ -72,7 +72,8 @@ def elaborate_query(
         homes=homes,
     )
     if sides is not None:
-        _check_product_hops(prebound, filter_typings=filter_typings, sides=sides)
+        _check_product_hops(prebound, filter_typings=filter_typings, sides=sides,
+                            product_anchor=bundle.row_supply is not None and bundle.row_supply.product)
     check_combined_partition_keys(
         prebound, filter_typings=filter_typings,
         order_texts=[o.raw_expression or o.field for o in query.order or []],
@@ -85,16 +86,21 @@ def elaborate_query(
 
 def _check_product_hops(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping], sides: ProductSides,
+    product_anchor: bool = False,
 ) -> None:
-    """Only aggregates and one-sided field filters read across a product hop (semantics Axiom 3.1)."""
+    """Only aggregates, one-sided field filters and a product anchor's dimensions read across a product hop
+    (semantics Axiom 3.1)."""
     if not sides.tokens:
         return
     population = sides.host
     roots: List[Tuple[ValueKey, str]] = [
         (dm.bound.value_key, f"{'dimension' if dm.is_dimension else 'metric'} {dm.public_name!r}")
-        for dm in prebound.declared_metrics
+        for i, dm in enumerate(prebound.declared_metrics)
+        if not (product_anchor and i < prebound.n_dims + prebound.n_time_dimensions)
     ]
-    roots += [(sp.bound.value_key, "order") for sp in prebound.order_specs]
+    dims = {dm.bound.value_key for dm in prebound.declared_metrics[:prebound.n_dims + prebound.n_time_dimensions]}
+    roots += [(sp.bound.value_key, "order") for sp in prebound.order_specs
+              if not (product_anchor and sp.bound.value_key in dims)]
     for bf, typing in zip(prebound.bound_filters, filter_typings, strict=True):
         if typing.typing == MaskTyping.FIELD:
             for cj in split_top_level_and(bf.value_key):
