@@ -18,7 +18,7 @@ from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
-from slayer.storage.migrations import CURRENT_VERSIONS
+from slayer.storage.field_expression_migration import FIELD_EXPRESSION_VERSION
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._deprecated_input_helpers import errors_in
@@ -27,7 +27,7 @@ from tests._engine_helpers import owned_query_engine
 DS = "shop"
 BACKENDS = ("sqlite", "duckdb")
 #: A stored dataset version written before this change.
-PREVIOUS = CURRENT_VERSIONS["SlayerModel"] - 1
+PREVIOUS = FIELD_EXPRESSION_VERSION - 1
 TOKEN = {"sqlite": "SQLITE", "duckdb": "DUCKDB"}
 
 ORDERS = [
@@ -162,23 +162,24 @@ async def rows(engine: SlayerQueryEngine, payload: dict[str, Any]) -> list[dict[
 
 async def by_id(engine: SlayerQueryEngine, *, field: str, ds: str = "orders") -> list[Any]:
     """``field`` per row of ``ds``, ordered by ``id``."""
-    out = await rows(engine, {"population": ds, "dimensions": ["id", field], "order": [{"field": "id"}]})
+    out = await rows(engine, {"population": ds, "dimensions": [f"{ds}.id", f"{ds}.{field}"],
+                              "order": [{"field": f"{ds}.id"}]})
     return [r[f"{ds}.{field}"] for r in out]
 
 
 async def counts_by(engine: SlayerQueryEngine, *, field: str, ds: str = "orders") -> dict[Any, int]:
-    out = await rows(engine, {"population": ds, "dimensions": [field],
-                              "metrics": [{"metric": "count(*)", "alias": "n"}]})
-    return {r[f"{ds}.{field}"]: r[f"{ds}.n"] for r in out}
+    out = await rows(engine, {"population": ds, "dimensions": [f"{ds}.{field}"],
+                              "metrics": [{"metric": f"count({ds}.*)", "alias": "n"}]})
+    return {r[f"{ds}.{field}"]: r["n"] for r in out}
 
 
 async def metric_value(engine: SlayerQueryEngine, *, metric: str, ds: str = "orders") -> Any:
     (row,) = await rows(engine, {"population": ds, "metrics": [{"metric": metric, "alias": "v"}]})
-    return row[f"{ds}.v"]
+    return row["v"]
 
 
 async def ids(engine: SlayerQueryEngine, ds: str = "orders") -> list[int]:
-    out = await rows(engine, {"population": ds, "dimensions": ["id"], "order": [{"field": "id"}]})
+    out = await rows(engine, {"population": ds, "dimensions": [f"{ds}.id"], "order": [{"field": f"{ds}.id"}]})
     return [r[f"{ds}.id"] for r in out]
 
 

@@ -61,10 +61,10 @@ class TestFieldFilter:
     @BACKEND
     async def test_single_column_aggregate_sql_unchanged(self, dialect: str) -> None:
         async with engine_with(dialect=dialect, docs=[orders_doc(fld("status"), PAID_AMOUNT)]) as (engine, _, _):
-            dry = await engine.execute({"population": "orders", "metrics": [{"metric": "sum(paid_amount)"}]},
+            dry = await engine.execute({"population": "orders", "metrics": [{"metric": "sum(orders.paid_amount)"}]},
                                        dry_run=True)
             assert re.search(r"SUM\(CASE WHEN .*status = 'paid' THEN .*amount END\)", dry.sql or "", re.I), dry.sql
-            assert await metric_value(engine, metric="sum(paid_amount)") == 30
+            assert await metric_value(engine, metric="sum(orders.paid_amount)") == 30
 
     @BACKEND
     async def test_derived_field_over_a_filtered_field_expands_the_wrapped_value(self, dialect: str) -> None:
@@ -94,7 +94,7 @@ class TestFieldFilter:
     async def test_variables_substitute_into_the_dialect_entry_and_the_filter(self) -> None:
         vcol = fld("vcol", {"dialects": [entry("DUCKDB", "amount * {mult}")]}, filter="status = '{s}'", datatype="Integer")
         async with engine_with(dialect="duckdb", docs=[orders_doc(fld("status"), vcol)]) as (engine, _, _):
-            dry = await engine.execute({"population": "orders", "metrics": [{"metric": "sum(vcol)"}],
+            dry = await engine.execute({"population": "orders", "metrics": [{"metric": "sum(orders.vcol)"}],
                                         "variables": {"mult": 2, "s": "paid"}}, dry_run=True)
             assert "{" not in (dry.sql or "")
             assert "'paid'" in (dry.sql or "")
@@ -148,7 +148,7 @@ async def renamed(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 def _amount_by(dimension: str) -> dict[str, Any]:
-    return {"population": "orders", "dimensions": [dimension], "metrics": [{"metric": "sum(amount)", "alias": "amt"}]}
+    return {"population": "orders", "dimensions": [dimension], "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}]}
 
 
 class TestRenamedReaderKeys:
@@ -167,13 +167,13 @@ class TestRenamedReaderKeys:
         assert cells(resp, dim_suffix="regions.name", metric="amt") == AMOUNT_BY_REGION
 
     async def test_association_over_a_renamed_primary_key_root(self, renamed: SlayerQueryEngine) -> None:
-        resp = await renamed.execute({"population": "orders", "dimensions": ["status"],
+        resp = await renamed.execute({"population": "orders", "dimensions": ["orders.status"],
                                       "metrics": [{"metric": "sum(customers.credit)", "alias": "cr"}],
                                       "to_many_handling": "associate"})
         assert cells(resp, dim_suffix="status", metric="cr") == ASSOC_CREDIT_BY_STATUS
 
     async def test_population_pushdown_over_renamed_keys(self, renamed: SlayerQueryEngine) -> None:
-        resp = await renamed.execute({"population": "customers", "metrics": [{"metric": "sum(credit)", "alias": "cr"}],
+        resp = await renamed.execute({"population": "customers", "metrics": [{"metric": "sum(customers.credit)", "alias": "cr"}],
                                       "filter": ["orders.status = 'new'"]})
         (row,) = resp.data
         assert float(next(v for k, v in row.items() if k.endswith("cr"))) == pytest.approx(CREDIT_WITH_NEW_ORDER)
@@ -197,7 +197,7 @@ async def test_a_mixed_case_physical_key_is_quoted_in_the_on_clause() -> None:
     customers["fields"][0] = fld("id", '"CustPK"', primary_key=True, datatype="Integer")
     orders = orders_doc(fld("customer_id", datatype="Integer"), relationships=[to_customers()])
     async with engine_with(dialect="duckdb", docs=[customers, orders], validate=False) as (engine, _, _):
-        dry = await engine.execute(_amount_by("customers.name") | {"metrics": [{"metric": "count(*)"}]}, dry_run=True)
+        dry = await engine.execute(_amount_by("customers.name") | {"metrics": [{"metric": "count(orders.*)"}]}, dry_run=True)
     assert '"CustPK"' in (dry.sql or "")
 
 
@@ -206,7 +206,7 @@ async def test_an_unresolvable_target_key_fails_closed_at_emission() -> None:
     customers["fields"][0] = fld("id", "id + 0", primary_key=True, datatype="Integer")
     orders = orders_doc(fld("customer_id", datatype="Integer"), relationships=[to_customers()])
     async with engine_with(dialect="duckdb", docs=[customers, orders], validate=False) as (engine, _, _):
-        query = _amount_by("customers.name") | {"metrics": [{"metric": "count(*)"}]}
+        query = _amount_by("customers.name") | {"metrics": [{"metric": "count(orders.*)"}]}
         with pytest.raises(RelationshipKeyError):
             await engine.execute(query, dry_run=True)
 
