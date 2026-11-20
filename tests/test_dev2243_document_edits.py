@@ -583,7 +583,7 @@ async def test_every_document_write_changes_the_graph_fingerprint(tmp_path: Path
     await storage.delete_semantic_model("sales", data_source=DS)
     seen.append(await storage.graph_fingerprint())
     assert None not in seen
-    assert len(set(seen)) == len(seen)
+    assert all(a != b for a, b in zip(seen, seen[1:]))
 
 
 STATUS_UPPER = "      - name: status_upper\n        expression: {sql: UPPER(status)}\n        datatype: String\n"

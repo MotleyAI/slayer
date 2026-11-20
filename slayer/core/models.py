@@ -910,6 +910,14 @@ def _coerce_source_queries(v: Any) -> Any:
     return result
 
 
+class ExtensionNote(BaseModel):
+    """Why a ``SLAYER`` extension entry on a document entity was not applied, or applied only in part."""
+
+    kind: str
+    entity: str
+    message: str
+
+
 class SourceDatasetOrigin(BaseModel):
     """In-memory lineage breadcrumb for virtual stage datasets: a linked list of
     upstream names so outer-stage dotted-ref lookup can strip prefixes.
@@ -1245,7 +1253,11 @@ class SlayerDataset(DatasetPart):
     source_dataset_origin: SourceDatasetOrigin | None = Field(default=None, exclude=True)
     #: Runtime only: the semantic-model document declaring this dataset (``None`` for a standalone dataset).
     semantic_model: str | None = Field(default=None, exclude=True)
+    #: Runtime only: why a ``SLAYER`` extension entry of its document was not applied on load.
+    extension_notes: list[ExtensionNote] = Field(default_factory=list, exclude=True)
     # Runtime-only (never persisted): a query stage's user spelling in relationship paths.
+    # Runtime-only: a document dataset as it was read, the base a save merges its changes from.
+    _read_as: "SlayerDataset | None" = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
     # Runtime-only: this dataset is the P factor of a ``time_spine × P`` population.
     _population_spine: bool = PrivateAttr(default=False)

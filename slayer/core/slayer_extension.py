@@ -81,6 +81,11 @@ class FieldContent(BaseModel):
     granularity: GranularitySpec | None = None
     allowed_aggregations: list[str] | None = None
     meta: dict[str, Any] | None = None
+    element_type: DataType | None = None
+    db_type: str | None = None
+    sampled: str | None = None
+    sampled_values: list[str] | None = None
+    distinct_count: int | None = None
 
 
 class FieldPayload(_Payload):
@@ -108,13 +113,31 @@ class DatasetPayload(_Payload):
     default_time_dimension: str | None = None
     meta: dict[str, Any] | None = None
     aggregations: list[Aggregation] = []
-    #: SLayer-only content: fields reading joined datasets, metrics Ossie cannot express.
+    #: SLayer-only content: fields reading joined datasets, metrics and relationships Ossie cannot express.
     fields: list[DatasetField] = []
     metrics: list[DatasetMetric] = []
+    relationships: list[DatasetRelationship] = []
+
+
+class ModelMetricContent(BaseModel):
+    """A model-scoped metric Ossie core cannot hold (it reads another by name, or a dataset that is gone)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    expression: FieldExpression
+    description: str | None = None
+    datatype: DataType | None = None
+
+
+class DocumentPayload(_Payload):
+    kind: Literal["semantic_model"] = "semantic_model"
+    metrics: list[ModelMetricContent] = []
 
 
 Payload = Annotated[
-    Union[DatasetPayload, FieldPayload, MetricPayload, RelationshipPayload], Field(discriminator="kind"),
+    Union[DatasetPayload, DocumentPayload, FieldPayload, MetricPayload, RelationshipPayload],
+    Field(discriminator="kind"),
 ]
 _ADAPTER: TypeAdapter[Payload] = TypeAdapter(Payload)
 

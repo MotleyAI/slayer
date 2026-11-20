@@ -17,14 +17,21 @@ from sqlglot.errors import SqlglotError
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import OssieDocumentInvalidError, StoredDocumentLoadError
 from slayer.core.field_expression import DialectEntry, Expression, ExpressionObject, token
-from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
+from slayer.core import slayer_extension as ext
+from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
 from slayer.core.ossie_validity import parse_ossie_sql
 from slayer.core.semantic_model import (
     ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument, ossie_validity_errors,
 )
-from slayer.sql.dialects import ossie_token
-from slayer.sql.ossie_dialects import ANSI_SQL, OSSIE_SQL, PORTABLE_READER, Candidate, read, reader_for, render
-from slayer.sql.ossie_source import parse_source
+from slayer.sql.dialects import dialect_for_ds_type, ossie_token
+from slayer.sql.ossie_dialects import (
+    ANSI_SQL, OSSIE_SQL, PORTABLE_READER, Candidate, read, reader_for, render, source_digest,
+)
+from slayer.storage.document_mapping import core_source
+from slayer.storage.document_extensions import (
+    apply_dataset_entry, apply_field_entry, digest as entry_digest, metric_entry, read_entry,
+    relationship_declarations, restore_metrics,
+)
 
 __all__ = ["Decomposition", "DocumentIndex", "build_index", "checked_document", "decompose", "expression_datasets",
            "parse_document_text"]
@@ -40,6 +47,7 @@ class Decomposition(BaseModel):
     data_source: str
     datasets: list[SlayerDataset]
     metrics: list[ModelScopedMetric]
+    notes: list[ExtensionNote] = []
 
 
 def parse_document_text(text: str) -> Any:
@@ -130,20 +138,25 @@ def _runnable_metric(expression: OssieExpression, *, target: str) -> tuple[Expre
 
 
 def _source(dataset: OssieDataset) -> dict[str, Any]:
-    parsed = parse_source(dataset.source)
-    return {"sql": parsed.query} if parsed.is_query else {"sql_table": dataset.source.strip()}
+    sql_table, sql = core_source(dataset.source)
+    return {"sql": sql} if sql is not None else {"sql_table": sql_table}
 
 
-def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str) -> DatasetField:
+def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: list[ExtensionNote],
+           dataset: str) -> DatasetField:
     primary, unique = keys
     expression, problem = _runnable(field.expression, target=target)
     warning = WINDOW_WARNING if _windowed(field.expression) else problem
-    return DatasetField(
+    built = DatasetField(
         name=field.name, expression=expression,
         datatype=_OSSIE_TYPES[field.datatype] if field.datatype else None,
         primary_key=field.name in primary, unique=field.name in unique,
         label=field.label, description=field.description, load_warning=warning,
     )
+    label = f"field {field.name!r} of {dataset!r}"
+    entry = read_entry(field.nonportable_extensions, kind="field", entity=field.name,
+                       ossie=entry_digest(field.expression), label=label, notes=notes)
+    return apply_field_entry(built, entry, notes=notes, label=label)
 
 
 def _metric(metric: Any, *, target: str, windowed_fields: set[str]) -> DatasetMetric:
@@ -163,28 +176,58 @@ def _reads(expression: OssieExpression, names: set[str]) -> bool:
     return tree is not None and any(not c.table and c.name.casefold() in names for c in tree.find_all(exp.Column))
 
 
-def _dataset(dataset: OssieDataset, *, data_source: str, target: str, document: str) -> SlayerDataset:
+def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: str, document: str,
+             restored: list[tuple[str, DatasetMetric]]) -> SlayerDataset:
     primary = set(dataset.primary_key or [])
     unique = {k[0] for k in dataset.unique_keys or [] if len(k) == 1}
-    fields = [_field(f, keys=(primary, unique), target=target) for f in dataset.fields or []]
+    notes: list[ExtensionNote] = []
+    fields = [_field(f, keys=(primary, unique), target=target, notes=notes, dataset=dataset.name)
+              for f in dataset.fields or []]
     windowed = {f.name.casefold() for f in fields if f.load_warning == WINDOW_WARNING}
-    return SlayerDataset(
+    metrics = []
+    for raw in dataset.metrics or []:
+        label = f"metric {raw.name!r} of {dataset.name!r}"
+        entry = read_entry(raw.nonportable_extensions, kind="metric", entity=raw.name,
+                           ossie=entry_digest(raw.expression), label=label, notes=notes)
+        core = _metric(raw, target=target, windowed_fields=windowed)
+        metric, was_restored = metric_entry(core, entry, home=dataset.name, notes=notes, label=label)
+        if was_restored:
+            restored.append((dataset.name, core))
+        metrics.append(metric)
+    built = SlayerDataset(
         name=dataset.name, data_source=data_source, description=dataset.description, fields=fields,
-        semantic_model=document,
-        metrics=[_metric(m, target=target, windowed_fields=windowed) for m in dataset.metrics or []],
-        **_source(dataset),
+        semantic_model=document, metrics=metrics, **_source(dataset),
     )
+    entry = read_entry(dataset.nonportable_extensions, kind="dataset", entity=dataset.name,
+                       ossie=source_digest(dataset.source, reader=reader), label=f"dataset {dataset.name!r}",
+                       notes=notes)
+    built = apply_dataset_entry(built, entry, notes=notes)
+    built.extension_notes = notes
+    return built
 
 
 @functools.lru_cache(maxsize=256)
-def _decomposed(text: str, name: str, data_source: str, target: str) -> Decomposition:
+def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
     doc = checked_document(text=text, name=name)
-    datasets = {d.name: _dataset(d, data_source=data_source, target=target, document=doc.name) for d in doc.datasets}
+    target = ossie_token(ds_type)
+    reader = dialect_for_ds_type(ds_type).sqlglot_name
+    restored: list[tuple[str, DatasetMetric]] = []
+    datasets = {d.name: _dataset(d, data_source=data_source, target=target, reader=reader, document=doc.name,
+                                 restored=restored) for d in doc.datasets}
     for rel in doc.relationships or []:
-        datasets[rel.from_dataset].relationships.append(DatasetRelationship(
+        notes = datasets[rel.from_dataset].extension_notes
+        default = DatasetRelationship(
             name=rel.name, to=rel.to, from_columns=list(rel.from_columns), to_columns=list(rel.to_columns),
             cardinality=RelationshipCardinality.MANY_TO_ONE, join_type=JoinType.LEFT,
-        ))
+        )
+        entry = read_entry(rel.nonportable_extensions, kind="relationship", entity=rel.name,
+                           ossie=ext.relationship_digest(from_dataset=rel.from_dataset, to=rel.to,
+                                                         from_columns=list(rel.from_columns),
+                                                         to_columns=list(rel.to_columns)),
+                           label=f"relationship {rel.name!r}", notes=notes)
+        for owner, declared in relationship_declarations(rel, entry, datasets=datasets, default=default, notes=notes):
+            datasets[owner].relationships.append(declared)
+    restore_metrics(datasets, restored=restored, dialect=reader)
     metrics = []
     for m in doc.metrics or []:
         expression, problem = _runnable_metric(m.expression, target=target)
@@ -194,12 +237,20 @@ def _decomposed(text: str, name: str, data_source: str, target: str) -> Decompos
             datatype=_OSSIE_TYPES[m.datatype] if m.datatype else None,
             load_warning=WINDOW_WARNING if _windowed(m.expression) else problem,
         ))
-    return Decomposition(name=doc.name, data_source=data_source, datasets=list(datasets.values()), metrics=metrics)
+    notes: list[ExtensionNote] = []
+    entry = read_entry(doc.nonportable_extensions, kind="semantic_model", entity=doc.name, ossie=doc.name,
+                       label=f"semantic model {doc.name!r}", notes=notes)
+    if entry is not None:
+        metrics += [ModelScopedMetric(name=m.name, semantic_model=doc.name, data_source=data_source,
+                                      expression=m.expression, description=m.description, datatype=m.datatype)
+                    for m in entry.payload.metrics]
+    return Decomposition(name=doc.name, data_source=data_source, datasets=list(datasets.values()), metrics=metrics,
+                         notes=notes)
 
 
 def decompose(*, text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
     """``text`` decomposed for a datasource of ``ds_type``; raises ``OssieDocumentInvalidError`` when invalid."""
-    return _decomposed(text, name, data_source, ossie_token(ds_type)).model_copy(deep=True)
+    return _decomposed(text, name, data_source, ds_type).model_copy(deep=True)
 
 
 def expression_datasets(expression: Expression) -> tuple[set[str], set[str]]:
@@ -257,12 +308,13 @@ def build_index(*, data_source: str, documents: list[tuple[str, str]], standalon
             for owner, spelled in owners:
                 index.failure(kind="dataset", name=spelled,
                               cause=f"{spelled!r} is declared by {index.quarantined[folded]}; rename one of them")
+    known = {n.casefold() for n in standalone} | set(claims)
     for doc in decomposed:
-        _admit(index, doc)
+        _admit(index, doc, known=known)
     return index
 
 
-def _admit(index: DocumentIndex, doc: Decomposition) -> None:
+def _admit(index: DocumentIndex, doc: Decomposition, *, known: set[str]) -> None:
     """Admit ``doc``'s datasets and metrics, dropping each dependent of a quarantined dataset with a failure."""
     gone = set(index.quarantined)
     for ds in doc.datasets:
@@ -294,4 +346,8 @@ def _admit(index: DocumentIndex, doc: Decomposition) -> None:
                 dropped.add(folded)
                 del pending[folded]
                 changed = True
+    for metric in pending.values():
+        missing = sorted(t for t in expression_datasets(metric.expression)[0] if t not in known)
+        if missing and metric.load_warning is None:
+            metric.load_warning = f"reads {', '.join(repr(m) for m in missing)}, which no longer exist"
     index.metrics.update(pending)

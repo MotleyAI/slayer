@@ -28,6 +28,7 @@ from slayer.core.errors import (
     ColonSpellingError,
     IdCollisionError,
     NamespaceCollisionError,
+    OssieDocumentInvalidError,
     RelationshipTargetCaseError,
     SemanticModelsUnsupportedError,
     MemoryNotFoundError,
@@ -57,7 +58,7 @@ from slayer.core.models import (
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery, mode_a_texts
-from slayer.core.semantic_model import ModelScopedMetric
+from slayer.core.semantic_model import ModelScopedMetric, ossie_validity_errors
 from slayer.core.syntax import parse_expr
 from slayer.core.vocabulary import bridge_renamed_hooks, method_twin
 from slayer.core.warnings import (
@@ -116,7 +117,11 @@ from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
 from slayer.storage.qualified_references import qualified_stages
-from slayer.storage.semantic_models import DocumentIndex, build_index, checked_document
+from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
+from slayer.storage.document_text import edit_text
+from slayer.storage.semantic_models import (
+    DocumentIndex, build_index, checked_document, decompose, expression_datasets,
+)
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
@@ -650,7 +655,46 @@ def _with_document_identities(identities: Callable[..., Any]) -> Callable[..., A
     return listed
 
 
-_DOCUMENT_WRAPPERS = {"get_dataset": _documents_first, "_list_all_dataset_identities": _with_document_identities}
+def _sampled_into_documents(update: Callable[..., Any]) -> Callable[..., Any]:
+    """``update_field_sampled`` patching the owning document of a document dataset."""
+
+    @functools.wraps(update)
+    async def update_field_sampled(self: StorageBackend, *, data_source: str, dataset_name: str, field_name: str,
+                                   sampled: str | None, sampled_values: list[str] | None,
+                                   distinct_count: int | None) -> None:
+        owner = None if _STANDALONE_ONLY.get() else await self._owner_of(dataset_name, data_source=data_source)
+        if owner is None:
+            await update(self, data_source=data_source, dataset_name=dataset_name, field_name=field_name,
+                         sampled=sampled, sampled_values=sampled_values, distinct_count=distinct_count)
+            return
+
+        def sample(old: SlayerDataset | None) -> SlayerDataset:
+            if old is None or old.get_field(field_name) is None:
+                raise ValueError(f"Field {field_name!r} of dataset {dataset_name!r} not found")
+            values = {"sampled": sampled, "sampled_values": sampled_values, "distinct_count": distinct_count}
+            return old.model_copy(update={"fields": [f.model_copy(update=values) if f.name == field_name else f
+                                                     for f in old.fields]})
+
+        await self._write_document_dataset(data_source=data_source, document=owner, name=dataset_name, mutate=sample)
+
+    setattr(update_field_sampled, "__documents__", True)
+    return update_field_sampled
+
+
+def _handed_out(dataset: SlayerDataset) -> SlayerDataset:
+    """A copy of a document dataset remembering the form it was read as, the base its save merges from."""
+    out = dataset.model_copy(deep=True)
+    out._read_as = dataset.model_copy(deep=True)
+    return out
+
+
+def _reads(ossie: dict[str, Any]) -> set[str]:
+    """The case-folded datasets an Ossie metric expression reads."""
+    return expression_datasets(as_expression(ossie))[0] if ossie else set()
+
+
+_DOCUMENT_WRAPPERS = {"get_dataset": _documents_first, "_list_all_dataset_identities": _with_document_identities,
+                      "update_field_sampled": _sampled_into_documents}
 
 
 class StorageBackend(ABC):
@@ -735,8 +779,52 @@ class StorageBackend(ABC):
                 dataset = with_converted_sql(dataset, ds_type=datasource.type)
             await self.validate_for_save(dataset, failures=failures)
             warn_library_shadows(dataset)
-        await self._save_dataset_impl(dataset)
+        owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
+        moving = owner is None and dataset.semantic_model is not None
+        owner = owner or dataset.semantic_model
+        if owner is None:
+            await self._save_dataset_impl(dataset)
+        else:
+            await self._write_document_dataset(data_source=dataset.data_source, document=owner, name=dataset.name,
+                                               mutate=lambda _old: dataset)
+            if moving:
+                await self._delete_dataset_row(data_source=dataset.data_source, name=dataset.name)
         self._forget_raw(data_source=dataset.data_source, name=dataset.name)
+
+    async def _owner_of(self, name: str, *, data_source: str) -> str | None:
+        """The one owner lookup: the document declaring dataset ``name``, ``None`` for a standalone or new one."""
+        if not self._supports_semantic_models() or not await self._document_data_sources():
+            return None
+        return (await self._document_index(data_source)).owners.get(name.casefold())
+
+    async def _write_document_dataset(self, *, data_source: str, document: str, name: str,
+                                      mutate: Callable[[SlayerDataset | None], SlayerDataset | None]) -> None:
+        """Patch document ``document``: dataset ``name`` becomes ``mutate(current)`` (``None`` removes it), read and
+        written as one serialized step."""
+        datasource = await self.get_datasource(data_source)
+        ds_type = datasource.type if datasource is not None else None
+        reader = dialect_for_ds_type(ds_type).sqlglot_name
+
+        def patch(text: str) -> str:
+            current = decompose(text=text, name=document, data_source=data_source, ds_type=ds_type)
+            old = next((d for d in current.datasets if d.name.casefold() == name.casefold()), None)
+            new = mutate(old)
+            base = (new._read_as if new is not None and new._read_as is not None else None) or old
+            baseline = with_canonical_spellings(base)[0] if base is not None else None
+
+            def edit(doc: dict[str, Any]) -> dict[str, Any]:
+                out = without_dataset(doc, name=name, reads=_reads) if new is None else with_dataset(
+                    doc, old=baseline, new=new, reader=reader)
+                reasons = ossie_validity_errors(out)
+                if reasons:
+                    raise OssieDocumentInvalidError(name=document, reasons=reasons)
+                return out
+
+            return edit_text(text, edit)
+
+        if self._supports_semantic_models() and await self.get_semantic_model_text(document, data_source=data_source) is None:
+            raise ValueError(f"Semantic model {document!r} not found in datasource {data_source!r}")
+        await self._patch_semantic_model_text(data_source=data_source, name=document, patch=patch)
 
     async def validate_for_save(self, dataset: SlayerDataset, *, failures: DocumentLoadFailures | None = None) -> None:
         """Reserved-name and case-collision rejection, derived-field and dataset-filter well-formedness (reference arity + cycles) and relationship validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
@@ -902,7 +990,7 @@ class StorageBackend(ABC):
             if token is not None:
                 _RAW_PASS.reset(token)
         for index in indexes.values():
-            loaded += [d.model_copy(deep=True) for d in index.datasets.values() if d.name != exclude]
+            loaded += [_handed_out(d) for d in index.datasets.values() if d.name != exclude]
             loaded += index.failures
         return (
             [m for m in loaded if isinstance(m, SlayerDataset)],
@@ -982,7 +1070,7 @@ class StorageBackend(ABC):
             raise StoredDocumentLoadError(kind="dataset", name=name, data_source=data_source, cause=ValueError(
                 f"{name!r} is declared by {cause}; rename one of them"))
         found = index.datasets.get(name.casefold())
-        return found.model_copy(deep=True) if found is not None else None
+        return _handed_out(found) if found is not None else None
 
     async def _resolve_document(self, name: str, data_source: str | None) -> tuple[str, str] | None:
         _validate_path_component(name, kind="semantic model name")
@@ -1237,9 +1325,14 @@ class StorageBackend(ABC):
         if target is None:
             return False
         resolved_data_source, resolved_name = target
-        deleted = await self._delete_dataset_row(
-            data_source=resolved_data_source, name=resolved_name,
-        )
+        owner = await self._owner_of(resolved_name, data_source=resolved_data_source)
+        if owner is not None:
+            deleted = await self._delete_document_dataset(data_source=resolved_data_source, document=owner,
+                                                          name=resolved_name)
+        else:
+            deleted = await self._delete_dataset_row(
+                data_source=resolved_data_source, name=resolved_name,
+            )
         if deleted:
             self._forget_raw(data_source=resolved_data_source, name=resolved_name)
             canonical = f"{resolved_data_source}.{resolved_name}"
@@ -1249,6 +1342,33 @@ class StorageBackend(ABC):
             await self.strip_dangling_entities_from_memories(
                 canonical_id=canonical,
             )
+            await self._drop_inbound_relationships(data_source=resolved_data_source, name=resolved_name)
+        return deleted
+
+    async def _drop_inbound_relationships(self, *, data_source: str, name: str) -> None:
+        """Remove every relationship of the datasource's other datasets that targets the deleted dataset ``name``."""
+        loaded, _ = await self.load_datasets(data_source=data_source)
+        for peer in loaded:
+            kept = [r for r in peer.relationships if r.to.casefold() != name.casefold()]
+            if len(kept) != len(peer.relationships):
+                await self.save_dataset(peer.model_copy(update={"relationships": kept}), _validate=False)
+
+    async def _delete_document_dataset(self, *, data_source: str, document: str, name: str) -> bool:
+        """Remove dataset ``name`` from ``document`` (the document itself with its last dataset), warning about each
+        model-scoped metric that read it."""
+        index = await self._document_index(data_source)
+        readers = [m.name for m in index.metrics.values()
+                   if name.casefold() in expression_datasets(m.expression)[0]]
+        members = [d for k, d in index.owners.items() if d == document]
+        if len(members) <= 1:
+            deleted = await self._delete_semantic_model_row(data_source=data_source, name=document)
+        else:
+            await self._write_document_dataset(data_source=data_source, document=document, name=name,
+                                               mutate=lambda _old: None)
+            deleted = True
+        for reader in readers:
+            warnings.warn(f"Model-scoped metric {reader!r} of semantic model {document!r} reads the deleted dataset "
+                          f"{name!r}; it no longer loads.", UserWarning, stacklevel=outside_stacklevel())
         return deleted
 
     @abstractmethod
